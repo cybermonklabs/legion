@@ -103,8 +103,8 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 			append(attributes, "attempts", mergeStateLadderReads, "error", failed)...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-read:%s:%d", row.Issue, row.ID),
-		intake.MergeQueueReadDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
-		return fmt.Errorf("apply the merge-queue read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
+		intake.MergeQueueReadDone{Issue: row.Issue, Repo: pr.Repo, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the merge-queue read of %s's pull request %s#%d: %w", row.Issue, pr.Repo, payload.Number, err)
 	}
 	return nil
 }

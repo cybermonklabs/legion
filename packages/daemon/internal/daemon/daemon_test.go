@@ -2133,17 +2133,24 @@ func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, pro
 }
 
 // workflowDispatch is workflowConfig's board (dispatchBoard): the calls every boot makes
-// (servedBootCall) and an empty listing of issues, and any other call of the daemon's fails the
-// test.
+// (servedBootCall), an empty listing of issues, and the read of one issue the boot makes of each
+// running issue for its links (readLinksAtBoot), which Dispatch answers with the issue linking
+// nothing; any other call of the daemon's fails the test.
 func workflowDispatch(t *testing.T, project string) string {
 	t.Helper()
 	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+		key, ofIssue := strings.CutPrefix(r.URL.Path, "/api/v1/issues/")
 		switch {
 		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
 				t.Errorf("write Dispatch issues: %v", err)
+			}
+		case r.Method == http.MethodGet && ofIssue && key != "" && !strings.Contains(key, "/"):
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{"key": key, "external_links": []any{}}); err != nil {
+				t.Errorf("write Dispatch issue %s: %v", key, err)
 			}
 		default:
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)

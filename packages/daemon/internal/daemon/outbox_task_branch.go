@@ -31,6 +31,12 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 	if err != nil {
 		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
+	return r.repoClient(ctx, recorded)
+}
+
+// repoClient is the client a write of recorded is made with, and the repository GitHub holds it
+// under now (serving), as the implement App for that repository's owner.
+func (r *outbox) repoClient(ctx context.Context, recorded ghrepo.Repository) (githubrest.Client, ghrepo.Repository, error) {
 	repo := r.repositories.serving(recorded)
 	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
@@ -202,8 +208,9 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 
 // closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (those
 // whose work a merge holds, a removed task's at the version that removed it, an earlier run's at
-// the first step of a run started again), as branchClient makes each write of a branch (the
-// implement App), within branchRowTimeout: each is closed, then the row's comment is written on it
+// the first step of a run started again), in the repository the row names, the issue's where the row
+// names none (record.TaskPullRequestsClose.RepoOf), as repoClient makes each write of a branch (the
+// implement App for that repository's owner), within branchRowTimeout: each is closed, then the row's comment is written on it
 // once, as the implement App's login (ghbranch.ClosePullRequest), which the outbox's token source
 // answers, as the boot requires of it (appauth.Logins). A row that runs again finds each close and
 // each comment an earlier try made. A row of a generation the issue has left finishes without
@@ -230,9 +237,13 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 			"generation", payload.Generation, "current", issue.Generation)
 		return nil
 	}
+	target, err := ghrepo.Parse("the repository of the pull requests to close for "+issue.Key, payload.RepoOf(issue.GitHubRepo))
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
-	github, repo, err := r.branchClient(ctx, issue)
+	github, repo, err := r.repoClient(ctx, target)
 	if err != nil {
 		return err
 	}

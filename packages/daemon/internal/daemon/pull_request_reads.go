@@ -87,20 +87,20 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 	return w.openRecord(ctx, pr)
 }
 
-// openRecord is the pull request record of pr's task (record.PullRequest.Task) as it stands now,
-// which must still be pr's and open. The per-issue read builds facts from it and writes nothing of
-// it.
+// openRecord is pr's record as it stands now, read by its repository and number
+// (record.Store.PullRequestRowByNumber, dispatch://INFRA-5910 decision 20, b9), which must still
+// be pr's issue's and open. The per-issue read builds facts from it and writes nothing of it.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequestRowOfTask(ctx, tx, pr.Issue, pr.Task)
+		current, err = w.records.PullRequestRowByNumber(ctx, tx, pr.Repo, pr.Number)
 		return err
 	}); err != nil {
-		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)
+		return pr, fmt.Errorf("read the pull request record of %s#%d: %w", pr.Repo, pr.Number, err)
 	}
-	if current == nil || current.State != record.PullRequestOpen || current.Number != pr.Number {
-		return pr, fmt.Errorf("%s records pull request #%d open no longer", pr.Issue, pr.Number)
+	if current == nil || current.State != record.PullRequestOpen || current.Issue != pr.Issue {
+		return pr, fmt.Errorf("%s records pull request %s#%d open no longer", pr.Issue, pr.Repo, pr.Number)
 	}
 	return *current, nil
 }
@@ -405,23 +405,23 @@ func (w *workflowRuntime) heardSpelling(repo string) string {
 	return repo
 }
 
-// openPullRequestOn is the open pull request of repo on branch, and whether there is one, as
-// githubrest.Client.OpenPullRequestOn reads it.
+// openPullRequestsOn is each open pull request of repo on branch, in GitHub's order, newest first,
+// as githubrest.Client.OpenPullRequestsOn reads them (dispatch://INFRA-5910 decision 20, b6).
 //
 // The repository GitHub serves the recorded one under is what this reads, addresses and filters
 // on (repositories.serving): after a transfer the record keeps the old name, and the head filter
 // names an owner, so a listing made under the recorded name would ask the wrong installation for
 // heads of an owner that holds none and find no pull request at all — which the caller reports as
 // a pull request that has gone missing.
-func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch string) (githubrest.PullRequest, bool, error) {
+func (w *workflowRuntime) openPullRequestsOn(ctx context.Context, repo, branch string) ([]githubrest.PullRequest, error) {
 	recorded, err := ghrepo.Parse("the issue's repository", repo)
 	if err != nil {
-		return githubrest.PullRequest{}, false, err
+		return nil, err
 	}
 	repository := w.repositories.serving(recorded)
 	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
 	if err != nil {
-		return githubrest.PullRequest{}, false, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return nil, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
-	return github.OpenPullRequestOn(ctx, repository, branch)
+	return github.OpenPullRequestsOn(ctx, repository, branch)
 }

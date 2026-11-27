@@ -652,29 +652,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		},
 	} {
 		// No release here ever recorded a migration of this pull request's stack: each lacks
-		// those numbered at or below its newest too, and the upgrade applies them (stacksMigrations).
+		// those numbered at or below its newest too, and the upgrade applies them (StackMigrations).
 		release.lacks = append(slices.Clone(release.lacks), stacksMigrationsUpTo(release.newest)...)
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
 }
 
-// stacksMigrations are the versions cybermonklabs/legion#5169 and the pull requests it stands on
-// (#5164, #5156, #5165, #5168) add, which neither main nor INFRA-3320's branch recorded: the
-// embedded versions main at dfe2c546f21f does not hold. A database either of those left lacks
-// each of them numbered at or below its newest, and the test of the merge's databases builds it
-// so (stacksMigrationsUpTo). A migration this stack adds goes in this list, or the test builds a
-// database that holds it and the upgrade counts one migration fewer than it applies.
-var stacksMigrations = []int{
-	20261117213545, 20261117223524, 20261117224125, 20261121165047, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
-	20261123154051, 20261123200630, 20261123221142, 20261124023617, 20261126144204,
-	20261126234607, 20261127031536,
-}
-
-// stacksMigrationsUpTo is stacksMigrations numbered at or below newest.
+// stacksMigrationsUpTo is StackMigrations numbered at or below newest.
 func stacksMigrationsUpTo(newest int) []int {
 	var below []int
-	for _, version := range stacksMigrations {
+	for _, version := range StackMigrations {
 		if version <= newest {
 			below = append(below, version)
 		}
@@ -682,28 +669,15 @@ func stacksMigrationsUpTo(newest int) []int {
 	return below
 }
 
-// migrateMainsThrough applies every embedded migration numbered up to and including version but
-// this stack's (stacksMigrations): the database main's daemon left while version was its newest.
-// A test of one of main's kind lists reads its negative control there and not on this stack's own
-// order, where a list of this stack numbered below main's version names main's kind already: the
-// last migration to write a list owns every value of it, main's included, because on a database
-// main migrated this stack's lists run late, after main's, and are the last word there.
+// migrateMainsThrough is Store.MigrateMainsThrough, failing the test on an error: the database
+// main's daemon left while version was its newest. A test of one of main's kind lists reads its
+// negative control there and not on this stack's own order, where a list of this stack numbered
+// below main's version names main's kind already: the last migration to write a list owns every
+// value of it, main's included, because on a database main migrated this stack's lists run late,
+// after main's, and are the last word there.
 func migrateMainsThrough(t *testing.T, store *Store, version int) {
 	t.Helper()
-	ctx := context.Background()
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	for _, migration := range all {
-		if migration.Version > version {
-			return
-		}
-		if slices.Contains(stacksMigrations, migration.Version) {
-			continue
-		}
-		if _, err := store.apply(ctx, migration); err != nil {
-			t.Fatalf("apply %s as main's run did: %v", migration.Name, err)
-		}
+	if err := store.MigrateMainsThrough(context.Background(), version); err != nil {
+		t.Fatal(err)
 	}
 }

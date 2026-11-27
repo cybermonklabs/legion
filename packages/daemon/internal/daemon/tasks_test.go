@@ -615,19 +615,32 @@ func (r *tasksRig) testStep(task string) {
 	r.done(r.takeFor(claim.RoleTester, task), "test", testCompletion)
 }
 
-// retroAndMerge is the implementer's retro of task, the task whose work merges, at its branch's
-// head, then GitHub's merge of its pull request once the merger is launched; the issue is then
-// done.
+// retroAndMerge is the implementer's retro of task, the task whose work merges, then GitHub's
+// merge of its pull request; the issue is then done.
 func (r *tasksRig) retroAndMerge(task string) {
 	r.t.Helper()
+	r.retro(task)
+	r.merge(task)
+	r.waitPhase(phase.Done)
+}
+
+// retro is the implementer's retro of task, the task whose work merges, at its branch's head; the
+// issue then stands in merging, its merger launched.
+func (r *tasksRig) retro(task string) {
+	r.t.Helper()
 	c := r.takeFor(claim.RoleImplementer, task)
-	branch := r.branchOf(task)
-	head := r.gh.repo.Head(r.t, branch)
 	req := r.retroCompletion(&record.PlanRating{Rating: 4, Reason: "The plan fit the work."})
-	req.Commit = head
+	req.Commit = r.gh.repo.Head(r.t, r.branchOf(task))
 	r.done(c, "", req)
 	r.waitPhase(phase.Merging)
 	r.awaitLaunch(r.token(claim.RoleMerger))
+}
+
+// merge is GitHub merging task's pull request at its branch's head, as Envoy relays it.
+func (r *tasksRig) merge(task string) {
+	r.t.Helper()
+	branch := r.branchOf(task)
+	head := r.gh.repo.Head(r.t, branch)
 	number := r.pulls[task]
 	r.gh.merged(number)
 	payload, err := json.Marshal(map[string]string{
@@ -639,7 +652,6 @@ func (r *tasksRig) retroAndMerge(task string) {
 		r.t.Fatal(err)
 	}
 	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), number), "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
-	r.waitPhase(phase.Done)
 }
 
 // onePod fails the test unless every launch the runtime was asked for is of the issue, in its one
@@ -854,8 +866,10 @@ func tasksCopyTools(t *testing.T) map[string]string {
 
 // tasksGitHub is GitHub's REST API over one real repository, liveRepo (githubtest.GitRepository):
 // its branches, the joins of its branches and its pull requests are the repository's, each pull
-// request clean until GitHub merges it (merged), the person of the reviews has write access, and a
-// GraphQL root knows no pull request. Every other route is a 404, so nothing reaches github.com.
+// request clean until GitHub merges it (merged) or closes it unmerged (closePull), the person of
+// the reviews has write access, and a GraphQL root knows no pull request. A second repository,
+// stepRecordsLinkedRepo, holds the pull requests a test opens there (openLinked). Every other
+// route is a 404, so nothing reaches github.com.
 // Each pull request's number is the repository's plus offset, a number of the run's own: the tests
 // of the package share one database, where the daemon finds a pull request by its repository and
 // number, so two tests that each numbered theirs from 1 would read each other's.
@@ -865,8 +879,14 @@ type tasksGitHub struct {
 	url    string
 	offset int
 	mu     sync.Mutex
-	// merges is each pull request GitHub merged, by number.
-	merges map[int]bool
+	// merges is each pull request GitHub merged, and closed each one it closed unmerged, by
+	// number.
+	merges, closed map[int]bool
+	// linked is each pull request of the second repository, stepRecordsLinkedRepo, by number,
+	// which only a link of an issue names (openLinked), and front answers a request before the
+	// fake repository does where it reports it answered (a test's close of pull requests).
+	linked map[int]*linkedPull
+	front  func(w http.ResponseWriter, r *http.Request) bool
 }
 
 func newTasksGitHub(t *testing.T) *tasksGitHub {
@@ -876,13 +896,21 @@ func newTasksGitHub(t *testing.T) *tasksGitHub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &tasksGitHub{t: t, repo: githubtest.GitRepository(t, owner, name, "main"), offset: 1000 + 10*int(offset), merges: map[int]bool{}}
+	g := &tasksGitHub{t: t, repo: githubtest.GitRepository(t, owner, name, "main"), offset: 1000 + 10*int(offset), merges: map[int]bool{},
+		closed: map[int]bool{}, linked: map[int]*linkedPull{}}
 	prefix := "/repos/" + liveRepo
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, ofRepository := strings.CutPrefix(r.URL.Path, prefix)
+		linkedRest, ofLinked := strings.CutPrefix(r.URL.Path, "/repos/"+stepRecordsLinkedRepo)
+		g.mu.Lock()
+		front := g.front
+		g.mu.Unlock()
 		switch {
+		case front != nil && front(w, r):
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
+		case r.Method == http.MethodGet && ofLinked:
+			g.readLinked(w, linkedRest)
 		case r.Method == http.MethodGet && ofRepository && rest == "/collaborators/"+stepRecordsPerson+"/permission":
 			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"`+stepRecordsPerson+`"}}`)
 		case r.Method == http.MethodGet && ofRepository && strings.HasPrefix(rest, "/pulls/") && strings.HasSuffix(rest, "/reviews"):
@@ -898,6 +926,62 @@ func newTasksGitHub(t *testing.T) *tasksGitHub {
 		}
 	}})
 	return g
+}
+
+// setFront has front answer every request it reports it answered, before the fake repository.
+func (g *tasksGitHub) setFront(front func(w http.ResponseWriter, r *http.Request) bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.front = front
+}
+
+// openLinked is a pull request number of the second repository, open on branch at head, which a
+// link of an issue names.
+func (g *tasksGitHub) openLinked(number int, branch, head string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.linked[number] = &linkedPull{repo: stepRecordsLinkedRepo, number: number, branch: branch, base: "main", head: head, state: "open"}
+}
+
+// closePull is GitHub closing pull request number of liveRepo unmerged.
+func (g *tasksGitHub) closePull(number int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.closed[number] = true
+}
+
+// mergeLinked is GitHub merging pull request number of the second repository.
+func (g *tasksGitHub) mergeLinked(number int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.linked[number].state, g.linked[number].merged = "closed", true
+}
+
+// readLinked answers a read of the second repository at rest, the path after its name: the
+// repository itself, or one of its pull requests and its reviews.
+func (g *tasksGitHub) readLinked(w http.ResponseWriter, rest string) {
+	if rest == "" {
+		_, _ = io.WriteString(w, `{"full_name":"`+stepRecordsLinkedRepo+`","default_branch":"main"}`)
+		return
+	}
+	number, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
+	n, err := strconv.Atoi(number)
+	g.mu.Lock()
+	pull := g.linked[n]
+	var answer map[string]any
+	if pull != nil {
+		answer = (&linkedGitHub{}).pullAnswer(*pull)
+	}
+	g.mu.Unlock()
+	switch {
+	case err != nil || pull == nil || !strings.HasPrefix(rest, "/pulls/"):
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	case reviews:
+		_, _ = io.WriteString(w, `[]`)
+	default:
+		_ = json.NewEncoder(w).Encode(answer)
+	}
 }
 
 // numbered is pull as the repository answers it, with its number and its page the run's own
@@ -927,8 +1011,8 @@ func (g *tasksGitHub) openPull(w http.ResponseWriter, r *http.Request) {
 }
 
 // readPulls answers a read of one pull request or of a list as the repository answers it,
-// numbered, each open one mergeable and clean, and each GitHub merged closed and merged, left out
-// of a list of the open ones.
+// numbered, each open one mergeable and clean, each GitHub merged closed and merged, and each it
+// closed unmerged closed, the two left out of a list of the open ones.
 func (g *tasksGitHub) readPulls(w http.ResponseWriter, r *http.Request) {
 	if number, one := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo+"/pulls/"); one {
 		n, err := strconv.Atoi(number)
@@ -956,6 +1040,10 @@ func (g *tasksGitHub) readPulls(w http.ResponseWriter, r *http.Request) {
 			head, _ := pull["head"].(map[string]any)
 			pull["state"], pull["merged"], pull["mergeable"], pull["mergeable_state"] = "closed", true, true, "unknown"
 			pull["merge_commit_sha"] = fmt.Sprintf("merge-%v", head["sha"])
+			return pull
+		}
+		if g.closed[pull["number"].(int)] {
+			pull["state"], pull["mergeable"], pull["mergeable_state"] = "closed", true, "unknown"
 			return pull
 		}
 		pull["mergeable"], pull["mergeable_state"] = true, "clean"

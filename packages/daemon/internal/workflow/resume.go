@@ -2,6 +2,9 @@ package workflow
 
 import (
 	"context"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,7 +14,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// booted is the daemon's boot (intake.DaemonBooted). It does three things, in this order.
+// booted is the daemon's boot (intake.DaemonBooted). It does three things, in this order, after
+// it records the boot's read of each running issue's links and of each linked pull request
+// (takeBootLinks), so the sweep judges each close over the set as it stands.
 //
 // First, the upgrade's sweep (sweepMerged): an issue of this project that awaits its merge on a
 // pull request already merged is one the migration moved out of production_check, or one whose
@@ -62,14 +67,18 @@ import (
 // for the issue's admission slot in a phase that keeps one and for none in accepting, retro or merging. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
+// The link read runs before the sweep (dispatch://INFRA-5910 decision 9), and the sweep runs first
+// of the three so the resume reads the trees it closed as lingering. The stop of each task
 // a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
 // so the resume finds those issues held and starts no lost role. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
-func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
+func (e *Engine) booted(ctx context.Context, tx pgx.Tx, fact intake.DaemonBooted) (intake.Result, error) {
+	if err := e.takeBootLinks(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
@@ -105,6 +114,76 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			"phase", issue.Phase, "suspendedBy", held.SuspendedBy)
 	}
 	return intake.Result{}, nil
+}
+
+// takeBootLinks applies the boot's read of each running issue's links from Dispatch
+// (fact.Links.Issues) and of each linked pull request from GitHub (fact.Links.Reads) before
+// sweepMerged judges any close (dispatch://INFRA-5910 decision 9): a link added or removed while
+// the daemon was down, or a linked pull request that opened, merged or closed while the daemon was
+// down, is recorded first, so the sweep never closes an issue over an open linked pull request and
+// closes one whose last open linked pull request merged or went. An issue that left the workflow
+// meanwhile is skipped (D10: a done issue is never reopened by its links), and an issue whose
+// record already applied a Dispatch event newer than the boot's read keeps that newer event's
+// links. A boot that read none (fact.Links nil) changes nothing.
+func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.DaemonBooted) error {
+	if fact.Links == nil {
+		return nil
+	}
+	boot := *fact.Links
+	read := map[PullRequestKey]bool{}
+	for _, r := range boot.Reads {
+		read[PullRequestKey{Repo: strings.ToLower(r.Repo), Number: r.Number}] = true
+	}
+	var updated []string
+	for _, key := range slices.Sorted(maps.Keys(boot.Issues)) {
+		booted := boot.Issues[key]
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil || issue == nil || !InWorkflow(*issue) {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if booted.Seq != 0 && booted.Seq < issue.LastDispatchSeq {
+			continue
+		}
+		if _, err := e.takeLinks(ctx, tx, *issue, booted.Links, false); err != nil {
+			return err
+		}
+		updated = append(updated, key)
+	}
+	for _, r := range boot.Reads {
+		if _, err := e.pullRequestLinkRead(ctx, tx, r); err != nil {
+			return err
+		}
+	}
+	// Any link whose read the boot could not complete (for example a transient GitHub error) is
+	// queued for the outbox executor so it is read on backoff rather than left unread until the
+	// next boot.
+	for _, key := range updated {
+		links, err := e.store.PullRequestLinksOf(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		for _, link := range links {
+			if read[PullRequestKey{Repo: strings.ToLower(link.Repo), Number: link.Number}] {
+				continue
+			}
+			if link.Refused == record.LinkRefusedFork || link.Refused == record.LinkRefusedOtherIssue {
+				continue
+			}
+			pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
+			if err != nil {
+				return err
+			}
+			if pr == nil || link.Refused == record.LinkRefusedUnserved || link.Refused == record.LinkRefusedUnreadable {
+				if err := e.enqueue(ctx, tx, key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands

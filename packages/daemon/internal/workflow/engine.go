@@ -119,6 +119,12 @@ type Config struct {
 	// one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
+	// LinksTaken is told, inside the transaction that replaces an issue's links to pull requests
+	// (takeLinks), the issue and the whole of its links as written: the daemon replaces the issue's
+	// entries in the intake decoder's index (intake.Consumers.ReplaceLinks) and hears each linked
+	// repository once the transaction has committed (store.OnCommit, daemon's linksTaken). Nil
+	// tells none.
+	LinksTaken func(ctx context.Context, issue string, links []intake.PullRequestLink)
 	// ReadMergeState is asked, on the commit of a fact of one pull request that owes a read of
 	// GitHub's merge state (askMergeState, by mergeStateOwed), to read it for the pull
 	// request's head: a fact that leaves a review round waiting on GitHub's answer, which is what
@@ -546,7 +552,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// change of links closed the issue (judgeClose), it stands done out of the workflow, and the
 	// event's status moves nothing more of it from the record read before that close.
 	if fact.LinksKnown {
-		closed, err := e.takeLinks(ctx, tx, *issue, fact.Links)
+		closed, err := e.takeLinks(ctx, tx, *issue, fact.Links, true)
 		if err != nil || closed {
 			return intake.Result{}, err
 		}

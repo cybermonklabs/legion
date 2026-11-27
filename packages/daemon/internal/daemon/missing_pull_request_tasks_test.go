@@ -113,7 +113,7 @@ func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
 		task   string
 		number int
 	}{{"a", 86}, {"b", 87}} {
-		got, err := w.openRecord(context.Background(), record.PullRequest{Issue: "CAPTURE-1", Task: want.task, Number: want.number})
+		got, err := w.openRecord(context.Background(), record.PullRequest{Issue: "CAPTURE-1", Repo: "acme/widgets", Task: want.task, Number: want.number})
 		if err != nil || got.Number != want.number || got.Task != want.task {
 			t.Fatalf("the open record of task %s's #%d = #%d of task %q, %v; want its own row", want.task, want.number, got.Number, got.Task, err)
 		}

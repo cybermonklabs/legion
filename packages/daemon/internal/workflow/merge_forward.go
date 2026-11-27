@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -94,7 +95,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	for _, to := range addressed {
 		role := to.role
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: steps[role], Head: pr.HeadSHA, Base: pr.Base,
-			Phase: at, PullRequest: pr.Number, Why: why}); err != nil {
+			Phase: at, Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: why}); err != nil {
 			return err
 		}
 	}
@@ -642,7 +643,17 @@ func (e *Engine) tellRole(ctx context.Context, tx pgx.Tx, issue record.Issue, pr
 // askAgain.
 func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim.Role, token claim.Token, step record.MergeForwardStep, why record.ConflictWhy) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: role, Claim: token, Step: step, Head: pr.MergeForward.Head, Base: pr.MergeForward.Base,
-		Phase: record.StandsAt(issue), PullRequest: pr.Number, Why: why}
+		Phase: record.StandsAt(issue), Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: why}
+}
+
+// otherRepo is repo when it names a repository other than issue's own, and "" otherwise: an empty
+// Repo on an outbox payload names the issue's own repository (RepoOf), so same-repository rows
+// keep the minimal wire shape that the release before also decodes.
+func otherRepo(issue record.Issue, repo string) string {
+	if strings.EqualFold(repo, issue.GitHubRepo) {
+		return ""
+	}
+	return repo
 }
 
 // holdStartedWorker holds the worker that has just started in the phase issue stands at, where
@@ -786,7 +797,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 			step = record.MergeForwardReview
 		}
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: step, Head: asked.Head, Landed: pr.HeadSHA,
-			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}); err != nil {
+			Base: asked.Base, Phase: at, Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: asked.Why}); err != nil {
 			return err
 		}
 	}
@@ -818,7 +829,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // restates their states for a row already queued. It is exported for that executor, which names
 // the pull request's repository and writes nothing of it, so the pull requests are read as rows
 // alone (record.Store.TaskPullRequestRows), with none of what each remembers of its settled heads.
-func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
+func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key, repo string, number int, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return nil, nil, "", err
@@ -826,6 +837,19 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree)
 	if err != nil {
 		return nil, nil, "", err
+	}
+	if number > 0 {
+		if repo == "" {
+			repo = issue.GitHubRepo
+		}
+		pr, err := store.PullRequestRowByNumber(ctx, tx, repo, number)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		if pr != nil && pr.Issue != key {
+			pr = nil
+		}
+		return issue, pr, leftMergeForwardAt(*issue, lingers, pr, role, step, head), nil
 	}
 	prs, err := store.TaskPullRequestRows(ctx, tx, key)
 	if err != nil {

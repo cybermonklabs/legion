@@ -1095,6 +1095,11 @@ func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 			}
 		}
 		for _, repo := range slices.Concat(w.heardMissed, recorded) {
+			// A spelling with no capital says nothing GitHub's own spelling, held already, does not
+			// (a link's, lowercased), so it replaces none.
+			if _, held := named[strings.ToLower(repo.String())]; held && repo.String() == strings.ToLower(repo.String()) {
+				continue
+			}
 			named[strings.ToLower(repo.String())] = repo
 		}
 		heard = sortedRepositories(named)
@@ -2321,20 +2326,25 @@ func sortedRepositories(named map[string]ghrepo.Repository) []ghrepo.Repository 
 }
 
 // heardRepositories is what GitHub intake hears: every repository a record of the project names,
-// as tx reads the records, and every configured rename's partner of those
+// as tx reads the records, the repository of each pull request an issue links (linkRepositories,
+// dispatch://INFRA-5910 decision 17), and every configured rename's partner of those
 // (`repository_renames`), once each, sorted. A record is heard whatever its tree's state, since a
 // root that lingers or closed comes back, by re-admission, a hand-over or an orphan's carry, on
 // the repository it keeps, with no refresh between; a fact from a repository an issue is recorded
-// on reaches only that issue (workflow's issueForBranch and ownPullRequest). A record that keeps
+// on reaches only that issue (workflow's issueForBranch and ownPullRequest), and one from a
+// repository only a link names reaches only a pull request that link names (the decoder's index
+// of the links). A record that keeps
 // no GitHub spelling of its repository, which its backfill has not filled yet (backfillLater), is
 // passed by, so it stops nothing. A rename's partner is heard in both directions, so the
 // consumer's FilterSubjects carry both subjects over a transfer: the events arrive under the name
 // GitHub now has while the records keep the name they were written under, and neither side may
 // be deaf. Each is spelled as GitHub spells it, which Envoy's subjects carry and NATS matches
 // case-sensitively, whatever spelling a record keeps for its workspace (a backfilled record keeps
-// its clone's): a record's repository as it keeps GitHub's spelling (record.Issue.GitHubRepo), and
-// a partner, for a name no record names, as the pair configures it, so a restart subscribes with
-// no read of GitHub.
+// its clone's): a record's repository as it keeps GitHub's spelling (record.Issue.GitHubRepo),
+// which wins over a link's, written lowercased as Dispatch writes it, and a partner, for a name no
+// record names, as the pair configures it, so a restart subscribes with no read of GitHub. A
+// repository only a link names is heard as the link spells it until the boot's read of that link
+// finds GitHub's spelling (readLinkedPullRequest).
 func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]ghrepo.Repository, error) {
 	issues, err := w.records.Issues(ctx, tx)
 	if err != nil {
@@ -2343,6 +2353,15 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]g
 	heard, err := repositoriesOf(issues)
 	if err != nil {
 		return nil, err
+	}
+	linked, err := w.linkRepositories(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for name, repo := range linked {
+		if _, held := heard[name]; !held {
+			heard[name] = repo
+		}
 	}
 	// One pass over the configured pairs, not over everything heard: a deployment configures no
 	// pair at all nearly always, and this runs at every boot and consumer re-open. A partner is

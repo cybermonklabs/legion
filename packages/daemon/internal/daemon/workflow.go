@@ -308,15 +308,15 @@ type workflowRuntime struct {
 	// for (handoffCompleted) that readHandedOff has not made yet, which is what makes a second
 	// completion of the same task, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[taskRead]
-	// mergeStates is each task's pull request a fact owes a read of GitHub's merge state, by its
-	// issue and task (taskRead; queueMergeState, the engine's Config.ReadMergeState: a round
+	// mergeStates is each pull request a fact owes a read of GitHub's merge state, by its
+	// repository and number (pullRead; queueMergeState, the engine's Config.ReadMergeState: a round
 	// waiting on GitHub's answer, and by the gate classify.MergeStateReadOwed a head move in
 	// implementing through merging), each the start read found GitHub still computing
 	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
 	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
 	// mergeStateQueued is what each of them asked for, the pull request its ladder hands to the
 	// reads of its base, as the read that handed it over held it, or nil for a climb
-	// (queueMergeStateRead); and mergeStateRunning each task's pull request whose ladder is still
+	// (queueMergeStateRead); and mergeStateRunning each pull request whose ladder is still
 	// climbing (mergeStateRun), which is why a second fact of a pull request already being read
 	// starts no second ladder. mergeStateRetry is how long a ladder waits between reads of a state
 	// GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how long the
@@ -327,22 +327,23 @@ type workflowRuntime struct {
 	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
 	// (merge_state_batches.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
 	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
-	// `unknown` for (followOnBase). baseReadOf is the base each owed task's pull request is read
-	// under, by its issue and task (taskRead), so one task's place in a batch is no other's,
-	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet, and baseAsks
-	// the number of the last request put in any batch (putLocked, baseOwed.asked): one count for
-	// the runtime, so a batch made again for a base whose last batch ended reuses no number a climb
-	// or a read still holds. All of it is guarded by mergeStateMu, so a request moves a pull request
-	// between a ladder of its own and its base's batch under one lock. baseChunk is how many pull
-	// requests one query of a batch asks for, baseReadChunk when zero, which a test shortens.
-	mergeStates       *wakeSet[taskRead]
+	// `unknown` for (followOnBase). baseReadOf is the base each owed pull request is read
+	// under, by its repository and number (pullRead), so one pull request's place in a batch is no
+	// other's, baseWake the bases readBaseMergeStates has not started a batch ladder for yet, and
+	// baseAsks the number of the last request put in any batch (putLocked, baseOwed.asked): one
+	// count for the runtime, so a batch made again for a base whose last batch ended reuses no
+	// number a climb or a read still holds. All of it is guarded by mergeStateMu, so a request
+	// moves a pull request between a ladder of its own and its base's batch under one lock.
+	// baseChunk is how many pull requests one query of a batch asks for, baseReadChunk when zero,
+	// which a test shortens.
+	mergeStates       *wakeSet[pullRead]
 	mergeStateMu      sync.Mutex
-	mergeStateQueued  map[taskRead]*record.PullRequest
-	mergeStateRunning map[taskRead]*mergeStateRun
+	mergeStateQueued  map[pullRead]*record.PullRequest
+	mergeStateRunning map[pullRead]*mergeStateRun
 	mergeStateRetry   time.Duration
 	baseWake          *wakeSet[string]
 	baseReads         map[string]*baseRead
-	baseReadOf        map[taskRead]string
+	baseReadOf        map[pullRead]string
 	baseAsks          uint64
 	baseChunk         int
 	// gates is each installation's GraphQL queries, by the implement App's scope for the owner
@@ -787,7 +788,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newHandedOffSet(), mergeStates: newMergeStateSet(),
-		mergeStateRunning: map[taskRead]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
+		mergeStateRunning: map[pullRead]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
 		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 		rates:           rates, ownsTransport: ownsTransport,
@@ -821,7 +822,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, err
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
-	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeStateOf, w.hearRecorded
+	engineCfg.ReadMergeState, engineCfg.HearRepository, engineCfg.LinksTaken = w.queueMergeStateOf, w.hearRecorded, w.linksTaken
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
@@ -1311,6 +1312,15 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		conn.Close()
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
+	}
+	// The decoder's index of the pull requests the issues link is loaded before the consumers run,
+	// so no event of a linked pull request on a branch other than legion/<KEY> is decoded as
+	// nobody's while the index is empty (decision 17); the links the boot reads from Dispatch
+	// change it on commit afterwards (linksTaken).
+	if err := w.loadLinksAtBoot(ctx); err != nil {
+		conn.Close()
+		w.conn.Store(nil)
+		return err
 	}
 	if servesNone {
 		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
@@ -2007,6 +2017,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.readLinkedPullRequest, w.outbox.linkHead = w.readLinkedPullRequest, w.setLinkHead
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
@@ -2205,11 +2216,24 @@ func retryUntilApplied(ctx context.Context, log *slog.Logger, first, most time.D
 
 // booted tells the workflow of this boot (intake.DaemonBooted), once every stored claim has its
 // machine and the terminal facts are replayed: it starts, through the outbox's start, every claim
-// that owns its issue's current phase and that the daemon or its own exit suspended.
+// that owns its issue's current phase and that the daemon or its own exit suspended. The fact
+// carries what the boot read of the pull requests each running issue links (readLinksAtBoot), which
+// the workflow applies before it sweeps (dispatch://INFRA-5910 decision 9): the read is made once
+// the boot's other stages are done and before the fact is applied, and a boot that retries reads
+// again.
 func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
-	fact := intake.DaemonBooted{Boot: bootID}
+	fact := intake.DaemonBooted{Boot: bootID, Links: w.readLinksAtBoot(ctx)}
 	if _, err := intake.ApplyFact(ctx, w.pool, "daemon", fmt.Sprintf("boot:%s:%d", w.dispatchProject, bootID), fact, w.handlers...); err != nil {
 		return fmt.Errorf("apply the boot of %s: %w", w.dispatchProject, err)
+	}
+	if fact.Links != nil {
+		// The pull requests the boot read are recorded now, and the decoder's index holds their links
+		// (linksTaken), so each takes the head branch GitHub showed.
+		for _, read := range fact.Links.Reads {
+			if read.Branch != "" {
+				w.setLinkHead(read.Repo, read.Number, read.Branch)
+			}
+		}
 	}
 	return nil
 }

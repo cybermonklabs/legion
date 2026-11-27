@@ -57,25 +57,38 @@ func (p PullRequest) HeadRepository() string {
 	return p.Head.Repo.FullName
 }
 
-// OpenPullRequestOn is the open pull request on branch of the client's repository, repository
-// (GET /pulls?head=<owner>:<branch>&state=open), and whether there is one. The list's filter
-// is not taken on trust: a listed pull request counts only when its head is branch of repository
-// itself (head.ref is branch, and HeadIn), as the webhook path counts one (intake's
-// decodePullRequest reads head_ref and head_repo). The filter names an owner only, and the owner of
-// a repository can hold a fork of it, under another name, whose branches may carry any name, an
-// issue's or a task's among them; a fork GitHub no longer has names no repository at all. The
-// workflow keeps one pull request per branch and assumes one is open at a time, so of two it takes
-// the first GitHub lists.
+// OpenPullRequestOn is the open pull request on branch of the client's repository, repository,
+// and whether there is one: the first GitHub lists of OpenPullRequestsOn's, whatever its base. Of
+// the reads that have only a branch, the handoff's read of an implementer's branch alone takes it.
 func (c Client) OpenPullRequestOn(ctx context.Context, repository ghrepo.Repository, branch string) (PullRequest, bool, error) {
-	var pulls []PullRequest
-	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
-	if err := c.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
+	pulls, err := c.OpenPullRequestsOn(ctx, repository, branch)
+	if err != nil || len(pulls) == 0 {
 		return PullRequest{}, false, err
 	}
-	for _, pull := range pulls {
+	return pulls[0], true, nil
+}
+
+// OpenPullRequestsOn is each open pull request on branch of the client's repository, repository
+// (GET /pulls?head=<owner>:<branch>&state=open), in the order GitHub lists them, newest first. A
+// branch can hold several, each onto a base of its own (dispatch://INFRA-5910 D1), so a read that
+// has only a branch takes each of them and chooses among them by its own rule. The list's filter
+// is not taken on trust: a listed pull request counts only when its head is branch of repository
+// itself (head.ref is branch, and HeadIn), as the webhook path counts one (intake's
+// decodePullRequest reads head_ref and head_repo). The filter names an owner only, and the owner
+// of a repository can hold a fork of it, under another name, whose branches may carry any name, an
+// issue's or a task's among them; a fork GitHub no longer has names no repository at all. It reads
+// GitHub's first page, thirty pull requests, far more than any branch holds open.
+func (c Client) OpenPullRequestsOn(ctx context.Context, repository ghrepo.Repository, branch string) ([]PullRequest, error) {
+	var listed []PullRequest
+	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
+	if err := c.Get(ctx, "/pulls?"+query.Encode(), &listed); err != nil {
+		return nil, err
+	}
+	pulls := listed[:0]
+	for _, pull := range listed {
 		if pull.Head.Ref == branch && pull.HeadIn(repository.String(), ghrepo.Renames{}) {
-			return pull, true, nil
+			pulls = append(pulls, pull)
 		}
 	}
-	return PullRequest{}, false, nil
+	return pulls, nil
 }

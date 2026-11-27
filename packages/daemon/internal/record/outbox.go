@@ -129,11 +129,11 @@ const (
 // that the project's merge holds changed (merge_holds_changed), the messages of a merge forward,
 // which go to the role asked to merge (MergeForwardAsker) and to the worker of the phase the issue
 // stays in (merge_forward), and an update round's ask, which goes to any claim whose process runs
-// in the issue's pod, its architect's included (update_ask). It also runs the two reads of GitHub
-// that come before a message: the read before a merge-queue removal's
-// message (merge_queue_read), and the second read of a head a first read found conflicting, whose
-// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
+// in the issue's pod, its architect's included (update_ask). It also runs the three reads of
+// GitHub that run from the outbox: the read before a merge-queue removal's message
+// (merge_queue_read), the second read of a head a first read found conflicting, whose confirmation
+// is what writes a merge forward's messages (conflict_confirm), and the read of a pull request the
+// issue links in Dispatch (pull_request_link_read). It is a lane of its
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
 // open children ended its phase, a role given the words a hook fired on a move back, told that its
 // pull request left the merge queue or that the merge holds changed, asked to merge the base
@@ -171,7 +171,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPullRequestLinkRead},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},

@@ -46,10 +46,30 @@ type issueResponse struct {
 	ResolvedRepo           *string         `json:"resolved_repo"`
 	BlockedBy              []string        `json:"blocked_by"`
 	Claim                  *claimResponse  `json:"claim"`
+	// ExternalLinks is nil where the detail carries no `external_links`, or a null.
+	ExternalLinks *[]externalLinkResponse `json:"external_links"`
+}
+
+// externalLinkResponse is one of an issue's external links as Dispatch's detail serves it.
+type externalLinkResponse struct {
+	URL string `json:"url"`
+}
+
+// links is the URL of each link r names, and whether r named its links at all (Issue.LinksKnown).
+func (r issueResponse) links() ([]string, bool) {
+	if r.ExternalLinks == nil {
+		return nil, false
+	}
+	urls := make([]string, len(*r.ExternalLinks))
+	for at, link := range *r.ExternalLinks {
+		urls[at] = link.URL
+	}
+	return urls, true
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
 func (r issueResponse) issue() Issue {
+	links, linksKnown := r.links()
 	return Issue{
 		Key:                    r.Key,
 		Project:                r.Project,
@@ -69,6 +89,8 @@ func (r issueResponse) issue() Issue {
 		BlockedBy:              r.BlockedBy,
 		Claim:                  r.Claim.claim(),
 		ClaimUnread:            r.Claim.unread(),
+		ExternalLinks:          links,
+		LinksKnown:             linksKnown,
 	}
 }
 

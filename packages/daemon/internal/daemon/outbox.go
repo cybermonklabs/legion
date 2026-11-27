@@ -121,8 +121,8 @@ type outbox struct {
 	// later GraphQL answer than the read's; and mergeStateWait is how long a read row waits
 	// before it reads again. The two rows that read a pull request use them: the merge-queue read
 	// (mergeQueueRead) and the second read of a conflicting head (conflictConfirm), whose every
-	// read is bounded by issueRead. queueMergeStateFollow hands an issue's pull request, as the
-	// row's own read of the record held it, to the merge-state reader to follow GitHub's merge
+	// read is bounded by issueRead. queueMergeStateFollow hands a pull request, as the row's own
+	// read of the record held it, to the merge-state reader to follow GitHub's merge
 	// state for, which the second read does when its last attempt read no answer. All four are the
 	// workflow runtime's own
 	// (workflowRuntime.readPullRequest, workflowRuntime.applyMergeability,
@@ -135,7 +135,15 @@ type outbox struct {
 	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) (intake.PullRequestMergeability, error)
 	mergeStateWait        func() time.Duration
-	queueMergeStateFollow func(issue string, follow *record.PullRequest)
+	queueMergeStateFollow func(follow *record.PullRequest)
+	// readLinkedPullRequest is the read of a pull request an issue links, in its own repository
+	// (workflowRuntime.readLinkedPullRequest), and linkHead the decoder's index taking that pull
+	// request's head branch once the read's fact has committed (workflowRuntime.setLinkHead): what
+	// the pull_request_link_read row runs (pullRequestLinkRead). Set by attach after newOutbox; a
+	// test that builds the outbox by hand leaves them nil, and the row then fails with an error that
+	// names the missing read.
+	readLinkedPullRequest func(ctx context.Context, issue, repo string, number int) (linkRead, error)
+	linkHead              func(repo string, number int, branch string)
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
@@ -1116,6 +1124,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.PullRequestLinkRead:
+		return r.pullRequestLinkRead(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}

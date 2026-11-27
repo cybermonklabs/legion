@@ -43,9 +43,12 @@ func sameLink(link record.PullRequestLink) func(record.PullRequestLink) bool {
 // a link changes which pull requests are the issue's, never where its work stands, so a link to a
 // done issue reopens nothing (D10).
 //
-// The read of a pull request the issue links newly, whose row the record does not hold yet, is
-// owed: the link holds no row of the issue until that read records one (pullRequestLinkRead).
-func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, links []intake.PullRequestLink) (bool, error) {
+// When queueReads is true, a new link whose row the record does not hold yet, and any link held
+// refused as unserved or unreadable when the issue's links change (decision 8), queues a
+// PullRequestLinkRead row to read the pull request from GitHub in its own repository. At boot
+// (takeBootLinks), the boot has already read each linked pull request and applies those reads
+// right after, so queueReads is false.
+func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, links []intake.PullRequestLink, queueReads bool) (bool, error) {
 	before, err := e.store.PullRequestLinksOf(ctx, tx, issue.Key)
 	if err != nil {
 		return false, err
@@ -56,6 +59,9 @@ func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 	}
 	if err := e.store.ReplacePullRequestLinks(ctx, tx, issue.Key, given); err != nil {
 		return false, err
+	}
+	if e.cfg.LinksTaken != nil {
+		e.cfg.LinksTaken(ctx, issue.Key, links)
 	}
 	removed, added := 0, 0
 	for _, link := range before {
@@ -71,13 +77,25 @@ func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 		if slices.ContainsFunc(before, sameLink(link)) {
 			continue
 		}
-		if err := e.linkAdded(ctx, tx, issue, link); err != nil {
+		if err := e.linkAdded(ctx, tx, issue, link, queueReads); err != nil {
 			return false, err
 		}
 		added++
 	}
 	if removed == 0 && added == 0 {
 		return false, nil
+	}
+	if queueReads {
+		// Decision 8: an unserved or unreadable link is read again at each change of the issue's
+		// links, so installing the missing App or making the pull request readable takes effect
+		// without waiting for a restart.
+		for _, link := range before {
+			if (link.Refused == record.LinkRefusedUnserved || link.Refused == record.LinkRefusedUnreadable) && slices.ContainsFunc(given, sameLink(link)) {
+				if err := e.enqueue(ctx, tx, issue.Key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
+					return false, err
+				}
+			}
+		}
 	}
 	judged, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("%d of its links went and %d came", removed, added))
 	return judged.closed, err
@@ -129,10 +147,19 @@ func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // dispatch://INFRA-5910 decision 8): a pull request belongs to one issue, and the issue column of
 // its row never moves. A pull request the record holds for issue already, a task's, is in its set
 // now as linked too. One the record holds no row of is a link whose read is owed.
-func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink) error {
+func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink, queueRead bool) error {
 	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
-	if err != nil || pr == nil || pr.Issue == issue.Key {
+	if err != nil {
 		return err
+	}
+	if pr == nil {
+		if queueRead {
+			return e.enqueue(ctx, tx, issue.Key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number})
+		}
+		return nil
+	}
+	if pr.Issue == issue.Key {
+		return nil
 	}
 	return e.refuseLink(ctx, tx, issue, link, record.LinkRefusedOtherIssue, pr.Issue)
 }
@@ -293,7 +320,15 @@ func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake
 	if recorded != nil {
 		return e.linkReadOf(ctx, tx, fact, *recorded)
 	}
-	pr := record.PullRequest{Issue: issue.Key, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
+	// The row keeps GitHub's own spelling of the repository where the read showed it (the head's, in
+	// the repository itself), not the lowercased one Dispatch's link carries: GitHub intake hears a
+	// repository only a link names by the spelling its record keeps, and NATS matches Envoy's
+	// subjects case-sensitively (the daemon's heardRepositories).
+	spelled := fact.Repo
+	if fact.HeadRepo != "" && strings.EqualFold(fact.HeadRepo, fact.Repo) {
+		spelled = fact.HeadRepo
+	}
+	pr := record.PullRequest{Issue: issue.Key, Repo: spelled, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
 		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: fact.State, MergeSHA: fact.MergeSHA}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err

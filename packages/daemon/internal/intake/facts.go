@@ -122,11 +122,10 @@ type DispatchIssue struct {
 	// external_links), in Dispatch's order, each once, and nil for none: each link whose URL is
 	// https://github.com/<owner>/<name>/pull/<number>, by the rule of Dispatch's
 	// linkedPullRequestTerms, a link into the issue's own repository among them; any other link
-	// names no pull request and is left out (decodeDispatchEvent's issueEventLinks). LinksKnown
-	// says the observation named the links at all: an event that carries no external_links (a
-	// Dispatch release before it sent them), one whose links Dispatch did not read (a null), one
-	// whose links could not be read, and the listing's and the detail's facts of this release
-	// (ListedIssue, ObservedIssue), say nothing of them. That is never no links, so the issue's
+	// names no pull request and is left out (pullRequestLink). LinksKnown says the observation named
+	// the links at all: an event that carries no external_links (a Dispatch release before it sent
+	// them), one whose links Dispatch did not read (a null), one whose links could not be read, and
+	// the listing's fact (ListedIssue), say nothing of them. That is never no links, so the issue's
 	// links are replaced from an observation that named them alone.
 	Links      []PullRequestLink
 	LinksKnown bool
@@ -189,19 +188,38 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
-// repository, with no event's type or actor, since no one event wrote that state.
-// release_children's todo child and an unrecorded issue's admission event are applied from it. It
-// names no links (DispatchIssue.LinksKnown): the client reads none from the detail yet.
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers,
+// repository and links to pull requests (DetailLinks), with no event's type or actor, since no one
+// event wrote that state. release_children's todo child and an unrecorded issue's admission event
+// are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
 	}
+	links, linksKnown := DetailLinks(issue)
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
 		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
-		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
-		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(),
+		ClaimKnown: !issue.ClaimUnread, Links: links, LinksKnown: linksKnown, Observed: true}
+}
+
+// DetailLinks is each pull request the external links of issue, Dispatch's detail of it, name
+// (pullRequestLink), each once, in Dispatch's order, nil for none, and whether the detail named
+// its links at all (dispatch.Issue.LinksKnown): the links an event's decode reads from its
+// external_links (issueEventLinks), read from the detail. The boot reads each running issue's
+// links from it (the daemon's readLinksAtBoot).
+func DetailLinks(issue dispatch.Issue) ([]PullRequestLink, bool) {
+	if !issue.LinksKnown {
+		return nil, false
+	}
+	var links []PullRequestLink
+	for _, url := range issue.ExternalLinks {
+		if pull, ok := pullRequestLink(url); ok && !slices.Contains(links, pull) {
+			links = append(links, pull)
+		}
+	}
+	return links, true
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -220,8 +238,8 @@ func OwnStatusWrite(written dispatch.Issue) DispatchIssue {
 }
 
 // ListedIssue is issue as Dispatch's issue listing shows it, as a fact at the issue's sequence, with
-// no event's type or actor: what a boot's reconcile records or prepares from. It names no links
-// (DispatchIssue.LinksKnown), since the listing serves none.
+// no event's type or actor: what a boot's reconcile records or prepares from. The listing serves no
+// links, so it says nothing of them (DispatchIssue.LinksKnown).
 func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
@@ -1202,10 +1220,10 @@ func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true 
 // the checks the daemon makes of a recorded repository (record.LinkRefusedUnserved), and it names
 // the App that is not installed on it, as the architect is told. Each of the two leaves GitHub's
 // fields empty. The workflow's handler applies it (workflow's pullRequestLinkRead): it records the
-// linked pull request, or holds the link refused, and moves no phase of its own. No executor
-// applies the fact yet: the read's executor comes with the daemon's reads of each linked pull
-// request (step 8 of the plan of dispatch://INFRA-5910). Like every fact, it applies under the one
-// fact lock (ApplyFact, SerializeFacts).
+// linked pull request, or holds the link refused, and moves no phase of its own. The outbox's
+// executor of record.PullRequestLinkRead applies it for a link read after the link came, and the
+// boot's fact carries the reads the boot made (DaemonBooted.Links). Like every fact, it applies
+// under the one fact lock (ApplyFact, SerializeFacts).
 type PullRequestLinkReadDone struct {
 	Issue     string
 	Repo      string
@@ -2035,9 +2053,31 @@ func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
 
 // DaemonBooted records a boot of the daemon: every stored claim has its machine again, and the
 // boot replayed what its claims' terminal states owe the workflow. Boot is the boot's record id
-// (daemon_boot), which makes each boot's fact its own.
+// (daemon_boot), which makes each boot's fact its own. Links is what the boot read of the pull
+// requests the running issues link (BootLinks), nil where it read none: the workflow applies it
+// first, before sweepMerged judges any close (dispatch://INFRA-5910 decision 9).
 type DaemonBooted struct {
-	Boot int64
+	Boot  int64
+	Links *BootLinks
+}
+
+// BootLinks is what the boot read of the pull requests the running issues link, before its sweep:
+// Issues is each running issue's links as Dispatch's detail showed them (IssueLinks), so a link
+// added or removed while the daemon was down is taken before the sweep judges any close; and Reads
+// is the boot's GitHub read of each linked pull request in its own repository
+// (PullRequestLinkReadDone), applied right after, so a linked pull request that merged, closed or
+// opened while the daemon was down stands recorded before the sweep judges any close.
+type BootLinks struct {
+	Issues map[string]IssueLinks
+	Reads  []PullRequestLinkReadDone
+}
+
+// IssueLinks is one running issue's links to pull requests as the boot read them from Dispatch's
+// issue detail (DetailLinks), at Seq, that detail's last_seq: an event the record applied since, at
+// a higher sequence, keeps its own links.
+type IssueLinks struct {
+	Seq   int64
+	Links []PullRequestLink
 }
 
 func (DaemonBooted) namedIssue() (string, bool) { return "", false }

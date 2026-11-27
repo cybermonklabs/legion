@@ -268,7 +268,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			}
 		default:
 			first = &record.ConflictRead{Head: pr.HeadSHA, Base: base, At: readAt}
-			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Number: pr.Number, Head: pr.HeadSHA, FirstReadAt: readAt}, readAt.Add(conflictConfirmWait)); err != nil {
+			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Repo: pr.Repo, Number: pr.Number, Head: pr.HeadSHA, FirstReadAt: readAt}, readAt.Add(conflictConfirmWait)); err != nil {
 				return intake.Result{}, err
 			}
 			e.logOnCommit(ctx, "workflow: a conflict read waits for a second read",

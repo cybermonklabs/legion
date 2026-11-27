@@ -303,14 +303,14 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 			t.Cleanup(cancel)
 			go rig.w.readMergeStates(ctx)
 			if tc.handed {
-				rig.w.queueBaseRead(acme, "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
+				rig.w.queueBaseRead(acme, "main", map[pullRead]string{ownWork("CAPTURE-1"): "code"}, false)
 				// The climb notes this batch and this request as it begins: nothing else puts the
 				// issue anywhere before it, and the follow's first read is two hours on.
 				if held, asked := rig.w.heldUnder(ownWork("CAPTURE-1")); held != key || asked == 0 {
 					t.Fatalf("the base's batch holds CAPTURE-1 as %q under request %d, want main's batch under a request of its own", held, asked)
 				}
 			}
-			rig.w.queueMergeState("CAPTURE-1", "")
+			rig.w.queueMergeState(ownWork("CAPTURE-1"))
 
 			testwait.Eventually(t, "the push's read to record GitHub's CONFLICTING after the climb's first read", func() bool {
 				_, pr := capturePhase(t, rig.pool)
@@ -341,8 +341,8 @@ func TestAClimbsFirstReadTakesTheIssueOutOfItsBase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go rig.w.readMergeStates(ctx)
-	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
-	rig.w.queueMergeState("CAPTURE-1", "")
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[pullRead]string{ownWork("CAPTURE-1"): "code"}, false)
+	rig.w.queueMergeState(ownWork("CAPTURE-1"))
 
 	testwait.Eventually(t, "the climb's read, and the climb and the base's batch to end", func() bool {
 		running, waiting := ladders(rig.w)
@@ -367,19 +367,19 @@ func (a *armedFailure) fire() bool {
 	return a.on.CompareAndSwap(true, false)
 }
 
-// failingPullRecords is a runtime's records whose next read of an issue's pull request rows
-// (TaskPullRequestRows, the read issueRecord makes) fails once armed, as a transient error of the
-// database fails it, and which read as records do after that.
+// failingPullRecords is a runtime's records whose next read of a pull request's row
+// (PullRequestRowByNumber, the read pullRequestRow makes for a climb and a base's reads) fails once
+// armed, as a transient error of the database fails it, and which read as records do after that.
 type failingPullRecords struct {
 	record.Store
 	armed *armedFailure
 }
 
-func (s failingPullRecords) TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]record.PullRequest, error) {
+func (s failingPullRecords) PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	if s.armed.fire() {
 		return nil, errors.New("the database closed the connection")
 	}
-	return s.Store.TaskPullRequestRows(ctx, tx, issue)
+	return s.Store.PullRequestRowByNumber(ctx, tx, repo, number)
 }
 
 // failingPullWrites is an engine's records whose next write of a pull request fails once armed, as

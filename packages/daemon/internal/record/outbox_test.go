@@ -322,7 +322,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
 		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
-		OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove}
+		OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindPullRequestLinkRead}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -441,6 +441,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
+		// The read of a pull request an issue links reads it from GitHub in its own repository and
+		// applies what it read as a fact, as the conflict's second read does, and starts no turn
+		// (dispatch://INFRA-5910 decision 8).
+		OutboxKindPullRequestLinkRead: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
 		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
 		// the project is paused changes those holders, which Dispatch should show. The pause's own
