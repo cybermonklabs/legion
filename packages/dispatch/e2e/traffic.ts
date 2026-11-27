@@ -1,4 +1,4 @@
-import { expect, type Page, type Request } from "@playwright/test";
+import { expect, type Frame, type Page, type Request } from "@playwright/test";
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
@@ -9,18 +9,61 @@ export interface Traffic {
   readonly gets: string[];
   /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
   issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
+  /** Whether no request has been in flight for `ms`, as `watchInFlight` counts one. */
   quietFor(ms: number): boolean;
   reset(): void;
+}
+
+/** A URL as a navigation commits it: the fragment is never sent, so a frame's URL is compared with
+ *  its navigation request's without one. */
+function withoutFragment(url: string): string {
+  const at = url.indexOf("#");
+  return at === -1 ? url : url.slice(0, at);
+}
+
+/**
+ * Whether nothing has been in flight on `page` for `ms`. A request counts from its `request`
+ * event until its `requestfinished` or `requestfailed`, or until the document that sent it is
+ * gone. A write the page lets finish as it goes (`keepalive`, every `PUT` and `DELETE` of
+ * `web/src/api/client.ts`) outlives its document, and Chromium reports no end to it once that
+ * document is gone, since its answer reaches no page. So when a frame commits a new document (a
+ * `framenavigated` at the URL of a navigation request that frame sent), what the old document
+ * sent and still waits on stops counting, and the navigation's own request and what the new
+ * document sends count as before. A navigation inside one document (`history.pushState`, a
+ * fragment) sends no navigation request, so that document's requests go on counting.
+ */
+function watchInFlight(page: Page): (ms: number) => boolean {
+  /** Each request in flight, by the frame whose document sent it. A navigation request and a
+   *  service worker's request outlive no document, so they belong to no frame here. */
+  const inFlight = new Map<Request, Frame | null>();
+  /** The URL each frame's newest navigation request asked for, until the frame commits it. */
+  const navigating = new Map<Frame, string>();
+  let lastSettledAt = Date.now();
+  page.on("request", (request) => {
+    const navigation = request.isNavigationRequest();
+    if (navigation) navigating.set(request.frame(), request.url());
+    inFlight.set(request, navigation || request.serviceWorker() !== null ? null : request.frame());
+  });
+  const settle = (request: Request) => {
+    if (inFlight.delete(request)) lastSettledAt = Date.now();
+  };
+  page.on("requestfinished", settle);
+  page.on("requestfailed", settle);
+  page.on("framenavigated", (frame) => {
+    if (navigating.get(frame) !== withoutFragment(frame.url())) return;
+    navigating.delete(frame);
+    for (const [request, sentBy] of inFlight) {
+      if (sentBy === frame) settle(request);
+    }
+  });
+  return (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms;
 }
 
 export function watchTraffic(page: Page): Traffic {
   const gets: string[] = [];
   const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
+  const quietFor = watchInFlight(page);
   page.on("request", (request) => {
-    inFlight.add(request);
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
@@ -30,15 +73,10 @@ export function watchTraffic(page: Page): Traffic {
       issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
     }
   });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
   return {
     gets,
     issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
+    quietFor,
     reset: () => {
       gets.length = 0;
     },
@@ -67,7 +105,8 @@ export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
   /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here. This is how the recorded baseline measures one load
+   *  only the ones counted here, as `watchInFlight` counts one. This is how the recorded baseline
+   *  measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
@@ -107,10 +146,8 @@ export function apiRoute(pathname: string): string {
 
 export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
+  const quietFor = watchInFlight(page);
   page.on("request", (request) => {
-    inFlight.add(request);
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
@@ -119,11 +156,6 @@ export function watchApiRequests(page: Page): ApiRequests {
       route: apiRoute(url.pathname),
     });
   });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
   return {
     byRoute: () => {
       const counts = new Map<string, number>();
@@ -134,7 +166,7 @@ export function watchApiRequests(page: Page): ApiRequests {
         .map(([route, count]) => ({ count, route }))
         .sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
     },
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
+    quietFor,
     requests,
     reset: () => {
       requests.length = 0;
