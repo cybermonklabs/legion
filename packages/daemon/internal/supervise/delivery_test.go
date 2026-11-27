@@ -103,12 +103,12 @@ func TestARetiredLooksTaskLeavesItsLookOnTheClaimUntilAnotherLooksTask(t *testin
 	look := CheckLook{Look: 2, OpenedAt: opened}
 	h := newHarness(t)
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "Production check of LEGION-209.", Generation: 7, CheckLook: look})
-	if p := h.pending(); p.CheckLook != look {
-		t.Fatalf("the queued delivery carries look %+v, want the start's %+v", p.CheckLook, look)
+	h.must(RequestDeliver{Claim: testToken, Task: "Production check of LEGION-209.", Generation: 7, CheckLook: look, LookID: "LOOKIDOFLOOKTWO"})
+	if p := h.pending(); p.CheckLook != look || p.LookID != "LOOKIDOFLOOKTWO" {
+		t.Fatalf("the queued delivery carries look %+v and look id %q, want the start's %+v and %q", p.CheckLook, p.LookID, look, "LOOKIDOFLOOKTWO")
 	}
-	if stored, ok := h.store.delivery(testToken); !ok || stored.CheckLook != look {
-		t.Fatalf("the stored delivery is %+v, want it to carry %+v: a restart reads the look back", stored, look)
+	if stored, ok := h.store.delivery(testToken); !ok || stored.CheckLook != look || stored.LookID != "LOOKIDOFLOOKTWO" {
+		t.Fatalf("the stored delivery is %+v, want it to carry %+v and look id %q: a restart reads the look back", stored, look, "LOOKIDOFLOOKTWO")
 	}
 	h.must(StreamTurnStart{Claim: testToken})
 	if got := h.claim().ServingCheck(); got != look {

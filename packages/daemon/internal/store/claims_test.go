@@ -143,6 +143,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 		Phase:       phase.Implementing,
 		Generation:  4,
 		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
+		LookID:      "LOOKIDOFLOOKTWOOFTHECHECK",
 		QueuedAt:    at(1),
 		DeliveredAt: at(2),
 		Interrupted: true,
@@ -308,6 +309,44 @@ func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 	}
 	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "outbox:9" || got.RoundNamed {
 		t.Fatalf("the delivery read back = %+v, want outbox:9 with no fact: the release before named no round", got)
+	}
+}
+
+// The look id a look's task gives (supervise.Delivery.LookID) reaches the store with the delivery
+// and comes back from it, through a re-put that replaces the delivery with a task of no look and
+// through one that brings the look's task back: a restarted daemon fences the task it reads back on
+// that id, and an id lost on the way would drop the look's task, while one kept past a task of no
+// look would fence that task on a look it is not. A delivery the release before wrote, which names
+// no such column, reads back with no id.
+func TestADeliveryCarriesTheLookIDItsTaskGives(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-213-tester")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	look := supervise.Delivery{ID: "outbox:7", Task: "Production check of LEGION-213: look 2.", CheckLook: supervise.CheckLook{Look: 2, OpenedAt: at(3)},
+		LookID: "LOOKIDOFLOOKTWOOFTHECHECK", QueuedAt: at(1)}
+	for _, put := range []supervise.Delivery{look, {ID: "outbox:8", Task: "Continue. Phase: testing.", Phase: phase.Testing, QueuedAt: at(2)}, look} {
+		if err := store.PutDelivery(ctx, c.Token, put); err != nil {
+			t.Fatalf("put the delivery %s: %v", put.ID, err)
+		}
+		if got := onlyClaim(t, store).Pending; got == nil || got.ID != put.ID || got.LookID != put.LookID {
+			t.Fatalf("the delivery read back = %+v, want %s with the look id %q", got, put.ID, put.LookID)
+		}
+	}
+	// The release before writes a delivery naming no look_id, so a delivery it writes on a claim
+	// that holds none leaves the column null.
+	if _, err := store.pool.Exec(ctx, `delete from pending_task_deliveries where claim_token = $1`, string(c.Token)); err != nil {
+		t.Fatalf("retire the delivery: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, check_look, check_opened_at, queued_at)
+		values ($1, 'outbox:9', 'Production check of LEGION-213: look 2.', '', 1, 2, $2, now())`, string(c.Token), at(3)); err != nil {
+		t.Fatalf("write the delivery as the release before writes it: %v", err)
+	}
+	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "outbox:9" || got.CheckLook.Look != 2 || got.LookID != "" {
+		t.Fatalf("the delivery read back = %+v, want outbox:9 of look 2 with no look id: the release before made none", got)
 	}
 }
 

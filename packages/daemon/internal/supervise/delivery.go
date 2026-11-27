@@ -80,7 +80,13 @@ type Delivery struct {
 	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
 	// to attribute an explicitly named check report to the look the worker took, not to choose
 	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
-	CheckLook   CheckLook
+	CheckLook CheckLook
+	// LookID is the secret look id that a look's task gives the checking role, from the start
+	// row that queued it (RequestDeliver.LookID, record.SuperviseRequest.LookID): the look id
+	// the check recorded for that look (record.ProductionCheck.LookID). A look's task holds only
+	// while it is the current look id of its look, so a task that carries none, which an older
+	// daemon queued, never holds. Every other task carries none.
+	LookID      string
 	Phase       phase.Phase
 	QueuedAt    time.Time
 	DeliveredAt time.Time
@@ -619,7 +625,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Resume: request.Resume, News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry,
-		CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		CheckLook: request.CheckLook, LookID: request.LookID, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,

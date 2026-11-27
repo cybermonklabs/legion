@@ -1932,13 +1932,18 @@ func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 // agent asks for its next look, which a pending on a look that is not the check's last carries
 // and no other report does (the route holds it to that: CHECK_WAKE_REQUIRED,
 // CHECK_WAKE_UNEXPECTED); the engine clamps it and writes the check's one wake row for it.
+// OpenedAt is the check instance the report names (record.ProductionCheck.OpenedAt), the
+// report's checkOpenedAt that the route matched to the open check, so a report of a check that a
+// later merge of the same issue replaced before the fact applied is not recorded on the check
+// that replaced it; a zero OpenedAt names none.
 type CheckReport struct {
-	Issue   string
-	Claim   claim.Token
-	Look    int
-	Verdict string
-	Summary string
-	WakeAt  *time.Time
+	Issue    string
+	Claim    claim.Token
+	Look     int
+	OpenedAt time.Time
+	Verdict  string
+	Summary  string
+	WakeAt   *time.Time
 }
 
 func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }

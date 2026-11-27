@@ -2244,8 +2244,11 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	return &pr, nil
 }
 
+// productionCheckColumns reads the look id's three columns and opened_generation, which an older
+// binary leaves null on a check it inserts, as the empty id, look 0, the zero time and generation 0.
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,
-	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, failed_looks`
+	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, failed_looks,
+	coalesce(look_id, ''), coalesce(look_id_look, 0), look_id_opened_at, coalesce(opened_generation, 0)`
 
 func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error) {
 	check, err := scanProductionCheck(tx.QueryRow(ctx, "select "+productionCheckColumns+" from production_checks where issue = $1", issue))
@@ -2258,20 +2261,30 @@ func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string)
 	return check, nil
 }
 
+// PutProductionCheck writes the whole check. The look id's columns and opened_generation are
+// written null for their zero values, as an older binary, which names none of them, leaves them on
+// a check it inserts.
 func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error {
+	var lookIDOpenedAt any
+	if !check.LookIDOpenedAt.IsZero() {
+		lookIDOpenedAt = check.LookIDOpenedAt
+	}
 	_, err := tx.Exec(ctx, `insert into production_checks (issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at,
 		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at,
-		last, closed_at, outcome, failed_looks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20)
+		last, closed_at, outcome, failed_looks, look_id, look_id_look, look_id_opened_at, opened_generation)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20,
+		nullif($21::text, ''), nullif($22::integer, 0), $23, nullif($24::bigint, 0))
 		on conflict (issue) do update set project = excluded.project, tree = excluded.tree, repo = excluded.repo,
 		pr_number = excluded.pr_number, merge_sha = excluded.merge_sha, opened_at = excluded.opened_at, bound_at = excluded.bound_at,
 		role = excluded.role, looks = excluded.looks, look_open = excluded.look_open, look_wake_at = excluded.look_wake_at,
 		last_wake_kind = excluded.last_wake_kind, last_wake_detail = excluded.last_wake_detail, last_wake_at = excluded.last_wake_at,
 		wake_at = excluded.wake_at, last = excluded.last, closed_at = excluded.closed_at, outcome = excluded.outcome,
-		failed_looks = excluded.failed_looks`,
+		failed_looks = excluded.failed_looks, look_id = excluded.look_id, look_id_look = excluded.look_id_look,
+		look_id_opened_at = excluded.look_id_opened_at, opened_generation = excluded.opened_generation`,
 		check.Issue, check.Project, check.Tree, check.Repo, check.Number, check.MergeSHA, check.OpenedAt, check.BoundAt,
 		string(check.Role), check.Looks, check.LookOpen, check.LookWakeAt, check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt,
 		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome), check.FailedLooks,
+		check.LookID, check.LookIDLook, lookIDOpenedAt, int64(check.OpenedGeneration),
 	)
 	if err != nil {
 		return fmt.Errorf("put production check of %s: %w", check.Issue, err)
@@ -2313,15 +2326,22 @@ func scanProductionCheck(row scanner) (*ProductionCheck, error) {
 	var check ProductionCheck
 	var outcome *string
 	var role string
+	var lookIDOpenedAt *time.Time
+	var openedGeneration int64
 	if err := row.Scan(&check.Issue, &check.Project, &check.Tree, &check.Repo, &check.Number, &check.MergeSHA, &check.OpenedAt, &check.BoundAt,
 		&role, &check.Looks, &check.LookOpen, &check.LookWakeAt, &check.LastWakeKind, &check.LastWakeDetail, &check.LastWakeAt,
-		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &check.FailedLooks); err != nil {
+		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &check.FailedLooks,
+		&check.LookID, &check.LookIDLook, &lookIDOpenedAt, &openedGeneration); err != nil {
 		return nil, err
 	}
 	check.Role = claim.Role(role)
 	if outcome != nil {
 		check.Outcome = CheckOutcome(*outcome)
 	}
+	if lookIDOpenedAt != nil {
+		check.LookIDOpenedAt = *lookIDOpenedAt
+	}
+	check.OpenedGeneration = uint64(openedGeneration)
 	return &check, nil
 }
 

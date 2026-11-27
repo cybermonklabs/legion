@@ -1,0 +1,58 @@
+-- 20261127171352_production_check_look_id.up.sql — each look of a production check gets a secret
+-- look id of its own, and a check keeps the generation it was opened in (dispatch://INFRA-3518).
+--
+-- production_checks.look_id is record.ProductionCheck.LookID: the id that only the look's own task
+-- gives the checking role, and that the role's report of the look gives back. look_id_look and
+-- look_id_opened_at are the look number and the check instance (opened_at) the id was made for
+-- (LookIDLook, LookIDOpenedAt), so an id the record still holds for a look that has ended, or for
+-- the check that a later merge replaced, names no look (ProductionCheck.CurrentLookID).
+-- opened_generation is ProductionCheck.OpenedGeneration: the issue's generation when
+-- workflow.openCheck opened the check, which tells a later leave of the issue whether it ran again
+-- after that merge. pending_task_deliveries.look_id is supervise.Delivery.LookID: the look id that
+-- a look's task gives, which fences that task on its look.
+--
+-- All five columns are nullable, and every row the migration finds holds null in each of them:
+-- no release before this one made a look id or recorded the generation of a check. The record
+-- store reads a null as the empty id, look 0, the zero time and generation 0. The next boot of
+-- this release gives each open look without an id of its own an id and a new task of that look,
+-- and each open check with no generation its issue's generation.
+--
+-- The release before this one names each column it reads and writes in production_checks (the
+-- record store's productionCheckColumns and PutProductionCheck) and in pending_task_deliveries
+-- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these. Its
+-- upsert of a later look, or of the check that a later merge opens, leaves the look id's three
+-- columns as this release wrote them, which CurrentLookID reads as no id of the current look.
+-- Its upsert of a new check also leaves opened_generation of the check it replaces in place, so
+-- the way back below clears that column, and the next boot of this release writes each open
+-- check's generation again. Its write of a new delivery leaves the look id of the delivery it
+-- replaces in place. This release keeps a look's task only while the id the task carries is the
+-- current look id of its look (ProductionCheck.CurrentLookID), so such an id holds no task.
+--
+-- This release also writes the keys lookId and lookReissue into supervise rows
+-- (record.SuperviseRequest.LookID and LookReissue), and queues supervise rows of the op
+-- retire_look, which end a look's task when its look ends. The release before this one knows no
+-- such key and no such op, and decodes an outbox payload strictly (record.DecodeOutboxPayload,
+-- DisallowUnknownFields), so each such row would fail to decode there on every attempt. A start
+-- stripped of the two keys is a start of its look as the release before writes one. A retire_look
+-- row has nothing the release before can run, and is deleted. The release's whole way back is the
+-- section of docs/kubernetes.md "Rolling back the release whose look report gives its look id",
+-- which also closes the open checks that the release before would keep open past the leave of an
+-- issue that ran again.
+--
+-- There is no down file. This directory keeps none: migrations here are forward-only and no
+-- .down.sql file exists. The way back is the block that closes this header, its last paragraph
+-- (migrations.WayBack), run with every daemon of the database stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It drops no column and
+-- deletes no version row, so the roll forward finds the five columns and applies nothing.
+--
+-- begin;
+-- update outbox set payload = payload - 'lookId' - 'lookReissue'
+-- where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue');
+-- delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look';
+-- update production_checks set opened_generation = null where opened_generation is not null;
+-- commit;
+alter table production_checks add column look_id text;
+alter table production_checks add column look_id_look integer;
+alter table production_checks add column look_id_opened_at timestamptz;
+alter table production_checks add column opened_generation bigint;
+alter table pending_task_deliveries add column look_id text;

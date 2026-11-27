@@ -1922,6 +1922,20 @@ type ProductionCheck struct {
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
 	FailedLooks    int
+	// LookID is the secret id of the current look: only the look's own task gives it to the
+	// checking role, and the role's report of the look gives it back (workflow's startLook makes
+	// it with crypto/rand's Text). LookIDLook and LookIDOpenedAt are the look number and the check
+	// instance (OpenedAt) the id was made for. An older binary writes none of the three, so its
+	// write of a later look, or of the check a later merge opens, leaves them as they were: the id
+	// names the current look only while both still name it (CurrentLookID).
+	LookID         string
+	LookIDLook     int
+	LookIDOpenedAt time.Time
+	// OpenedGeneration is the issue's generation when workflow.openCheck opened the check, which
+	// tells a later leave of the issue whether it ran again after that merge. It is 0 for a check
+	// that an older binary opened or wrote, since such a binary writes no generation, until the
+	// boot gives the check its issue's generation.
+	OpenedGeneration uint64
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -1941,6 +1955,19 @@ func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixM
 // replaced, whose looks count from one again, or the one that replaced this.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
+}
+
+// CurrentLookID is the look id of the check's current look: LookID when it was made for this look
+// of this check instance (LookIDLook is Looks, and LookIDOpenedAt is the instant OpenedAt is, as
+// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns,
+// so after a rollback the record can hold the id of a look that has since ended, or of the check
+// that a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look
+// has no id of its own until the boot gives it one.
+func (c ProductionCheck) CurrentLookID() string {
+	if c.LookID == "" || c.LookIDLook != c.Looks || !c.LookIDOpenedAt.Equal(c.OpenedAt) {
+		return ""
+	}
+	return c.LookID
 }
 
 // CheckOutcome is how a production check closed; "" while it is open.
