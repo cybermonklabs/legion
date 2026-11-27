@@ -532,7 +532,7 @@ func startWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *wave
 	if tune != nil {
 		tune(&o)
 	}
-	return startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)), 30*time.Second)
+	return startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
 }
 
 // waitingWakes is the wakes the daemon's state says the pacing holds, earliest first: the queue as

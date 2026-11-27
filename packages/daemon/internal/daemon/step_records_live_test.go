@@ -9,7 +9,7 @@
 // (startHandoffDispatch, as handoff-records.sh's driver starts it), on a database of its own on
 // LEGION_TEST_PG_DSN's server, publishing its events on the script's broker, which the daemon
 // reads; it is stopped and started again on the same database and port for the outage. The daemon
-// is the whole daemon (run, the function `legion start` calls, through startDaemonWithin) with
+// is the whole daemon (run, the function `legion start` calls, through startDaemonLogging) with
 // dispatch_url at that server, so every step record it writes goes through its outbox and its
 // Dispatch client to the real route. The issue walks as the package's whole-daemon tests walk it
 // (stepRecordsRig, step_records_rig_test.go): each role over the worker

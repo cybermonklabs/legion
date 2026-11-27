@@ -239,7 +239,7 @@ func (r *stepRecordsRig) boot() {
 			<-held.release
 		}
 	}
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
+	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
 }
 
 // restart stops the daemon and boots it again (reboot).

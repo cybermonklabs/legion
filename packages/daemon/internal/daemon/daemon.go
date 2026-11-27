@@ -261,7 +261,8 @@ type overrides struct {
 	// daemon's readiness latch is set (serve, servingLatch), on a context that ends when serving
 	// does, so a hook that waits never outlives the daemon's stop; nil, in production, is nothing.
 	// It is the seam a test holds the daemon at the moment it serves HTTP and reports itself not
-	// ready, which is what /readyz answers 503 for.
+	// ready, which is what /readyz answers 503 for, and the signal the tests' startDaemonLogging
+	// waits on to know the daemon serves, in place of polling /healthz against a clock.
 	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
 	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
