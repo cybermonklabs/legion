@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
@@ -67,18 +66,19 @@ const (
 // (envoy_url, envoy_token_file, as notify.HTTPPublisher holds them; a token "" sends none), the
 // HTTP client, the logger, which routes have answered 404 already, each logged once, and which
 // sessions' writes the listener refused for a stored entry it cannot decode
-// (listenerwire.CodeMalformedRecord), each logged once at ERROR and counted (MalformedRecords). A
-// Writer is for one goroutine at a time: the mirror's Run; MalformedRecords alone may be read from
-// any.
+// (listenerwire.CodeMalformedRecord), each logged once at ERROR. The daemon exports no metrics, so
+// that line's "count" attribute is the count: how many sessions' writes the listener has refused
+// so, each session once however often its write is refused, and a batch of several entries never,
+// since its own entries are each sent alone after it and the bad one is counted there. A Writer is
+// for one goroutine at a time: the mirror's Run.
 type Writer struct {
 	baseURL, token string
 	client         *http.Client
 	log            *slog.Logger
 	logged404      map[string]bool
-	// loggedMalformed holds each session a malformed record refused a write of, and malformed
-	// counts them.
+	// loggedMalformed holds each session a malformed record refused a write of; how many it holds
+	// is the ERROR line's count.
 	loggedMalformed map[string]bool
-	malformed       atomic.Int64
 }
 
 // New builds a Writer for the listener at baseURL. A nil client is one with a ten-second timeout.
@@ -87,14 +87,6 @@ func New(baseURL, token string, client *http.Client, log *slog.Logger) *Writer {
 		client = &http.Client{Timeout: requestTimeout}
 	}
 	return &Writer{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: client, log: log, logged404: map[string]bool{}, loggedMalformed: map[string]bool{}}
-}
-
-// MalformedRecords is how many sessions' writes the listener has refused for a stored entry it
-// cannot decode (listenerwire.CodeMalformedRecord): each session once, however often its write is
-// refused, and a batch of several entries never, since its own entries are each sent alone after
-// it and the bad one is counted there.
-func (w *Writer) MalformedRecords() int64 {
-	return w.malformed.Load()
 }
 
 // Batch PUTs a batch of entries to /v1/legion/agents. A batch of one entry is that entry's write:
@@ -120,10 +112,10 @@ func (w *Writer) Answering(ctx context.Context, project string, beat listenerwir
 // put PUTs body to path, logging what is not a success: a route's first 404, a refusal, and every
 // other failure. session is the one session whose entry body carries, "" for a batch of several
 // and for the project's record. A 500 with the code listenerwire.CodeMalformedRecord is Refused:
-// for a session's own write it is logged at ERROR the first time, naming the session's key and the
-// listener's cause, and counted (MalformedRecords), so the mirror drops that one entry and goes on
-// with the rest; for any other write it is logged as a 400 or 409 is. Every other 500, and every
-// 503, is Failed, to be sent again.
+// for a session's own write it is logged at ERROR the first time, naming the session's key, the
+// listener's cause and the count (Writer), so the mirror drops that one entry and goes on with the
+// rest; for any other write it is logged as a 400 or 409 is. Every other 500, and every 503, is
+// Failed, to be sent again.
 func (w *Writer) put(ctx context.Context, route, path, session string, body any) Outcome {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -164,10 +156,9 @@ func (w *Writer) put(ctx context.Context, route, path, session string, body any)
 	case malformed && session != "":
 		if !w.loggedMalformed[session] {
 			w.loggedMalformed[session] = true
-			count := w.malformed.Add(1)
 			w.log.Error("the Envoy listener holds an agent registry entry it cannot decode; the daemon does not send its write again and goes on with the rest of the mirror",
 				"route", route, "path", path, "session", session, "key", "session."+session, "code", listenerwire.CodeMalformedRecord,
-				"count", count, "cause", cause)
+				"count", len(w.loggedMalformed), "cause", cause)
 		}
 		return Refused
 	case status == http.StatusBadRequest || status == http.StatusConflict || malformed:

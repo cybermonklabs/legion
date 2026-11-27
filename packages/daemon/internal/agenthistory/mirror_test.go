@@ -432,12 +432,12 @@ func TestARefusedBatchIsSentAgainAnEntryAtATime(t *testing.T) {
 // A stored entry the listener cannot decode costs only itself. The listener answers every put of
 // that session, alone or in a batch, 500 with the code listenerwire.CodeMalformedRecord: the boot's
 // batch holding it is sent again an entry at a time, every other entry of it is written, and the
-// bad one is logged once at ERROR naming its key and the listener's cause, counted, and not sent
-// again, with nothing left to try on a backoff. A later registration of that session is refused
-// the same way, neither logged nor counted a second time, and leaves nothing waiting behind it: the
-// next registration is written at once. The control is the same listener answering that 500 with
-// no code, as a fault it does not name: the batch is Failed and tried again whole on the backoff,
-// no entry of it is written or sent alone, and nothing is logged at ERROR or counted.
+// bad one is logged once at ERROR naming its key, the listener's cause and the count, and is not
+// sent again, with nothing left to try on a backoff. A later registration of that session is
+// refused the same way, not logged a second time, and leaves nothing waiting behind it: the next
+// registration is written at once. The control is the same listener answering that 500 with no
+// code, as a fault it does not name: the batch is Failed and tried again whole on the backoff, no
+// entry of it is written or sent alone, and nothing is logged at ERROR.
 func TestAStoredEntryTheListenerCannotDecodeCostsOnlyItself(t *testing.T) {
 	history := func(t *testing.T) *fakeStore {
 		return &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1), testerRow(t, "ses-2", 2)}}
@@ -469,9 +469,6 @@ func TestAStoredEntryTheListenerCannotDecodeCostsOnlyItself(t *testing.T) {
 		if lines := log.lines("level=WARN", "refused an agent registry write", "path=/v1/legion/agents ", "status=500"); len(lines) != 1 {
 			t.Errorf("the batch's refusal was logged %d times, want once:\n%s", len(lines), strings.Join(log.lines(), "\n"))
 		}
-		if got := m.writer.MalformedRecords(); got != 1 {
-			t.Errorf("after the boot the count is %d, want 1: ses-1", got)
-		}
 
 		m.Put(testerRow(t, "ses-1", 3))
 		if w := clock.wait(t); w.d != time.Minute {
@@ -487,15 +484,12 @@ func TestAStoredEntryTheListenerCannotDecodeCostsOnlyItself(t *testing.T) {
 		if lines := log.lines("level=ERROR"); len(lines) != 1 {
 			t.Errorf("ERROR lines = %d, want ses-1's one from the boot:\n%s", len(lines), strings.Join(lines, "\n"))
 		}
-		if got := m.writer.MalformedRecords(); got != 1 {
-			t.Errorf("after ses-1's registration was refused again the count is %d, want 1: one session", got)
-		}
 	})
 	t.Run("control: a 500 with no code", func(t *testing.T) {
 		listener, server := newStandIn(t)
 		listener.unreadable, listener.uncoded = "ses-1", true
 		log := &logs{}
-		m, clock := runMirror(t, server, history(t), log)
+		_, clock := runMirror(t, server, history(t), log)
 		w := clock.wait(t)
 		if w.d < time.Second || w.d > 2*time.Second {
 			t.Fatalf("after a 500 with no code the mirror waits %s, want the backoff's first step: the batch is tried again", w.d)
@@ -512,9 +506,6 @@ func TestAStoredEntryTheListenerCannotDecodeCostsOnlyItself(t *testing.T) {
 		}
 		if lines := log.lines("level=ERROR"); len(lines) != 0 {
 			t.Errorf("a 500 with no code was logged at ERROR: %q", lines)
-		}
-		if got := m.writer.MalformedRecords(); got != 0 {
-			t.Errorf("after a 500 with no code the count is %d, want 0", got)
 		}
 	})
 }

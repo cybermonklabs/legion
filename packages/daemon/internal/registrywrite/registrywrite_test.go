@@ -224,13 +224,14 @@ func TestAWritesOutcomeIsItsAnswersStatus(t *testing.T) {
 // listenerwire.CodeMalformedRecord, and a write it answers so is Refused, so the mirror drops that
 // one entry and goes on with the rest. A session's own write, one PUT of its entry or a batch of
 // that entry alone, is logged at ERROR the first time, naming the session's key, the listener's
-// cause and the count, and is counted once however often the listener refuses it; another session
-// is a line and a count of its own. A batch of several entries is Refused and logged as a 400 or
-// 409 is, and counted never: the mirror sends each of its entries alone, and the bad one is counted
-// there. The controls are each other answer, a 500 with no code, with another code or with a body
-// that is not JSON, and a 503 with no code or this one: each is Failed, logged as a write to try
-// again, and counted never. A writer that read no code fails the first half; one that refused every
-// 500, or read the code on any status, fails the controls.
+// cause and the count, the daemon's only count of them, and is counted once however often the
+// listener refuses it; another session is a line and a count of its own. A batch of several
+// entries is Refused and logged as a 400 or 409 is, and counted never: the mirror sends each of its
+// entries alone, and the bad one is counted there. The controls are each other answer, a 500 with
+// no code, with another code or with a body that is not JSON, and a 503 with no code or this one:
+// each is Failed, logged as a write to try again, and counted never, so the batch's bad entry sent
+// alone after them is the third. A writer that read no code fails the first half; one that refused
+// every 500, or read the code on any status, fails the controls.
 func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *testing.T) {
 	l, server := newListener(t)
 	writer, log := newWriter(server, "envoy-bearer")
@@ -266,9 +267,6 @@ func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *tes
 	if lines := errorLines("ses-bad"); len(lines) != 1 || !strings.Contains(lines[0], "count=1 ") || !strings.Contains(lines[0], cause("ses-bad")) {
 		t.Errorf("ses-bad was logged at ERROR as %q, want one line naming its key, the count 1 and the listener's cause:\n%s", lines, strings.Join(log.lines(), "\n"))
 	}
-	if got := writer.MalformedRecords(); got != 1 {
-		t.Errorf("after three refused writes of ses-bad the count is %d, want 1: one session", got)
-	}
 
 	// Another session is its own line and its own count.
 	l.set("/v1/legion/agents/sessions/ses-worse", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+cause("ses-worse")))
@@ -277,9 +275,6 @@ func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *tes
 	}
 	if lines := errorLines("ses-worse"); len(lines) != 1 || !strings.Contains(lines[0], "count=2 ") || !strings.Contains(lines[0], cause("ses-worse")) {
 		t.Errorf("ses-worse was logged at ERROR as %q, want one line naming its key, the count 2 and the listener's cause:\n%s", lines, strings.Join(log.lines(), "\n"))
-	}
-	if got := writer.MalformedRecords(); got != 2 {
-		t.Errorf("after ses-worse's refused write the count is %d, want 2", got)
 	}
 
 	// A batch of several: Refused, logged as a refusal, counted never.
@@ -292,9 +287,6 @@ func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *tes
 	}
 	if lines := log.lines("level=ERROR"); len(lines) != 2 {
 		t.Errorf("ERROR lines after the batch of two = %d, want ses-bad's and ses-worse's alone:\n%s", len(lines), strings.Join(lines, "\n"))
-	}
-	if got := writer.MalformedRecords(); got != 2 {
-		t.Errorf("after the batch of two the count is %d, want 2: its entries are counted when each is sent alone", got)
 	}
 
 	// The controls: every other 500, and a 503 whatever its code, is Failed.
@@ -320,8 +312,15 @@ func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *tes
 			t.Errorf("%s's %d was logged at ERROR as a record the listener cannot decode: %q", tc.id, tc.status, lines)
 		}
 	}
-	if got := writer.MalformedRecords(); got != 2 {
-		t.Errorf("after the controls the count is %d, want 2: none of them is a record the listener cannot decode", got)
+
+	// The batch's bad entry sent alone, as the mirror sends it: its line counts it third, after
+	// ses-bad and ses-worse, so neither the batch of two nor any control was counted.
+	l.set("/v1/legion/agents/sessions/ses-third", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+cause("ses-third")))
+	if got := writer.Entry(ctx, entry("ses-third")); got != Refused {
+		t.Fatalf("ses-third's write answered 500 %s came to %v, want Refused", listenerwire.CodeMalformedRecord, got)
+	}
+	if lines := errorLines("ses-third"); len(lines) != 1 || !strings.Contains(lines[0], "count=3 ") || !strings.Contains(lines[0], cause("ses-third")) {
+		t.Errorf("ses-third was logged at ERROR as %q, want one line naming its key, the count 3 and the listener's cause:\n%s", lines, strings.Join(log.lines(), "\n"))
 	}
 }
 
