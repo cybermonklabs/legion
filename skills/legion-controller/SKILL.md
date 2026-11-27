@@ -40,7 +40,7 @@ Read `skill://legion-controller/references/session.md` for who launched you, the
 
 ## What happened before you started
 
-Every launch opens with a start message, and Envoy keeps no wake sent while no controller ran: run the start procedure in `skill://legion-controller/references/session.md#what-happened-before-you-started`.
+Every launch opens with a start message: run the start procedure in `skill://legion-controller/references/session.md#what-happened-before-you-started`.
 
 ## Wakes
 

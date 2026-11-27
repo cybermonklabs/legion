@@ -418,11 +418,11 @@ func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 func stepRef(key string, step record.DesignStep) string {
 	switch step {
 	case record.DesignStepDecisions:
-		return "dispatch://" + key + "/artifact/" + dispatch.DecisionsSlug
+		return dispatch.DocumentRef(key, false, dispatch.DecisionsSlug)
 	case record.DesignStepCriteria:
-		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
+		return dispatch.DocumentRef(key, false, dispatch.VerificationSlug)
 	}
-	return "dispatch://" + key + "/spec"
+	return dispatch.DocumentRef(key, true, "")
 }
 
 // refStep is the design-gate step whose document ref names on issue key, the one stepRef gives

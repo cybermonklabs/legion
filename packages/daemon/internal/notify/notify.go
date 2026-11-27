@@ -55,13 +55,16 @@ var ErrHolderUnresponsive = errors.New("the role's holder is unresponsive")
 // ReasonHolderLapsed is the listener's 404 reason for a role whose holder is past its live window,
 // and StateUnresponsive the `holder_state` it carries while that holder is inside the gone horizon
 // (writeRoleHolderError, packages/envoy/cmd/listener/api.go). A 404 that names no `holder_state` is
-// an older listener's, whose lapsed holder is no holder at all. ReasonHolderLapsed is the shared
-// reason itself (roleholder.HolderLapsed), so the daemon's reading of the wire word and the
-// listener's writing of it cannot drift; StateUnresponsive is declared here, with the rest of the
-// listener's wire words this daemon reads, so the publisher and the controller's liveness probe
-// read one copy of them.
+// an older listener's, whose lapsed holder is no holder at all. StateLive is the `holder_state` of
+// the 200 a live holder gets (listenerwire.RoleHolder), which RoleHolder also answers for a 200 of
+// an older listener that names no state. ReasonHolderLapsed is the shared reason itself
+// (roleholder.HolderLapsed), so the daemon's reading of the wire word and the listener's writing of
+// it cannot drift; the states are declared here, with the rest of the listener's wire words this
+// daemon reads, so the publisher, the outbox's controller notice and the controller's liveness
+// probe read one copy of them.
 const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
+	StateLive          = "live"
 	StateUnresponsive  = "unresponsive"
 )
 
@@ -147,58 +150,14 @@ func (e ErrMessageRefused) Error() string {
 }
 
 // RoleTopicPrefix is the Envoy subject a role token is reached on (ROLE_TOPIC_PREFIX,
-// packages/contracts/src/subject.ts): a notice goes to its architect's, and a review-stuck notice
-// names its reviewer's, so the architect need not build it.
+// packages/contracts/src/subject.ts): a notice goes to its architect's, a review-stuck notice names
+// its reviewer's, so the architect need not build it, and every controller notice goes to the
+// project's controller's (claim.ControllerToken), once the registered controller session holds
+// that role live (the daemon's outbox, controllerNotice, lists what it carries). The listener
+// resolves a role at the publish itself: a publish without keep is stored for the role's live
+// holder alone, on that session's own agent subject, so a notice reaches whichever session holds
+// the role and never one that has stopped following a topic.
 const RoleTopicPrefix = "notifications.role."
-
-// ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
-// to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
-// daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own,
-// and only the kinds named here (#4065): a root in triage handed to Legion (`triage`, admission);
-// the slot wakes admission sends through wakeController, `slot-free` and `todo`, on which the
-// controller runs its prioritization pass and its deployment's intake, and `tick`, its periodic
-// wake (admit.Admission.wakeController and its callers say when; the tick alone carries
-// `openCapabilities`, the deployment capabilities with no decision,
-// admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
-// admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
-// work the daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for
-// each arm and run of its tree); a person's decision on a tree Legion is not
-// running (`kept-decision`, the outbox's relaySpecDecision and workflow's relayKeptDecision); a
-// hold the tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate);
-// a tree architect's own failed claim while its root is not done (`worker-died`, workflow's
-// claimFailed), and the stall of that architect whose replacement failed its claim over a stop
-// the runtime did not confirm (`worker-stalled`, the daemon's enqueueStallNotice), both because
-// every other notice of the tree reaches that architect; an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates); a start the session store
-// could not answer (`session-store-fault`, workflow's
-// sessionStoreFault); a claim whose turns keep ending in a provider error (`provider-errors`,
-// supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
-// is the tree root's architect's own, and a child's own architect's run is told to the architect
-// above that child; one of the controller's own programs its pod's memory guard ended
-// (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once for each kill); the messages
-// the intake gave up, counted in one notice that waits a minute for the give-ups after its first
-// (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), which the controller replays or
-// discards (its replay_give_up and discard_give_up); and the
-// operator's pause and resume of the project (`project-paused` and `project-resumed`,
-// record.ProjectPause, queued in the store's Pause and Resume), of which the controller's own pause
-// or resume tells it nothing. A free slot alone is no reason for the controller to take an issue:
-// work reaches Legion only when a person hands it over or a role reports a clear defect the
-// controller files (skill://legion-controller, "Free slots"). It sits among the issue topics, where
-// no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers
-// it as an interest while it holds the controller role (legionControllerNoticeSubject,
-// packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
-// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
-// retains it and the controller's session receives it from its own JetStream consumer, whose filter
-// that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets the
-// project's controller role holder register it, and no other session), so a notice published while
-// that session was away is delivered when it registers again, its consumer keeping the place it
-// acknowledged. A session new to the lane is given a consumer at the stream's end, so a freshly
-// started controller is handed none of what came before it and learns that from `legion state` and
-// Dispatch.
-func ControllerTopic(project string) string {
-	return "notifications.legion." + project + ".controller"
-}
 
 // StateTopic is the topic of the project's state events (legionStateSubject,
 // packages/contracts/src/subject.ts). The daemon publishes there the events of each transaction it
@@ -207,8 +166,9 @@ func ControllerTopic(project string) string {
 // executor splits them): each change of what Dispatch observes of an issue (its phase, tree, slot,
 // waitingOn or a role's claim), each change of the admission block, and the boot event that opens
 // each run. Dispatch reads it from a durable of its own and writes its observations from it. token
-// is the project token panes are told as LEGION_PROJECT, as ControllerTopic's is, never the
-// Dispatch project key, which each message carries itself.
+// is the project token panes are told as LEGION_PROJECT
+// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key, which each
+// message carries itself.
 func StateTopic(token string) string {
 	return "notifications.legion." + token + ".state"
 }
@@ -541,7 +501,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
 			return "", "", refused("the listener's answer names no holder: " + excerpt(body, cut))
 		}
-		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
+		return answer.Holder, cmp.Or(string(answer.HolderState), StateLive), nil
 	}
 	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if response.StatusCode == http.StatusNotFound {

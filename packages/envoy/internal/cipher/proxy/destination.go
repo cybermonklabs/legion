@@ -4,7 +4,8 @@
 // address - in production Dispatch's public host and Dispatch's in-cluster URL. What is here is
 // all of it: the setting as the proxy holds it, each destination's own transport, the host each
 // serves (destinationOf), the addresses every dial to one may open and why none may
-// (upstreamAddresses), the dial itself (dialUpstream), and what the command is told when a
+// (upstreamAddresses, with netaddr.DestinationRefusal, the rule of one address, which the broker's
+// start reads too), the dial itself (dialUpstream), and what the command is told when a
 // destination is refused or does not answer, which names the rule and never the destination's
 // in-cluster name or address. serveConnect and serveBound decide when a request is a
 // destination's; this file decides nothing else.
@@ -99,12 +100,8 @@ func (d *destination) hostPort() (host, port string) {
 // upstreamAddresses answers the addresses destination d's host has, the ones every dial to it
 // opens, and why the proxy may dial none of them. It is checkedAddresses turned the other way, for a
 // host the broker's settings name as inside its own cluster: each address, read as
-// checkedAddresses reads it (netaddr.Canonical), must be one localRule refuses - private,
-// 100.64.0.0/10 or inside the cluster ranges - so the exception reaches no address the proxy would
-// tunnel to for a command; and none may be one netaddr.DestinationRefusal names - loopback,
-// link-local, unspecified, multicast, a cloud metadata server's IPv6 address, or an IPv6 form that
-// carries one - where the broker's own pod and the node's metadata server answer and no
-// destination of the broker's does. A name refused for one of its addresses is refused whole, as
+// checkedAddresses reads it (netaddr.Canonical), is held to netaddr.DestinationRefusal with the
+// broker's cluster ranges. A name refused for one of its addresses is refused whole, as
 // checkedAddresses refuses one.
 //
 // The refusal is written twice. The broker's line of a dial that did not happen (logDialFailure)
@@ -134,11 +131,7 @@ func (s *Server) upstreamAddresses(ctx context.Context, d *destination) ([]netip
 		return addrs, nil
 	}
 	for _, addr := range addrs {
-		why := netaddr.DestinationRefusal(addr)
-		if why == "" && localRule(addr, s.clusterRanges) == "" {
-			why = "an address which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES"
-		}
-		if why != "" {
+		if why := netaddr.DestinationRefusal(addr, s.clusterRanges); why != "" {
 			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused,
 				fmt.Sprintf("the private upstream %s resolves to %s, %s", host, addr, why))
 			return nil, destinationRefused("the private destination resolves to " + why)

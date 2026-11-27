@@ -1105,6 +1105,9 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 	trailing := make([]any, 0, 6)
 	if c.grant.GrantID != "" {
 		trailing = append(trailing, "issue", c.grant.Issue)
+		if c.grant.CheckRunID != "" {
+			trailing = append(trailing, "ci_check_run_id", c.grant.CheckRunID)
+		}
 	}
 	if slot := c.chosen.namedSlot(); slot != "" {
 		trailing = append(trailing, "slot", slot)
@@ -1141,6 +1144,11 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 		"path", r.URL.Path,
 		"status", status,
 		"allowed", reason == "",
+	}
+	if c.grant.CheckRunID != "" {
+		// A CI run's result grant: the check run of the job whose write this is, which ties
+		// the line to the run Dispatch stores the result for.
+		fields = append(fields, "ci_check_run_id", c.grant.CheckRunID)
 	}
 	if slot := c.chosen.namedSlot(); slot != "" {
 		fields = append(fields, "slot", slot)

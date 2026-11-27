@@ -675,7 +675,8 @@ func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing
 
 // A report of a person's undelivered spec decision to a stopped tree relays it once: the first
 // report writes the controller notice, a second report of the same publish and the copy queued
-// before the close write none, and the controller is told once; the architect is told nothing.
+// before the close write none, and the controller is told once, on its role topic; the architect
+// is told nothing.
 func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -685,7 +686,9 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateSuspended, "ses_arch")
 	var logged bytes.Buffer
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 		project: "legion", now: time.Now}
 	notice := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
@@ -721,10 +724,10 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the copy queued before the close and the controller row: %v", err)
 	}
-	if relayed() != 1 || to(notify.ControllerTopic("legion")) != 1 || to(architectTopic(t, "LEGION-1")) != 0 ||
+	if relayed() != 1 || to(controllerRoleTopic) != 1 || to(architectTopic(t, "LEGION-1")) != 0 ||
 		!strings.Contains(logged.String(), `msg="outbox kept decision handled before under this key"`) || !strings.Contains(logged.String(), "key=legion-outbox:78") {
 		t.Fatalf("%d relays, %d to the controller, %d to the architect, log %q; want one relay told to the controller once, none to the architect, and the copy logged as handled before",
-			relayed(), to(notify.ControllerTopic("legion")), to(architectTopic(t, "LEGION-1")), logged.String())
+			relayed(), to(controllerRoleTopic), to(architectTopic(t, "LEGION-1")), logged.String())
 	}
 }
 

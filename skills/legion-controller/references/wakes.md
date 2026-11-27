@@ -1,7 +1,6 @@
 # Wakes
 
 Read this when the skill's wake table sends you here, and for the every-turn check of trees waiting on a root claim.
-Wakes come on `notifications.legion.<project>.controller`, agents' messages on `notifications.role.legion-<project>-controller`.
 Check each in `read_state` before you act.
 A notice's `reason` is the daemon's own account: quote it, never rewrite it.
 

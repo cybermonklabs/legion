@@ -164,9 +164,10 @@ func diskNotice(kind record.NoticeKind) bool {
 // queues the notice (store's recordDecline), and keeps the pod until a read finds it clean, and a
 // workspace-taken notice is the one word of a disk that is gone, so neither must finish with
 // nobody told: the controller gets a controller notice of its own with the notice's words
-// (record.ControllerNotice, published on the controller topic by its own row, controllerNotice),
-// queued once under key in a transaction that marks key processed, so a row whose finish did not
-// commit runs again and queues nothing more. The undelivered row then finishes.
+// (record.ControllerNotice, published on the controller's role topic by its own row once the
+// registered controller session holds that role live, controllerNotice), queued once under key in
+// a transaction that marks key processed, so a row whose finish did not commit runs again and
+// queues nothing more. The undelivered row then finishes.
 //
 // It does nothing for a kind that is no disk notice, as relaySpecDecision does nothing for a kind
 // that is no spec decision, so every place a notice finishes undelivered because nobody will hold
