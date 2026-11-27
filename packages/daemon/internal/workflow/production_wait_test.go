@@ -637,8 +637,10 @@ func TestNoTimerOpensALookAfterNotRun(t *testing.T) {
 
 // An issue whose every check passes, with nothing beneath it, waits only for its production check
 // of its generation, closed not_run: the stored wait, close-wait.md and the daily notice name it
-// with its generation, merge, outcome and way out. Where no check of the issue's generation
-// stands, the turn's read opens one.
+// with its generation, merge, outcome and way out. The read that shows it here was made before the
+// close and applied after it, so it opens no look: a read made after the close in which each check
+// passes opens one more (TestAReadInWhichEachCheckPassesOpensOneLookAfterNotRun). Where no check of
+// the issue's generation stands, the turn's read opens one.
 func TestProductionOnlyWaitIsVisibleAndReconciled(t *testing.T) {
 	t.Parallel()
 	t.Run("closed not_run", func(t *testing.T) {
@@ -647,7 +649,15 @@ func TestProductionOnlyWaitIsVisibleAndReconciled(t *testing.T) {
 		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		rig.lastLook(waitRoot)
 		rig.report(waitRoot, 2, "pending", "the requirement is still unobserved", nil)
-		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		closed := rig.check(waitRoot).ClosedAt
+		if closed == nil {
+			t.Fatal("the check after its last look's pending has no close, want it closed not_run")
+		}
+		before := answerOf(waitRoot, nil, passing("c-after", waitRootMerge))
+		rig.fact(intake.CloseChecksRead{Issue: waitRoot, Generation: waitGeneration, ReadAt: closed.Add(-time.Second), Answer: &before})
+		if check := rig.check(waitRoot); check.Open() {
+			t.Fatalf("the check after a read made before its close = %+v, want it closed not_run: only a read after the close opens a look", check)
+		}
 		stored := rig.stored(waitRoot)
 		if stored.Production == nil || stored.Production.Generation != waitGeneration || stored.Production.Merge != waitRootMerge ||
 			stored.Production.Outcome != string(record.CheckNotRun) || len(stored.Checks) != 0 {
