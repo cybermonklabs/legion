@@ -159,12 +159,19 @@
         {
           "signal": "kills",
           "part": null,
-          "value": 0,
+          "value": 3,
           "absent": null,
-          "limit": null,
-          "limitSet": null,
-          "holds": false,
-          "since": null
+          "limit": 2,
+          "limitSet": {
+            "setBy": {
+              "kind": "controller",
+              "session": "ses_controller"
+            },
+            "at": "2026-11-26T06:00:00Z",
+            "reason": "the owner set the limit in the weekly plan"
+          },
+          "holds": true,
+          "since": "2026-11-26T07:00:00Z"
         },
         {
           "signal": "approvals",
@@ -195,6 +202,42 @@
       }
     },
     "signalChanges": [
+      {
+        "id": 5,
+        "at": "2026-11-26T07:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "holds",
+        "value": 1,
+        "absent": null,
+        "setBy": null,
+        "reason": null
+      },
+      {
+        "id": 4,
+        "at": "2026-11-26T07:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "value",
+        "value": 3,
+        "absent": null,
+        "setBy": null,
+        "reason": null
+      },
+      {
+        "id": 3,
+        "at": "2026-11-26T06:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "limit",
+        "value": 2,
+        "absent": null,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "reason": "the owner set the limit in the weekly plan"
+      },
       {
         "id": 2,
         "at": "2026-11-26T05:00:00Z",

@@ -44,8 +44,15 @@
       {
         "signal": "kills",
         "part": null,
-        "limit": null,
-        "set": null
+        "limit": 2,
+        "set": {
+          "setBy": {
+            "kind": "controller",
+            "session": "ses_controller"
+          },
+          "at": "2026-11-26T06:00:00Z",
+          "reason": "the owner set the limit in the weekly plan"
+        }
       },
       {
         "signal": "approvals",

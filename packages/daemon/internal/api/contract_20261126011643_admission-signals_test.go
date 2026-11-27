@@ -47,10 +47,11 @@ var (
 )
 
 // signalSettingsFixture is the settings a change answers: admission by signals on, a limit set by
-// the controller on the idle share, one by the operator on the headroom, and none on the rest.
+// the controller on the idle share and on the memory kills, one by the operator on the headroom,
+// and none on the rest.
 func signalSettingsFixture() SignalSettingsView {
-	limits := map[string]*float64{signals.Idle: new(0.5), signals.Provider: new(0.9)}
-	sets := map[string]store.SignalSet{signals.Idle: controllerSet, signals.Provider: operatorSet}
+	limits := map[string]*float64{signals.Idle: new(0.5), signals.Provider: new(0.9), signals.Kills: new(2.0)}
+	sets := map[string]store.SignalSet{signals.Idle: controllerSet, signals.Provider: operatorSet, signals.Kills: controllerSet}
 	view := SignalSettingsView{On: true, Switch: &operatorSet}
 	for _, series := range store.LiveSeries() {
 		limit := store.SignalLimitView{Limit: limits[series]}
@@ -74,13 +75,14 @@ func signalNamesOf(series string) (string, *string) {
 
 // signalsReadingFixture is the state's `admission.signals` of every shape a series takes: a value
 // under its limit dated by the hold entry that says so, a value the daemon cannot compute with no
-// limit, a value under its limit no pass dated yet, and values with no limit, beside two minutes
-// of the provider's record, one held and one not.
+// limit, a value under its limit no pass dated yet, one at its limit holding since the pass that
+// dated it, and values with no limit, beside two minutes of the provider's record, one held and
+// one not.
 func signalsReadingFixture() *SignalsReading {
 	since := signalsFixtureAt.Add(-time.Hour)
 	reading := &SignalsReading{On: true, Switch: &operatorSet}
 	settings := signalSettingsFixture()
-	values := map[string]*float64{signals.Idle: new(0.25), signals.Provider: new(0.42), signals.Kills: new(0.0), signals.Approvals: new(1.0)}
+	values := map[string]*float64{signals.Idle: new(0.25), signals.Provider: new(0.42), signals.Kills: new(3.0), signals.Approvals: new(1.0)}
 	for i, series := range store.LiveSeries() {
 		row := store.SignalSeriesReading{Value: values[series], Limit: settings.Limits[i].Limit, LimitSet: settings.Limits[i].Set}
 		row.Signal, row.Part = signalNamesOf(series)
@@ -89,6 +91,8 @@ func signalsReadingFixture() *SignalsReading {
 			row.Absent = new("the daemon keeps the merge queue's events from 2026-11-26T06:00:00Z, so the span this signal counts is whole from 2026-11-26T12:00:00Z")
 		case signals.Idle:
 			row.Since = &since
+		case signals.Kills:
+			row.Holds, row.Since = true, &since
 		}
 		reading.Series = append(reading.Series, row)
 	}
@@ -99,12 +103,18 @@ func signalsReadingFixture() *SignalsReading {
 	return reading
 }
 
-// signalChangesFixture is the state's `admission.signalChanges` newest first: a value the daemon
-// cannot compute with its reason, and the switch with who set it and why.
+// signalChangesFixture is the state's `admission.signalChanges` of every kind of entry, newest
+// first: a hold, a value, a limit with who set it and why, a value the daemon cannot compute with
+// its reason, and the switch.
 func signalChangesFixture() []SignalChange {
+	at := signalsFixtureAt.Add(-time.Hour)
+	kills, _ := signalNamesOf(signals.Kills)
 	queue, _ := signalNamesOf(signals.Queue)
-	operator := operatorSet.By
+	operator, controller := operatorSet.By, controllerSet.By
 	return []SignalChange{
+		{ID: 5, At: at, Signal: &kills, What: store.SignalChangeHolds, Value: new(1.0)},
+		{ID: 4, At: at, Signal: &kills, What: store.SignalChangeValue, Value: new(3.0)},
+		{ID: 3, At: controllerSet.At, Signal: &kills, What: store.SignalChangeLimit, Value: new(2.0), SetBy: &controller, Reason: &controllerSet.Reason},
 		{ID: 2, At: operatorSet.At, Signal: &queue, What: store.SignalChangeValue, Absent: new("the daemon has not begun keeping the merge queue's events")},
 		{ID: 1, At: operatorSet.At, What: store.SignalChangeSwitch, Value: new(1.0), SetBy: &operator, Reason: &operatorSet.Reason},
 	}
