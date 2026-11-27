@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch OpenAPI document declares the optional exclude_types query parameter of GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events, so the generated Dispatch API types carry it.
+time: 2026-11-26T21:59:51.687500181Z
+custom:
+    Issue: pr4243

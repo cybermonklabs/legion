@@ -159,5 +159,5 @@ export const KEY_REPORTS = freeze({
   /** The zoom-out key, and Left on a row whose parent is the issue, the whole issue drawn. */
   whole_tree: "The tree is already showing the whole issue.",
   /** The row an address lands on, for a turn of a thread only agents wrote in. */
-  agents_thread: "This thread is the agents' alone.",
+  agents_thread: "This thread is in the history, in Details.",
 } as const);

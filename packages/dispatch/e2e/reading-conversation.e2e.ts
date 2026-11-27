@@ -1,5 +1,6 @@
 import type { Locator } from "@playwright/test";
 
+import { issueProject } from "../web/src/lib/issue-key";
 import {
   answerAsk,
   createAsk,
@@ -10,6 +11,7 @@ import {
 } from "./api";
 import { indexedBlockAsk } from "./editor";
 import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
+import { daemonOf, historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
@@ -40,6 +42,10 @@ import { expect, test } from "./test";
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
  * its words names nothing, and its driver holds the other five forms. A row of the new page reads
  * no question map, so a `#id` in its words is drawn as written, and its driver holds the rest.
+ *
+ * Two drivers read the new page's Details history: a turn of a thread the history holds, which
+ * reads every form, and a handoff's opened fields, which read all but a question id, since a
+ * handoff is no record of the reference graph.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -304,3 +310,46 @@ async function expectRowReadsForms(scope: Locator, world: ReadingWorld): Promise
   }
   await expect(scope).not.toContainText("dispatch://");
 }
+
+// SLOW(>=2s): seeds the reading world and a Legion daemon's message, then loads the new issue
+// page at `/activity`, which opens Details' History and resolves each reference the turn holds.
+test("issue-page-history-turn: an agents' thread turn in the new page's history draws a stored key, an address and a party through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // A message the project's Legion daemon writes with no target opens a thread the new page's
+  // history holds whole (`agents-only.ts`).
+  const turn = await createMessage(
+    world.host.key,
+    { body: readingText(world) },
+    daemonOf(issueProject(world.host.key))
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(historyItem(page, turn.id).locator(RENDERED_BODY), world, "link");
+});
+
+// SLOW(>=2s): seeds the reading world and a handoff, then loads the new issue page at `/activity`,
+// which opens Details' History and reads the handoff's fields and each reference in them.
+test("issue-page-history-handoff-body: a handoff's field of words in the new page's history draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  await createHandoff(
+    world.host.key,
+    "implement",
+    { phase: "implement", summary: readingText(world) },
+    readingAgent.actor
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(
+    historyPanel(page).locator('[data-handoff-field="summary"] .dispatch-markdown'),
+    world,
+    "link"
+  );
+});

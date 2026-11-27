@@ -1,7 +1,7 @@
 import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
-import { pageInkText, pageQuietText, pageRowBorder } from "../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText, pageRowBorder } from "../../theme/classes";
 import { IssueLine } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { statusGlyph } from "./issue-status";
@@ -9,9 +9,16 @@ import { authorText, MARGIN_SECTION_NAMES, type MarginSection, pageChrome } from
 import { CONTROL_LABELS } from "./page-words";
 import type { MarginSections } from "./useMarginSections";
 
-/** How many entries a list of unbounded length draws before it folds behind a count that opens
- *  the rest. */
-export const FOLD_AFTER = 10;
+/** How many entries a list of unbounded length in Details draws at first, and how many more each
+ *  press of the Show more under it draws (`useListPages`). */
+const LIST_PAGE = 20;
+
+/** The controls of an entry a press of Show more can move the focus to, and of the history a
+ *  focus can be handed to (`IssueHistory.tsx`). */
+export const ENTRY_CONTROLS = "a[href], button:not(:disabled)";
+
+/** The look of Show more, under a list's entries and under the history's (`IssueHistory.tsx`). */
+export const SHOW_MORE_CONTROL = `dispatch-inline-link text-xs font-medium underline ${pageMutedText}`;
 
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
@@ -23,65 +30,147 @@ const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
 };
 
 /** The issues of a list of them, each its key as a link and its title, where it has one, beside
- *  it, folded after ten behind a count that opens the rest. */
+ *  it, drawn 20 at a time (`useListPages`). */
 export function IssueList({
   issues,
 }: {
   issues: readonly { readonly key: string; readonly title: string | undefined }[];
 }): ReactNode {
-  const [open, setOpen] = useState(false);
-  const list = useRef<HTMLDivElement>(null);
-  const shown = open ? issues : issues.slice(0, FOLD_AFTER);
+  const pages = useListPages<HTMLDivElement>();
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1" ref={list}>
-      {shown.map((one) => (
+    <div className="flex w-full min-w-0 flex-col gap-1" ref={pages.list}>
+      {issues.slice(0, pages.drawn).map((one) => (
         <IssueLine issueKey={one.key} key={one.key} title={one.title} />
       ))}
-      {issues.length > FOLD_AFTER && !open ? (
-        <ShowAll
-          className="self-start"
-          count={issues.length}
-          list={list}
-          onShow={() => setOpen(true)}
-        />
-      ) : null}
+      {pages.more(issues.length)}
     </div>
   );
 }
 
-/** The count a folded list is drawn behind, which opens the rest of it. `className` places it
- *  in the list that draws it, and `list` is that list, each of its children one entry. The
- *  count goes with its press, so the focus goes on to the link of the first entry it opened,
- *  the list's entry `FOLD_AFTER`, rather than falling to the page. A count a change made
- *  elsewhere takes away, as the list falls to ten, hands nothing on: that loss is not the
- *  reader's, and the focus stays on the page's body. */
-export function ShowAll({
+/** The pages of one list of unbounded length in Details (`useListPages`). */
+export interface ListPages<E extends Element> {
+  /** How many of the list's entries it draws: its first `LIST_PAGE`, and `LIST_PAGE` more for
+   *  each press of its Show more. */
+  readonly drawn: number;
+  /** The box the list draws its entries in, each entry one child of it in the list's order,
+   *  for the list to hand to that box: where a press of Show more finds the first entry it drew
+   *  unless the list says otherwise (`more`'s `entry`). */
+  readonly list: RefObject<E | null>;
+  /** The list's Show more, which the list draws under its entries: for a list of `count`
+   *  entries, nothing once every entry is drawn. `entry` is the list's entry at a place of it,
+   *  as the page draws it, which the press moves the focus to: by default the child of `list`
+   *  at that place. `className` places the control in the list that draws it. */
+  readonly more: (
+    count: number,
+    entry?: (index: number) => Element | null | undefined,
+    className?: string
+  ) => ReactNode;
+}
+
+/**
+ * The one paging rule of every list of unbounded length that Details draws but the history: the
+ * list draws its first 20 entries and, under them, Show more, which says how many entries are
+ * left and draws the next 20, in the words and the look of the history's own control
+ * (`IssueHistory.tsx`). A press keeps the entries drawn and reads nothing, and the control goes
+ * once no entry is left. The list's entries are one sequence, whatever reads they come from: the
+ * entries of a source drawn after another take the places after that one's, share its pages and
+ * its control, and count in the `count` the control is given, which is the whole list's.
+ *
+ * The press draws the next entries before it returns (`flushSync`), and moves the focus to the
+ * first of them (`focusEntry`), whether the control stays or goes, rather than let it fall to the
+ * page as the last press takes the control away. A control that a change made elsewhere takes
+ * away, as the list falls to what it draws, hands nothing on: that loss is not the reader's, and
+ * the focus stays on the page's body.
+ */
+export function useListPages<E extends Element = HTMLElement>(): ListPages<E> {
+  const [drawn, setDrawn] = useState(LIST_PAGE);
+  const list = useRef<E>(null);
+  return {
+    drawn,
+    list,
+    more: (count, entry = (index) => list.current?.children[index], className = "") =>
+      count <= drawn ? null : (
+        <ShowMore
+          className={className}
+          left={count - drawn}
+          onMore={() => {
+            flushSync(() => setDrawn(drawn + LIST_PAGE));
+            focusEntry(entry(drawn));
+          }}
+        />
+      ),
+  };
+}
+
+/** The groups of a list Details draws as one sequence of their entries, a step's runs by their
+ *  task or Legion's agents by their role, cut where its pages end (`useListPages`): each group
+ *  with those of its entries among the first `drawn` of the sequence, and none whose entries are
+ *  all after them. */
+export function groupsDrawn<G, T>(
+  groups: readonly G[],
+  entriesOf: (group: G) => readonly T[],
+  drawn: number
+): readonly { readonly entries: readonly T[]; readonly group: G }[] {
+  let left = drawn;
+  return groups.flatMap((group) => {
+    const entries = entriesOf(group).slice(0, left);
+    left -= entries.length;
+    return entries.length === 0 ? [] : [{ entries, group }];
+  });
+}
+
+/** Moves the focus to `entry`, the first entry a press of Show more drew: to its first link or
+ *  button, and where it holds none, a label or a step's run, to the entry itself, which then
+ *  takes a focus moved to it and stays out of the tab order (`tabindex` -1), as a heading of
+ *  Details the focus is handed to does. */
+function focusEntry(entry: Element | null | undefined): void {
+  if (!(entry instanceof HTMLElement)) return;
+  const control = entry.matches(ENTRY_CONTROLS)
+    ? entry
+    : entry.querySelector<HTMLElement>(ENTRY_CONTROLS);
+  if (control !== null) {
+    control.focus();
+    return;
+  }
+  if (!entry.hasAttribute("tabindex")) entry.setAttribute("tabindex", "-1");
+  entry.focus();
+}
+
+/** Show more, on a line of its own under a list's entries: how many entries are left, "Show more
+ *  (25 left)" (`ShowMoreWords`), in the look of the history's own control (`IssueHistory.tsx`). */
+function ShowMore({
   className,
-  count,
-  list,
-  onShow,
+  left,
+  onMore,
 }: {
   className: string;
-  count: number;
-  list: RefObject<HTMLElement | null>;
-  onShow: () => void;
+  left: number;
+  onMore: () => void;
 }): ReactNode {
   return (
-    <button
-      className={`${className} text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-      onClick={() => {
-        flushSync(onShow);
-        list.current?.children[FOLD_AFTER]?.querySelector<HTMLElement>("a[href]")?.focus();
-      }}
-      type="button"
-      {...pageChrome}
-    >
-      {/* One child, so the space before the count holds where every button is a flex box
-          (`styles.css`, below 1280 px), which drops a space between two of its children. */}
-      <span>
-        {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
-      </span>
-    </button>
+    <div className={`w-full ${className}`}>
+      <button className={SHOW_MORE_CONTROL} onClick={onMore} type="button" {...pageChrome}>
+        <ShowMoreWords count={<span {...authorText}>{left}</span>} />
+      </button>
+    </div>
+  );
+}
+
+/** The words of Show more, the list's and the history's: "Show more", and where `count` is given,
+ *  the node drawn for how many entries are left, " (25 left)". They are one child of the
+ *  control, so the space before the count holds where every button is a flex box (`styles.css`,
+ *  below 1280 px), which drops a space between two of its children. */
+export function ShowMoreWords({ count }: { count?: ReactNode }): ReactNode {
+  return (
+    <span>
+      {CONTROL_LABELS.show_more}
+      {count === undefined ? null : (
+        <>
+          {" ("}
+          {count} {CONTROL_LABELS.show_more_left})
+        </>
+      )}
+    </span>
   );
 }
 
