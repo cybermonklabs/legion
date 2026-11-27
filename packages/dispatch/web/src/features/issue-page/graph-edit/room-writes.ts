@@ -1,5 +1,5 @@
 import type { createTypedBlockCommands } from "@legion/proof-editor";
-import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import type { NodeType, Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type * as ProseMirrorState from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 
@@ -64,13 +64,43 @@ function blockIn(
   return found;
 }
 
+/** Whether the paragraph `block` holds no words: nothing, or blank text alone, which a new row's
+ *  first key does not write either (`new-row-editing.ts`). Any other inline node is content. */
+function holdsNoWords(block: ProseMirrorNode): boolean {
+  let words = false;
+  block.forEach((child) => {
+    words ||= !child.isText || (child.text ?? "").trim() !== "";
+  });
+  return !words;
+}
+
+/**
+ * Where the paragraphs that end `doc` and hold no words start, or its end where its last block
+ * holds words. Such paragraphs stand there in two ways. A fragment that holds no block is, in the
+ * editor, a document of one empty paragraph: its schema wants a block at least, so ProseMirror
+ * fills one in, and the server keeps one in a document whose last block it deleted. And an edit
+ * can leave one at the end of a document with words: Enter at the end of its last block makes one.
+ */
+function wordlessEnd(doc: ProseMirrorNode, paragraph: NodeType): number {
+  let from = doc.content.size;
+  for (let index = doc.childCount - 1; index >= 0; index -= 1) {
+    const block = doc.child(index);
+    if (block.type !== paragraph || !holdsNoWords(block)) break;
+    from -= block.nodeSize;
+  }
+  return from;
+}
+
 /**
  * Writes a new row's block (R3): one paragraph of `words` at the end of the document of the
  * editor `view` - the issue's own fragment, the tree artifact's editor - with the block id
  * `blockId` the page chose for it, so the tree read returns the node by that id, and the
- * selection at the end of its words, so the reader's next letter follows the first. One
- * transaction, tagged with `GRAPH_EDIT_META`. Answers whether it was dispatched: a schema with
- * no paragraph writes nothing.
+ * selection at the end of its words, so the reader's next letter follows the first. The
+ * paragraphs without words that end the document (`wordlessEnd`) give it their place: kept
+ * beside it, each would be stored, take a block id and be read as a block with no words, since
+ * an empty paragraph is no block of the server's index only while it is the document's one
+ * block. Every block before them stays, in order. One transaction, tagged with
+ * `GRAPH_EDIT_META`. Answers whether it was dispatched: a schema with no paragraph writes nothing.
  */
 export function writeNewBlock(
   view: EditorView,
@@ -81,10 +111,10 @@ export function writeNewBlock(
   const { doc, schema } = view.state;
   const paragraph = schema.nodes.paragraph;
   if (paragraph === undefined) return false;
-  const end = doc.content.size;
+  const from = wordlessEnd(doc, paragraph);
   const block = paragraph.create({ [BLOCK_ID_PROPERTY]: blockId }, schema.text(words));
-  const transaction = view.state.tr.insert(end, block);
-  transaction.setSelection(state.TextSelection.create(transaction.doc, end + 1 + words.length));
+  const transaction = view.state.tr.replaceWith(from, doc.content.size, block);
+  transaction.setSelection(state.TextSelection.create(transaction.doc, from + 1 + words.length));
   view.dispatch(transaction.setMeta(GRAPH_EDIT_META, true));
   return true;
 }
