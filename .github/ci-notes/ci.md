@@ -289,7 +289,7 @@ step, which tests those five — so the filter covers the whole module's closure
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server `packages/daemon/internal/testbuild/testbuild.go#buildEnvoy` builds
 for `packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go#startScratchDispatchOn`, and what their
-tests read outside the daemon: the contracts fixtures `packages/daemon/internal/api/state_golden_test.go#goldenPath`,
+tests read outside the daemon: the contracts fixtures `packages/daemon/internal/apifixture/apifixture.go#Path`,
 `packages/daemon/internal/api/state_golden_test.go#golden`,
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
