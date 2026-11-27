@@ -1,12 +1,12 @@
 package testnats
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -20,33 +20,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
-	"github.com/testcontainers/testcontainers-go"
-	tcexec "github.com/testcontainers/testcontainers-go/exec"
-	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A start that fails after Docker created the container — here a readiness wait that can never
 // succeed, as a start timing out under load does — leaves no container behind once it returns: the
 // container is shared by the package, so no test's end would remove it. The container is asked for
-// by its label on the same Docker daemon testcontainers created it on. A run on an external server
-// starts no container, and is how a host with no Docker runs these tests, so it skips this one.
+// by a label of this row's own on the Docker daemon the docker CLI reaches. A run on an external
+// server starts no container, and is how a host with no Docker runs these tests, so it skips this
+// one.
 func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
 	label := "legion-testnats-" + rand.Text()
-	created, err := start(Image, func() []testcontainers.ContainerCustomizer {
-		return []testcontainers.ContainerCustomizer{
-			testcontainers.WithLabels(map[string]string{"legion.test": label}),
-			testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3 * time.Second)),
-		}
+	created, err := start(Image, startOptions{
+		labels: map[string]string{"legion.test": label},
+		ready:  "a line NATS never prints",
+		within: 3 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("a start whose readiness wait cannot succeed returned no error")
@@ -54,28 +50,100 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if created == nil {
 		t.Fatalf("the failed start created no container (%v), so there was nothing to leak", err)
 	}
-	docker, err := testcontainers.NewDockerClientWithOpts(t.Context())
-	if err != nil {
-		t.Fatalf("the Docker client testcontainers uses: %v", err)
-	}
-	defer docker.Close()
-	left, err := docker.ContainerList(t.Context(), container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", "legion.test="+label))})
+	left, err := docker(t.Context(), nil, "ps", "--all", "--quiet", "--filter", "label=legion.test="+label)
 	if err != nil {
 		t.Fatalf("list containers labelled %s: %v", label, err)
 	}
-	for _, c := range left {
-		t.Errorf("container %s of the failed start is still there (%s)", c.ID, c.State)
-		_ = docker.ContainerRemove(t.Context(), c.ID, container.RemoveOptions{Force: true})
+	for _, id := range strings.Fields(left) {
+		t.Errorf("container %s of the failed start is still there", id)
+		_, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id)
 	}
 }
+
+// reaperChildEnv makes this test binary, started again by TestAKilledTestBinaryLeavesNoContainer,
+// start a container, print its ID and wait to be killed.
+const reaperChildEnv = "LEGION_TESTNATS_REAPER_CHILD"
+
+// A test binary that is killed before it removes its container leaves none behind: the kernel
+// closes the reaper's pipe when the binary ends, and the reaper removes every container of the
+// binary's session (container.go). The row starts this test binary again as a child that starts a
+// container and then waits, kills the child with SIGKILL, which no cleanup of the child outlives,
+// and waits for the container to be gone. A run on an external server starts no container, so it
+// skips this row.
+func TestAKilledTestBinaryLeavesNoContainer(t *testing.T) {
+	if os.Getenv(reaperChildEnv) != "" {
+		started, err := start(Image, startOptions{})
+		if err != nil {
+			fmt.Printf("start: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("started %s\n", started.id)
+		// The parent holds this stdin open until it has killed this process.
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+	if server, _, err := external(); err == nil && server != "" {
+		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAKilledTestBinaryLeavesNoContainer$", "-test.count=1")
+	child.Env = append(os.Environ(), reaperChildEnv+"=1")
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatalf("start this test binary again: %v", err)
+	}
+	killed := false
+	defer func() {
+		if !killed {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	id, ok := strings.CutPrefix(strings.TrimSpace(line), "started ")
+	if err != nil || !ok || id == "" {
+		t.Fatalf("the child started no container: %q, %v", line, err)
+	}
+	// A container this row could not see removed is removed here, by its ID, so a failing run
+	// leaves nothing behind either.
+	t.Cleanup(func() { _, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id) })
+	if _, err := docker(t.Context(), nil, "inspect", "--format", "{{.State.Running}}", id); err != nil {
+		t.Fatalf("the child's container %s is not there to be reaped: %v", id, err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatalf("kill the child: %v", err)
+	}
+	killed = true
+	var exit *exec.ExitError
+	if err := child.Wait(); !errors.As(err, &exit) || exit.ExitCode() != -1 {
+		t.Fatalf("the child ended with %v, want the SIGKILL this row sent", err)
+	}
+	testwait.Eventually(t, "the killed child's container "+id+" to be removed", func() bool {
+		_, err := docker(t.Context(), nil, "inspect", "--format", "{{.Id}}", id)
+		return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such object")
+	})
+}
+
+// This test binary, which TestAKilledTestBinaryLeavesNoContainer starts again, links no module of
+// testcontainers-go (testbinary.LinksNoTestcontainers), so no start of it pays that library's
+// package init (container.go).
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
 
 // A start Docker refuses because something took a probed port before the publish is tried again
 // on a fresh address and ports (start), and the server the retry runs is the one its caller
 // configured: an nkey server refuses a client with no credential and admits its user there, as at
-// a first start. testcontainers reads a configuration file's reader to its end as it creates the
-// container (v0.41.0 lifecycle.go:159), before Docker refuses the publish at the start, so a retry
-// handed the first attempt's reader copies an empty configuration in, and that server admits
-// anyone. The row takes the first probe's client port at its address once the probe lets it go,
+// a first start. Each attempt copies the caller's configuration into the container it created
+// (Container.run), so a retry carries the same configuration as the first; a retry that reused a
+// configuration an earlier attempt had used up started a server that admits anyone, as one did
+// under testcontainers-go, which read a configuration file's reader to its end as it created the
+// container. The row takes the first probe's client port at its address once the probe lets it go,
 // as another program can, and requires the start to have been tried again: a first start Docker
 // did not refuse checks no retry. Docker refuses only where this process can hold the port it
 // publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
@@ -84,17 +152,10 @@ func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
-	if local, err := localDaemon(context.Background()); err != nil {
+	if daemon, err := reachedDaemon(); err != nil {
 		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
-	} else if !local {
-		daemon := "another machine"
-		if provider, err := testcontainers.NewDockerProvider(); err == nil {
-			if host, err := provider.DaemonHost(context.Background()); err == nil {
-				daemon = host
-			}
-			provider.Close()
-		}
-		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon)
+	} else if !daemon.local() {
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon.dial)
 	}
 	probe := loopbackPorts
 	t.Cleanup(func() { loopbackPorts = probe })
@@ -500,29 +561,22 @@ func onTheServersHost(t *testing.T, name string, args ...string) {
 	onServersHost(t, heldServer(t), name, args...)
 }
 
-// onServersHost runs a command where s keeps its store: in its container, or on this host for an
-// external server, which a host with no Docker runs itself (the package comment). It fails t when
-// the command fails, with what the command printed.
+// onServersHost runs a command where s keeps its store: in its container (`docker exec`, through
+// the docker CLI the fixture starts it with), or on this host for an external server, which a host
+// with no Docker runs itself (the package comment). It fails t when the command fails, with what
+// the command printed.
 func onServersHost(t *testing.T, s *server, name string, args ...string) {
 	t.Helper()
 	command := strings.Join(append([]string{name}, args...), " ")
-	container := s.container
-	if container == nil {
+	if s.container == nil {
 		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
 		}
 		return
 	}
-	code, reader, err := container.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
-	if err != nil {
-		t.Fatalf("%s in the NATS container: %v", command, err)
-	}
-	out, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read the output of %s in the NATS container: %v", command, err)
-	}
-	if code != 0 {
-		t.Fatalf("%s in the NATS container exited %d: %s", command, code, out)
+	// docker exec exits with the command's own status, so a command that fails fails it.
+	if out, err := exec.Command("docker", append([]string{"exec", s.container.id, name}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("%s in the NATS container %s: %v: %s", command, s.container.id, err, out)
 	}
 }
 

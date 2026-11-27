@@ -233,12 +233,12 @@ async function exists(file: string): Promise<boolean> {
  * whose hardlink fails with EXDEV, since `destination` is on another filesystem than `source` (a
  * TMPDIR on a data disk, the cache under $HOME), is a symlink to the cached file instead, so the
  * HOME works wherever the machine puts the two. Oh My Pi stats a native through the link, finds it
- * at its embedded size and loads it, and writes none (measured on the pin). A symlink costs the
- * HOME no bytes, where a copy would cost each HOME the whole native and a second copy on the
- * HOME's filesystem would be one more cache that no hook of `bun test` or `go test` can remove.
- * The cached files are read-only, so neither kind of link lets a write reach the copy, and Oh My Pi
- * replaces a native only by renaming a file over it, which replaces the link. `hardLink` is
- * `link(2)`, which a test replaces to fail with EXDEV on one filesystem.
+ * at its embedded size and loads it, and writes none. A symlink costs the HOME no bytes, where a
+ * copy would cost each HOME the whole native and a second copy on the HOME's filesystem would be
+ * one more cache that no hook of `bun test` or `go test` can remove. The cached files are
+ * read-only, so neither kind of link lets a write reach the copy, and Oh My Pi replaces a native
+ * only by renaming a file over it, which replaces the link. `hardLink` is `link(2)`, which a test
+ * replaces to fail with EXDEV on one filesystem.
  */
 export async function linkTree(
   source: string,
@@ -247,7 +247,7 @@ export async function linkTree(
 ): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o755 });
   for (const relative of await readdir(source, { recursive: true })) {
-    const from = path.resolve(source, relative); // absolute, since a symlink below targets it
+    const from = path.resolve(source, relative);
     const to = path.join(destination, relative);
     if ((await stat(from)).isDirectory()) {
       await mkdir(to, { recursive: true, mode: 0o755 });

@@ -224,11 +224,10 @@ func readBinary(path string) (string, map[string]int64, error) {
 // since destination is on another filesystem than source (a TMPDIR on a data disk, the cache under
 // $HOME), is a symlink to the cached file instead, so the HOME works wherever the machine puts the
 // two. omp stats a native through the link, finds it at its embedded size and loads it, and writes
-// none (measured on the pin). A symlink costs the HOME no bytes, where a copy would cost each HOME
-// the whole native and a second copy on the HOME's filesystem would be one more cache that no hook
-// of `go test` or `bun test` can remove. The cached files are read-only, so neither kind of link
-// lets a write reach the copy, and omp replaces a native only by renaming a file over it, which
-// replaces the link.
+// none. A symlink costs the HOME no bytes, where a copy would cost each HOME the whole native and a
+// second copy on the HOME's filesystem would be one more cache that no hook of `go test` or `bun
+// test` can remove. The cached files are read-only, so neither kind of link lets a write reach the
+// copy, and omp replaces a native only by renaming a file over it, which replaces the link.
 func linkTree(source, destination string, hardLink func(oldname, newname string) error) error {
 	source, err := filepath.Abs(source)
 	if err != nil {
