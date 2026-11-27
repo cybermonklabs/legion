@@ -134,9 +134,11 @@ function rowSize(): { readonly height: number; readonly width: number } {
 /** The words each new row is typed with, each unique in its store. */
 const TYPED = {
   belowCriterion: "The first new row, below the criterion.",
+  belowParagraph: "The new row below the paragraph under the issue.",
   belowProse: "The second new row, below the prose block.",
   belowStatement: "The fourth new row, below the first statement.",
   insideStatement: "A second paragraph of the first statement.",
+  paragraphUnderIssue: "The paragraph the row seeds directly under the issue.",
   proseUnderIssue: "A paragraph the row writes under the issue.",
   retypedCriterion: "A paragraph that becomes a criterion.",
   retypedStatement: "A paragraph that becomes a statement.",
@@ -506,6 +508,100 @@ test("a new node below and under is a prose block the reader types @phone", asyn
   });
 });
 
+/** The entries the new row below the paragraph under the issue offers once it is placed: Indent
+ *  and Move up, since the paragraph stands right above it, and New row under. Outdent and Move
+ *  down are grey at their edges there, directly under the issue and last of its own blocks. */
+const PLACED_OFFERS = [
+  EDIT_LABELS.edit_indent,
+  EDIT_LABELS.edit_move_up,
+  EDIT_LABELS.edit_new_under,
+] as const;
+
+/** What the menu of the focused row `what` offers, read with the menu opened by `m` and closed
+ *  again: whether each entry of `PLACED_OFFERS` is offered, not grey, and the state Delete settles
+ *  on once its dry run answered. A menu opened again reads the row's verdicts anew and sends its
+ *  own dry run, so a poll of this reads the row as it stands at each read. */
+async function placedOffers(
+  page: Page,
+  what: string
+): Promise<{ readonly delete: string; readonly offered: readonly boolean[] }> {
+  await openRowMenu(page, "m", what);
+  const offered = await Promise.all(
+    PLACED_OFFERS.map(
+      async (word) => (await menuEntry(page, word).getAttribute("aria-disabled")) !== "true"
+    )
+  );
+  const deleted = await deleteState(page, what);
+  await closeRowMenu(page, what);
+  return { delete: deleted, offered };
+}
+
+// c-new-node, second row: Enter at the end of a paragraph that stands directly under the issue
+// makes a row under the same parent, whose placing PATCH reparents nothing, so its answer carries
+// the placement_seq the node had; the row is placed all the same, with its moves, Delete and New
+// row under offered and no reload, and after a reload the server keeps the node under the issue,
+// right after the paragraph.
+// SLOW(>=2s): a paragraph written into the room and waited for until the block index ranks it, a
+// landing, a new row typed and placed through the block index's read of the room, its menu read
+// until it offers its acts, and a reload.
+test("a new row below a block directly under the issue is placed", async ({ browser }) => {
+  test.setTimeout(300_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    await insertInto(seed.tree, "end", `${TYPED.paragraphUnderIssue}\n`);
+    const paragraph = await rankedProse(key, TYPED.paragraphUnderIssue);
+    expect(paragraph.parent?.id, "the seeded paragraph stands elsewhere than under the issue").toBe(
+      ids.issue
+    );
+    const sent = watchNodeRequests(page, key);
+
+    await landOn(page, key, paragraph.id, "the paragraph under the issue");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(page), { message: "Enter puts no caret in the paragraph's text" })
+      .toBe(paragraph.id);
+    await page.keyboard.press("End");
+    const from = nodeWrites(sent).length;
+    await page.keyboard.press("Enter");
+    await expectCaretInNewRow(page, "Enter at the end of the paragraph's text draws no new row");
+    const what = "the new row below the paragraph";
+    const below = await typeNewRow(page, sent, from, TYPED.belowParagraph, what);
+    const placing = await nthWrite(sent, from + 1, `the page sends no PATCH that places ${what}`);
+    expect(placeOf(placing), `the PATCH that places ${what} names another place`).toEqual({
+      after: paragraph.id,
+      parent: `issue/${ids.issue}`,
+    });
+    expect(
+      nextTag(await placing.answer),
+      `the PATCH that places ${what} is answered with another placement_seq than it went under`
+    ).toBe(placing.ifMatch);
+
+    // The row keeps the focus once Escape left its text: its menu, read again until it holds,
+    // offers the acts of a placed node, with no reload.
+    await expect
+      .poll(() => placedOffers(page, what), {
+        message: "the new row under the same parent is placed",
+        timeout: 30_000,
+      })
+      .toEqual({ delete: "counted", offered: PLACED_OFFERS.map(() => true) });
+
+    const answer = await treeAfterReload(page, key);
+    const row: NewRow = {
+      after: paragraph.id,
+      id: below,
+      kind: "the new node below the paragraph is a prose block",
+      parent: ids.issue,
+      patchParent: `issue/${ids.issue}`,
+      what,
+      words: TYPED.belowParagraph,
+    };
+    expect(nodeOf(answer, row.id)?.supertag, row.kind).toBe("block");
+    expectPlaced(answer, sent, row);
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // c-new-node-wait
 // ---------------------------------------------------------------------------------------------
@@ -612,7 +708,7 @@ test("a new node the index owes is read again every 30 seconds for 2 minutes", a
       expect(treeReads(traffic.requests, key, null), "one read each 30 seconds").toBe(1 + period);
     }
     await openRowMenu(page, "m", "the new row");
-    for (const word of MOVE_ENTRIES) {
+    for (const word of [...MOVE_ENTRIES, EDIT_LABELS.edit_delete, EDIT_LABELS.edit_new_under]) {
       await expectGrey(
         page,
         word,

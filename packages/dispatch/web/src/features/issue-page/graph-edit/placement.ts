@@ -70,7 +70,9 @@ export interface PlacementInput {
   readonly zoomRoot?: string;
   /** The kinds the editor's schema for the fragment lets the editor make (default: all four). */
   readonly kinds?: readonly RetypeKind[];
-  /** A new row the reader typed in that no `PATCH` has placed yet. */
+  /** A new row the reader typed in that no `PATCH` has placed yet: its moves, both new rows and
+   *  Delete are grey with `grey_not_placed`, since no read holds its node where the server places
+   *  it, so there is no node to move, to count for a delete or to place a row beside or under. */
   readonly unplaced?: true;
 }
 
@@ -227,13 +229,13 @@ export function placementOf(input: PlacementInput): Placement {
   };
   return {
     new_below: edit !== undefined ? grey(edit) : (unplaced ?? newBelow(focus)),
-    new_under: under !== undefined ? grey(under) : newUnder(focus),
+    new_under: under !== undefined ? grey(under) : (unplaced ?? newUnder(focus)),
     retype: edit !== undefined ? grey(edit) : retype(focus, input.kinds ?? RETYPE_KINDS),
     indent: moves("indent"),
     outdent: moves("outdent"),
     move_up: moves("move_up"),
     move_down: moves("move_down"),
-    delete: edit !== undefined ? grey(edit) : { kind: "ask" },
+    delete: edit !== undefined ? grey(edit) : (unplaced ?? { kind: "ask" }),
     lens: { kind: "open" },
   };
 }
@@ -249,11 +251,11 @@ export interface PlacingInput {
 
 export type Placing =
   | { readonly kind: "wait" }
-  | { readonly kind: "send"; readonly body: MoveBody; readonly placementSeq: number };
+  | { readonly kind: "send"; readonly body: MoveBody };
 
 /** The new node's `PATCH` (R3): to wait until `held` holds the node with a `rank` and a
- *  `placement_seq`, since the route refuses a node with no rank, and then the one body that gives
- *  it its place with the `placement_seq` it is sent under. */
+ *  `placement_seq`, since the route refuses a node with no rank and the `PATCH` goes under that
+ *  `placement_seq` (`node-writes.ts`' `placeNode`), and then the one body that places it. */
 export function placingOf({ held, node, place }: PlacingInput): Placing {
   const nodes = held.nodes ?? [];
   const found =
@@ -262,7 +264,7 @@ export function placingOf({ held, node, place }: PlacingInput): Placing {
   if (found === undefined || !hasRank(found)) return { kind: "wait" };
   const seq = found.placement_seq;
   if (seq === null || seq === undefined) return { kind: "wait" };
-  return { body: place.body, kind: "send", placementSeq: seq };
+  return { body: place.body, kind: "send" };
 }
 
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the

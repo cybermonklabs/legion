@@ -78,9 +78,9 @@ import {
  * and Retype write in the issue's room, through the editor the outline gives the menu
  * (`OutlineEdits.editor`); with none given, each is grey where the node takes it, and says so
  * (`ANSWER_LINES.grey_no_editor`). A new row the reader made (R3) is named by the block id the
- * page chose for it while the read holds no node of it (`RowEditor.readIdOf`), its verdicts read
- * with it (`RowEditor.held`), and until its node is placed, its Delete and New row under are grey
- * as its moves are, and it sends no dry run.
+ * page chose for it while the read holds no node of it (`RowEditor.readIdOf`), and its verdicts
+ * are read with it (`RowEditor.held`) and, until its node is placed, as `unplaced`, which greys its
+ * moves, both new rows and Delete (`placementOf`), so no dry run goes for it.
  *
  * A press on its control opens it, and so does `m` while the row holds the focus
  * (`useTreeKeymap.ts`'s `tree-menu`), and the focus goes to its first entry. Up and Down move,
@@ -354,8 +354,9 @@ export function RowMenu({
   };
 
   const openMenu = () => {
-    // A new row not placed yet sends no dry run: the server counts no node it has not placed.
-    if (readId !== undefined && !unplaced && verdictsNow()?.delete.kind === "ask") {
+    // Delete asks the server only where `placementOf` answers `ask`: a new row not placed yet has
+    // it grey, so the server is asked to count no node it has not placed.
+    if (readId !== undefined && verdictsNow()?.delete.kind === "ask") {
       askCount(readId);
     }
     setSubmenu(undefined);
@@ -478,11 +479,6 @@ export function RowMenu({
       if (id === "lens") return [];
       const verdict = placement[id];
       if (verdict.kind === "grey") return [greyEntry(id, verdict.reason)];
-      // A new row not placed yet takes no delete and no row under it, whose place would name a
-      // node the server has not placed (R3).
-      if (unplaced && (id === "delete" || id === "new_under")) {
-        return [greyEntry(id, "grey_not_placed")];
-      }
       const words = CONTROL_LABELS[`edit_${id}`];
       switch (id) {
         case "new_below":

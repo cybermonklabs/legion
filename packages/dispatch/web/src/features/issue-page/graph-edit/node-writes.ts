@@ -60,7 +60,8 @@ import {
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
- * answered, its answer written into the held read as a move's is (`new-rows.ts`).
+ * answered, its answer written into the held read as a move's is and handed to `new-rows.ts`,
+ * which lets the new row go once the held read holds the node where that answer put it.
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
@@ -151,6 +152,12 @@ export type MoveOutcome =
   | { readonly status: "refused"; readonly line: RefusalLine }
   | { readonly status: "dropped"; readonly reason?: GreyReason };
 
+/** How a new row's placing ended (`placeNode`): as a move ends, a taken one with the server's
+ *  answer, null for a landing that gave none. */
+export type PlaceOutcome =
+  | { readonly status: "taken"; readonly answer: NodeMoved | null }
+  | Exclude<MoveOutcome, { readonly status: "taken" }>;
+
 /** How a confirmed delete ended: taken; refused with the count the delete takes now, which the
  *  confirm names when it opens again (`409 DELETE_COUNT_MOVED`); refused; or dropped unsent, for
  *  a node the held read no longer holds. */
@@ -225,14 +232,14 @@ interface PlaceAct {
   readonly kind: "place";
   readonly body: MoveBody;
   readonly entry: NewEntry;
-  readonly done: (outcome: MoveOutcome) => void;
+  readonly done: (outcome: PlaceOutcome) => void;
 }
 
 type Act = MoveAct | DeleteAct | PlaceAct;
 
 /** A node's place as a taken answer names it (`NodeMoved`): under `parent`, right after the
  *  sibling `after` names, first in its band where `after` is null. */
-type Place = Pick<NodeMoved, "after" | "parent">;
+export type Place = Pick<NodeMoved, "after" | "parent">;
 
 /** The acts of one node of one issue, in press order, the first of them the one whose turn it
  *  is. */
@@ -435,7 +442,7 @@ export function readAfterRoomWrite(client: QueryClient, issue: string, node: str
 
 /** Whether `address`, a node as the node routes answer it (a block by its read id, any other node
  *  by `<kind>/<read id>`, as `placement.ts` names one in a body), names `node`. */
-function names(node: TreeAnswerNode, address: string): boolean {
+export function names(node: Pick<TreeAnswerNode, "id" | "kind">, address: string): boolean {
   return node.id === address || `${node.kind}/${node.id}` === address;
 }
 
@@ -653,7 +660,8 @@ function drop(client: QueryClient, chain: Chain, reason: GreyReason | undefined)
   if (act === undefined) return;
   const dropped = [...(act.kind === "delete" ? [] : [act]), ...takeMoves(chain)];
   if (act.kind === "delete") act.done(DROPPED);
-  const outcome: MoveOutcome = reason === undefined ? DROPPED : { reason, status: "dropped" };
+  const outcome: Extract<MoveOutcome, { readonly status: "dropped" }> =
+    reason === undefined ? DROPPED : { reason, status: "dropped" };
   for (const move of dropped) move.done(outcome);
   const lead = reason === undefined ? undefined : ANSWER_LINES[reason];
   writeLine(client, chain, lead, dropped.length);
@@ -823,7 +831,8 @@ function sendMove(
     (answer) => {
       chain.acts.shift();
       chain.reads = true;
-      act.done(TAKEN);
+      if (act.kind === "place") act.done({ answer, status: "taken" });
+      else act.done(TAKEN);
       try {
         // A landing with no answer to give says nothing of the place: the next act goes from the
         // read as it stands, and its refusal reads the tree again.
@@ -915,9 +924,9 @@ function pressDelete(
 /**
  * Places the node of read id `node`, a new row's (R3), with the one `PATCH` of `body` - the place
  * `placement.ts` gave the row as `entry` made it - under the node's `placement_seq` as Graph's
- * held read of `issue` holds it, on the node's own chain, as a move goes (`MoveOutcome`): a taken
- * answer is written into the held read at its `parent` and `after`, a refusal draws the row's line
- * (R8), and once the chain is empty the outline reads are read again (R7).
+ * held read of `issue` holds it, on the node's own chain, as a move goes (`PlaceOutcome`): a taken
+ * answer is written into the held read at its `parent` and `after`, and answered, a refusal draws
+ * the row's line (R8), and once the chain is empty the outline reads are read again (R7).
  */
 export function placeNode(
   client: QueryClient,
@@ -925,8 +934,8 @@ export function placeNode(
   node: string,
   body: MoveBody,
   entry: NewEntry
-): Promise<MoveOutcome> {
-  const { promise, resolve } = Promise.withResolvers<MoveOutcome>();
+): Promise<PlaceOutcome> {
+  const { promise, resolve } = Promise.withResolvers<PlaceOutcome>();
   press(client, issue, node, { body, done: resolve, entry, kind: "place" });
   return promise;
 }

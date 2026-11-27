@@ -747,7 +747,7 @@ function belowCriterion(): NewRowAsk {
 }
 
 /** The server's answer to the one placing `PATCH` of `ask`: the node where its body puts it, under
- *  the next placement_seq, `placementSeq`, as a move's answer is (`fixture.moved`). */
+ *  `placementSeq`, the next placement_seq unless given, as a move's answer is (`fixture.moved`). */
 function placedAnswer(ask: NewRowAsk, placementSeq = "<seq:owed-paragraph>@2"): Exchange {
   return { body: { ...ask.place.body, placement_seq: placementSeq }, status: 200 };
 }
@@ -882,6 +882,48 @@ test("the read that holds the node sends the one placing PATCH", async () => {
   await waitInAct(50);
   expect(patches.calls, "a later read sent a second PATCH").toHaveLength(1);
   expect(reads.count(), "the outline was read more than once").toBe(1);
+});
+
+// New row below on a block of the issue's own fragment that stands directly under the issue keeps
+// the node under the issue: the server writes no part_of and answers the placing PATCH with the
+// placement_seq it went under. The fixture's indexed read holds the written paragraph right before
+// the requirement, a block of the issue's own fragment under the issue; New row below on the
+// requirement places it right after it. The answer written into the held read puts the node there,
+// which lets the row go: its placement_seq never changes.
+test("a placing answered with the placement_seq it went under lets the row go once the held read holds the node at the answer's place", async () => {
+  const from = "<owed-requirement>";
+  const verdict = placementOf({ held: indexedRead, node: from, status: "in_progress" }).new_below;
+  if (verdict.kind !== "new") throw new Error("New row below is not offered on the requirement");
+  const ask: NewRowAsk = {
+    blockId: WRITTEN,
+    entry: "new_below",
+    from,
+    parent: KEY,
+    place: verdict.place,
+    under: KEY,
+  };
+  const sentSeq = nodeOf(indexedRead, WRITTEN).placement_seq;
+  const patches = answerPatches(placedAnswer(ask, String(sentSeq)));
+  answerOutline();
+  const { client, view } = mountNewRows();
+  typed(client, ask);
+  act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedRead));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(patches.calls[0]?.body).toEqual({ after: from, parent: `issue/${KEY}` });
+  await waitFor(() =>
+    expect(view.result.current.rows, "the new row under the same parent is placed").toEqual([])
+  );
+  expect(heldNode(client, WRITTEN)?.placement_seq, "the answer's placement_seq changed").toBe(
+    sentSeq
+  );
+  const underIssue = (heldRead(client, KEY)?.nodes ?? []).flatMap((node) =>
+    node.parent?.id === KEY ? [node.id] : []
+  );
+  expect(underIssue, "the node stands elsewhere than right after the requirement").toEqual([
+    "<owed-criterion>",
+    from,
+    WRITTEN,
+  ]);
 });
 
 // Past 2 minutes of the page's clock from the first character, the row says that its block is

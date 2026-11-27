@@ -40,7 +40,8 @@ import { retypeKinds } from "./room-writes";
  *   - `input.kinds?: readonly RetypeKind[]`, the kinds the editor's schema for the fragment lets
  *     the editor make (the default is `RETYPE_KINDS`; a child that is a view of its ancestor's
  *     spec gives the schema in which `requirement` may not be made, so no `statement`);
- *   - `input.unplaced?: true`, a new row the reader typed in that no `PATCH` has placed yet.
+ *   - `input.unplaced?: true`, a new row the reader typed in that no `PATCH` has placed yet: its
+ *     moves, New node below, New node under and Delete are grey with `grey_not_placed`.
  *   A node id the held read lacks is a bug of the caller: `placementOf` throws.
  * - A `Verdict` is one of
  *   - `{ kind: "grey", reason }`, `reason` a key of `ANSWER_LINES` of `page-words-r.ts` that starts
@@ -67,8 +68,7 @@ import { retypeKinds } from "./room-writes";
  *   - `{ kind: "open" }`: W's own act (Lens), which this module never greys.
  * - `placingOf({ held, node, place }): Placing`, the new node's `PATCH` (R3): `{ kind: "wait" }`
  *   until `held` holds the node with a `rank` and a `placement_seq`, then
- *   `{ kind: "send", body: place.body, placementSeq }`, `place` the `NewPlace` of the entry
- *   that made the row.
+ *   `{ kind: "send", body: place.body }`, `place` the `NewPlace` of the entry that made the row.
  */
 
 const STATUS = "in_progress";
@@ -668,6 +668,33 @@ test("a new row's moves are grey until the node holds a rank and a placement_seq
   }
 });
 
+// R3: until its node is placed, a new row takes no delete and no row under it: the page has no
+// node it may count for a delete or place a row under, so `placementOf` greys both with the
+// moves, and the menu sends no dry run for a Delete that is grey.
+test("a new row's Delete and New node under are grey until it is placed", () => {
+  for (const [name, held] of [
+    ["the read that owes the index", owed],
+    ["the read after the index", indexed],
+  ] as const) {
+    const verdicts = placementOf({
+      held,
+      node: "<owed-requirement>",
+      status: STATUS,
+      unplaced: true,
+    });
+    expect(verdicts.delete, `Delete on ${name}`).toEqual(grey("grey_not_placed"));
+    expect(verdicts.new_under, `New node under on ${name}`).toEqual(grey("grey_not_placed"));
+  }
+  // Placed, the same node takes both again.
+  const placed = placementOf({ held: indexed, node: "<owed-requirement>", status: STATUS });
+  expect(placed.delete).toEqual({ kind: "ask" });
+  expect(placed.new_under.kind).toBe("new");
+  // A node R2 does not admit keeps its own reason.
+  expect(
+    placementOf({ held: converted, node: "<decision>", status: STATUS, unplaced: true }).delete
+  ).toEqual(grey("grey_kind"));
+});
+
 test("the new node's PATCH waits until the node holds a rank", () => {
   const under = place("<criterion>").new_under;
   if (under.kind !== "new") throw new Error("New node under is not offered on the criterion");
@@ -680,14 +707,9 @@ test("the new node's PATCH waits until the node holds a rank", () => {
     kind: "wait",
   });
   // The read after the index holds the paragraph with its rank and its placement_seq: one body.
-  const written = nodeOf(indexed, "<owed-paragraph>");
   expect<unknown>(
     placingOf({ held: indexed, node: "<owed-paragraph>", place: under.place })
-  ).toStrictEqual({
-    body: under.place.body,
-    kind: "send",
-    placementSeq: written.placement_seq,
-  });
+  ).toStrictEqual({ body: under.place.body, kind: "send" });
 });
 
 test("retype is offered on a prose block that is one paragraph, and is grey on a prose heading, list, table or code block", () => {
