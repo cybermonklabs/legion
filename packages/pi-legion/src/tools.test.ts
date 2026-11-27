@@ -1564,9 +1564,11 @@ test("a named look's report leaves the phase open and a step's completion closes
       checkOpenedAt: "2026-10-19T06:00:00.123456Z",
     },
   ]);
+  // The step's completion carries no verdict: the check states decide the testing phase, and the
+  // tool refuses a phase completion that names one.
   await tool.execute(
     "",
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    { op: "handoff_complete", summary: "tested" },
     undefined,
     undefined,
     context()
