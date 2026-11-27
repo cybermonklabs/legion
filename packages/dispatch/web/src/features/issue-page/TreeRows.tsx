@@ -6,15 +6,23 @@ import type { Artifact } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
+import type { PointMark } from "./current-point";
+import { type DocumentAdmissions, useDocumentReadOnly } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import { isStatement, type TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
+import { takesCaret, useRoomFacts } from "./model-rows/room-target";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
+import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+
+/** No admission read-only: what the rows' rule reads while the tree artifact's room admitted the
+ *  page to write, or has not answered (`TreeRows`' `treeAdmission`). */
+const NO_ADMISSION: DocumentAdmissions = new Map();
 
 /**
  * The rows of the issue's tree, drawn.
@@ -38,6 +46,7 @@ export function TreeRows({
   onOlder,
   onPage,
   onToggle,
+  points,
   report,
   rows,
   tabStop,
@@ -79,6 +88,9 @@ export function TreeRows({
    *  the fold is the row's, so another row of the same node stays as it was. One function for
    *  every row, as `onFocus` is. */
   onToggle: (row: string, expanded: boolean | undefined) => void;
+  /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
+   *  `pointMarks`, R12): a row it holds no key of is not marked. */
+  points: ReadonlyMap<string, PointMark>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -106,6 +118,16 @@ export function TreeRows({
   const [authors] = useState(() => new Map<string, RowAuthor>());
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  // The room of the issue's tree read, read once for every row as Enter reads it
+  // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  // The one admission no row reads for itself: the tree artifact's, which a node written into the
+  // issue is edited in and which is no row's document. A row of a document reads its own
+  // document's (`NodeRow`'s `useDocumentReadOnly`), so the rows' rule (`takesCaret`) is given the
+  // tree's entry alone, and a room's answer for a document draws no row but that document's.
+  const tree = room?.tree ?? undefined;
+  const treeReadOnly = useDocumentReadOnly(tree);
+  const treeAdmission = tree !== undefined && treeReadOnly ? new Map([[tree, true]]) : NO_ADMISSION;
   // The Lens act each row offers in Conversation and in Graph, whatever the focus, with every
   // node's invocations read once for all the rows: one value while the address stands and no
   // invocation of a lens changes (`useLensAct`).
@@ -122,7 +144,13 @@ export function TreeRows({
           const key = rowKeyOf(row);
           if (row.kind === "page") {
             return (
-              <PageControl key={key} kind="page" level={row.level} onPress={() => onPage(row)}>
+              <PageControl
+                current={points.get(key)}
+                key={key}
+                kind="page"
+                level={row.level}
+                onPress={() => onPage(row)}
+              >
                 {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
                   lays the count's own span and the words after it out as two boxes side by
                   side, the space that opens the words dropped at the start of theirs. */}
@@ -135,6 +163,7 @@ export function TreeRows({
           }
           const place = documentOfNode(row.node.id, artifacts);
           const mark = threads.get(row.node.id);
+          const current = points.get(key);
           return (
             <NodeRow
               {...(row.node.answer === undefined
@@ -150,10 +179,18 @@ export function TreeRows({
               // Only a statement's row is given the coverage read's state, so the read answering
               // draws again no row it gives nothing to.
               countsHeld={coverageOut && isStatement(row.node)}
+              {...(current === undefined ? {} : { current })}
               {...(place === undefined ? {} : { document: place.artifact })}
               // Each row reads its own document's room admission (`useDocumentReadOnly`) and
               // whether it is being edited (`useEditedRow`), so neither draws every row again.
               editable={!isClosed && place !== undefined}
+              // Where the room is read, the row carries the typing cue wherever Enter puts a
+              // caret, a criterion's row among them: a node written into the issue, such as a
+              // criterion, takes its place from the room rather than from a document, and is
+              // read against the tree artifact's admission (`treeAdmission`).
+              {...(room === undefined
+                ? {}
+                : { editable: takesCaret(row.node, artifacts, room, isClosed, treeAdmission) })}
               expanded={row.expanded}
               focused={focused === key}
               foldable={!(row.level === 1 && row.node.id === zoomRoot)}
@@ -242,11 +279,16 @@ const PAGE_CONTROL_MARKS = {
  */
 function PageControl({
   children,
+  current,
   kind,
   level,
   onPress,
 }: {
   children: ReactNode;
+  /** The conversation's current point where it stands among the rows this control draws: `path`
+   *  on the row that pages a node's children (`current-point.ts`'s `pointMarks`, R12), drawn as
+   *  the mark a node's row carries; undefined on every other control. */
+  current?: PointMark;
   /** Which of the three it is, by the mark it carries (`PAGE_CONTROL_MARKS`). */
   kind: keyof typeof PAGE_CONTROL_MARKS;
   level: number;
@@ -260,6 +302,7 @@ function PageControl({
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
+      data-current-point={current}
       {...{ [PAGE_CONTROL_MARKS[kind]]: "" }}
     >
       <IndentGuides depth={depth} />

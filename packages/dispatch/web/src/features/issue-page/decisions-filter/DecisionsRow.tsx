@@ -16,6 +16,7 @@ import { useAgentText } from "../../refs/AgentName";
 import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
+import { useDocumentStage } from "../document-stage";
 import type { ParentLine } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import {
@@ -47,7 +48,14 @@ import {
   NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
-import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import { pressAsksCaret } from "../useNodeEditing";
+import type {
+  AskDeclined,
+  DecisionChange,
+  DecisionsEntry,
+  NamedEntry,
+  ReadingEntry,
+} from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -97,6 +105,12 @@ interface RowPerson {
  * mark on its own row. A decision's row draws two marks of other nodes: its parent's, on the
  * parent line, and its Change's ` · edited`, after the Change's words.
  *
+ * A reading of an agent's decision is drawn as a row under the decision's (`ReadingEntry`), as
+ * the outline draws one (`NodeRow.tsx`): in the agents' grey, its kind as its tag and its agent
+ * by its role's word, since it is the agent's account of what the decision means and never the
+ * decision itself (R3). It is no entry of the list and no context, so it draws no state, no
+ * Keep and no Change.
+ *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
  *
@@ -105,21 +119,32 @@ interface RowPerson {
  * one exception is the focused row's, as on the outline's rows: a block of its words whose
  * content runs past its box, a wide code block or table, keeps a tab stop of its own, so that a
  * reader on the keyboard can scroll it sideways (`RowText.tsx`).
+ *
+ * A press on the row's words puts the caret in them, as Enter on the row does, where the list
+ * says the row takes one (`onPressWords`), and the row draws its document's one editor on its
+ * stage in place of its words while it is the row edited (`editing`). A press on a control inside
+ * the words - a link, a button, a drawn diagram's summary - is that control's own, and a click
+ * that ends a selection made in the words, or a double click's second, asks for no caret
+ * (`pressAsksCaret`); the row's acts and its links stand outside the words, so a press on one is
+ * theirs and never the words'.
  */
 export function DecisionsRow({
   body,
   document,
+  editing,
   entry,
   focused,
   isClosed,
   level,
   onFocus,
   onPin,
+  onPressWords,
   onReviewed,
   pinned,
   reader,
   report,
   review,
+  rowKey,
   statementNames,
   tabStop,
   threadRead,
@@ -132,7 +157,10 @@ export function DecisionsRow({
    *  decision node's own document (`decision-nodes.ts`' `DecisionNode.document`), never this
    *  one. */
   document?: Artifact;
-  entry: DecisionsEntry | NamedEntry;
+  /** The document this row's own text is being edited in, while this is the row edited (the
+   *  list's `editing`): its one editor is drawn on the row's stage in place of the words. */
+  editing?: string;
+  entry: DecisionsEntry | NamedEntry | ReadingEntry;
   focused: boolean;
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
@@ -140,6 +168,9 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
+  /** A pointer's press on the row's words: the list puts the caret in the row's node where the
+   *  row takes one, and does nothing else (`DecisionsFilterBody.tsx`'s `pressWords`). */
+  onPressWords: () => void;
   /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
    *  alone is no review: the list reads the decision the server writes back to tell whether
    *  the reader kept it or asked to change it, and only that review takes it off the review
@@ -153,6 +184,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
+  /** The row's key in the list's rows (`tree-keys.ts`'s `rowKeyOf`), which the editing finds the
+   *  row it edits by (`data-row-key`). */
+  rowKey: string;
   /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`),
    *  drawn as it is; a statement whose name is `""` is not named. */
   statementNames: ReadonlyMap<string, string>;
@@ -178,6 +212,7 @@ export function DecisionsRow({
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
+  const stage = useDocumentStage(editing);
   const ids = rowNameIds(useId());
   const tone = toneOf(entry);
   // Each statement the entry shaped by its name, and none whose node holds no words: no
@@ -196,6 +231,7 @@ export function DecisionsRow({
       data-node-row=""
       data-node-state={standing?.token}
       data-node-type={node.type}
+      data-row-key={rowKey}
       onFocus={onFocus}
       onPointerDown={press}
       ref={row}
@@ -237,13 +273,23 @@ export function DecisionsRow({
         <div className={NODE_ROW_LAYOUT.content} data-node-content="" id={ids.content}>
           {/* A replaced decision's words are struck through and grey, beside the word that
               says so (the prototype's `.replaced`). */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+              pointer's way to what Enter on the row does; the words are no control of their own,
+              and the keyboard reaches the same caret by Enter on the row. */}
           <div
             className={`relative text-[15px] leading-6 ${
               standing?.token === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
             }`}
             data-node-words=""
+            onClick={(event) => {
+              if (pressAsksCaret(event, editing)) onPressWords();
+            }}
           >
-            {deleted === null ? (
+            {editing !== undefined ? (
+              // The editor lays its own content out, so on a phone it starts under the
+              // margin's float, at the words' whole width (`NODE_ROW_LAYOUT.content`).
+              <div className="clear-right flex min-w-0 flex-col" ref={stage} {...authorText} />
+            ) : deleted === null ? (
               <RowText
                 focused={focused}
                 markdown={node.text}
@@ -390,7 +436,7 @@ const KEEP = rowActionSelector("keep");
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
-function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
+function toneOf(entry: DecisionsEntry | NamedEntry | ReadingEntry): Tone {
   switch (entry.kind) {
     case "ask":
       return "question";
@@ -398,6 +444,9 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
       return "decision";
     case "named":
       return "context";
+    // A reading is the agent's words, in the agents' grey (`NodeRow.tsx`'s `toneOf`).
+    case "reading":
+      return "agent";
   }
 }
 

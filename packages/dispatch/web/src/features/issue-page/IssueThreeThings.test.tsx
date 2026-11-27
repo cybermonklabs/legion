@@ -520,6 +520,33 @@ test("the checks are counted once each, by state, adding up to the number of che
   }
 });
 
+// R1, R4: a check of an issue under this one that Conversation's tree draws with no state, its
+// read naming no result, is one of the issue's checks and in no state, so the states add up to
+// less than the number until the Verification view's read gives it a standing. A `check` block
+// with no state and no `issue`, a block of another document, is counted nowhere. Plan's view read
+// has answered, which the rows wait for under Conversation (`planTasksOut`).
+test("a child's check with no state is counted in the number of checks and in no state", () => {
+  const root = treeNode(KEY, "issue", {
+    children: [
+      treeNode("spec#b-r1", "requirement", {
+        children: [
+          checkNode(1, "passed"),
+          treeNode("c9", "check", { issue: "CORE-2" }),
+          treeNode("plan#b-c8", "check"),
+        ],
+      }),
+    ],
+    views: { plan: treeAnswer([]) },
+  });
+
+  expect(
+    briefCounts({ namesHeld: true, readsHeld: true, root }, "", "conversation")?.checks
+  ).toEqual({
+    count: 2,
+    states: [{ count: 1, state: "passed" }],
+  });
+});
+
 // R1: where the plan holds no task or the issue no check, the row draws the page's line for it in
 // place of a count, each row on its own account, and a count of one check reads in the singular.
 test("a plan with no task and an issue with no check draw the page's line, and one check reads in the singular", () => {

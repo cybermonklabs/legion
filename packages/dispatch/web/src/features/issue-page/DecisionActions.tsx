@@ -35,6 +35,7 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorBlock, type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decidedByPerson } from "./decision-review";
+import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
@@ -234,6 +235,7 @@ function DecisionControls({
   tabStops: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const noteOwnAct = useNoteOwnAct();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const drafts = useContext(ChangeDrafts);
   // A Change the reader left open on this decision opens again with the body.
@@ -289,6 +291,9 @@ function DecisionControls({
     // its column's (`useLastAnswer`) - so a decision only the Decisions view read holds keeps
     // these controls meanwhile, and a refusal is said below, on the decision, until the next
     // press. Where that read is refused, the Decisions view says so over the rows it keeps.
+    // A Keep that was taken is the reader's own act on the node, which the tree notes before the
+    // answer is drawn (`own-act.ts`).
+    onSuccess: () => noteOwnAct(decision.ref),
     onSettled: () => readDecisionsAgain(queryClient, issueKey),
   });
   return (

@@ -4,6 +4,7 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 
+import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
@@ -25,6 +26,10 @@ import {
 } from "./editor";
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { expectIssuePageDrawn, focusRow } from "./issue-page-g";
+import { expectActivePreset, pickPreset } from "./issue-page-i";
+import { withIssuePage } from "./issue-page-option";
+import { criterionAct, criterionLine } from "./issue-page-y";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -510,6 +515,56 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const onMessage = inboxPane(page).getByRole("textbox", { name: "Reply" });
       await expect(onMessage).toBeVisible();
       await expectRow(page, onMessage, "inbox-thread-reply", "message-reply");
+    },
+  },
+  // The new issue page's one box, at the foot of its outline, which a
+  // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
+  // what it writes, so it is reached by the attribute its form carries. It answers no ask
+  // (`OutlineWriter.answer`), so it draws no answer field. An edit of the reader's own comment is
+  // opened only by an Edit of that comment, which the page does not draw yet, so the list leaves
+  // `comment-edit` uncovered until such an Edit is under the box.
+  // A row's Write a criterion opens its criterion line, a form of its own beside the write line,
+  // which it keeps mounted and hidden.
+  "issue-page-composer": {
+    drive: async (page, world) => {
+      await withIssuePage(page.context(), "alice");
+      await page.goto(`/issues/${world.host}`);
+      await expectIssuePageDrawn(page);
+      const box = page.getByTestId("issue-composer");
+      const field = box.locator("[data-issue-composer] textarea");
+      await expect(field).toBeVisible();
+      // With no target the line writes on the issue: a comment while Comment is pressed, as it
+      // is at first, sent with the line's own Send, and a question once Question is.
+      await walkBox(field, world);
+      await expectRow(page, field, "issue-page-composer", "comment", () =>
+        box.getByRole("button", { exact: true, name: CONTROL_LABELS.send }).click()
+      );
+      // The box stays at the foot after a send, and clears its draft as the comment lands.
+      await expect(field).toHaveValue("");
+      const question = box.locator('[data-composer-kind="ask"]');
+      await question.click();
+      await expect(question).toHaveAttribute("aria-pressed", "true");
+      await expectRow(page, field, "issue-page-composer", "ask");
+      // `r` on the reader's own message aims the line at a reply in that thread, which goes to
+      // the thread's target. A target takes no kind, so Question left pressed makes no ask of it.
+      // Conversation draws no message (its kinds are root R1's), and Graph draws every node of
+      // the tree read, with the box at its foot as well, so the message's row is reached there.
+      await pickPreset(page, PRESET_NAMES.graph);
+      await expectActivePreset(page, PRESET_NAMES.graph);
+      await focusRow(page, world.message);
+      await page.keyboard.press("r");
+      await expect(field).toBeFocused();
+      await expectRow(page, field, "issue-page-composer", "message-reply");
+      // Write a criterion on the reader's own comment aims the criterion line at it: a focused
+      // comment offers the act once the issue's tree read is cached. Each Enter of the line's walk
+      // takes a picker's row, so no criterion is sent.
+      const comment = await focusRow(page, world.comment);
+      await criterionAct(comment).click();
+      await expect(criterionLine(page)).toHaveAttribute("data-criterion-under", world.comment);
+      const criterion = criterionLine(page).locator("textarea");
+      await expect(criterion).toBeVisible();
+      await walkBox(criterion, world);
+      await expectRow(page, criterion, "issue-page-composer", "criterion");
     },
   },
   "margin-comment-edit": {

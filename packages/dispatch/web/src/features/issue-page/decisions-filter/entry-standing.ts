@@ -1,6 +1,6 @@
 import type { Actor } from "../../../api/types";
 import { DECISIONS_WORDS, type NodeState, nodeStateWord } from "../page-words";
-import type { DecisionsEntry, NamedEntry } from "./decisions-parts";
+import type { DecisionsEntry, NamedEntry, ReadingEntry } from "./decisions-parts";
 
 /**
  * How one entry of the Decisions filter stands, read once for its two readers so neither works
@@ -59,9 +59,11 @@ export function standingWords(
  * How `entry` stands, each person named by `nameOf` (`standingWords`). Undefined where the entry
  * stands in no state: the node an address names, which is drawn for its words, and a decision the
  * model gives no state.
+ * A reading of an agent's decision stands in none either: it is the agent's account of what the
+ * decision means, and never the decision itself.
  */
 export function entryStanding(
-  entry: DecisionsEntry | NamedEntry,
+  entry: DecisionsEntry | NamedEntry | ReadingEntry,
   nameOf: (actor: Actor) => string
 ): EntryStanding | undefined {
   const token =

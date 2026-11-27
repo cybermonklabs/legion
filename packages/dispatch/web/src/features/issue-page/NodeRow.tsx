@@ -23,6 +23,10 @@ import {
   pageKindTag,
   pageMutedText,
   pageOwnWordsRule,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+  pagePointRingFolded,
   pageQuietText,
   pageRowAct,
   pageRowActs,
@@ -41,6 +45,7 @@ import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
+import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentReadOnly } from "./document-admission";
@@ -72,6 +77,7 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -130,6 +136,7 @@ export const NodeRow = memo(function NodeRow({
   author,
   context,
   countsHeld = false,
+  current,
   document,
   editable = false,
   expanded,
@@ -165,6 +172,10 @@ export const NodeRow = memo(function NodeRow({
    *  (`TreeRows.tsx`), so the counts are drawn into a line of their own height and move nothing
    *  under the row (the plan's "The places held", row 6). False unless the view passes it. */
   countsHeld?: boolean;
+  /** Whether this row carries the conversation's current point: `here` on the point's own row,
+   *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
+   *  every other row. */
+  current?: PointMark;
   /** The document this row's node is a block of, which names the issue whose tree read holds
    *  the node: a decision's Keep and Change write on the decision node's own document
    *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
@@ -176,6 +187,8 @@ export const NodeRow = memo(function NodeRow({
    *  reader edit its words in place and draws such a row its own way: part I's outline passes
    *  it, and its styles draw the cue that the row takes typing (decision 323). False unless the
    *  view passes it. */
+  // A node written into the issue, such as a criterion, has no document: the outline passes
+  // whether the issue's tree artifact, which Enter edits it in, takes typing (`TreeRows.tsx`).
   editable?: boolean;
   /** `true` when its children are drawn, `false` when it holds children the reader folded, and
    *  undefined for a node that holds none. */
@@ -280,10 +293,14 @@ export const NodeRow = memo(function NodeRow({
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
   return (
     <div
+      // The conversation's current point (R12), named by the screen reader's own words for the
+      // current location. It is no control: it takes no focus and answers no press.
+      aria-current={current === "here" ? CURRENT_POINT : undefined}
       aria-expanded={expanded}
       aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-current-point={current}
       data-editable={takesTyping ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
@@ -304,6 +321,7 @@ export const NodeRow = memo(function NodeRow({
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
         <Bullet
           collapsed={oneLine}
+          current={current}
           expanded={expanded}
           foldable={foldable}
           onToggle={() => onToggle(rowKey, expanded)}
@@ -677,6 +695,8 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     // A criterion is what a person wants to be able to do, in their own words (`page-words`): it
     // is one of the spec's statements, beside the requirements under it, and the work is held to
     // it as it is to them, so it takes the statements' colour.
+    // It takes that colour wherever it stands (R1), though it carries no `statement` mark, which
+    // only the spec's own requirement does (`isStatement`).
     case "criterion":
       return "statement";
     case "decision":
@@ -730,9 +750,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * A press leaves the focus where it is, as an option and the acts do: the fold it makes is the
  * whole of what the reader asked for (R11). On a phone the fold control's box is 24 px square,
  * the least target WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
+ *
+ * A row that carries the conversation's current point rings the dot (R12, `pointRing`): quietly
+ * on the point's own row, lighter on each row above it on its path while its own row is folded
+ * away. The ring is drawn, never a control, and moves no focus.
  */
 function Bullet({
   collapsed,
+  current,
   expanded,
   foldable,
   onToggle,
@@ -740,6 +765,7 @@ function Bullet({
   tone,
 }: {
   collapsed: boolean;
+  current?: PointMark;
   expanded?: boolean;
   foldable: boolean;
   onToggle: () => void;
@@ -749,7 +775,7 @@ function Bullet({
   const dot = (
     <i
       aria-hidden="true"
-      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
+      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""} ${pointRing(current, collapsed)}`}
     />
   );
   if (!foldable) {
@@ -780,6 +806,15 @@ function Bullet({
       {dot}
     </button>
   );
+}
+
+/** The ring on the bullet's dot of a row that carries the conversation's current point (R12): the
+ *  quiet ring on the point's own row and the lighter one on a row above it on its path, each set
+ *  outside the halo on a folded branch's dot; nothing on every other row. */
+function pointRing(current: PointMark | undefined, collapsed: boolean): string {
+  if (current === "here") return collapsed ? pagePointRingFolded : pagePointRing;
+  if (current === "path") return collapsed ? pagePathRingFolded : pagePathRing;
+  return "";
 }
 
 /** What a row's edited mark draws its element with (`EditedMark`): `data-node-edited`, and the
@@ -830,6 +865,8 @@ export function RowMargin({
   tagTo?: string;
   tone: Tone;
 }): ReactNode {
+  // The issue the page is of, which tells a node of another issue from one of its own.
+  const writer = useOutlineWriter();
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
@@ -865,9 +902,30 @@ export function RowMargin({
       </div>
     );
   }
+  // A node whose own address names another issue than the page's - a child's check or plan task
+  // under the statement it serves, and its result - names that issue by its key before its kind
+  // tag, a link to that issue's own page (R4). With no writer the page's issue is unknown.
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  const otherIssue =
+    writer !== undefined && route !== undefined && "key" in route && route.key !== writer.issueKey
+      ? route.key
+      : undefined;
+  const otherIssueHref =
+    otherIssue === undefined ? undefined : referenceHref({ key: otherIssue, kind: "issue" });
   return (
     <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="" id={id}>
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
+        {otherIssueHref === undefined ? null : (
+          <Link
+            className="dispatch-inline-link font-semibold whitespace-nowrap underline decoration-page-hair underline-offset-[3px] max-[1279px]:-my-[6px]"
+            data-node-issue=""
+            tabIndex={tabStops ? undefined : -1}
+            to={otherIssueHref}
+            {...authorText}
+          >
+            {otherIssue}
+          </Link>
+        )}
         {UNTYPED[node.type] === true ? null : (
           <span
             className={`inline-flex shrink-0 items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
@@ -1035,8 +1093,8 @@ function KindTag({ node }: { node: TreeNode }): ReactNode {
  * `tabStops` holds, as every other control inside a row is (R9).
  *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
- * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * a press picks one, or lets it go, in the answer the writer holds (`OutlineWriter.answer`, which
+ * says what reads it), and the one picked is drawn on the waiting tint. A
  * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
@@ -1110,8 +1168,8 @@ export function NodeOptions({
             key={option.label}
           >
             {answering ? (
-              // Out of the tab order, as every control inside a row is: the line the press sets
-              // draws the same options as its own chips, which the keyboard reaches (R9). A
+              // Out of the tab order, as every control inside a row is, unless `tabStops` holds
+              // (R9); the line at the foot draws none of them (`OutlineWriter.answer`). A
               // press leaves the focus where it is until it ends, so the press ends on the option
               // it went down on, in a view whose body opens on focus as much as on the outline's
               // rows. Once the press has picked, the focus goes to the row: one press picks the
@@ -1157,6 +1215,10 @@ export function NodeOptions({
  * (`useTreeKeymap.ts`). A typed node - a statement, a check, a decision - takes no reply in
  * today's model, which holds no reply to a block, so it draws none; and with no writer
  * (`OutlineWriterProvider`) the row draws none of the four.
+ *
+ * After Reply, Write a criterion on an ask, a comment or a message of this issue, on an issue
+ * that takes one (`OutlineWriter.takesCriterion`): it aims the line at the node to write a
+ * criterion under it. No key presses it, and `f` reaches it as it reaches every act.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
@@ -1226,6 +1288,13 @@ export function RowActs({
       act: "edit",
       label: CONTROL_LABELS.edit_comment,
       run: () => writer.edit(item.id, node.text),
+    });
+  }
+  if (writer?.takesCriterion(node) === true) {
+    acts.push({
+      act: "criterion",
+      label: CONTROL_LABELS.write_criterion,
+      run: () => writer.criterionUnder(node),
     });
   }
   const reference = node.reference;

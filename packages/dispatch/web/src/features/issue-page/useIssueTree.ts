@@ -3,6 +3,7 @@ import { useMemo, useRef } from "react";
 
 import { api } from "../../api/client";
 import {
+  CONVERSATION_KINDS,
   issueAskThreadsQuery,
   issueCoverageQuery,
   issueResultsQuery,
@@ -30,8 +31,11 @@ import { askState } from "./tree-drafts";
 import { holdsPlanTask } from "./tree-read/tree-nodes";
 import {
   loadEnded,
+  outlineQuery,
+  TREE_VIEWS,
   type TreeAnswer,
   type TreeRead,
+  type TreeView,
   useDecisionsView,
   useLastAnswer,
   useTreeRead,
@@ -189,6 +193,7 @@ const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>>
   coverage: true,
   holdsPlanTask: true,
   issue: true,
+  kinds: true,
   messages: true,
   results: true,
   targets: true,
@@ -237,6 +242,26 @@ const viewsWithContext = new WeakMap<
   { readonly answer: TreeAnswer; readonly outline: TreeAnswer | undefined }
 >();
 
+/** The kinds each view's read asks for, as the server's query of that name takes them
+ *  (`graphstore/objects.go`' `queryTakes`): the spec's memo callout, criteria and requirements;
+ *  the verification's checks and their results; the plan's tasks and the role blocks of their
+ *  owners; and the decisions' asks, decisions and readings. Each list is one value, so the reads
+ *  of one view's trees compare equal by identity (`builtTree`). */
+const VIEW_KINDS: Readonly<Record<TreeView, readonly string[]>> = {
+  decisions: ["ask", "decision", "reading"],
+  plan: ["plan_task", "plan_role"],
+  spec: ["callout", "criterion", "requirement"],
+  verification: ["check", "result"],
+};
+
+/** The kinds the view read whose answer is `view` asked for (`VIEW_KINDS`), by the view its
+ *  answer names (`TreeAnswer.view`, the read's own `?view=`); undefined for an answer that names
+ *  none of `TREE_VIEWS`, which is read as a read of every kind. */
+function viewKinds(view: TreeAnswer): readonly string[] | undefined {
+  const name = TREE_VIEWS.find((one) => one === view.view);
+  return name === undefined ? undefined : VIEW_KINDS[name];
+}
+
 /**
  * The tree a view answer builds alone (`TreeViews.trees`): `builtTree` of `reads` with `view` as
  * the tree read's answer, the outline read's answer (`reads.tree`) adding only the context the
@@ -244,6 +269,11 @@ const viewsWithContext = new WeakMap<
  * callers of the same reads hold one tree, and a read that changed builds a tree of its own.
  */
 export function viewTree(reads: IssueTreeReads, view: TreeAnswer): TreeNode {
+  // The view's tree is drafted as the view's own read asked (`IssueTreeReads.kinds`), whatever
+  // the outline's read named: the outline adds only context the view left out
+  // (`viewWithContext`), and the view's read is what answers a check's results, where it asks
+  // for them.
+  reads = { ...reads, kinds: viewKinds(view) };
   const outline = reads.tree;
   const held = viewsWithContext.get(view);
   const fresh = held === undefined || held.outline !== outline;
@@ -368,12 +398,22 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // answer the page holds (`plan`): a later read of it that is refused keeps the answer before,
   // so a statement it marks keeps its mark.
   const planTaskHeld = useMemo(() => holdsPlanTask(plan), [plan]);
+  // The kinds the read the tree is built from named (`IssueTreeReads.kinds`): Conversation's,
+  // which names `CONVERSATION_KINDS`, where `read`'s answer is the one Conversation's own query
+  // holds, and else Graph's, which names none and so answers every kind. That query is watched
+  // by an observer that sends nothing (`treeRead`), as the view row and the view reads already
+  // watch it (`decisions-entries.ts`' `useDecisionsTree`, `ViewReadProvider`): which read it is
+  // is told by the answer's identity, never by what the answer holds.
+  const conversation = useQuery(treeRead(outlineQuery(key, "conversation"))).data;
+  const kinds =
+    read.answer !== undefined && read.answer === conversation ? CONVERSATION_KINDS : undefined;
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
       coverage: coverage.data,
       holdsPlanTask: planTaskHeld,
       issue,
+      kinds,
       messages: messages.data,
       results: results.data,
       tree: read.answer,
@@ -383,6 +423,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       asks.data,
       coverage.data,
       issue,
+      kinds,
       messages.data,
       planTaskHeld,
       read.answer,

@@ -47,7 +47,9 @@ const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
 /** What the two rows under the sentences count (`briefCounts`). */
 export interface BriefCounts {
   /** The issue's checks: how many there are, each once, and how many stand in each state that
-   *  holds one, in `NODE_STATE_WORDS.check`'s order, so the counts add up to the number. Undefined
+   *  holds one, in `NODE_STATE_WORDS.check`'s order. A check of another issue that the tree
+   *  draws with no state is in the number and in no state (`briefCounts`), so there the counts
+   *  add up to less than the number. Undefined
    *  where the issue holds no check. */
   readonly checks:
     | {
@@ -79,6 +81,10 @@ export interface BriefCounts {
  * with no words typed says that the plan holds no task or the issue no check, which the rows
  * draw as the page's line for it; under a words filter that leaves none, the count is 0, as the
  * control says, since the plan or the issue may hold others that hold no such words.
+ * A check of another issue is in the number whatever its standing, and in no state where the tree
+ * draws it with none, as Conversation's tree does, whose read names no result: the states then
+ * add up to less than the number until the Verification view's read is held, which gives that
+ * check the standing its results do.
  */
 export function briefCounts(
   reads: { namesHeld: boolean; readsHeld: boolean; root: TreeNode },
@@ -96,6 +102,10 @@ export function briefCounts(
       seen.add(node.id);
       inState.set(state, (inState.get(state) ?? 0) + 1);
     }
+    // The view draws a `check` node as a row only where `presets.ts`' `kindOf` reads it as a check,
+    // so one here with no state is a check of another issue whose standing the page has not read:
+    // one of the issue's checks, in no state.
+    if (node.type === "check" && state === undefined) seen.add(node.id);
     for (const child of node.children) walk(child);
   };
   walk(presetView(root, "verification", query).root);

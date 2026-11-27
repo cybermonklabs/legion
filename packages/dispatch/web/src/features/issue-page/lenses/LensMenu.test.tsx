@@ -167,6 +167,7 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
       onFocus={(row) => setFocused(row)}
       onPage={() => {}}
       onToggle={() => {}}
+      points={new Map()}
       rows={rows}
       tabStop={first === undefined ? undefined : rowKeyOf(first)}
       threads={new Map()}

@@ -7,6 +7,7 @@ import {
 } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { BOX_PICKER_LINES, CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
@@ -224,6 +225,8 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
   "ask-decline": "The note goes to whoever asked.",
   broadcast: "The message goes to each agent you selected.",
   "comment-edit": "A new comment, not an edit, tells a picked agent or role.",
+  criterion:
+    "The criterion goes under the comment, question or message it answers. A comment on the issue tells a picked agent or role.",
   "document-text": "A comment on the document tells a picked agent or role.",
   "issue-spec": "A comment on the new issue tells a picked agent or role.",
   "message-reply": "Your reply goes to whoever the thread is with.",
@@ -270,6 +273,40 @@ const EDITOR_HINTS: Partial<Record<DispatchWritingBox, string>> = {
   "priority-description": "priority-description-hint",
 };
 
+/** The words a box says in place of the list's, where its page holds it to words of its own
+ *  (decision 527): the issue page's box describes its field by what its keys do
+ *  (`description`), reads the list of who its comment is delivered to by the page's name for it
+ *  and each party in it by its name, never its address (`targets`), and says the page's own line
+ *  where the picker has no rows (`empty`). Each is read from the page's lists. Every other box
+ *  says the list's hint, `session:<id>` and `REF_PICKER_WORDS.empty`. */
+interface OwnWords {
+  readonly description: string;
+  readonly empty: string;
+  readonly targets: string;
+}
+
+const OWN_WORDS: Partial<Record<DispatchWritingBox, OwnWords>> = {
+  "issue-page-composer": {
+    description: CONTROL_LABELS.composer_keys,
+    empty: BOX_PICKER_LINES.empty,
+    targets: CONTROL_LABELS.composer_mentioned,
+  },
+};
+
+/** The words of the box `field` is in, where its page holds it to words of its own
+ *  (`OWN_WORDS`): a field inside the element that box's rows reach it by. */
+async function ownWordsOf(field: Locator): Promise<OwnWords | undefined> {
+  for (const [box, own] of Object.entries(OWN_WORDS)) {
+    const reach = rowsOfBox(box as DispatchWritingBox)[0]?.reach;
+    if (own === undefined || reach === undefined) continue;
+    // Which box holds the field was fixed when the field was drawn, and no later frame changes it.
+    if (await field.evaluate((node, selector) => node.closest(selector) !== null, reach)) {
+      return own;
+    }
+  }
+  return undefined;
+}
+
 /** The line under the box, which the box reads from its row of the list at the mount, held to
  *  the words that row must say (`hintWords`): the element the box points `aria-describedby` at.
  *  The hosts that draw the picker in an editor of their own carry their hint on a test id
@@ -280,6 +317,20 @@ export async function expectHint(
   box: DispatchWritingBox,
   write: DispatchWriting
 ): Promise<void> {
+  // A box held to words of its own describes its field in them, in place of its row's hint.
+  const own = OWN_WORDS[box];
+  if (own !== undefined) {
+    const ownIds = ((await field.getAttribute("aria-describedby")) ?? "")
+      .split(/\s+/)
+      .filter((id) => id !== "");
+    expect(ownIds, `${box}: the box names no line under it`).not.toEqual([]);
+    const ownLines = page.locator(ownIds.map((id) => `[id="${id}"]`).join(","));
+    await expect(
+      ownLines.filter({ hasText: own.description }),
+      `${box} writing ${write}: its description`
+    ).toHaveText([own.description]);
+    return;
+  }
   const hint = hintWords(box, write);
   const testid = EDITOR_HINTS[box];
   if (testid !== undefined) {
@@ -314,6 +365,12 @@ async function expectDoors(field: Locator): Promise<void> {
   }
   await field.fill("");
   const empty = await openRefPicker(field, `[[${NO_MATCH}`);
+  const own = await ownWordsOf(field);
+  if (own !== undefined) {
+    await expect(empty.getByTestId("ref-picker-empty")).toHaveText(own.empty);
+    await field.fill("");
+    return;
+  }
   await expect(empty.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
   await field.fill("");
 }
@@ -325,6 +382,15 @@ export async function expectIssueRows(field: Locator, issueRows: boolean): Promi
   const list = await openRefPicker(field, `@${OFF_ISSUE_PERSON}`);
   const person = list.getByRole("option", { name: new RegExp(`^${OFF_ISSUE_PERSON}$`) });
   if (issueRows) {
+    const own = await ownWordsOf(field);
+    if (own !== undefined) {
+      await expect(list.getByTestId("ref-picker-empty")).toHaveText(own.empty);
+      await expect(person, "a box that writes on an issue lists that issue's people").toHaveCount(
+        0
+      );
+      await field.fill("");
+      return;
+    }
     await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
     await expect(person, "a box that writes on an issue lists that issue's people").toHaveCount(0);
   } else {
@@ -481,6 +547,25 @@ export async function expectDeliveryClaim(
   const list = refPicker(page);
   await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
   await field.press("Enter");
+  // A box held to words of its own lists who its write is delivered to under its own name for
+  // the list, and each party by its name, never its address.
+  const own = OWN_WORDS[box];
+  if (own !== undefined) {
+    const named = page.getByRole("list", { name: own.targets });
+    if (sends === null) {
+      await expect(named).toHaveCount(0);
+      await field.fill("");
+      held.add(`${box}/${write}`);
+      return;
+    }
+    await expect(named).toHaveText(SESSION.title);
+    await field.press("End");
+    await field.pressSequentially(DELIVERED_WORDS);
+    const ownBody = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+    await expect(field).toHaveValue(ownBody);
+    await expectSend(box, write, ownBody, sends);
+    return;
+  }
   const targets = page.getByRole("list", { name: "Mention targets" });
   if (sends === null) {
     await expect(targets).toHaveCount(0);

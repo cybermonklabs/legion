@@ -786,10 +786,14 @@ function drawVerification(
             createElement(Publisher, { published }),
             createElement(VerificationFilterBody, {
               ...(addressed === undefined ? {} : { addressed }),
+              artifacts: new Map(),
               checks,
               context: preset.context,
               coverage: { ...coverageRead([]), requirements: coverageRows(root) },
+              isClosed: false,
               namesLine: NO_FAILED_READS,
+              // No document a row is edited in, so no row asks the page for an editor.
+              onEditing: () => {},
               published,
               reads: { state: "answered" },
               view: preset.root,
@@ -2745,6 +2749,8 @@ function drawDecisions(
                   isClosed: false,
                   issue,
                   namesLine: NO_FAILED_READS,
+                  // No case here edits a row in place, so no row asks the page for an editor.
+                  onEditing: () => {},
                   published,
                   reader: READER,
                   root: { ...root, views: { decisions: held } },

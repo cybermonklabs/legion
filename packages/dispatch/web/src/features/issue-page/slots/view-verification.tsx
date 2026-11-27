@@ -7,7 +7,9 @@ import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
+import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
@@ -91,6 +93,12 @@ export function ViewVerificationSlot({
     onAddressDrawn
   );
   const addressed = useMemo(() => ({ named, tell: onAddressDrawn }), [named, onAddressDrawn]);
+  // The document a row of the view is being edited in, and that document's one editor, which the
+  // view draws for the row to take onto its own stage: `IssuePresetPanels.tsx`'s
+  // `useOutlineEditing`, as the outline's body and the Plan view read it. A row's node is edited
+  // in the document its id names among the issue's artifacts, by their slugs.
+  const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
+  const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}
@@ -100,10 +108,13 @@ export function ViewVerificationSlot({
           // body's landing reads: a reader who acted keeps the page as they left it.
           {...(acts === undefined ? {} : { addressActs: acts })}
           {...(tells ? { addressed } : {})}
+          artifacts={artifacts}
           checks={checks}
           context={view.context}
           coverage={coverage}
+          isClosed={issue.closed_at !== null}
           namesLine={names}
+          onEditing={onEditing}
           published={published}
           reads={reads}
           readsSettled={readsSettled}
@@ -114,6 +125,7 @@ export function ViewVerificationSlot({
         {/* While the view read answers a next page, the control that reads it (R15). */}
         <NextViewPage filter="verification" issueKey={issue.key} />
       </div>
+      {panels}
     </NoTooltips>
   );
 }

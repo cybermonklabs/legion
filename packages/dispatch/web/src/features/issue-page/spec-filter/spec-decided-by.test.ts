@@ -916,6 +916,148 @@ test("a statement's mark is how its checks stand at the commit the server names 
   ]);
 });
 
+/** c9, a check of the child CORE-2 that serves the statement r1, as the Verification view's read
+ *  answers it, and res-9, one pass over its words as they stand; with that read's answer, which
+ *  holds both, or, where `holdsCheck` is false, neither: a page of the read whose next page holds
+ *  them. */
+function childCheckRead(holdsCheck = true): {
+  readonly check: TreeAnswerNode;
+  readonly verification: NonNullable<TreeNode["views"]>["verification"];
+} {
+  const words = "sum-of-the-words-now";
+  const check = treeNode("c9", "check", "r1", {
+    check: { changed_version: 1, text_sha256: words },
+    document: { artifact_id: "artifact-core-2-verification", position: 0, slug: "verification-md" },
+    issue: "CORE-2",
+    role: "context",
+  });
+  const pass = treeNode(
+    "res-9",
+    "result",
+    { first_line: "", id: check.id, kind: check.kind, supertag: "check" },
+    { issue: "CORE-2", result: { check_sha256: words, check_version: 1, verdict: "pass" } }
+  );
+  return {
+    check,
+    verification: {
+      converted: true,
+      cursor: holdsCheck ? null : "page-2",
+      documents: null,
+      issue: KEY,
+      nodes: holdsCheck ? [check, pass] : [],
+      tree: null,
+      tuples: [],
+      version: null,
+      view: "verification",
+      view_of: null,
+    },
+  };
+}
+
+// R17: a statement whose check is a child's reads as the Verification view reads that check,
+// from the view's read the issue's node holds, though the outline's tree draws the check with no
+// state: Conversation's read names no result, so its tree gives such a check none. With the
+// view's read holding one pass over the check's words as they stand, the statement is Met.
+test("a statement a child's check serves reads that check as the Verification view reads it", () => {
+  const { check, verification } = childCheckRead();
+  const tree = {
+    ...issueTree([
+      statement("r1", {
+        children: [node({ id: "c9", issue: "CORE-2", readId: check.id, type: "check" })],
+        counts: { checks: 1, planTasks: 0 },
+      }),
+    ]),
+    views: { verification },
+  };
+
+  expect(bodyOf(tree)[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
+    ["spec#b-r1", "met"],
+  ]);
+});
+
+// R17: a statement that only a child's check serves carries that check before the page holds the
+// Verification view's answer: the outline's tree draws the check with no state, since
+// Conversation's read names no result, and the statement holds no coverage count, so the check
+// under it is what covers it. Its mark is not "No check"; what it reads instead waits on the
+// check's results.
+test("a statement only a child's check serves is covered with no Verification view answer", () => {
+  const tree = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: "CORE-2/verification-md#c9", type: "check" }),
+      ],
+      counts: { checks: 0, planTasks: 0 },
+    }),
+  ]);
+
+  const marks = bodyOf(tree)[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark]);
+  expect(marks?.map(([id]) => id)).toEqual(["spec#b-r1"]);
+  expect(marks?.map(([, mark]) => mark)).not.toContain("no_check");
+});
+
+/** The statement r1, which `own`, a check of this issue, and c9, a check of the child CORE-2,
+ *  serve, the child's as the outline's tree draws it: with no state, since Conversation's read
+ *  names no result. Where `verification` is given, the issue's node holds it as the Verification
+ *  view's answer (`childCheckRead`). Each statement comes with the verdict its row draws: its
+ *  mark, or none where the page holds no verdict of it (`SpecStatement.noVerdict`). */
+function childServedVerdicts(
+  own: CheckBlock,
+  verification?: NonNullable<TreeNode["views"]>["verification"]
+): (string | undefined)[][] {
+  const tree = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: childCheckRead().check.id, type: "check" }),
+        checkNode(own),
+      ],
+      counts: { checks: 2, planTasks: 0 },
+    }),
+  ]);
+  const held = verification === undefined ? tree : { ...tree, views: { verification } };
+  const groups = bodyOf(held, [], READER, [own]);
+  return (groups[0]?.runs[0]?.statements ?? []).map((one) => [
+    one.node.id,
+    one.noVerdict === true ? undefined : one.mark,
+  ]);
+}
+
+// R17: the page reads how a child's check stands only from the Verification view's answer, which
+// a Spec load does not send while Conversation's answer holds such a check. Until the page holds
+// it, a statement that check serves has no verdict the page can give, though its own check
+// passed, and draws none of the three marks; where its own check failed it is Not met, since one
+// failed check is enough. Once that answer is held it reads as that answer's results give it,
+// and an answer that holds no node of the check, a page whose next page holds it, gives none.
+test("a statement a child's check serves draws no verdict until the page reads that check's results, but Not met where its own check failed", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const failed = check({
+    block_id: "c2",
+    pass_stands: { answer: "no" },
+    results: [result({ id: "f1", verdict: "fail" })],
+  });
+
+  expect(childServedVerdicts(passed)).toEqual([["spec#b-r1", undefined]]);
+  expect(childServedVerdicts(failed)).toEqual([["spec#b-r1", "not_met"]]);
+  expect(childServedVerdicts(passed, childCheckRead().verification)).toEqual([
+    ["spec#b-r1", "met"],
+  ]);
+  expect(childServedVerdicts(passed, childCheckRead(false).verification)).toEqual([
+    ["spec#b-r1", undefined],
+  ]);
+  // "No check" is a mark of its own: a statement marked so holds no `noVerdict`, though a child's
+  // check whose results the page has not read is drawn under it.
+  const unchecked = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: childCheckRead().check.id, type: "check" }),
+      ],
+      gaps: ["no_check"],
+    }),
+  ]);
+  expect(bodyOf(unchecked)[0]?.runs[0]?.statements.map((one) => [one.mark, one.noVerdict])).toEqual(
+    [["no_check", undefined]]
+  );
+});
+
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it
 // enters no run and carries no mark, and the body draws it by its kind and its words.
 test("a row the filter kept that is no statement is in no run", () => {
@@ -939,6 +1081,79 @@ test("a row the filter kept that is no statement is in no run", () => {
     )
   ).toEqual(["spec#b-r1"]);
   expect(read.others.map((one) => one.id)).toEqual(["comment-1"]);
+});
+
+/** A criterion the reader wrote under a comment of theirs, with a statement written under it:
+ *  the tree the Spec view's criterion cases read, a statement of the spec before and after. */
+function criterionTree(): TreeNode {
+  return issueTree([
+    statement("r1"),
+    node({
+      author: READER_ACTOR,
+      children: [
+        node({
+          at: "2026-11-15T10:00:00Z",
+          author: READER_ACTOR,
+          children: [statement("r2")],
+          id: "criterion-1",
+          text: "A person reads the whole spec on a phone.",
+          type: "criterion",
+        }),
+      ],
+      id: "comment-1",
+      text: "Can I read the spec on my phone?",
+      type: "comment",
+    }),
+    statement("r3"),
+  ]);
+}
+
+// R1: a criterion of the view is a row of the statements' list, in the view's order, in the
+// group of the comment it was written under, and no row of `others`.
+test("a criterion is a row of the statements' list, in the view's order", () => {
+  const tree = criterionTree();
+  const read = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: [],
+    lineNames: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  });
+  expect(
+    read.groups.flatMap((group) =>
+      group.runs.flatMap((run) => run.statements.map((one) => one.node.id))
+    )
+  ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2", "spec#b-r3"]);
+  expect(read.groups[1]?.parent).toMatchObject({ id: "comment-1", type: "comment" });
+  expect(read.others).toEqual([]);
+});
+
+// R1, R2: a statement written under a criterion hangs under it, so the criterion is the
+// statement's parent line, which heads its group with its words and who wrote it, as a comment
+// heads the statements written under it.
+test("a statement under a criterion carries that criterion as its parent line", () => {
+  const groups = bodyOf(criterionTree());
+  expect(
+    groups.map((group) => [
+      group.parent?.id,
+      group.runs.flatMap((run) => run.statements.map((one) => one.node.id)).join(" "),
+    ])
+  ).toEqual([
+    [undefined, "spec#b-r1"],
+    ["comment-1", "criterion-1"],
+    ["criterion-1", "spec#b-r2"],
+    [undefined, "spec#b-r3"],
+  ]);
+  expect(groups[2]?.parent).toEqual({
+    at: "2026-11-15T10:00:00Z",
+    by: READER_ACTOR,
+    id: "criterion-1",
+    line: "A person reads the whole spec on a phone.",
+    type: "criterion",
+  });
 });
 
 // R2: a statement's parent is no row of the Spec filter, so it heads the group its statements

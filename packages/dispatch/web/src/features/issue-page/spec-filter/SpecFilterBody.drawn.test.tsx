@@ -57,6 +57,7 @@ import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeAsk, type TreeNode } from "../issue-tree";
+import * as roomTarget from "../model-rows/room-target";
 import { type CaretAt, caretInBlock } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
@@ -4578,6 +4579,161 @@ test("the body drawn again over a refused read asks for it no more times", async
       await promise;
     });
     expect(read.coverage.mock.calls.length).toBe(before);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R1: a criterion of the view is drawn as a row of the statements' list, in the
+// statements' bullet colour, with its tag, its author and its day, and no mark; its statements
+// stand in the group it heads.
+test("a criterion is a row of the statements' list, with its tag, its words and its author, and no mark", () => {
+  const words = "A person reads the whole spec on a phone.";
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+      node({
+        children: [
+          node({
+            at: "2026-11-15T10:00:00Z",
+            author: { id: READER, kind: "user" },
+            children: [statement("r2")],
+            id: "criterion-1",
+            text: words,
+            type: "criterion",
+          }),
+        ],
+        id: "comment-1",
+        text: "Can I read the spec on my phone?",
+        type: "comment",
+      }),
+    ])
+  );
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-spec-statement]")].map((row) =>
+        row.getAttribute("data-node-id")
+      )
+    ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2"]);
+    expect(view.container.querySelector("[data-spec-other]")).toBeNull();
+    const row = rowOf(view, "criterion-1");
+    const bulletOf = (one: HTMLElement) => one.querySelector(":scope > span > i")?.className;
+    expect(row.getAttribute("data-node-type")).toBe("criterion");
+    expect(row.querySelector("[data-node-tag]")?.textContent).toBe(NODE_TYPE_NAMES.criterion);
+    expect(row.querySelector("[data-spec-author]")?.textContent).toBe(READER);
+    expect(row.querySelector("[data-spec-criterion]")?.textContent).toContain(
+      shortDay("2026-11-15T10:00:00Z")
+    );
+    expect(row.querySelector("[data-node-words]")?.textContent).toBe(words);
+    expect(bulletOf(row)).toBe(bulletOf(rowOf(view, "spec#b-r1")));
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("no_check");
+    expect(row.hasAttribute("data-spec-mark")).toBe(false);
+    expect(row.querySelector(":scope > svg[data-glyph]")).toBeNull();
+    const group = rowOf(view, "spec#b-r2").closest<HTMLElement>("[data-spec-group]");
+    expect(group?.getAttribute("data-parent-id")).toBe("criterion-1");
+    expect(group?.querySelector("[data-spec-group-heading]")?.textContent).toContain(words);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5, R9: on a converted issue, Enter on a statement and a press on a criterion's words
+// each edit in their room's artifact; a parent's statement drawn as context is edited on its own
+// issue and takes no caret.
+test("Enter on a statement and a press on a criterion edit each in its document's room, and a parent's statement is edited on its own issue", async () => {
+  const user = userEvent.setup();
+  const rooms = spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+    converted: true,
+    issueKey: KEY,
+    tree: "artifact-tree",
+    viewOf: null,
+  });
+  const onEditing = mock<OnEditing>(() => {});
+  const own = statement("r1");
+  const criterion = node({
+    id: `${KEY}/tree#k1`,
+    text: "A person reads the whole spec on a phone.",
+    type: "criterion",
+  });
+  const above = statement("r9", { id: "r9", reference: "dispatch://CORE-2/spec#b-r9" });
+  const editors = (
+    <>
+      <DocumentStage artifactId="artifact-spec">
+        <div data-test-room-editor="artifact-spec" tabIndex={-1} />
+      </DocumentStage>
+      <DocumentStage artifactId="artifact-tree">
+        <div data-test-room-editor="artifact-tree" tabIndex={-1} />
+      </DocumentStage>
+    </>
+  );
+  const { read, view } = drawBody(issueTree([own, criterion, above]), [], {
+    context: new Set([above.id]),
+    editor: editors,
+    onEditing,
+  });
+  try {
+    const statementRow = rowOf(view, own.id);
+    const criterionRow = rowOf(view, criterion.id);
+    const aboveRow = rowOf(view, above.id);
+    expect(criterionRow).toHaveAttribute("data-editable");
+    expect(aboveRow).not.toHaveAttribute("data-editable");
+
+    act(() => statementRow.focus());
+    await user.keyboard("{Enter}");
+    expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function));
+    expect(
+      statementRow.querySelector('[data-test-room-editor="artifact-spec"]')
+    ).toBeInTheDocument();
+
+    const criterionWords = criterionRow.querySelector<HTMLElement>("[data-node-words]");
+    if (criterionWords === null) throw new Error("criterion draws no words");
+    await user.click(criterionWords);
+    await waitFor(() =>
+      expect(
+        criterionRow.querySelector('[data-test-room-editor="artifact-tree"]')
+      ).toBeInTheDocument()
+    );
+    expect(onEditing).toHaveBeenCalledWith("artifact-tree", expect.any(Function));
+
+    act(() => aboveRow.focus());
+    await user.keyboard("{Enter}");
+    expect(aboveRow.querySelector("[data-row-report]")?.textContent).toBe(KEY_REPORTS.issue_above);
+    expect(aboveRow.querySelector("[data-test-room-editor]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    rooms.mockRestore();
+  }
+});
+
+// R17: a statement a child's check serves has no verdict the page can give until it holds the
+// Verification view's answer, the one read that holds that check's results, so its row draws no
+// mark, though its own check passed; a statement served by this issue's checks alone draws its
+// mark beside it.
+test("a statement a child's check serves draws no mark before the page reads that check's results", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const alsoPassed = check({ block_id: "c2", results: [result({ id: "p2" })] });
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { children: [checkNode(passed)] }),
+      statement("r2", {
+        children: [
+          node({ id: "c9", issue: "CORE-2", readId: "CORE-2/verification-md#c9", type: "check" }),
+          checkNode(alsoPassed),
+        ],
+        counts: { checks: 2, planTasks: 0 },
+      }),
+    ]),
+    [],
+    { checks: [passed, alsoPassed] }
+  );
+  try {
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met");
+    const served = rowOf(view, "spec#b-r2");
+    expect(served.hasAttribute("data-spec-mark")).toBe(false);
+    expect(served.querySelector(":scope > svg[data-glyph]")).toBeNull();
   } finally {
     view.unmount();
     read.mockRestore();

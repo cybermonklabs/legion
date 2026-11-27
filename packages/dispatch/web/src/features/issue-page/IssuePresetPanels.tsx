@@ -5,6 +5,7 @@ import type { Artifact, IssueDetails } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
 import { createHeld, type Held } from "./held-value";
+import { useEditedTree } from "./model-rows/room-target";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
@@ -56,10 +57,13 @@ function OutlineEditedPanels({
   const navigate = useNavigate();
   const toolbarSink = useToolbarSink();
   const current = useSyncExternalStore(editing.subscribe, editing.get);
+  // A node written into the issue is edited in the tree artifact, which no document of the issue
+  // is, so its editor is drawn from the artifact read.
+  const tree = useEditedTree(issue.key, current?.artifactId);
   const edited =
     current === undefined
       ? undefined
-      : issue.artifacts?.find((artifact) => artifact.id === current.artifactId);
+      : (issue.artifacts?.find((artifact) => artifact.id === current.artifactId) ?? tree);
   return (
     <IssuePresetPanels
       editedDocument={edited}

@@ -25,6 +25,7 @@ import {
   pageHairBorder,
   pageInkText,
   pageKindBullet,
+  pageKindTag,
   pageLineBorder,
   pageMutedText,
   pagePaperBg,
@@ -58,6 +59,7 @@ import { presetPath } from "../issue-address";
 import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { LensLines } from "../lenses/LensLines";
+import { takesCaret, useRoomFacts } from "../model-rows/room-target";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { NodeMarks } from "../node-states/NodeMarks";
@@ -161,6 +163,11 @@ const NOTHING = (): void => {};
  * the body already passes to the keymap. The focus on a statement puts its facts in Details,
  * as a row of the outline does, and the focus on a decision puts that decision's. An address
  * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
+ *
+ * A criterion of the view is drawn as a statement is, in the statements' bullet colour, with a
+ * line of its own above its words naming its kind (`NODE_TYPE_NAMES.criterion`), its author and
+ * its day, and its statements under it in a group it heads, as any node does that is no row of
+ * the spec (R1). It carries no mark (`Statement`).
  */
 export function SpecFilterBody({
   addressActs,
@@ -428,6 +435,7 @@ export function SpecFilterBody({
     artifacts,
     container: tree,
     onEditing,
+    onOwnEdit: () => {},
     onReport: reportHere,
   });
   // The statements in the order they are drawn, which is the order the keys move through them,
@@ -705,11 +713,18 @@ export function SpecFilterBody({
     stop !== undefined && statements.some((node) => node.id === stop)
       ? stop
       : ((addressTakes ? addressed : undefined) ?? statements[0])?.id;
+  // The room the row's edit reads too (`useNodeEditing`), so the cue and Enter agree.
+  const room = useRoomFacts(writer?.issueKey);
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
+      // On a converted issue a criterion written into the issue takes its place from the room
+      // rather than from a document, so it carries the typing cue.
+      ...(room === undefined
+        ? {}
+        : { editable: takesCaret(node, artifacts, room, issue.closed_at !== null, admissions) }),
       editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
@@ -1577,6 +1592,13 @@ function Statement({
   // draws the mark "No check": no count reads them, which is why they read as served by no check,
   // and the row draws no mark in its place.
   if (outOfCounts(node) && statement.mark === "no_check") marked = false;
+  // A criterion draws no mark: no check serves what a person wants to be able to do, so its row
+  // says nothing of checks, and no "No check" (R1).
+  if (node.type === "criterion") marked = false;
+  // Nor does a statement the page holds no verdict of (`SpecStatement.noVerdict`): until it reads
+  // the results of a check of another issue that serves it, Met, Not met and Unknown would each
+  // say more than the page knows.
+  if (statement.noVerdict === true) marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
@@ -1638,6 +1660,33 @@ function Statement({
         />
       </span>
       <div className="flex min-w-0 flex-col">
+        {node.type === "criterion" ? (
+          <p
+            className={`min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
+            data-spec-criterion=""
+          >
+            {dotted([
+              {
+                key: "kind",
+                part: (
+                  <span
+                    className={`font-semibold ${pageKindTag.statement}`}
+                    data-node-tag=""
+                    {...pageChrome}
+                  >
+                    {NODE_TYPE_NAMES.criterion}
+                  </span>
+                ),
+              },
+              {
+                drawn: node.author !== undefined,
+                key: "author",
+                part: <Author actor={node.author} />,
+              },
+              { key: "day", part: node.at === undefined ? null : <Day at={node.at} /> },
+            ])}
+          </p>
+        ) : null}
         <div
           className={`text-[15px] leading-6 ${context ? pageQuietText : pageWordsText}`}
           data-node-words=""

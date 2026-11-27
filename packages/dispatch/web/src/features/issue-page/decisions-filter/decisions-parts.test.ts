@@ -329,6 +329,71 @@ test("a person's decision is the answered ask's entry with its ties, and a readi
   }
 });
 
+// R3: an agent decision's reading is the agent's account of what the decision means: a row
+// under the decision's entry (`DecisionEntry.readings`) and no entry of any part, whether the
+// model is handed the whole tree or the Decisions filter's own view of it.
+test("an agent decision's reading stands under the decision's entry, and is no entry of any part", () => {
+  const reading = node({
+    author: AGENT,
+    id: `${SPEC_SLUG}#b-g1`,
+    reference: specRef("g1"),
+    text: "The planner reads the decision as one rail for every width.",
+    type: "reading",
+  });
+  const children = [statement("s1"), decisionNode("d1", { children: [reading] })];
+  const made = [decision("d1", { decision: { links: [shaped(specRef("s1"))] } })];
+  const views = [
+    undefined,
+    presetView(issueTree(children), "decisions", "", new Set<string>()).root,
+  ];
+
+  for (const view of views) {
+    const parts = partsOf(children, made, [], view);
+    expect(Object.values(idsOf(parts)).flat()).not.toContain(reading.id);
+    expect(idsOf(parts).review).toEqual([D("d1")]);
+    expect(parts.review[0]?.readings?.map((one) => [one.node.id, one.kind])).toEqual([
+      [reading.id, "reading"],
+    ]);
+  }
+});
+
+// R3 under the Decisions view read: a decision past the pages of Conversation's read, which only
+// that read holds, carries the readings the read holds of it, as a decision the tree holds does,
+// and no reading is an entry of any part. The parts are read from the tree that read builds
+// (`decisions-entries.ts`' `useDecisionsTree`), whose issue node carries the read's answer, so the
+// view's rows are the nodes that answer holds as its own (`presets.ts`' `ownNodes`).
+test("a decision only the Decisions view read holds carries its readings", () => {
+  const reading = node({
+    author: AGENT,
+    id: `${SPEC_SLUG}#b-g2`,
+    reference: specRef("g2"),
+    text: "The planner reads the decision as one rail for every width.",
+    type: "reading",
+  });
+  // The view read answers the decision as one of its own nodes, as the route does, and the tree
+  // built from that answer carries the answer's id on the decision's node (`TreeNode.readId`).
+  const made = decision("d2", { role: "query" });
+  const past = decisionNode("d2", { children: [reading], readId: made.id });
+  const root = {
+    ...issueTree([statement("s1"), past]),
+    views: { decisions: treeAnswer([made]) },
+  };
+  const parts = decisionsParts({
+    asks: [],
+    decisions: [],
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root,
+    view: presetView(root, "decisions", "", new Set<string>()).root,
+  });
+
+  expect(Object.values(idsOf(parts)).flat()).not.toContain(reading.id);
+  expect(
+    parts.agents.map((entry) => [entry.node.id, entry.readings?.map((one) => one.node.id)])
+  ).toEqual([[past.id, [reading.id]]]);
+});
+
 // R2: the Decisions view holds asks, decisions and readings and no statement, and the route sends
 // a tuple only where the answer holds its far end (`issue_tree_read.go`'s `answer`), so the view's
 // answer holds no `shaped` tuple from an answered ask. The person's decision the read answers on

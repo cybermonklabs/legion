@@ -6,6 +6,7 @@ import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
 import {
   heldBy,
+  isBorrowedCheck,
   isCheck,
   isStatement,
   type NodeChip,
@@ -25,6 +26,7 @@ import {
 } from "./page-words";
 import { storedReading } from "./stored-reading";
 import { outOfCounts } from "./tree-fold";
+import { nodesInOrder } from "./tree-keys";
 import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -82,9 +84,9 @@ export function isFilter(preset: Preset): preset is Filter {
 
 /** The kinds each filter draws as rows of its own (R2). */
 const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
-  decisions: ["ask", "decision"],
+  decisions: ["ask", "decision", "reading"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check", "result"],
 };
 
@@ -103,7 +105,7 @@ const CONTEXT_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check"],
 };
 
@@ -165,12 +167,18 @@ const NO_LINES: ReadonlyMap<string, readonly PresetLine[]> = new Map();
 /** No block named by the view: a view read off the outline's tree. */
 const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 
+/** No node of another issue drawn as a row of a view: every view's but Verification's. */
+const NO_BORROWED_ROWS: ReadonlySet<TreeAnswerNode> = new Set();
+
 /** The kind a filter reads `node` as: its type, but for a requirement that is no statement
  *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
  *  does not play that part and nothing more, so no filter draws or counts either as its kind;
  *  undefined for both. */
 function kindOf(node: TreeNode): NodeType | undefined {
   if (node.type === "requirement" && !isStatement(node)) return undefined;
+  // A check of another issue is a check whatever its standing (`isBorrowedCheck`): a tree whose
+  // read named no result, as Conversation's, draws it with no state.
+  if (isBorrowedCheck(node)) return node.type;
   if (node.type === "check" && !isCheck(node)) return undefined;
   return node.type;
 }
@@ -433,8 +441,25 @@ function filterView(
   const counted = COUNTED_KINDS[filter];
   const context = new Set<string>();
   const matched = new Set<string>();
+  // The readings Decisions leaves out: each under a question, but one the address names, which
+  // every filter draws. Decisions draws an agent decision's readings under it, and none of any
+  // question's; a reading stands only under an answered question, since the schema refuses one
+  // in an ask with no answer.
+  const hiddenReadings = new Set<string>();
+  if (filter === "decisions") {
+    const walk = (node: TreeNode): void => {
+      for (const child of node.children) {
+        if (node.type === "ask" && child.type === "reading" && !named.has(child.id)) {
+          hiddenReadings.add(child.id);
+        }
+        walk(child);
+      }
+    };
+    walk(root);
+  }
   // The row `node` is, with the rows of its branch under it, where the filter draws it.
   const rowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
+    if (hiddenReadings.has(node.id)) return undefined;
     // A `requirement` or `check` block of a document that does not play that part is of no
     // kind a filter draws (`kindOf`): it is a row only where the address names it, and counted
     // nowhere.
@@ -478,7 +503,7 @@ function filterView(
  * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
  * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
  * context, with each check under each statement it serves and each result under its check. A
- * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
+ * node neither tree drafts is no row, and neither is the memo, a callout. A
  * decision and a constraint are never rows: each is a line of the row its tie names
  * (`PresetView.lines`). The words filter keeps the rows whose words hold it, as `filterView`
  * keeps them, and a node the address names is drawn whatever the filter: from the view where the
@@ -491,7 +516,9 @@ function filterView(
  * hands them over. Each of its rows carries what the read answers of the task beside the node: its
  * place in the order the read answers, its size, and the issue it is another issue's task of
  * (`planFactsOf`), and the Plan view draws its tasks in that order (`plan-filter/plan-order.ts`).
- * No other view takes a node of another issue as a row.
+ * Verification draws as rows, beside the issue's own checks, each check of an issue under it that
+ * serves a statement it draws, and that check's results, which its read answers as context too
+ * (`borrowedRows`). No other view takes a node of another issue as a row.
  */
 function heldFilterView(
   root: TreeNode,
@@ -512,8 +539,14 @@ function heldFilterView(
   // view's own tree names each block a chip of it names - a step it needs, a statement of the
   // outline read the view's tree holds as context - by that block's line (`chipsNamed`).
   const byReference = new Map<string, TreeNode>();
+  // Under Verification, each node of the view's own tree by its id at its first placement, whose
+  // standing a check of another issue the view draws as its own row takes (`standingOf`).
+  const viewTreeNodes = new Map<string, TreeNode>();
   const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
+      if (!outline && filter === "verification" && !viewTreeNodes.has(child.id)) {
+        viewTreeNodes.set(child.id, child);
+      }
       if (child.reference !== undefined && !byReference.has(child.reference)) {
         byReference.set(child.reference, child);
       }
@@ -605,10 +638,25 @@ function heldFilterView(
   }
   const kinds: readonly string[] = ROW_KINDS[filter];
   const contextKinds: readonly string[] = CONTEXT_KINDS[filter];
+  // Verification draws a check of an issue under this one, and its results, as its own rows
+  // where the check serves a statement it draws (`borrowedRows`).
+  const borrowed =
+    filter === "verification" ? borrowedRows(answer, treeOf, root.id) : NO_BORROWED_ROWS;
+  // A check of another issue the view draws as its own row (`borrowedRows`) stands as the view's
+  // own tree drafts it, where that tree holds it, and never as the outline's: the view's read
+  // asks for the check's results, where the outline's may name none, as Conversation's does,
+  // whose tree draws such a check no standing (`model-rows/model-drafts.ts`' `borrowedStanding`).
+  const standingOf = (node: TreeAnswerNode, tree: TreeNode): Pick<TreeNode, "state"> => {
+    const own =
+      node.supertag === "check" && borrowed.has(node) ? viewTreeNodes.get(tree.id) : undefined;
+    return own === undefined ? {} : { state: own.state };
+  };
   const rows = nodes.filter(
     (node) =>
       treeOf.has(node) &&
-      (viewRow(node, filter, root.id) ? kinds : contextKinds).includes(node.supertag)
+      (viewRow(node, filter, root.id) || borrowed.has(node) ? kinds : contextKinds).includes(
+        node.supertag
+      )
   );
   const rowIds = new Set(rows.map((node) => treeOf.get(node)?.id));
   // Where each row stands: under its parent where that is a row, and under Verification a check
@@ -731,7 +779,7 @@ function heldFilterView(
     const inner = new Set([...above, tree.id]);
     const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
     const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
-    const row = viewRow(node, filter, root.id);
+    const row = viewRow(node, filter, root.id) || borrowed.has(node);
     const own = named.has(tree.id) || (row && holds(tree, wanted));
     const placing =
       !own &&
@@ -752,6 +800,7 @@ function heldFilterView(
           children: kept,
           held: heldBy(kept),
           ...(filter === "plan" ? planFactsOf(node, root.id) : {}),
+          ...standingOf(node, tree),
         },
       ],
     };
@@ -805,6 +854,46 @@ function ownNodes(answer: TreeAnswer | undefined, key: string): ReadonlySet<stri
   return new Set(
     (answer.nodes ?? []).flatMap((node) => (viewRow(node, "decisions", key) ? [node.id] : []))
   );
+}
+
+/**
+ * The nodes of an issue under `key`, the issue the page is of, that the Verification view draws
+ * as its own rows from its read (`answer`), which answers them as context, as it answers the
+ * statements: each check whose `serves` tuple names a statement the view draws, and each result
+ * the read places under such a check. A check that serves none of them is drawn nowhere, as the
+ * outline draws none (`model-rows/model-drafts.ts`). Each is a row only where the tree's node
+ * drawn for it (`treeOf`) is the node of its full read id: the tree draws a node of another
+ * issue by its bare block id, which a node of this issue can share.
+ */
+function borrowedRows(
+  answer: TreeAnswer,
+  treeOf: ReadonlyMap<TreeAnswerNode, TreeNode>,
+  key: string
+): ReadonlySet<TreeAnswerNode> {
+  const nodes = answer.nodes ?? [];
+  const statements = new Set(
+    nodes.flatMap((node) => {
+      const tree = treeOf.get(node);
+      return node.role !== "query" && tree !== undefined && isStatement(tree) ? [node.id] : [];
+    })
+  );
+  const serving = new Set(
+    (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "serves" && statements.has(tuple.to.id) ? [tuple.from.id] : []
+    )
+  );
+  const rows = new Set<TreeAnswerNode>();
+  const checks = new Set<string>();
+  for (const node of nodes) {
+    if (!isForeign(node, key) || treeOf.get(node)?.readId !== node.id) continue;
+    if (node.supertag === "check" && serving.has(node.id)) {
+      rows.add(node);
+      checks.add(node.id);
+    } else if (node.supertag === "result" && node.parent !== null && checks.has(node.parent.id)) {
+      rows.add(node);
+    }
+  }
+  return rows;
 }
 
 /**
@@ -902,6 +991,26 @@ function lineOfParent(node: TreeNode): ParentLine {
   };
 }
 
+/** `view` with each row it draws under a criterion carrying that criterion as its parent's line
+ *  (`parentLineOf`), as a view gives that line to a row whose parent it draws as no row
+ *  (`lineOfParent`): the Spec list draws no row under another, so a statement written under a
+ *  criterion stands in the group the criterion heads (`spec-filter/spec-decided-by.ts`). `view`
+ *  itself where every such row carries that line already. */
+export function withCriterionLines(view: TreeNode): TreeNode {
+  if (view.children.length === 0) return view;
+  let changed = false;
+  const children = view.children.map((child) => {
+    const drawn = withCriterionLines(child);
+    const lined =
+      view.type === "criterion" && drawn.parentLine?.id !== view.id
+        ? { ...drawn, parentLine: parentLineOf(view) }
+        : drawn;
+    if (lined !== child) changed = true;
+    return lined;
+  });
+  return changed ? { ...view, children } : view;
+}
+
 /** How a chip names `node`, a node of a tree whose chip the names read gave no words, or the
  *  parent a row's line names (`ParentLine`, which carries the same words): by the reading of its
  *  words, its read's own else its stored text's (`storedReading`), with the page's word for its
@@ -964,6 +1073,17 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
+/** The checks of an issue under this one that `view`, the Verification view drawn from its held
+ *  read, draws as its own rows (`heldFilterView`'s `borrowedRows`), each once by the read's id of
+ *  its node (`TreeNode.readId`), however many statements it is drawn under (`isBorrowedCheck`). */
+function borrowedChecksDrawn(view: TreeNode): ReadonlySet<string> {
+  return new Set(
+    nodesInOrder(view)
+      .filter(isBorrowedCheck)
+      .map((node) => node.readId ?? node.id)
+  );
+}
+
 /** The signal each filter's control draws under `query`, which its count follows. A count read
  *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
  *  for a filter whose view is held, and the tree's for every other. Decisions is counted off the
@@ -993,15 +1113,25 @@ export function filterSignals(
     const wanted = query.trim().toLowerCase();
     const words = (node: TreeAnswerNode): string =>
       node.text_tree === undefined ? node.text : wordsOf(node.text_tree);
-    return new Set(
-      (held.nodes ?? []).flatMap((node) =>
-        viewRow(node, filter, root.id) &&
-        kinds.includes(node.supertag) &&
-        (wanted === "" || words(node).toLowerCase().includes(wanted))
-          ? [node.id]
-          : []
-      )
-    ).size;
+    // The read's own nodes of the filter's main kind whose words hold the query.
+    const own = (): number => {
+      return new Set(
+        (held.nodes ?? []).flatMap((node) =>
+          viewRow(node, filter, root.id) &&
+          kinds.includes(node.supertag) &&
+          (wanted === "" || words(node).toLowerCase().includes(wanted))
+            ? [node.id]
+            : []
+        )
+      ).size;
+    };
+    // Under Verification each check of an issue under this one that the view draws as its own row
+    // (`borrowedRows`) counts too, once however many statements it is drawn under, where the view
+    // draws it under the words typed: the read answers such a check as context, which `own` takes
+    // for no row of the view (`viewRow`), so no check is counted twice. The view is the one built
+    // below (`verification`), which is built before any count is read.
+    const borrowed = filter === "verification" ? borrowedChecksDrawn(verification.root).size : 0;
+    return own() + borrowed;
   };
   const verification = view("verification");
   const decisions = presetView(decisionsRoot, "decisions", query);

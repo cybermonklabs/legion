@@ -18,8 +18,7 @@ import {
   insertionFor,
   matchesQuery,
   orderedRows,
-  REF_PICKER_INSTRUCTION,
-  REF_PICKER_PARTS_WORDS,
+  REF_PICKER_DEFAULT_WORDS,
   REF_PICKER_QUERY_MIN,
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
@@ -36,6 +35,7 @@ import {
   type RefPickerRow,
   type RefPickerState,
   type RefPickerTrigger,
+  type RefPickerWords,
   readTrigger,
 } from "./ref-picker";
 import { agentArtifactsQuery, architectureQuery } from "./reference-target";
@@ -75,6 +75,10 @@ export interface RefPickerOptions {
    *  ProseMirror document, whose links are marks, so its text holds no address a door could
    *  stand in and a party's pick is its mention wherever the caret is. */
   readonly links?: RefPickerLinks;
+  /** The words the picker draws (`RefPickerWords`): the hook puts its headings on the groups,
+   *  and says its instruction, the line under an opened row with no parts and a role's state
+   *  in them. A host with none draws the picker's own (`REF_PICKER_DEFAULT_WORDS`). */
+  readonly words?: RefPickerWords;
 }
 
 /** What a host needs to draw the picker and to serve its keyboard. */
@@ -86,7 +90,7 @@ export interface RefPicker {
   readonly groups: readonly RefPickerGroup[];
   /** The highlighted row's id, which a host puts in `aria-activedescendant`. */
   readonly activeId: string | undefined;
-  /** What the list is while it holds no rows; `REF_PICKER_WORDS` has each one's words. */
+  /** What the list is while it holds no rows; `RefPickerWords.states` has each one's words. */
   readonly state: RefPickerState;
   /** What the live registry read behind the agent and role rows is, so the reader is never
    *  left reading a missing Agents group as an absence. */
@@ -94,7 +98,7 @@ export interface RefPicker {
   /** The one instruction row, while the query is too short for the search route to answer. */
   readonly instruction: string | undefined;
   /** What the list says under the opened row once its parts are read and hold none, in the
-   *  words of their kind (`REF_PICKER_PARTS_WORDS`); undefined otherwise. */
+   *  words of their kind (`RefPickerWords.parts`); undefined otherwise. */
   readonly partsNote: string | undefined;
   /** What the picker did with a key the host handed it, and the insertion when it took a row. */
   readonly pressKey: (key: string) => RefPickerKeyResult;
@@ -172,21 +176,28 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
  *  session itself, or the one holding the role - which the list draws with its running state. A
  *  session's row opens its conversation's documents, as a node's opens its blocks; a role holds
  *  none of its own. */
-function partyRow(option: MentionOption, delivers: boolean): RefPickerRow | undefined {
+function partyRow(
+  option: MentionOption,
+  delivers: boolean,
+  named: string
+): RefPickerRow | undefined {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
   // `partyOfAddress` reads an address by (`routes.ts`).
   const party = partyOfAddress(option.target);
   if (delivers && party === undefined) return undefined;
   // A session option's holder is its own name, which is its row's label.
+  // The row names its agent by `named`, as its host's words ask (`RefPickerWords.sessionNames`):
+  // the image the list draws the agent as (`RowAgent`), and the head of a role's detail, which
+  // the list cuts that name off.
   const agent: RefPickerAgent = {
     sessionId: option.sessionId,
     storedTitle: option.sessionTitle,
-    words: option.holder,
+    words: named,
   };
   if (party?.kind === "role") {
     return {
       agent,
-      detail: `${option.holder} · ${option.detail}`,
+      detail: `${named} · ${option.detail}`,
       id: `ref-picker-role-${party.role}`,
       kind: "role",
       label: party.role,
@@ -305,6 +316,7 @@ export function useRefPicker({
   links = "markdown",
   project,
   text,
+  words = REF_PICKER_DEFAULT_WORDS,
 }: RefPickerOptions): RefPicker {
   const trigger = enabled ? readTrigger(text, caret, links) : undefined;
   // The trigger the reader dismissed with Escape stays shut while they type on after it: Escape
@@ -363,11 +375,22 @@ export function useRefPicker({
     // A live list that is not current says nothing about who is absent, so no role is offered as
     // not running under it - the rule the composer's own options follow.
     const stopped = live.current
-      ? stoppedRoleOptions(live.agents, collaborators.data?.agents ?? [], agentText)
+      ? stoppedRoleOptions(
+          live.agents,
+          collaborators.data?.agents ?? [],
+          agentText,
+          words.stoppedRole
+        )
       : [];
     const parties: RefPickerRow[] = [];
     for (const option of [...mentionOptions(live.agents, agentText), ...stopped]) {
-      const row = partyRow(option, delivers);
+      const row = partyRow(
+        option,
+        delivers,
+        words.sessionNames === "shown"
+          ? agentText.sessionShown(option.sessionId, option.sessionTitle)
+          : option.holder
+      );
       if (row !== undefined) parties.push(row);
     }
     const logins =
@@ -409,6 +432,8 @@ export function useRefPicker({
     live.current,
     open,
     users.data,
+    words.sessionNames,
+    words.stoppedRole,
   ]);
 
   // The parties, the people and the components are listed whole and filtered here; the hits the
@@ -457,14 +482,14 @@ export function useRefPicker({
           ? undefined
           : blockRows(openedParts.address, opened.kind, parts.data);
     return {
-      partsNote: held?.length === 0 ? REF_PICKER_PARTS_WORDS[openedParts.kind].none : undefined,
+      partsNote: held?.length === 0 ? words.parts[openedParts.kind].none : undefined,
       rows: held === undefined ? drawn : [...drawn, ...held],
     };
-  }, [documents.data, drawn, opened, openedParts, parts.data]);
+  }, [documents.data, drawn, opened, openedParts, parts.data, words.parts]);
 
   const groups = useMemo(
-    () => (trigger === undefined || !open ? [] : groupRows(rows, trigger.door)),
-    [open, rows, trigger]
+    () => (trigger === undefined || !open ? [] : groupRows(rows, trigger.door, words.headings)),
+    [open, rows, trigger, words.headings]
   );
   const ordered = useMemo(() => orderedRows(groups), [groups]);
   const active = ordered.find((row) => row.id === activeId) ?? ordered[0];
@@ -539,7 +564,7 @@ export function useRefPicker({
     door: open && trigger !== undefined ? trigger.door : undefined,
     groups,
     highlight: setActiveId,
-    instruction: open && query.length < REF_PICKER_QUERY_MIN ? REF_PICKER_INSTRUCTION : undefined,
+    instruction: open && query.length < REF_PICKER_QUERY_MIN ? words.instruction : undefined,
     open,
     openParts: (id: string) => {
       const row = ordered.find((candidate) => candidate.id === id);

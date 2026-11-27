@@ -76,6 +76,12 @@ import { nodeReading } from "../presets";
  * part and no count, and an address naming it names the question it restates (`issue-address.ts`'
  * `pathToTarget`).
  *
+ * A reading of an agent's decision is the agent's account of what that decision means, which
+ * the view keeps under the decision (`presets.ts`): it is a row under the decision's entry
+ * (`DecisionEntry.readings`), drawn in the agents' grey by its author, and no entry of any part
+ * (R3). A reading whose decision the view leaves out, under words the decision does not hold,
+ * stays a row of its own kind before the parts, as a node the address names does.
+ *
  * An overtaken node stands in the same part as a live node in its state. Nothing at or under
  * an overtaken node (`TreeNode.closed`) waits on the reader (`waitingOrder`), and neither the open
  * questions' heading nor the review part's counts it (`headingCount`).
@@ -216,6 +222,9 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
+  /** The readings of it the view keeps, in reading order, each a row under the decision's own
+   *  (R3); absent where it has none. */
+  readonly readings?: readonly ReadingEntry[];
   /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`), by the one
    *  rule the outline reads too (`decision-review.ts`' `reviewState`). */
   readonly standing?: DecisionState;
@@ -225,6 +234,13 @@ export interface DecisionEntry extends EntryBase {
  *  kind by its words. */
 export interface NamedEntry extends EntryBase {
   readonly kind: "named";
+}
+
+/** A reading of an agent's decision, drawn as a row under the decision's entry (R3): the agent's
+ *  account of what the decision means, in the agents' grey and by its author. It is no entry of
+ *  any part and draws no parent line, since it stands under the node it hangs under. */
+export interface ReadingEntry extends EntryBase {
+  readonly kind: "reading";
 }
 
 /** One entry of the filter. */
@@ -360,12 +376,29 @@ export function decisionsParts({
   // with what others decided otherwise, a decision nobody is recorded for included.
   const decidedBy = (by: Actor | undefined): DecisionsEntry[] =>
     isReader(by, reader) ? yours : others;
+  // Each reading of an agent's decision, by the decision's node id, in reading order, which the
+  // list draws under the decision's entry and as no entry of any part (R3): a reading the view
+  // keeps of a decision the view keeps. `root` is the tree the decisions view read builds
+  // (`decisions-entries.ts`' `useDecisionsTree`), so a decision past the pages of Conversation's
+  // read carries the readings that read holds of it.
+  const readings = new Map<string, ReadingEntry[]>();
+  for (const { node, parent } of placed.values()) {
+    if (node.type !== "reading" || parent?.type !== "decision") continue;
+    if (kept !== undefined && (!kept.has(node.id) || !kept.has(parent.id))) continue;
+    const held = readings.get(parent.id) ?? [];
+    held.push({ kind: "reading", node, ...pathOf(node), shapes: [] });
+    readings.set(parent.id, held);
+  }
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
+    // A reading of a decision the list draws is a row under that decision's entry (`readings`).
+    if (node.type === "reading" && parent !== undefined && readings.has(parent.id)) continue;
+    const ownReadings = readings.get(node.id);
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),
       ...pathOf(node),
+      ...(ownReadings === undefined ? {} : { readings: ownReadings }),
     };
     if (node.type === "ask") {
       const askId = askIdOf(node) ?? "";
