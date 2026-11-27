@@ -1308,9 +1308,10 @@ func clientWrites() []clientWrite {
 		{
 			method: "PutRoleHolders", route: "PUT /api/v1/issues/OTHER-7/role-holders",
 			call: func(ctx context.Context, client *HTTPClient) error {
-				return client.PutRoleHolders(ctx, "OTHER-7", []RoleHolder{{Role: "implementer", Session: "ses-implementer"}})
+				return client.PutRoleHolders(ctx, "OTHER-7", []RoleHolder{{Role: "implementer", Session: "ses-implementer",
+					Claim: "legion-other-other-7-implementer", WorksStep: true}})
 			},
-			body: `{"holders":[{"role":"implementer","session":"ses-implementer"}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+			body: `{"holders":[{"role":"implementer","session":"ses-implementer","claim":"legion-other-other-7-implementer","works_step":true}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
 			method: "PutStep", route: "PUT /api/v1/issues/OTHER-7/steps/" + step,

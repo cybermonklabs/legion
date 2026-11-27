@@ -107,20 +107,20 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 				t.Fatalf("the resume task of the planning phase = %q, want it to open with %q", got, want)
 			}
 
-			complete("plan", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RolePlanner, Claim: "plan-claim",
-				HandoffRecord: "plan-1", HandoffVersion: 1})
+			complete("plan", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RolePlanner,
+				Claim: workerOr(t, pool, gatedRoot, claim.RolePlanner, "plan-claim"), HandoffRecord: "plan-1", HandoffVersion: 1})
 			implementer := phaseStartTask(t, pool, claim.RoleImplementer, phase.Implementing)
 			assertViewSentence(t, "the implementer's task", implementer, tc.view)
 
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: gatedRoot, Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/" + gatedRoot, HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
-			complete("implement", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleImplementer, Claim: "implement-claim",
-				Commit: "fix-1", HandoffRecord: "implement-1", HandoffVersion: 1})
+			complete("implement", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleImplementer,
+				Claim: workerOr(t, pool, gatedRoot, claim.RoleImplementer, "implement-claim"), Commit: "fix-1", HandoffRecord: "implement-1", HandoffVersion: 1})
 			tester := phaseStartTask(t, pool, claim.RoleTester, phase.Testing)
 			assertViewSentence(t, "the tester's task", tester, tc.view)
 
-			complete("test", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass",
-				HandoffRecord: "test-1", HandoffVersion: 1})
+			complete("test", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleTester,
+				Claim: workerOr(t, pool, gatedRoot, claim.RoleTester, "test-claim"), Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1})
 			reviewer := phaseStartTask(t, pool, claim.RoleReviewer, phase.Reviewing)
 			assertViewSentence(t, "the reviewer's task", reviewer, tc.view)
 			if !strings.Contains(reviewer, "Pull request: #42.") {
