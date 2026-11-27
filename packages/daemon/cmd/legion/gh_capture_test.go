@@ -547,7 +547,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
 		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
-		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (ssh://` + redact.URLWithCredentials + `/sjawhar/legion.git)`},
+		// gh reads the scp-like remote as an ssh URL, which the refusal names as the URL rule
+		// writes it (redact.URL, read from the rule, never written out here).
+		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (` + redact.URL("ssh://git@github.com/sjawhar/legion.git") + `)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
 		{gitPlusHTTPS, nil, []string{"pr", "view", "1", "--json", "title"}, "sjawhar", ""},

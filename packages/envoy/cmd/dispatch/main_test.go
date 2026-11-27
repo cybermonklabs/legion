@@ -309,13 +309,14 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
-		// The issuer is printed through redact.URL: a value with no scheme is no plain http(s) URL.
+		// The issuer is printed through redact.URL, whose text is read from the rule, never written
+		// out here: a value with no scheme is no plain http(s) URL.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is " + redact.URL("accounts.google.com")},
 		// A made-up token percent-encoded in the issuer's path, which loads: the domain refusal
 		// prints no part of it.
 		{"a domain under an issuer with an encoded token in its path", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/%6DadeUpPathToken0123456789"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is " + redact.URL("https://issuer.example/%6DadeUpPathToken0123456789")},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
@@ -337,6 +338,8 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := resolveBootConfig(envGetter(tc.env)); err == nil || err.Error() != tc.want {
 				t.Errorf("err = %v, want %q", err, tc.want)
+			} else if strings.Contains(err.Error(), "adeUpPathToken") {
+				t.Errorf("err = %v, which holds part of the token in the issuer's path", err)
 			}
 		})
 	}

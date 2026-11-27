@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testkernel"
@@ -381,6 +382,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	// The marked fork checkout of dispatch://INFRA-3399: acme's fork, whose upstream is sjawhar's
 	// and whose origin carries gh's default marker, followed by more lines.
 	forkUpstream := ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}
+	// A remote URL a CI checkout writes, a made-up token as its user info, built from its parts so
+	// that no source line holds a URL with a credential.
+	const remoteToken = "x-access-token:madeUpRemoteToken0123"
+	tokenUpstream := ghRemote{name: "upstream", url: strings.Replace("https://github.com/sjawhar/legion.git", "://", "://"+remoteToken+"@", 1)}
 	originBase := ghMarkerLine("remote.origin.gh-resolved base")
 	markedFork := func(more ...ghRemote) func() ([]ghRemote, error) {
 		return remotes(append([]ghRemote{acmeClone, forkUpstream, originBase}, more...)...)
@@ -412,19 +417,21 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/octocat/hello"}), owner: "octocat"},
-		// An ssh remote's user name alone prints as the mark, its host with it: the rule cannot tell
-		// an SSH login from a token written as the user.
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git) naming acme/widgets) and sjawhar (the working directory's remote "upstream" (ssh://[a URL with credentials]/sjawhar/legion.git) naming sjawhar/legion)`},
-		// A remote URL a CI checkout writes with its token as the user info prints the mark in its
-		// place beside another owner's, its host masked with it and its path, the repository, still
-		// printed; a remote this refuses, naming no OWNER/REPO, is named by its git name alone.
+		// An ssh remote's user name alone prints as the URL rule writes it (redact.URL, read from
+		// the rule, never written out here), its host with it: the rule cannot tell an SSH login
+		// from a token written as the user. gh reads the scp-like remote as an ssh URL.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git) naming acme/widgets) and sjawhar (the working directory's remote "upstream" (` + redact.URL("ssh://git@github.com/sjawhar/legion.git") + `) naming sjawhar/legion)`},
+		// A remote URL a CI checkout writes with its token as the user info prints as the URL rule
+		// writes it beside another owner's, the path, the repository, still printed; a remote this
+		// refuses, naming no OWNER/REPO, is named by its git name alone and the rule's words for a
+		// URL not printed.
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/ownera/repo/tree/main"}),
-			err: `the working directory's remote "origin" (a URL that is not printed) names no OWNER/REPO`},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/sjawhar/legion.git"}),
-			err: `sjawhar (the working directory's remote "upstream" (https://[a URL with credentials]/sjawhar/legion.git) naming sjawhar/legion)`},
+			err: `the working directory's remote "origin" ` + redact.URLNotPrinted + ` names no OWNER/REPO`},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, tokenUpstream),
+			err: `sjawhar (the working directory's remote "upstream" (` + redact.URL(tokenUpstream.url) + `) naming sjawhar/legion)`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion naming sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: `remote "work" (a URL that is not printed) is an ssh remote whose host gh may read as github.com`},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: `remote "work" ` + redact.URLNotPrinted + ` is an ssh remote whose host gh may read as github.com`},
 		// GitHub's 100-character limit counts a repository's name without the `.git` `gh repo
 		// clone` writes into a remote, so a 97 to 100 character name with it is a repository's, in
 		// a remote and in -R; 101 characters is none.

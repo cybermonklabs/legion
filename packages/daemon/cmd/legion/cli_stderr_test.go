@@ -17,17 +17,19 @@ const stderrToken = "FAKEtok3nZQ9x"
 // call in a checkout whose remotes name two owners and names each remote by its URL as `git
 // remote -v` lists it (ghRemote.what), and a remote's URL can carry a token, as a remote added
 // as https://x-access-token:<token>@github.com/... does: the refusal names that remote by its URL
-// with no credential, and holds no token.
+// as the URL rule writes it (redact.URL, read from the rule, never written out here), and holds no
+// token.
 func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, _ := visibilityReadGh(t, ":\n")
 	repository := t.TempDir()
 	fixture := fixturegit.Isolated(t, t.TempDir())
+	tmpRemote := "https://x-access-token:" + stderrToken + "@github.com/sjawhar/legion.git"
 	for _, args := range [][]string{
 		fixturegit.InitWorkTree("", "")[1:],
 		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
-		{"remote", "add", "tmp", "https://x-access-token:" + stderrToken + "@github.com/sjawhar/legion.git"},
+		{"remote", "add", "tmp", tmpRemote},
 	} {
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
@@ -42,18 +44,20 @@ func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 	if strings.Contains(stdout+stderr, stderrToken) {
 		t.Errorf("legion gh printed the token a remote's URL carries: %s", shown)
 	}
-	if want := `remote "tmp" (https://` + redact.URLWithCredentials + `/sjawhar/legion.git)`; !strings.Contains(stderr, want) {
+	if want := `remote "tmp" (` + redact.URL(tmpRemote) + `)`; !strings.Contains(stderr, want) {
 		t.Errorf("legion gh printed %q, want it to name %s", shown, want)
 	}
 }
 
 // What any command prints itself passes the URL rule on its way to stderr (newRoot), cobra's own
 // refusal of a flag's value among it: `legion state --port <url>` quotes the value it could not
-// read, and prints that URL with no credential.
+// read, and prints that URL as the URL rule writes it (redact.URLCredentials, read from the rule,
+// never written out here), with no credential.
 func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"legion", "state", "--port", "https://x-access-token:" + stderrToken + "@github.com/acme/widgets.git"}, &stdout, &stderr)
+	value := "https://x-access-token:" + stderrToken + "@github.com/acme/widgets.git"
+	code := run(context.Background(), []string{"legion", "state", "--port", value}, &stdout, &stderr)
 	shown := strings.ReplaceAll(stdout.String()+stderr.String(), stderrToken, "<the token>")
 	if code != 2 {
 		t.Errorf("legion state --port <url> = exit %d, %q; want exit 2", code, shown)
@@ -61,7 +65,7 @@ func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
 	if strings.Contains(stdout.String()+stderr.String(), stderrToken) {
 		t.Errorf("legion state printed the token its flag's value carries: %s", shown)
 	}
-	if want := `"https://` + redact.URLWithCredentials + `/acme/widgets.git"`; !strings.Contains(stderr.String(), want) {
+	if want := redact.URLCredentials(`"` + value + `"`); !strings.Contains(stderr.String(), want) {
 		t.Errorf("legion state printed %q, want it to quote the value as %s", shown, want)
 	}
 }

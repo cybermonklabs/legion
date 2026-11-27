@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -186,6 +188,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	defer stdout.Close()
 	// A port nothing listens on, so the report's post fails at its dial.
 	const daemon = "127.0.0.1:1"
+	daemonURL := "http://legion-reader@" + daemon + "/daemon?token=planted-query-token-3"
 	bootToken := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -194,14 +197,16 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\n"+
 		`printf '%s\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","is_error":false}'`+"\n"+
 		"exec sleep 86400\n", stdout,
-		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
+		"LEGION_DAEMON_URL="+daemonURL,
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
 	p.await("the failed report logged", func() bool {
 		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := "http://[a URL with credentials]/daemon: dial tcp [a URL with credentials]:[a URL with credentials]: "; !strings.Contains(logged, want) {
+	// The rule's own text for the failure, read from the rule and never written out here: the URL,
+	// then the dial's error, which begins with the address it dialed.
+	if want := redact.RequestError("the daemon", daemonURL, errors.New("dial tcp "+daemon+": ")).Error(); !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {

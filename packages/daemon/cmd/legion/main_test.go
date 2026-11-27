@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -1744,10 +1746,10 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). A source in URL form is
-// printed as the state shows it: a made-up user name, password and signature in a private
-// tarball URL's userinfo and query are not. When worker_backends runs any role on Claude Code, the
-// line gains one sentence naming those roles, whose plugin is the worker image's and never an
-// install.
+// printed as the state shows it (api.PluginSourceOf, read from the rule, never written out here),
+// and a made-up user name, password and signature in a private tarball URL's userinfo and query
+// are not printed. When worker_backends runs any role on Claude Code, the line gains one sentence
+// naming those roles, whose plugin is the worker image's and never an install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
@@ -1761,7 +1763,7 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
-			"plugins: @sjawhar/pi-legion https://[a URL with credentials]/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+			"plugins: @sjawhar/pi-legion " + api.PluginSourceOf(privateURL) + " @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
@@ -1785,6 +1787,11 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+			for _, credential := range []string{"madeUpPluginUser", "madeUpPluginPassword", "madeUpSignature"} {
+				if strings.Contains(out.String(), credential) {
+					t.Errorf("legion config check printed %q, which holds %q", out.String(), credential)
+				}
 			}
 		})
 	}
@@ -2648,9 +2655,10 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	}
 }
 
-// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo
-// (redact.URL), a made-up password holding a "'" included, in its first line when the daemon
-// answers and in its refusal when the daemon cannot be reached.
+// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo, a made-up
+// password holding a "'" included, as the URL rule writes it (redact.URL and redact.RequestError,
+// read from the rule, never written out here), in its first line when the daemon answers and in
+// its refusal when the daemon cannot be reached.
 func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 	const credential = "madeUpStateUser0123:madeUpState'Password0123"
 	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -2668,16 +2676,21 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 			}
 		}
 	}
+	answering := strings.Replace(server.URL, "http://", "http://"+credential+"@", 1)
+	const unreachable = "http://" + credential + "@127.0.0.1:1"
 	for name, tc := range map[string]struct {
 		url, want string
 		code      int
 	}{
-		"a daemon that answers":         {server.URL, "legion LEGION on http://[a URL with credentials] — ", 0},
-		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://[a URL with credentials]/legion/v1/state: ", 1},
+		"a daemon that answers": {answering, "legion LEGION on " + redact.URL(answering) + " — ", 0},
+		// The head of the rule's text for a request that got no answer: the route as the rule
+		// writes it, and the separator before the request's own error, which an empty error
+		// leaves alone.
+		"a daemon that does not answer": {unreachable, "legion state: read " + redact.RequestError(daemonServer, unreachable+"/legion/v1/state", errors.New("")).Error(), 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", strings.Replace(tc.url, "http://", "http://"+credential+"@", 1))
+			t.Setenv("LEGION_DAEMON_URL", tc.url)
 			t.Setenv("LEGION_ISSUE", "")
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
@@ -2692,7 +2705,8 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 // A LEGION_DAEMON_URL whose password holds a "/" parses as a host with a port that is the
 // password's head, which url.Parse's error quotes (`invalid port ":<head>"`): `legion state` refuses
 // it in plain words, and `legion claims list`, an operator command, names an unreachable daemon
-// through redact.URL, holding no part of a made-up token written as the user.
+// through redact.URL (read from the rule, never written out here), holding no part of a made-up
+// token written as the user.
 func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
 	t.Run("an address that does not parse", func(t *testing.T) {
 		const head = "madeUpStateHead0123"
@@ -2713,10 +2727,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("LEGION_DAEMON_URL", "http://"+token+"@127.0.0.1:1")
+		daemonURL := "http://" + token + "@127.0.0.1:1"
+		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") || strings.Contains(errb.String(), token[:10]) {
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+"/legion/v1/")) || strings.Contains(errb.String(), token[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
@@ -2730,10 +2745,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Fatal(err)
 		}
 		userinfo := "legion:" + head + "@"
-		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		daemonURL := "http://" + userinfo + tail
+		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") ||
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+"/legion/v1/")) ||
 			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
 		}
@@ -2782,10 +2798,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 				t.Fatal(err)
 			}
 			userinfo := "legion:" + secret + "@"
-			t.Setenv("LEGION_DAEMON_URL", strings.Replace(served.URL, "://", "://"+userinfo, 1))
+			daemonURL := strings.Replace(served.URL, "://", "://"+userinfo, 1)
+			t.Setenv("LEGION_DAEMON_URL", daemonURL)
 			var out, errb bytes.Buffer
 			code := run(context.Background(), append(append([]string{"legion", "claims"}, args...), "--operator-token-file", bearer), &out, &errb)
-			if code != 1 || !strings.Contains(errb.String(), "read the answer http://[a URL with credentials]/legion/v1/operator/claims served") ||
+			if code != 1 || !strings.Contains(errb.String(), "read the answer "+redact.URL(daemonURL+"/legion/v1/operator/claims")+" served") ||
 				strings.Contains(errb.String(), secret[:10]) {
 				t.Fatalf("legion %s = %d, stderr %q; want 1, the list named by the mark, and no part of the password", name, code, errb.String())
 			}

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1147,10 +1148,10 @@ func killProcessesRunning(t *testing.T, path string) []string {
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
 // reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// --cache-url with its user name and its query: each line names the cache by its scheme, the mark
-// of a URL with credentials and its path, and neither the user name nor the query reaches the init
-// log. A cache that is never ready is a cause
-// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
+// --cache-url with its user name and its query: each line names the cache as the URL rule writes
+// it (redact.Writer, whose text is read from the rule, redact.URLCredentials, never written out
+// here), and neither the user name nor the query reaches the init log. A cache that is never ready
+// is a cause outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t)
@@ -1160,8 +1161,9 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 	v.instantClock()
 
-	code, stdout, stderr := v.run(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
-	shown := "http://[a URL with credentials]/widgets"
+	const cacheURL = "http://legion-reader@" + cache + "/widgets?token=planted-query-token-7"
+	code, stdout, stderr := v.run(append(v.fetchArgs(), "--cache-url", cacheURL))
+	shown := redact.URLCredentials(cacheURL)
 	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -447,17 +448,21 @@ func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 }
 
 // Neither a retried attempt's log line nor the final failure carries the provisioning token, even
-// where git echoes it: in a URL the authority that carries it is written as the mark of a URL with
-// credentials (the URL rule, redact.Writer), and anywhere else the token says *** in its place.
+// where git echoes it: in a URL the authority that carries it is written as the URL rule writes it
+// (redact.Writer, whose text is read from the rule, redact.URLCredentials, never written out
+// here), and anywhere else the token says *** in its place.
 func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.failClones(t,
-		"fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n",
-		"remote: Invalid username or token @TOKEN@.\nfatal: Authentication failed for 'https://x-access-token:@TOKEN@@github.com/acme/widgets/'\n",
+	const (
+		unreachable = "fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"
+		refused     = "fatal: Authentication failed for 'https://x-access-token:@TOKEN@@github.com/acme/widgets/'"
 	)
+	v.failClones(t, unreachable, "remote: Invalid username or token @TOKEN@.\n"+refused+"\n")
 	v.instantClock()
 	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+	// echoed is a line as the fake git writes it: the token it was handed in place of @TOKEN@.
+	echoed := func(line string) string { return strings.ReplaceAll(line, "@TOKEN@", "ghs_test") }
 
 	code, stdout, stderr := v.run(v.fetchArgs())
 	if code != 3 {
@@ -466,10 +471,10 @@ func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("the fetch logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: " + redact.URLCredentials(echoed(unreachable)); stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'"} {
+	for _, says := range []string{"remote: Invalid username or token ***.", redact.URLCredentials(echoed(refused))} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}

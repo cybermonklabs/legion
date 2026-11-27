@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -536,8 +537,9 @@ exit 9
 // The shim's lines and its refusals pass the URL rule. An Oh My Pi extension that failed on a
 // URL carrying a user name and a token in its query is shown on the pane as the shim summarizes
 // an extension_error event (internal/shim's summarize), and a --connect the shim refuses is
-// quoted in its refusal: each keeps the URL's host and path, and neither the user name nor the
-// token reaches the pane.
+// quoted in its refusal: each shows the URL as the URL rule writes it (redact.URLCredentials, read
+// from the rule, never written out here), and neither the user name nor the token reaches the
+// pane.
 func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
@@ -551,8 +553,10 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 	if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	const fetchFailed = "fetch https://legion-reader@daemon.example/legion/v1/claims?token=planted-query-token-1 failed"
 	failed := `{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start",` +
-		`"error":"fetch https://legion-reader@daemon.example/legion/v1/claims?token=planted-query-token-1 failed: connection refused"}`
+		`"error":"` + fetchFailed + `: connection refused"}`
+	const connect = "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2"
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -566,13 +570,13 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 			name:   "the agent's extension_error, summarized on the pane",
 			args:   []string{"--connect", "unix://" + socket, "--boot-token-file", token, "--", "sh", "-c", `printf '%s\n' "$0"; exit 7`, failed},
 			daemon: true, code: 7,
-			shown: "fetch https://[a URL with credentials]/legion/v1/claims failed", planted: "planted-query-token-1",
+			shown: redact.URLCredentials(fetchFailed), planted: "planted-query-token-1",
 		},
 		{
 			name:  "a --connect the shim refuses",
-			args:  []string{"--connect", "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2", "--boot-token-file", token, "--", "true"},
+			args:  []string{"--connect", connect, "--boot-token-file", token, "--", "true"},
 			code:  1,
-			shown: `got "tcp://[a URL with credentials]/"`, planted: "planted-query-token-2",
+			shown: "got " + redact.URLCredentials(`"`+connect+`"`), planted: "planted-query-token-2",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

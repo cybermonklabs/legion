@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -1351,23 +1352,25 @@ func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
 	}
 	t.Run("the starting line", func(t *testing.T) {
 		d := newControllerDaemon(t)
+		daemonURL := strings.Replace(d.url, "http://", "http://"+credential+"@", 1)
 		c := newControllerStart(t, d, controllerOptions{lines: []string{
-			"project: demo", "daemon_url: " + strings.Replace(d.url, "http://", "http://"+credential+"@", 1),
+			"project: demo", "daemon_url: " + daemonURL,
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "[legion] starting the controller for demo against http://[a URL with credentials]; state in "; code != 0 || !strings.Contains(errb, want) {
+		if want := "[legion] starting the controller for demo against " + redact.URL(daemonURL) + "; state in "; code != 0 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 0 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)
 	})
 	t.Run("an unreachable daemon's refusal", func(t *testing.T) {
+		const daemonURL = "http://" + credential + "@127.0.0.1:1"
 		c := newControllerStart(t, newControllerDaemon(t), controllerOptions{lines: []string{
-			"project: demo", "daemon_url: http://" + credential + "@127.0.0.1:1",
+			"project: demo", "daemon_url: " + daemonURL,
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "could not reach the Legion daemon at http://[a URL with credentials]: "; code != 1 || !strings.Contains(errb, want) {
+		if want := "could not reach the Legion daemon at " + redact.URL(daemonURL) + ": "; code != 1 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)
