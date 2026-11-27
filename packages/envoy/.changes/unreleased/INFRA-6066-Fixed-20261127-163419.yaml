@@ -1,11 +1,11 @@
 kind: Fixed
 body: |-
   A Dispatch process whose NATS connection is cut while its outbox reads the expiry notices of the
-  copies it kept for roles now gives the publisher hold up about 3 s after the cut, as a cut at any
-  other moment does. Before, the outbox waited out that read, up to 10 s for a reconnect, before it
-  started to count the 3 s, so it gave the hold up about 13 s after the cut, and the other process
-  took over past the 10 s bound. The read now ends at the cut, and the outbox reads the notices
-  again once its client is connected.
+  copies it kept for roles now gives the publisher hold up about 3 s after the cut, as a cut
+  between its passes does. Before, the outbox waited out that read, up to 10 s for a reconnect,
+  before it started to count the 3 s, so it gave the hold up about 13 s after the cut, and the
+  other process took over past the 10 s bound. The read now ends at the cut, and the outbox reads
+  the notices again once its client is connected.
 time: 2026-11-27T16:34:19Z
 custom:
     Issue: INFRA-6066

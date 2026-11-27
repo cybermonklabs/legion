@@ -509,11 +509,9 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // and wake nothing, so the expiry pass also runs by itself every keptExpiryReadEvery while nothing
 // else wakes the holder, with no scan of events before it; a row its pass backed off is taken by
 // the first pass after its wait. A full read or a full claim leaves the holder due again. Both
-// runs of the pass are bound to the NATS connection (passKeptExpiriesWhileConnected): none starts
-// while the client reads disconnected, and one in flight ends at the client's next connection
-// event, because serve reads the client's state and arms natsLossGrace only between its passes,
-// and the pass's own read of NATS would otherwise wait up to its 10 s bound for a reconnect first,
-// which holds the grace back and the release past the take-over bound.
+// runs of the pass are bound to the NATS connection: none starts while the client reads
+// disconnected, and one in flight ends at the client's next connection event, so natsLossGrace
+// counts a cut inside the pass from the cut (passKeptExpiriesWhileConnected, whose doc holds why).
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
