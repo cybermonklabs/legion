@@ -73,6 +73,14 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // credential to name.
   const readOnly = identity.scopes?.includes("read") === true;
   const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
+  // The projects the credential lists, which only the agent shape carries (a browser's cookie
+  // lists none). A full member's list decides only which private projects it reads, so it uses
+  // every public project too; a restricted member's decides every project. A Dispatch that
+  // predates the list leaves it out, as it does for a credential that lists none and for a broker
+  // token while no project is private; project is then the one it names, if any.
+  const projects =
+    identity.kind === "agent" && identity.projects?.length ? identity.projects : null;
+  const restricted = identity.kind === "agent" && identity.member_kind === "restricted";
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -128,22 +136,40 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   } else {
     acting = `Session ${session} runs under the shared token: ${unowned}`;
   }
-  // A token that names a project also writes other projects' objects, as a credential that
-  // names none does, except in a private project it does not name. So the line names the
-  // project and claims no limit on what the token writes. A job's public token and an exchange
-  // entry's token naming its account name no one project, and Dispatch holds them to none: a
-  // job entry's list of private projects limits none of its writes at this release. A read-only
-  // credential's line names none, as it names no write.
-  const projectSentence = readOnly
-    ? ""
-    : project !== null
-      ? ` Its token names project ${project}.`
-      : writesAsService
-        ? " It names no one project, so it may write wherever a token that names no project may."
-        : "";
+  // A credential that lists projects is told the list (KF4) in place of the project it names:
+  // the list is what decides its reads. A full member's list decides only which private projects
+  // it reads, so it is told it uses every public project too; a restricted member's list decides
+  // every project. Otherwise the line names the project a token names, if any, and claims no limit
+  // on what the token writes: a token that names a project also writes other projects' objects, as
+  // a credential that names none does, except in a private project it does not name. A job's public
+  // token and an exchange entry's token naming its account name no one project, and Dispatch holds
+  // them to none. A read-only credential's line names no project of its own, as it names no write.
+  const projectsNamed =
+    projects === null
+      ? ""
+      : `${projects.length === 1 ? "project" : "projects"} ${projects.join(", ")}`;
+  const projectSentence =
+    projects !== null
+      ? restricted
+        ? ` It may use ${projectsNamed} and no other.`
+        : ` It may use ${projectsNamed}, every public project, and no other private project.`
+      : readOnly
+        ? ""
+        : project !== null
+          ? ` Its token names project ${project}.`
+          : writesAsService
+            ? " It names no one project, so it may write wherever a token that names no project may."
+            : "";
   return {
     text: acting + elsewhere + projectSentence,
-    details: { session, owner, service, project, project_scope: projectScope },
+    details: {
+      session,
+      owner,
+      service,
+      project,
+      project_scope: projectScope,
+      ...(projects !== null ? { projects } : {}),
+    },
   };
 }
 
@@ -331,6 +357,19 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
   return undefined;
 }
 
+/** A side read refused with 403 DEPLOYMENT_READ_REFUSED, settled as the null a Dispatch with no
+ *  secrets broker answers: the caller's credential may not read the whole deployment's rows, so
+ *  it has none of them to list. Any other failure is left for `sideRead` to warn on. */
+function withoutDeploymentRefusal<T>(
+  settled: SettledSideRead<T | null>
+): SettledSideRead<T | null> {
+  return "error" in settled &&
+    dispatchAnswered(settled.error, 403) &&
+    settled.error.code === "DEPLOYMENT_READ_REFUSED"
+    ? { answer: null }
+    : settled;
+}
+
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The rows within a
@@ -406,9 +445,14 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
-  // no credential requests, so it lists and counts none.
+  // no credential requests, so it lists and counts none. The list is a read of the whole
+  // deployment, which Dispatch refuses a restricted member, and a credential acting for one, with
+  // 403 DEPLOYMENT_READ_REFUSED (a full member's credential reads it whatever it lists): such a
+  // caller has no credential list to read, as the web Inbox never asks them for it, so it is
+  // listed and counted as none and warns nothing.
   const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
+    sideRead(withoutDeploymentRefusal(await pending), "credential requests", warnings)?.pending ??
+    [];
   const threads: readonly MyReplyRow[] =
     sideRead(await unread, "unread threads", warnings)?.rows ?? [];
   return {

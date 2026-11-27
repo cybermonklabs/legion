@@ -31,10 +31,11 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // passes include_parent (api's readStatusChange) are all this query.
 //
 // It binds no visibility predicate and takes no acting person, because every caller is a rule of
-// a write - those four, the near-copy gate's exclusion of the new issue's chain and the scope a
-// result's check resolves in - and a rule that skipped an issue it may not see would let a cycle
-// through that issue, route an event short of its root, or leave an ancestor out of work above an
-// issue in work. The status change's plan moves each ancestor that is not in work into work, so
+// a write - those four and the scope a result's check resolves in - and a rule that skipped an
+// issue it may not see would let a cycle through that issue, route an event short of its root, or
+// leave an ancestor out of work above an issue in work. The near-copy gate reads the chain as its
+// caller sees it (IssueAncestorsAsSeen), since it runs before the create knows its parent is one
+// the caller sees. The status change's plan moves each ancestor that is not in work into work, so
 // that the parent status rule (R24) holds. It names those ancestors to the caller who asked to
 // move them: its dry run and its answer list them. It leaves out an ancestor in a private project
 // that the caller's credential does not name (access.CredentialCovers), and each ancestor above
@@ -56,6 +57,35 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 		)
 		select coalesce(array_agg(key order by depth), '{}') from ancestors
 	`, key, IssueDepthCap).Scan(&ancestors); err != nil {
+		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
+	}
+	return ancestors, nil
+}
+
+// IssueAncestorsAsSeen is IssueAncestors for a write that names key on behalf of who before it
+// knows who may see it: the near-copy gate of a create with a parent, which runs before the
+// create's transaction. Every issue of the walk is judged, key's own and each ancestor's, since a
+// parent may be of another project than its child: an issue who may not see answers as an issue no
+// row has, so key itself hidden answers [], and the walk stops below the first ancestor who may not
+// see, which with its ancestors is left out. All in one statement, so a hidden parent costs the rows
+// a parent nobody holds costs.
+func IssueAncestorsAsSeen(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
+	ancestors := []string{}
+	if key == "" {
+		return ancestors, nil
+	}
+	if err := q.QueryRow(ctx, `
+		with recursive ancestors as (
+			select p.key, p.parent_key, 1 as depth
+			from issues i join issues p on p.key = i.parent_key
+			where i.key = $1 and `+VisibleKind("issue", "i.key", "$3")+` and `+VisibleKind("issue", "p.key", "$3")+`
+			union
+			select i.key, i.parent_key, a.depth + 1
+			from issues i join ancestors a on i.key = a.parent_key
+			where a.depth < $2 and `+VisibleKind("issue", "i.key", "$3")+`
+		)
+		select coalesce(array_agg(key order by depth), '{}') from ancestors
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&ancestors); err != nil {
 		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
 	}
 	return ancestors, nil

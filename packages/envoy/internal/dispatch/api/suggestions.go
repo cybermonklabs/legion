@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -186,7 +187,8 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // answered ask a check offers carries the display tree of its answer. Each check reads its
 // trees through a reader of its own, resolved on that check's goroutine and before
 // running.Wait answers: the checks run side by side, and one reader is registered with and
-// resolved on one goroutine alone (text_trees.go).
+// resolved on one goroutine alone (text_trees.go). who is the editor as a reader, whose viewer
+// every check binds (relatedInput.who).
 func (s *server) decisionBlockChecks(
 	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor, who model.Actor, trees bool,
 ) []decisionBlockCheck {
@@ -449,7 +451,7 @@ func (s *server) runRelatedCheck(
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
-		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
+		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, input.who, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
 		switch {

@@ -233,6 +233,13 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
 }
 
+// unservedFields names the fields of an answer's Go type that no answer carries, each with why,
+// so the document declares no property a client would wait for and never read. Its key is the
+// object that carries the field, an embedded struct's fields included (rawFieldKeyOf), so one row
+// leaves out a field and the embedded one it shadows alike. A row naming no field of any type the
+// document describes fails the emit, as a stale rawFieldSchemas row does.
+var unservedFields = map[rawFieldKeyOf]string{}
+
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
 var (
 	openAPITimestamp = map[string]any{

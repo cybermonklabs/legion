@@ -94,7 +94,7 @@ func seedNothingToEmbed(t *testing.T, q querier, project string) (documentID, co
 // of the items whose text has nothing to embed, in any kind or in total.
 func requireOnlyTheIssueCounted(t *testing.T, database *store.Store, identity string) {
 	t.Helper()
-	report, err := Coverage(context.Background(), database, identity)
+	report, err := Coverage(context.Background(), database, identity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestATextThatChangesBetweenEmptyAndRealIsSettledThenEmbedded(t *testing.T) 
 		t.Errorf("embedder calls after the title emptied = %q, want only the first title's", embedder.calls)
 	}
 	requireSettledWithNoVector(t, database, "issue", "FLIP-1", configuredIdentity)
-	if report, err := Coverage(ctx, database, configuredIdentity); err != nil || report.Total.Items != 0 || report.Total.Failed != 0 {
+	if report, err := Coverage(ctx, database, configuredIdentity, everyProject); err != nil || report.Total.Items != 0 || report.Total.Failed != 0 {
 		t.Errorf("coverage with the title empty = %+v, %v; want no item", report.Total, err)
 	}
 
@@ -238,7 +238,7 @@ func TestATextThatChangesBetweenEmptyAndRealIsSettledThenEmbedded(t *testing.T) 
 	if row := readSettledRow(t, database, "issue", "FLIP-1"); !row.settled || !row.hasVector || row.dead || row.model != configuredIdentity {
 		t.Errorf("FLIP-1 = %+v, want embedded with a vector by %q", row, configuredIdentity)
 	}
-	if report, err := Coverage(ctx, database, configuredIdentity); err != nil || report.Total.Items != 1 || report.Total.Current != 1 {
+	if report, err := Coverage(ctx, database, configuredIdentity, everyProject); err != nil || report.Total.Items != 1 || report.Total.Current != 1 {
 		t.Errorf("coverage with the title real again = %+v, %v; want one item, current", report.Total, err)
 	}
 }
@@ -328,7 +328,7 @@ func TestCoverSettlesADeadRowWithNothingToEmbed(t *testing.T) {
 	requireNoBlankText(t, embedder.calls)
 	requireSettledWithNoVector(t, database, "issue", "DBLK-1", configuredIdentity)
 	requireSettledWithNoVector(t, database, "issue", "DBLK-2", configuredIdentity)
-	report, err := Coverage(context.Background(), database, configuredIdentity)
+	report, err := Coverage(context.Background(), database, configuredIdentity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}

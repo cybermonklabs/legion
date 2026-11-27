@@ -23,6 +23,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -51,7 +53,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
-	"golang.org/x/sync/singleflight"
 )
 
 // issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
@@ -143,6 +144,10 @@ type Deps struct {
 	// not verify, is refused there as every route refuses it (401 NO_IDENTITY for none), and
 	// every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
+	// BusProjects writes the private-projects record the listeners hold a private project's
+	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
+	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
+	BusProjects BusProjects
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -321,6 +326,8 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// BusProjects is Deps.BusProjects.
+	BusProjects BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -449,6 +456,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
+		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
@@ -595,6 +603,10 @@ type server struct {
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
+	// sessionTies is each (session, person) pair a broker-issued token proved that this process
+	// has recorded in session_owners (tieBrokerSession), so a session's every request does not
+	// write it again.
+	sessionTies tiedSessions
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
 	// which shares nothing with another process and runs a hook on itself.
@@ -978,16 +990,21 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		s.liveSocketHandler(s.serveLiveSocket))
 	// An access change made by SQL alone appends no event and announces nothing the document
 	// service hears, so it re-checks its sockets' access on their heartbeat too, until lifetime
-	// ends (docs.Service.RunAccessRecheck). The refresh of the stored listener answer it makes
-	// before each read of a person's rooms (docs.Service.SetRosterRefresh) is set from S3c-issues
-	// on, the slice that brings that refresh (refreshRosterForContent); until then nothing sets it,
-	// and the session content rule reads the stored answer as it stands.
+	// ends (docs.Service.RunAccessRecheck).
 	if recheck, ok := deps.Docs.(interface {
 		RunAccessRecheck(context.Context, time.Duration)
 	}); ok {
 		// It runs until lifetime ends and waitBackground does not wait for it: shutdown may wait
 		// with lifetime still running, and a pass reads only for the sockets this process holds.
 		go recheck.RunAccessRecheck(lifetime, cmp.Or(deps.StreamHeartbeat, defaultStreamHeartbeat))
+	}
+	// A session's documents follow the session content rule, which reads the stored listener
+	// answer only while it is fresh, so the document service refreshes it before each read of
+	// a socket's rule, as the live agent view does (refreshRosterForContent).
+	if refresh, ok := deps.Docs.(interface {
+		SetRosterRefresh(func(context.Context))
+	}); ok {
+		refresh.SetRosterRefresh(s.refreshRosterForContent)
 	}
 	return s
 }

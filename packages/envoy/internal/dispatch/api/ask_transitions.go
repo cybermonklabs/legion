@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -587,7 +588,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	if err := s.requireOpenOwner(ctx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, err
 	}
-	ask, err := s.readAskForTransition(ctx, tx, id)
+	ask, err := s.readAskForTransition(ctx, tx, who, id)
 	if err != nil {
 		return model.Ask{}, err
 	}

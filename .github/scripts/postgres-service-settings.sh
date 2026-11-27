@@ -9,7 +9,7 @@
 # .github/workflows must carry. .github/scripts/check-workflow-files.sh (rule 7) runs this form and
 # refuses a Postgres service whose `command:` is any other line; it refuses the lines that differ
 # and writes none of them, so a change to a setting edits this file and each Postgres service's
-# `command:` with it (16 services in 14 files at this writing; the check names each one it
+# `command:` with it (17 services in 15 files at this writing; the check names each one it
 # refuses). The second form reads each setting back from the server in the container and fails
 # unless each is what the command line asks for. Every job with a Postgres service runs it in its
 # step "Read the service's settings back", and check-workflow-files.sh refuses a job with no such

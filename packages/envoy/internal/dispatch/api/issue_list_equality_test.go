@@ -186,11 +186,12 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 			// Main's statement carries the eight filters it had, where the listing carries nine
 			// more behind them — the closed window's two, the `advances` keys' three, the move
 			// read's gate, `own` and the two strings of the label filter's map — named here as
-			// the request that asks for none of them: the rows the two read are then the same
-			// rows. Main's status filter is one value and the listing's a list, so the request
-			// naming no status passes each its own empty one.
+			// the request that asks for none of them, and the viewer, the server's own, which
+			// sees every project: the rows the two read are then the same rows. Main's status
+			// filter is one value and the listing's a list, so the request naming no status
+			// passes each its own empty one.
 			oracleArguments := slices.Clone(filters)
-			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false, false, "", "")
+			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader))
 			arguments[1] = []string{}
 			if listing.pinnedBy != "" {
 				oracleArguments = append(oracleArguments, listing.pinnedBy)
@@ -268,7 +269,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve main's repository for %s: %v", key, err)
 		}
-		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, key)
+		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, everyReader, key)
 		if err != nil {
 			t.Fatalf("read %s: %v", key, err)
 		}

@@ -8,6 +8,7 @@ import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { api, isRetryableQueryError } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { liveSocketFor } from "../../api/live-socket";
+import { whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
 import type { CredentialPendingResponse } from "../../api/types";
@@ -100,6 +101,41 @@ test("a Dispatch with no broker is asked once per load, even when that answer be
     expect(await screen.findByText("Nothing needs you")).toBeTruthy();
     expect(screen.queryByText("Couldn't load credential requests.")).not.toBeInTheDocument();
     expect(getCredentialPending).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A restricted member reads only the projects that name them, and the credential list is the
+// deployment's (403 DEPLOYMENT_READ_REFUSED): the Inbox never asks them for it, and holds it as
+// absent, as on a Dispatch with no broker, so their empty Inbox says that nothing needs them
+// rather than that a list failed to load. The shell holds `/auth/whoami`'s answer before any page.
+test("a restricted member is never asked for the credential list, and their empty Inbox says so", async () => {
+  const bob = {
+    event_head: "0",
+    kind: "user",
+    login: "bob@outside.example",
+    member_kind: "restricted",
+  } as const;
+  whoAmI.mockResolvedValue(bob);
+  const queryClient = productionQueryClient();
+  queryClient.setQueryData(whoAmIQuery().queryKey, bob);
+  const view = render(shell(queryClient, <Inbox />));
+  try {
+    expect(await screen.findByText("Nothing needs you")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load credential requests.")).not.toBeInTheDocument();
+    // A focus and a stream refresh read every query again; neither reaches the list.
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    act(() => refreshQueries(queryClient));
+    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Nothing needs you")).toBeTruthy();
+    expect(getCredentialPending).not.toHaveBeenCalled();
   } finally {
     view.unmount();
   }

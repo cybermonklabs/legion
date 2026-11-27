@@ -223,6 +223,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"frontDoorPdbMinAvailable", func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(1) }},
 		{"listenerPdbMinAvailable", func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(1) }},
 		{"allowedNamespaces", func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy"} }},
+		{"allowedApps", func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy-broker"} }},
 		{"azureEmbedEndpoint", func(a *gcp.DispatchArgs) { a.AzureEmbedEndpoint = pulumi.String(azureEmbedEndpoint) }},
 		{"azureEmbedDeployment", func(a *gcp.DispatchArgs) { a.AzureEmbedDeployment = pulumi.String("example-embed-deployment") }},
 		{"azureEmbedTokensPerMinute", func(a *gcp.DispatchArgs) { a.AzureEmbedTokensPerMinute = pulumi.IntRef(300000) }},

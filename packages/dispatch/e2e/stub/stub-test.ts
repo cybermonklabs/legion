@@ -96,8 +96,11 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
  *
  *  `seed` is the API seeding the rows need, run against the real harness in record mode and never
  *  in replay. What it returns is written beside the recording as JSON and handed back to the row,
- *  so the row names no server-minted id of its own. */
-export function stubbed<Scene>(seed: () => Promise<Scene>) {
+ *  so the row names no server-minted id of its own. `login` is the person the page is signed in
+ *  as while it records, alice unless the file's rows are about someone else's view: the recording
+ *  then answers `/auth/whoami`, and every other read, as Dispatch answered that person. The
+ *  sign-in comes before the seed, so a seed may change what the person is. */
+export function stubbed<Scene>(seed: () => Promise<Scene>, login = "alice") {
   /** The rows whose `scene` was set up, by Playwright's own id for the row. A row that takes
    *  no `scene` never runs that fixture, which is half of what the guard below reads. */
   const scened = new Set<string>();
@@ -189,7 +192,7 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       const { resetDatabase } = await import("../seed");
       const { signIn } = await import("../users");
       await resetDatabase();
-      await signIn(context, "alice");
+      await signIn(context, login);
       const value = await seed();
       const scene = recordingPath(test, ".scene.json");
       mkdirSync(dirname(scene), { recursive: true });

@@ -15,8 +15,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -90,6 +93,52 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // nothing appends to another credential's scopes. Read it, never write it: every daemon's
 // credential shares this one slice.
 var legionStatusScopes = []string{model.ScopeLegionStatus}
+
+// maxTiedSessions bounds tiedSessions: once it holds this many pairs it starts again empty, which
+// costs a later request of each pair one statement that finds its row and writes nothing.
+const maxTiedSessions = 1 << 16
+
+// tiedSessions is each (session, person) pair this process has recorded in session_owners
+// (tieBrokerSession). A row there is never removed, so a pair held here is one the table holds.
+type tiedSessions struct {
+	mu   sync.Mutex
+	held map[string]struct{}
+}
+
+// tieBrokerSession records that session acts for person, whom a broker-issued token proved
+// (access.TieSession), and records each private project the token's list covers as one the
+// session reached (access.RecordListedReach): the session reads under that list from this request
+// on, and the listener's record of the list is only sampled, so a token traded to a wider list
+// and back between two samples would otherwise leave nothing saying what the session could read.
+// A pair, and a list, this process recorded already is not written again. A server with no
+// database records nothing: it relays no agent view either.
+func (s *server) tieBrokerSession(ctx context.Context, session, person string, projects []string) error {
+	login := model.CanonicalLogin(person)
+	if session == "" || login == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return nil
+	}
+	pair := session + "\x00" + login + "\x00" + strings.Join(projects, ",")
+	ties := &s.sessionTies
+	ties.mu.Lock()
+	_, held := ties.held[pair]
+	ties.mu.Unlock()
+	if held {
+		return nil
+	}
+	if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
+		return err
+	}
+	if err := access.RecordListedReach(ctx, s.deps.Store.Pool, session, projects); err != nil {
+		return err
+	}
+	ties.mu.Lock()
+	defer ties.mu.Unlock()
+	if ties.held == nil || len(ties.held) >= maxTiedSessions {
+		ties.held = make(map[string]struct{})
+	}
+	ties.held[pair] = struct{}{}
+	return nil
+}
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to

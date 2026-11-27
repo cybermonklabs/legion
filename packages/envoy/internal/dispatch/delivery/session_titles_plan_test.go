@@ -72,9 +72,10 @@ func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 // The session titles read reads session_titles by its primary key and no row of events: the title
 // a page shows is stored where it is stamped (dispatch://INFRA-2916, R13), where resolving it out
 // of events read that table on each page read (resolveSessionTitlesQuery says what that cost). The
-// plan is `EXPLAIN (ANALYZE, BUFFERS)` of the read as ResolveSessionTitles sends it, and the read
-// answers the titled session alone: no row for a session that never stamped a title, none for one
-// the events table never heard of, and nothing from a person's actor that shares a session's id.
+// plan is `EXPLAIN (ANALYZE, BUFFERS)` of the read as ResolveSessionTitles sends it under a rule
+// that binds no viewer (events.EveryEvent), and the read answers the titled session alone: no row
+// for a session that never stamped a title, none for one the events table never heard of, and
+// nothing from a person's actor that shares a session's id.
 func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
@@ -90,7 +91,7 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 	// its first column, the session.
 	explaintest.NewIndexKeys(pool).RequireIndexKeyed(t, plan, "session_titles_pkey", "the session titles read", explaintest.CondOptional)
 
-	titles, err := ResolveSessionTitles(ctx, pool, sessionTitlePlanSessions)
+	titles, err := ResolveSessionTitles(ctx, pool, sessionTitlePlanSessions, events.EveryEvent)
 	if err != nil {
 		t.Fatalf("ResolveSessionTitles: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestARetitleChangesTheStoredTitleInTheEventsOwnTransaction(t *testing.T) {
 	}
 	titleOf := func(t *testing.T) string {
 		t.Helper()
-		titles, err := ResolveSessionTitles(ctx, pool, []string{session})
+		titles, err := ResolveSessionTitles(ctx, pool, []string{session}, events.EveryEvent)
 		if err != nil {
 			t.Fatalf("ResolveSessionTitles: %v", err)
 		}

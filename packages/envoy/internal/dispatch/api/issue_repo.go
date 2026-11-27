@@ -49,6 +49,30 @@ func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bo
 	return &canonical, true, nil
 }
 
+// refuseRepoOfRestrictedMember refuses an issue write by a restricted member, or by a credential
+// acting for one, that names `repo` at all, a string or null, and answers whether it did. An issue's
+// own repository may name any owner/name, and every repository an issue resolves to is one its
+// project owns (refs.ProjectRepositoriesSQL), which a viewer that is not open reads through the
+// GitHub proxy, the App-installation route and the Delivery views once a project it sees owns it
+// (refs.RepositoryClause): a restricted member who named one could make any repository the App
+// reaches theirs to read. So their issues take the repository they resolve to, their nearest
+// parent's or their project's default, and a restricted member sets no issue's own, nor changes or
+// clears one a full member set. A full member's write is refused nothing here and answers as
+// before (R9).
+//
+// It is 403 RESTRICTED_MEMBER, the code a restricted member's write of the deployment is refused
+// with (refuseDeploymentWrite), and it runs before the write reads the issue, its project or its
+// parent and before anything is written: it depends on the caller and the body alone, so it
+// answers alike for an issue or a project the caller does not see and for one nobody holds.
+func refuseRepoOfRestrictedMember(w http.ResponseWriter, who model.Actor, raw json.RawMessage) bool {
+	if len(raw) == 0 || who.Viewer == nil || !who.Viewer.Restricted {
+		return false
+	}
+	writeError(w, codeRestrictedMember, http.StatusForbidden,
+		"a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository")
+	return true
+}
+
 // codeRepositoryNotAvailable is the code refuseRepoHidden refuses a write with.
 const codeRepositoryNotAvailable = "REPOSITORY_NOT_AVAILABLE"
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -43,7 +45,9 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 			`, messageID, state); err != nil {
 				t.Fatalf("seed the %s delivery: %v", state, err)
 			}
-			items, err := List(ctx, database.Pool, "reader-"+state, time.Now().Add(-time.Hour))
+			// Read as the server's own reader, which sees every project and every party.
+			items, err := List(ctx, database.Pool, refs.VisibilityArg(model.ServerReader),
+				"reader-"+state, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatalf("list what reached the session: %v", err)
 			}
@@ -143,16 +147,19 @@ func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
 	}
 
 	since := time.Now().Add(-72 * time.Hour)
-	if custom := explain(query, "session-1", since, "notifications.agent.session-1"); !readsWindow(t, custom) {
+	// A viewer that sees one project and is not the server's own, so the read's rules are planned
+	// rather than folded away.
+	const viewer = `{"person": "alice", "sees": ["P"], "open": true, "all": false, "private": true}`
+	if custom := explain(query, "session-1", since, "notifications.agent.session-1", []byte(viewer)); !readsWindow(t, custom) {
 		t.Errorf("the custom plan reads message deliveries other than by an index-only scan of message_deliveries_session_taken over the window's range:\n%s", custom)
 	}
-	if _, err := tx.Exec(ctx, "prepare session_answers (text, timestamptz, text) as "+query); err != nil {
+	if _, err := tx.Exec(ctx, "prepare session_answers (text, timestamptz, text, jsonb) as "+query); err != nil {
 		t.Fatalf("prepare the read: %v", err)
 	}
 	if _, err := tx.Exec(ctx, "set local plan_cache_mode = force_generic_plan"); err != nil {
 		t.Fatalf("force generic plans: %v", err)
 	}
-	if generic := explain(`execute session_answers('session-1', now() - interval '72 hours', 'notifications.agent.session-1')`); !readsWindow(t, generic) {
+	if generic := explain(`execute session_answers('session-1', now() - interval '72 hours', 'notifications.agent.session-1', '` + viewer + `')`); !readsWindow(t, generic) {
 		t.Errorf("the generic plan reads message deliveries other than by an index-only scan of message_deliveries_session_taken over the window's range:\n%s", generic)
 	}
 }

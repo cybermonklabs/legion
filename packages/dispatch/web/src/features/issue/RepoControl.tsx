@@ -5,6 +5,7 @@ import { projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   dangerText,
   focusBorder,
@@ -179,6 +180,13 @@ export type RepoControlFailure = {
  * the clear control's included, where that focus fell to the document with it. Outside a row of
  * Details the box is drawn whether or not a repository resolves, and its description says
  * `No repository` when none does.
+ *
+ * A restricted member (`useRestrictedMember`) is drawn the repository the issue resolves to as
+ * text, the words the box's description says (`No repository` when none resolves, `None` in a row
+ * of Details), and no box and no clear control: Dispatch refuses such a person every write that
+ * names an issue's `repo` (403 RESTRICTED_MEMBER, `refuseRepoOfRestrictedMember` in
+ * `issue_repo.go`), so the control offers them none, as their Agents page offers no broadcast and
+ * their Settings no project create and no default-repository control.
  */
 export function RepoControl({
   disabled = false,
@@ -213,6 +221,7 @@ export function RepoControl({
    *  passes it, and the page's word list loads with that page alone (`components/tooltips.tsx`). */
   sayFailure?: (failure: RepoControlFailure) => ReactNode;
 }): ReactNode {
+  const restricted = useRestrictedMember();
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
@@ -386,6 +395,37 @@ export function RepoControl({
   const clearPlace = inDetails
     ? "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8"
     : "absolute inset-y-0 right-0 inline-flex w-8";
+  if (restricted) {
+    // The box's description in words, the repository in the box's font; in a row of Details,
+    // "None" while none resolves, as every empty row of Details reads.
+    return (
+      <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
+        {inDetails ? null : (
+          <span className="font-medium" {...page?.pageChrome}>
+            {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
+          </span>
+        )}
+        <span className="min-w-0 max-w-full [overflow-wrap:anywhere]" {...page?.pageChrome}>
+          {resolvedRepo === null ? (
+            inDetails ? (
+              page.CONTROL_LABELS.none
+            ) : (
+              (page?.CONTROL_LABELS.no_repository ?? description)
+            )
+          ) : (
+            <>
+              <span className="font-mono text-xs" {...page?.authorText}>
+                {resolvedRepo}
+              </span>
+              {repo === null
+                ? `, ${page?.CONTROL_LABELS.repository_inherited ?? "inherited or the project's default"}`
+                : null}
+            </>
+          )}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
       {inDetails ? null : (

@@ -402,14 +402,14 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 		read func(tx pgx.Tx, caller, key string) error
 	}{
 		{"readCreateParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
-			_, _, err := readCreateParent(ctx, tx, caller, key)
+			_, _, err := readCreateParent(ctx, tx, everyReader, caller, key)
 			return err
 		}},
 		{"validateIssueParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
-			return validateIssueParent(ctx, tx, own, caller, key)
+			return validateIssueParent(ctx, tx, everyReader, own, caller, key)
 		}},
 		{"writeBlockedBy", "BLOCKED_BY_INPUT", func(tx pgx.Tx, caller, key string) error {
-			return writeBlockedBy(ctx, tx, own, brokerTestProject, caller, []string{key})
+			return writeBlockedBy(ctx, tx, own, brokerTestProject, everyReader, caller, []string{key})
 		}},
 	} {
 		t.Run(site.name, func(t *testing.T) {

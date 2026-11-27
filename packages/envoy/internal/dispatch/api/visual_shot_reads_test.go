@@ -41,13 +41,13 @@ import (
 // itself - a read of the API, a view of the live socket, a document's room - each with every table
 // the server may write while it answers that way, and what makes that write no change a later
 // shot draws. Each table is one this test sees written on that channel; a write to any other
-// table fails it. None of them holds a document version or an event (a settlement a room owed),
+// table fails it. None of them holds a document version or an event (a settlement a room owed), or
 // pull_request_heads or the attribution events beside it (GET /issues/{key}/results asking GitHub
-// which pull request holds a commit), or route_roster (the suite's server stores no copy of the
-// listener's sessions).
+// which pull request holds a commit).
 var shotWriteChannels = map[string]map[string]string{
 	shotReadChannel: {
-		"text_trees": "the display-tree cache a read with Dispatch-Trees: 1 fills, built from what Dispatch holds",
+		"text_trees":   "the display-tree cache a read with Dispatch-Trees: 1 fills, built from what Dispatch holds",
+		"route_roster": "the stored copy of the listener's sessions, which a read of the roster stores even uncached, so the session rule's projection records each listener session (readRouteRosterLeaving): a copy of what the listener answered, which no page draws",
 	},
 	shotLiveChannel: {
 		"event_horizon":         "the event log's shared safe horizon the event feed reads up to, persisted at most once an interval: a cursor, which no page draws",

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -137,7 +138,7 @@ func artifactReference(document model.Artifact) string {
 // who reads it. An issue with none, an issue that does not exist and an issue who does not see
 // answer found false: the view is a read, and an issue with no spec simply holds no decision link.
 func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
-	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, s.deps.Store.Pool.QueryRow(ctx, `
+	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, who, s.deps.Store.Pool.QueryRow(ctx, `
 		select `+artifactColumns+`
 		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+access.DocumentClause("artifacts", "$2")+`
 	`, key, refs.VisibilityArg(who)))
@@ -191,10 +192,10 @@ func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		select `+askReadColumns+` `+askReadFromSeenBy("$3")+`
+		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+access.IssueProjectClause("$1", "$3")+`
 		order by a.created_at, a.id
-	`, key, specID)
+	`, key, specID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -227,11 +228,11 @@ func (s *server) specOpenQuestions(
 	return questions, nil
 }
 
-// readDecisions builds every decision of the decisions document: its sections from the document's
-// own blocks, its links from the block graph (refs.BlockLinks), its asks from the block mentions
-// its blocks hold, and its keeps from decision_keeps, a keep's text read through the version it
-// names where its sum is not the decision's (markKeptAcrossRenderers). specID is "" when the
-// issue has no spec, and every decision then has no links.
+// readDecisions builds every decision of the decisions document as who reads it: its sections
+// from the document's own blocks, its links from the block graph (refs.BlockLinks), its asks from
+// the block mentions its blocks hold, and its keeps from decision_keeps, a keep's text read
+// through the version it names where its sum is not the decision's (markKeptAcrossRenderers).
+// specID is "" when the issue has no spec, and every decision then has no links.
 //
 // The document is cut into its decisions at most once a view (decisionCuts), and that cut is the
 // one reader of the document as it stands for both the keeps and the links (markStaleLinks): each
@@ -256,6 +257,7 @@ func (s *server) specOpenQuestions(
 func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
+	viewer := refs.VisibilityArg(who)
 	markdown, sections, err := s.decisionSections(ctx, who, document.ID)
 	if err != nil {
 		return nil, err
@@ -270,11 +272,11 @@ func (s *server) readDecisions(
 			return nil, err
 		}
 	}
-	asks, err := decisionBlockAsks(ctx, s.deps.Store.Pool, document.ID)
+	asks, err := decisionBlockAsks(ctx, s.deps.Store.Pool, viewer, document.ID)
 	if err != nil {
 		return nil, err
 	}
-	keeps, err := decisionKeeps(ctx, s.deps.Store.Pool, document.ID)
+	keeps, err := decisionKeeps(ctx, s.deps.Store.Pool, viewer, document.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -345,11 +347,11 @@ func (s *server) readDecisions(
 		}
 		keys[i] = key
 	}
-	versions, err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, current)
+	versions, err := s.markKeptAcrossRenderers(ctx, viewer, document.ID, decisions, keys, current)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.markStaleLinks(ctx, document.ID, decisions, keys, current, versions); err != nil {
+	if err := s.markStaleLinks(ctx, viewer, document.ID, decisions, keys, current, versions); err != nil {
 		return nil, err
 	}
 	return decisions, nil
@@ -379,7 +381,7 @@ func (s *server) readDecisions(
 // (pmdoc.FragmentReadsAs), is compared by its sum alone. keepsRead is the versions the keeps' pass
 // read (markKeptAcrossRenderers), which storedDecisionsAt takes rather than reading them again.
 func (s *server) markStaleLinks(
-	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	ctx context.Context, viewer any, artifactID string, decisions []model.Decision, keys []sectionKey,
 	current documentCut, keepsRead map[int]storedDecisions,
 ) error {
 	times := map[int64]time.Time{}
@@ -395,14 +397,14 @@ func (s *server) markStaleLinks(
 	if len(numbers) == 0 {
 		return nil
 	}
-	atTime, err := s.versionsAtTimes(ctx, artifactID, sortedTimes(times))
+	atTime, err := s.versionsAtTimes(ctx, viewer, artifactID, sortedTimes(times))
 	if err != nil {
 		return err
 	}
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current, keepsRead)
+	versions, err := s.storedDecisionsAt(ctx, viewer, artifactID, sortedNumbers(numbers), current, keepsRead)
 	if err != nil {
 		return err
 	}
@@ -467,9 +469,10 @@ func staleLink(link model.DecisionLink, heldAt func(number int) (read, held bool
 
 // versionsAtTimes is, for each time, the document's greatest version written at or before it:
 // the version of decisions.md that stood when a spec block changed, keyed by the time's own
-// instant. A time before the document's first version answers 0.
+// instant. A time before the document's first version answers 0, and so does every time of a
+// document viewer does not see.
 func (s *server) versionsAtTimes(
-	ctx context.Context, artifactID string, times []time.Time,
+	ctx context.Context, viewer any, artifactID string, times []time.Time,
 ) (map[int64]int, error) {
 	at := map[int64]int{}
 	if len(times) == 0 {
@@ -480,10 +483,10 @@ func (s *server) versionsAtTimes(
 		from unnest($2::timestamptz[]) with ordinality as asked(at, ord)
 		left join lateral (
 			select v.number from artifact_versions v
-			where v.artifact_id = $1::uuid and v.created_at <= asked.at
+			where v.artifact_id = $1::uuid and v.created_at <= asked.at and `+documentVisible("$1::uuid", "$3")+`
 			order by v.number desc limit 1
 		) version on true
-	`, artifactID, times)
+	`, artifactID, times, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -626,13 +629,14 @@ func sliceMarkdown(markdown string, from, to int) string {
 }
 
 // decisionBlockAsks is each block of the decisions document that mentions an ask, with the asks it
-// mentions: the block index's own record of what the document's text cites.
-func decisionBlockAsks(ctx context.Context, q queryer, artifactID string) (map[string][]string, error) {
+// mentions: the block index's own record of what the document's text cites, read as viewer reads
+// it.
+func decisionBlockAsks(ctx context.Context, q queryer, viewer any, artifactID string) (map[string][]string, error) {
 	rows, err := q.Query(ctx, `
 		select block_id, to_id from block_refs
-		where artifact_id = $1::uuid and to_kind = 'ask' and kind = 'mentions'
+		where artifact_id = $1::uuid and to_kind = 'ask' and kind = 'mentions' and `+documentVisible("$1::uuid", "$2")+`
 		order by block_id, to_id
-	`, artifactID)
+	`, artifactID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -648,12 +652,13 @@ func decisionBlockAsks(ctx context.Context, q queryer, artifactID string) (map[s
 	return asks, rows.Err()
 }
 
-// decisionKeeps is every decision of the document a person has kept, by heading block.
-func decisionKeeps(ctx context.Context, q queryer, artifactID string) (map[string]model.DecisionKeep, error) {
+// decisionKeeps is every decision of the document a person has kept, by heading block, read as
+// viewer reads it.
+func decisionKeeps(ctx context.Context, q queryer, viewer any, artifactID string) (map[string]model.DecisionKeep, error) {
 	rows, err := q.Query(ctx, `
 		select block_id, text_sha256, changed_version, kept_by, kept_at
-		from decision_keeps where artifact_id = $1::uuid
-	`, artifactID)
+		from decision_keeps where artifact_id = $1::uuid and `+documentVisible("$1::uuid", "$2")+`
+	`, artifactID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -803,8 +808,9 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	var version *int
 	var at *time.Time
 	err = s.deps.Store.Pool.QueryRow(r.Context(), `
-		select version, read_at from user_document_reads where login = $1 and artifact_id = $2::uuid
-	`, model.CanonicalLogin(actor.ID), document.ID).Scan(&version, &at)
+		select version, read_at from user_document_reads
+		where login = $1 and artifact_id = $2::uuid and `+documentVisible("$2::uuid", "$3")+`
+	`, model.CanonicalLogin(actor.ID), document.ID, refs.VisibilityArg(who)).Scan(&version, &at)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.writeHandlerError(w, err)
 		return

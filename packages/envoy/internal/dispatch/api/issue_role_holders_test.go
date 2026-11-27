@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -144,8 +145,9 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 }
 
 // Under a credential that proves no session, only the daemon's own session for the issue's project
-// writes the set. A role session, the daemon of another project and a person are each refused, and
-// no row is written.
+// writes the set. A role session, the daemon of another project and a person are each refused, in
+// the words the route has always refused them in (R9: a deployment with no private project answers
+// as before), and no row is written.
 func TestUnderACredentialThatProvesNoSessionOnlyTheIssuesDaemonNamesTheRoleHolders(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -165,10 +167,10 @@ func TestUnderACredentialThatProvesNoSessionOnlyTheIssuesDaemonNamesTheRoleHolde
 			"holders": holders, "actor": daemonSessionOf("ACME"),
 		}, "alice"),
 	}
+	want := fmt.Sprintf(`{"code":"ROLE_HOLDER_FORBIDDEN","error":"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project ACME, as session legion-daemon:ACME, or another project's daemon, as session legion-daemon:\u003cP\u003e with a broker token that names P and proves that session."}`, issue)
 	for caller, response := range refusals {
-		code, _ := refusalOf(t, response)
-		if response.Code != http.StatusForbidden || code != "ROLE_HOLDER_FORBIDDEN" {
-			t.Errorf("%s: status=%d body=%s, want 403 ROLE_HOLDER_FORBIDDEN", caller, response.Code, response.Body.String())
+		if body := strings.TrimSpace(response.Body.String()); response.Code != http.StatusForbidden || body != want {
+			t.Errorf("%s: status=%d body=%s, want 403 %s", caller, response.Code, body, want)
 		}
 	}
 	if count := countRoleHolders(t, database); count != 0 {

@@ -715,15 +715,22 @@ func TestAStepAndItsCommentCommitTogether(t *testing.T) {
 	child := rig.file(t, "Child that holds the close", "todo", parent)
 	body := "Dispatch closed this issue once " + child + " was done."
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	served := directServer(rig.deps)
+	// The write reads its issues as alice's PATCH reads them, through her browser's credential
+	// (issueWriteCall.who).
+	who, err := served.readerFor(ctx, model.BrowserActor(alice.ID))
+	if err != nil {
+		t.Fatalf("resolve alice's reader: %v", err)
+	}
 	call := issueWriteCall{
 		writer:      issueWriter{actor: alice, human: true},
+		who:         who,
 		key:         parent,
 		fields:      updateIssueInput{Status: new("done")},
 		outliving:   ctx,
 		adviceRoute: "PATCH /api/v1/issues/{key}",
 		comment:     &issueComment{author: parentStatusRuleActor, words: func(model.Issue) string { return body }},
 	}
-	served := directServer(rig.deps)
 
 	// storedRow is a row of the comment as stored: a comment, an event or a reference, with the
 	// transaction that wrote it.

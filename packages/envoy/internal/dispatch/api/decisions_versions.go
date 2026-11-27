@@ -35,7 +35,7 @@ import (
 // only a keep whose text there has the keep's sum also pays pmdoc.FragmentReadsAs. It answers
 // every version it read, for the links' pass (markStaleLinks).
 func (s *server) markKeptAcrossRenderers(
-	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	ctx context.Context, viewer any, artifactID string, decisions []model.Decision, keys []sectionKey,
 	current documentCut,
 ) (map[int]storedDecisions, error) {
 	// A candidate is a decision waiting for review that a keep names and that stands alone now.
@@ -52,7 +52,7 @@ func (s *server) markKeptAcrossRenderers(
 	if len(numbers) == 0 {
 		return nil, nil
 	}
-	versions, err := s.otherRendererDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current)
+	versions, err := s.otherRendererDecisionsAt(ctx, viewer, artifactID, sortedNumbers(numbers), current)
 	if err != nil {
 		return nil, err
 	}
@@ -98,18 +98,19 @@ func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 }
 
 // storedDecisionsQuery reads the number, renderer version and markdown of the named versions of a
-// document, the columns scanStoredDecisions scans in that order.
-const storedDecisionsQuery = `
+// document, the columns scanStoredDecisions scans in that order, of a document the viewer bound at
+// $3 may read (documentVisible): a document it does not see holds no version.
+var storedDecisionsQuery = `
 	select number, renderer_version, coalesce(markdown, '') from artifact_versions
-	where artifact_id = $1::uuid and number = any($2::int[])`
+	where artifact_id = $1::uuid and number = any($2::int[]) and ` + documentVisible("$1::uuid", "$3")
 
 // storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
 // own stored markdown, cut by the same rule as the document as it stands, read beside the
 // renderer version that stored it. A version in keepsRead, which the keeps' pass read
 // (markKeptAcrossRenderers), is taken from there, and only the others are read, in one query
-// (scanStoredDecisions).
+// (scanStoredDecisions). A document viewer does not see holds no version.
 func (s *server) storedDecisionsAt(
-	ctx context.Context, artifactID string, numbers []int, current documentCut, keepsRead map[int]storedDecisions,
+	ctx context.Context, viewer any, artifactID string, numbers []int, current documentCut, keepsRead map[int]storedDecisions,
 ) (map[int]storedDecisions, error) {
 	versions := make(map[int]storedDecisions, len(numbers))
 	var unread []int
@@ -123,7 +124,7 @@ func (s *server) storedDecisionsAt(
 	if len(unread) == 0 {
 		return versions, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, storedDecisionsQuery, artifactID, unread)
+	rows, err := s.deps.Store.Pool.Query(ctx, storedDecisionsQuery, artifactID, unread, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -138,10 +139,10 @@ func (s *server) storedDecisionsAt(
 // decision otherwise than this build does: a version this renderer version stored is not read.
 // Its rows are cut as storedDecisionsAt's are (scanStoredDecisions).
 func (s *server) otherRendererDecisionsAt(
-	ctx context.Context, artifactID string, numbers []int, current documentCut,
+	ctx context.Context, viewer any, artifactID string, numbers []int, current documentCut,
 ) (map[int]storedDecisions, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, storedDecisionsQuery+`
-		and renderer_version is distinct from $3`, artifactID, numbers, pmdoc.RendererVersion)
+		and renderer_version is distinct from $4`, artifactID, numbers, viewer, pmdoc.RendererVersion)
 	if err != nil {
 		return nil, err
 	}

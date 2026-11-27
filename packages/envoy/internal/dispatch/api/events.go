@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -372,6 +373,9 @@ type eventListOptions struct {
 	limit      int
 }
 
+// readEvents reads one page of an issue's or a document's event log, of the events who may read
+// (eventReadableSQL): an owner of a project who does not see answers the empty page, as an owner
+// no row holds does.
 func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
 	var predicate, ownerValue string
 	switch {
@@ -382,39 +386,41 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 	default:
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
+	viewer := refs.VisibilityArg(who)
 	if len(options.ids) > 0 {
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+` and e.id = any($2)
+			where `+predicate+` and e.id = any($2) and `+eventReadableSQL("e", "$3")+`
 			order by e.seq asc
-		`, ownerValue, options.ids)
+		`, ownerValue, options.ids, viewer)
 	}
 	if options.descending {
 		if options.hasBefore {
 			return s.readEventRows(ctx, who, eventSelect+`
-				where `+predicate+` and e.seq < $2
+				where `+predicate+` and e.seq < $2 and `+eventReadableSQL("e", "$4")+`
 				order by e.seq desc limit $3
-			`, ownerValue, options.before, options.limit)
+			`, ownerValue, options.before, options.limit, viewer)
 		}
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+`
+			where `+predicate+` and `+eventReadableSQL("e", "$3")+`
 			order by e.seq desc limit $2
-		`, ownerValue, options.limit)
+		`, ownerValue, options.limit, viewer)
 	}
 	return s.readEventRows(ctx, who, eventSelect+`
-		where `+predicate+` and e.seq > $2
+		where `+predicate+` and e.seq > $2 and `+eventReadableSQL("e", "$4")+`
 		order by e.seq asc limit $3
-	`, ownerValue, options.after, options.limit)
+	`, ownerValue, options.after, options.limit, viewer)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
-// events whose ids are in (after, through]. Ids are not commit order, so a reader that moves its
-// cursor to a page's last row passes a through at or below the safe horizon (events.Horizon),
-// where every event is final: no lower id the page skipped can commit later.
+// events whose ids are in (after, through] that who may read (eventReadableSQL). Ids are not
+// commit order, so a reader that moves its cursor to a page's last row passes a through at or
+// below the safe horizon (events.Horizon), where every event is final: no lower id the page
+// skipped can commit later.
 func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, through int64, limit int) ([]model.Event, error) {
 	return s.readEventRows(ctx, who, eventSelect+`
-		where e.id > $1 and e.id <= $2
+		where e.id > $1 and e.id <= $2 and `+eventReadableSQL("e", "$4")+`
 		order by e.id asc limit $3
-	`, after, through, limit)
+	`, after, through, limit, refs.VisibilityArg(who))
 }
 
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up

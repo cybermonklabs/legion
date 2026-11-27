@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -88,6 +89,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member names no issue's repository (refuseRepoOfRestrictedMember): refused
+	// here, before the body's project, parent or external ref is read and before anything, the
+	// related-item record of an issue already imported included, is written.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -125,18 +132,19 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
 	// before the external ref is resolved to an issue already imported. Nothing is written before
 	// this point. A credential whose list holds its writes is refused a project its list does not
-	// cover (refuseOutsideCallerProjects). A credential that names one project creates an issue in
-	// every project that access.CredentialCovers covers. The one exception is a private project it
-	// does not name, whose visibility one statement reads here (projectVisibility). Such a caller
-	// gets here the 404 NOT_FOUND of a project that does not exist (pgx.ErrNoRows) for that project
-	// and for a project that no row holds. The checks before this one read no project, so the two
-	// get one answer whatever else the body holds, and the caller cannot tell them apart. It is
-	// refused here, so it is never answered with that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. A key that is
-	// empty or not a project key is left to its 400 below. callerProject is empty for a credential
-	// that names none, which is answered as before. The dependency lock step, the parent's read
-	// and writeBlockedBy below read it again, because neither a blocked_by target's project nor
-	// the parent's is part of this address.
+	// cover (refuseOutsideCallerProjects). A credential that lists none is refused nothing there;
+	// a project it does not see is the project read's missing row below. A credential that names
+	// one project creates an issue in every project that access.CredentialCovers covers. The one
+	// exception is a private project it does not name, whose visibility one statement reads here
+	// (projectVisibility). Such a caller gets here the 404 NOT_FOUND of a project that does not
+	// exist (pgx.ErrNoRows) for that project and for a project that no row holds. The checks
+	// before this one read no project, so the two get one answer whatever else the body holds, and
+	// the caller cannot tell them apart. It is refused here, so it is never answered with that
+	// project's issue, which respondWithExistingExternalIssue would also record a related-check
+	// outcome on. A key that is empty or not a project key is left to its 400 below.
+	// callerProject is empty for a credential that names none, which is answered as before. The
+	// dependency lock step, the parent's read and writeBlockedBy below read it again, because
+	// neither a blocked_by target's project nor the parent's is part of this address.
 	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
@@ -159,7 +167,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
 	// the reads under the locks ask again, the final check.
 	if scoped && (parentKey != "" || len(blockers) > 0) {
-		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, who, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -189,7 +197,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -273,7 +281,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if input.External == "" {
 		ancestors := []string{}
 		if parentKey != "" {
-			chain, err := refs.IssueAncestors(r.Context(), s.deps.Store.Pool, parentKey)
+			// As the caller sees it: a parent of a project the caller may not see costs the
+			// rows a parent nobody holds costs, and the create refuses both alike below.
+			chain, err := refs.IssueAncestorsAsSeen(r.Context(), s.deps.Store.Pool, who, parentKey)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -284,7 +294,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if input.Spec != nil {
 			spec = *input.Spec
 		}
-		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
+		outcome = s.runNearCopyGate(r.Context(), who, input.Project, input.Title, spec, ancestors, input.Force)
 		nearCopyRecord = newNearCopyCheckRow(s.newNearCopyRowID(), input.Project, actor, input.Title, spec, parentKey, outcome.Check)
 		if len(outcome.Refuse) > 0 {
 			if s.recordNearCopyRefusal(r.Context(), nearCopyRecord, outcome.Check) {
@@ -318,21 +328,33 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The body's project as the caller reads it, first and with nothing locked: a project it does
+	// not see is a project no row holds, and takes none of the locks below, so it never waits
+	// behind that project's writers, as a key no project holds never waits. Both are refused where
+	// a key no project holds always was: by the parent's read when the create names a parent,
+	// which no project the caller does not see can hold, and else at the project's read below.
+	var visible bool
+	if err := tx.QueryRow(r.Context(), `select exists (select 1 from projects where key = $1 and `+
+		access.ProjectClause("key", "$2")+`)`, input.Project, refs.VisibilityArg(who)).Scan(&visible); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
 	// takes none. The blockers and the parent may each be an issue of another project, whose
 	// dependency lock the write takes too.
-	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers, parentKey); err != nil {
+	if visible && (len(blockers) > 0 || parentKey != "") {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, who, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
 	var parentAssignee *string
 	if parentKey != "" {
+		// As the creator reads it: a parent of a project it does not see is a key no issue holds.
 		var parentProject string
-		parentProject, parentAssignee, err = readCreateParent(r.Context(), tx, callerProject, parentKey)
+		parentProject, parentAssignee, err = readCreateParent(r.Context(), tx, who, callerProject, parentKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -375,11 +397,26 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// the document's writes, which name it, are queued here with its version, its task count and
 	// its index, and run in the write phase after the artifact's insert. An issue created without
 	// a spec gets an empty primary document.
+	//
+	// The body's project is read as the caller reads it: a project it does not see is a project no
+	// row holds, so either is pgx.ErrNoRows here, 404 NOT_FOUND, before any document work. One the
+	// read before the locks did not find takes no lock; one it found is read again under the lock.
+	if !visible {
+		s.writeHandlerError(w, pgx.ErrNoRows)
+		return
+	}
+	// A repository the GitHub proxy hides from the creator is not theirs to name
+	// (refuseRepoHidden): read once the project and the parent are read as the creator reads them,
+	// before the project's owner lock and before anything is written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var number int
 	var artifactID string
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(input.Project), `
-		select next_number, gen_random_uuid()::text from projects where key = $1
-	`, []any{input.Project}, &number, &artifactID); err != nil {
+		select next_number, gen_random_uuid()::text from projects where key = $1 and `+access.ProjectClause("key", "$2")+`
+	`, []any{input.Project, refs.VisibilityArg(who)}, &number, &artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -462,15 +499,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The write phase: the statements from here on run back to back.
 	var written int
 	var projectDefaultAssignee string
+	// The body's project as the caller reads it, as the read under the lock above read it.
 	if err := tx.QueryRow(r.Context(), `
 		update projects
 		set next_number = next_number + 1
-		where key = $1
+		where key = $1 and `+access.ProjectClause("key", "$2")+`
 		-- default_assignee as it stands: the column names a person and refuses nothing
 		-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so the
 		-- chain's last step always lands and this statement reads no other table for it.
 		returning next_number - 1, default_assignee
-	`, input.Project).Scan(&written, &projectDefaultAssignee); err != nil {
+	`, input.Project, refs.VisibilityArg(who)).Scan(&written, &projectDefaultAssignee); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -538,7 +576,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
+	if err := writeBlockedBy(r.Context(), tx, key, input.Project, who, callerProject, blockers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -574,7 +612,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 	}
@@ -586,7 +624,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	issue, err := s.loadIssue(r.Context(), tx, key)
+	issue, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -674,17 +712,22 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.TitleMatches = outcome.TitleMatches
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &issue, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
 // readCreateParent reads, under a create's locks, the parent that the create names: the project
-// of that issue and its assignee. A parent may be an issue of any project. caller is the one
+// of that issue and its assignee. A parent may be an issue of any project. It is read as who
+// reads it: a parent of a project who does not see is a key no issue holds. caller is the one
 // project the request's credential names, empty for a credential that names none. A parent that
 // no issue holds answers parentNotFound. A credential that names one project is asked about the
 // parent again here, under the locks, as the lock step asked before them
 // (lockIssueDependencyWrite), and this read is the final check. A parent of a private project
 // that the credential does not name answers parentNotFound too, as a parent that does not exist.
-func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (string, *string, error) {
+func readCreateParent(ctx context.Context, tx pgx.Tx, who model.Actor, caller, parent string) (string, *string, error) {
 	var project string
 	var assignee *string
 	var private bool
@@ -692,8 +735,7 @@ func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (st
 		select i.project_key, i.assignee, p.visibility = 'private'
 		from issues i
 		join projects p on p.key = i.project_key
-		where i.key = $1
-	`, parent).Scan(&project, &assignee, &private)
+		where i.key = $1 and `+access.ProjectClause("i.project_key", "$2"), parent, refs.VisibilityArg(who)).Scan(&project, &assignee, &private)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, parentNotFound(parent)
 	}
@@ -757,18 +799,18 @@ type nearCopyOutcome struct {
 	Check *nearCopyCheck
 }
 
-// runNearCopyGate runs the gate for a create and settles every record of it at once. Only a
-// create the gate covers reaches it: createIssue leaves the zero outcome for an external create,
-// whose gate never runs.
+// runNearCopyGate runs the gate for a create, as who reads the project, and settles every record
+// of it at once. Only a create the gate covers reaches it: createIssue leaves the zero outcome for
+// an external create, whose gate never runs.
 //
 // The four states are the gate's own: it did not answer, it found nothing to say, it found a
 // refusal the create forced past, or it found one the create is refused with. Each sets what
 // that state records and leaves the rest zero, so no site downstream reads `force` or `external`
 // again and no record can disagree with another.
 func (s *server) runNearCopyGate(
-	ctx context.Context, project, title, spec string, ancestors []string, force bool,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string, force bool,
 ) nearCopyOutcome {
-	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
+	gate := s.duplicateGate(ctx, who, project, title, spec, ancestors)
 	refusals := gate.refusals()
 	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {
@@ -812,11 +854,12 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds
-// with that issue. Nothing was created, so no related-item check is made, and the result says so
-// (and the check is recorded as not made, reason already_exists).
+// with that issue, read as who reads it. Nothing was created, so no related-item check is made,
+// and the result says so (and the check is recorded as not made, reason already_exists).
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	existingKey string,
 	project string,
 	actor model.Actor,
@@ -835,7 +878,7 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), adviceReadTx, who, existingKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -852,6 +895,10 @@ func (s *server) respondWithExistingExternalIssue(
 		source:  suggestionSource{kind: "issue", issueKey: existingKey, actor: actor},
 		record:  true,
 	}, relatedReasonAlreadyExists, "Dispatch already holds this issue; nothing was created")
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &existing, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions))
 }
 

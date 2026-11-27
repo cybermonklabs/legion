@@ -1,6 +1,10 @@
 package delivery
 
-import "context"
+import (
+	"context"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+)
 
 // UnownedIssue is one open P0 issue with neither a claim nor a route.
 type UnownedIssue struct {
@@ -15,7 +19,10 @@ type UnownedIssue struct {
 // what it reads: one project's issues are one range of its key, every project's the whole of a
 // small index. One statement for each case, rather than one whose condition holds for an empty $1
 // or a matching project_key: under a generic plan, which knows no value of $1, that condition keys
-// nothing, and the project read would walk every project's entries.
+// nothing, and the project read would walk every project's entries. Each holds its issues to the
+// projects the viewer bound after the project, if any, sees (access.ProjectClause over the
+// visibility argument, refs.VisibilityArg), a filter over what the index reads like the claim and
+// the route.
 const (
 	// openP0Predicate is issues_open_p0's predicate (migration 20261117100010), which every read of
 	// the index repeats (here and openP0KeysQuery in store.go).
@@ -24,23 +31,30 @@ const (
 	// unownedP0Rule is the rule every read below holds an issue to: the index's predicate, no claim
 	// and no route.
 	unownedP0Rule = openP0Predicate + ` and claimed_by is null and route is null`
+)
 
-	unownedP0Query             = `select key, title from issues where ` + unownedP0Rule + ` order by project_key, number`
-	projectUnownedP0Query      = `select key, title from issues where project_key = $1 and ` + unownedP0Rule + ` order by number`
-	projectUnownedP0CountQuery = `select count(*) from issues where project_key = $1 and ` + unownedP0Rule
+var (
+	unownedP0Query = `select key, title from issues where ` + unownedP0Rule + `
+		and ` + access.ProjectClause("project_key", "$1") + ` order by project_key, number`
+	projectUnownedP0Query = `select key, title from issues where project_key = $1 and ` + unownedP0Rule + `
+		and ` + access.ProjectClause("project_key", "$2") + ` order by number`
+	projectUnownedP0CountQuery = `select count(*) from issues where project_key = $1 and ` + unownedP0Rule + `
+		and ` + access.ProjectClause("project_key", "$2")
 )
 
 // ListUnownedP0 is the "P0 issues with no owner" KPI (CONTRACT.md "KPI targets"): every issue of
 // project with priority 0, status other than done, claimed_by null and route null, in number
-// order, or with project empty the same issues of every project, in project then number order
-// (the prototype's collector/src/collector/dispatch.py:157-170 unowned_p0, without its fetch of
-// three named projects). The delivery measures read every project's. It follows neither the
-// measures' window nor their facets; how many there are is the length of the list. It reads in
-// q, the pool or a transaction whose snapshot an answer reads.
-func ListUnownedP0(ctx context.Context, q Querier, project string) ([]UnownedIssue, error) {
-	query, arguments := unownedP0Query, []any{}
+// order, or with project empty the same issues of every project the viewer sees, in project then
+// number order (the prototype's collector/src/collector/dispatch.py:157-170 unowned_p0, without
+// its fetch of three named projects). An issue of a project viewer, the visibility argument
+// (refs.VisibilityArg), does not see is none of them (access.ProjectClause). The delivery measures
+// read every project's. It follows neither the measures' window nor their facets; how many there
+// are is the length of the list. It reads in q, the pool or a transaction whose snapshot an answer
+// reads.
+func ListUnownedP0(ctx context.Context, q Querier, project string, viewer any) ([]UnownedIssue, error) {
+	query, arguments := unownedP0Query, []any{viewer}
 	if project != "" {
-		query, arguments = projectUnownedP0Query, []any{project}
+		query, arguments = projectUnownedP0Query, []any{project, viewer}
 	}
 	rows, err := q.Query(ctx, query, arguments...)
 	if err != nil {
@@ -58,13 +72,13 @@ func ListUnownedP0(ctx context.Context, q Querier, project string) ([]UnownedIss
 	return issues, rows.Err()
 }
 
-// CountUnownedP0 is how many issues ListUnownedP0 lists for project, which names one project,
-// counted by the statement rather than read. An empty project counts no issue and answers 0,
-// unlike ListUnownedP0's empty project, which lists every project's. Nothing in this tree calls it
-// yet: it is here because issues_open_p0's migration (20261117100010) and the plan test of this
+// CountUnownedP0 is how many issues ListUnownedP0 lists for project and viewer, which names one
+// project, counted by the statement rather than read. An empty project counts no issue and answers
+// 0, unlike ListUnownedP0's empty project, which lists every project's. Nothing in this tree calls
+// it yet: it is here because issues_open_p0's migration (20261117100010) and the plan test of this
 // package name its statement.
-func CountUnownedP0(ctx context.Context, q Querier, project string) (int, error) {
+func CountUnownedP0(ctx context.Context, q Querier, project string, viewer any) (int, error) {
 	var count int
-	err := q.QueryRow(ctx, projectUnownedP0CountQuery, project).Scan(&count)
+	err := q.QueryRow(ctx, projectUnownedP0CountQuery, project, viewer).Scan(&count)
 	return count, err
 }

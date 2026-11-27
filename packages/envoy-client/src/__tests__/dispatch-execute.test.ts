@@ -5186,6 +5186,68 @@ describe("executeDispatchTool", () => {
     expect(result.text).not.toContain("which is not this host session");
   });
 
+  // A credential that lists projects is told the list (KF4), and the deprecated project is not
+  // printed beside it: the list is what decides the credential's reads. A full member's list
+  // decides only which private projects it reads, so it is told it uses every public project too;
+  // a restricted member's list decides every project. The list is the agent shape's: a person at a
+  // browser lists none, so a person's answer prints none.
+  test("dispatch_whoami prints the projects a credential lists in place of its project", async () => {
+    const whoami = async (body: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_whoami",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: (async (): Promise<Response> => response(body)) as unknown as typeof fetch,
+      });
+    const agent = { kind: "agent", owner: "alice", service: null, session: null };
+
+    const two = await whoami({ ...agent, projects: ["INFRA", "OPS"], project: null });
+    expect(two.details).toEqual({
+      session: "session-1",
+      owner: "alice",
+      service: null,
+      project: null,
+      project_scope: null,
+      projects: ["INFRA", "OPS"],
+    });
+    expect(two.text).toContain(
+      "It may use projects INFRA, OPS, every public project, and no other private project."
+    );
+
+    const one = await whoami({ ...agent, projects: ["INFRA"], project: "INFRA" });
+    expect(one.text).toContain(
+      "It may use project INFRA, every public project, and no other private project."
+    );
+
+    const restricted = await whoami({
+      ...agent,
+      projects: ["INFRA", "OPS"],
+      project: null,
+      member_kind: "restricted",
+    });
+    expect(restricted.text).toContain("It may use projects INFRA, OPS and no other.");
+    expect(one.text).not.toContain("may write project");
+
+    const person = await whoami({ kind: "user", login: "alice", projects: ["OPS"], scopes: [] });
+    expect(person.details).not.toHaveProperty("projects");
+    expect(person.text).not.toContain("It may use");
+
+    const none = await whoami({ ...agent, project: null });
+    expect(none.details).toEqual({
+      session: "session-1",
+      owner: "alice",
+      service: null,
+      project: null,
+      project_scope: null,
+    });
+    expect(none.text).not.toContain("It may use");
+  });
+
   // A Dispatch older than sign_in_required and project_scope refuses every write by a broker
   // token that names a service and no person with SIGN_IN_REQUIRED, whose message names
   // `agent-secrets login`. whoami is where a person asks what their credential may do, so its

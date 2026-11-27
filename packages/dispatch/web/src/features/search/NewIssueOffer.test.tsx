@@ -6,10 +6,11 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -67,6 +68,7 @@ function CurrentRoute(): ReactNode {
 interface Stubs {
   readonly createIssue: Mock<typeof api.createIssue>;
   readonly createMessage: Mock<typeof api.createMessage>;
+  readonly newIssueSettings: Mock<typeof api.getNewIssueSettings>;
   readonly patchIssue: Mock<typeof api.patchIssue>;
   readonly queryClient: QueryClient;
   readonly restore: () => void;
@@ -75,8 +77,9 @@ interface Stubs {
 }
 
 /** The bar over a project page, its search answering nothing, with the deployment's two
- *  settings as given and every write it could make stubbed. */
-function openBar(settings: { label: string; session: string }): Stubs {
+ *  settings as given and every write it could make stubbed. A `memberKind` signs the bar in as a
+ *  person of that kind, through the identity the shell already read. */
+function openBar(settings: { label: string; session: string }, memberKind?: "restricted"): Stubs {
   // No hit at all, which is what makes the bar offer the words as a new issue.
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue(settings);
@@ -87,6 +90,14 @@ function openBar(settings: { label: string; session: string }): Stubs {
   const patchIssue = spyOn(api, "patchIssue").mockResolvedValue(issue("CORE-7"));
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as Message);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (memberKind !== undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: memberKind,
+    });
+  }
   const view = render(
     <MemoryRouter initialEntries={["/projects/CORE/issues"]}>
       <QueryClientProvider client={queryClient}>
@@ -100,6 +111,7 @@ function openBar(settings: { label: string; session: string }): Stubs {
   return {
     createIssue,
     createMessage,
+    newIssueSettings,
     patchIssue,
     queryClient,
     restore: () => {
@@ -134,6 +146,26 @@ test("offers words that matched nothing as a new issue and writes nothing until 
   try {
     await offerFor(user);
     expect(bar.createIssue).not.toHaveBeenCalled();
+  } finally {
+    bar.restore();
+  }
+});
+
+// The label and the session a new issue is filed with are the deployment's settings, which
+// Dispatch refuses a restricted member (403 DEPLOYMENT_READ_REFUSED). The bar never asks for
+// them, so it offers such a person no new issue, as it offers none where that read fails: a
+// press without them would file an issue carrying neither the label nor the session the
+// deployment asked for.
+test("a restricted member's bar reads no new-issue settings and offers no new issue", async () => {
+  const user = userEvent.setup();
+  const bar = openBar({ label: "from-the-bar", session: "sess-1" }, "restricted");
+  try {
+    await user.click(screen.getByRole("combobox", { name: "Search" }));
+    await user.paste(words);
+    await waitFor(() => expect(bar.search).toHaveBeenCalled());
+    await act(settle);
+    expect(screen.queryByText(`Make a new issue from “${words}”`)).not.toBeInTheDocument();
+    expect(bar.newIssueSettings).not.toHaveBeenCalled();
   } finally {
     bar.restore();
   }

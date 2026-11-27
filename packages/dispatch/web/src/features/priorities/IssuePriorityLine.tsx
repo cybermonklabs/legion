@@ -8,6 +8,7 @@ import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   dangerText,
   focusVisibleRing,
@@ -97,6 +98,11 @@ interface Draft {
  * line has an entry to name or the picker is open, as the components line reads the
  * architecture tree only while its picker is open.
  *
+ * The priorities are the deployment's, which Dispatch refuses a restricted member
+ * (`useRestrictedMember`), and their pages answer such a person Page not found: their issue
+ * draws no line at all, so it reads no priority, links to no page of theirs and offers no
+ * control over a list they cannot read.
+ *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`: each priority is a link of its order and title, with the word
  * that it is inherited after it, and the line's own label before them all. There `inRow` draws
@@ -127,9 +133,10 @@ export function IssuePriorityLine({
   const [inputError, setInputError] = useState<string | null>(null);
   const open = draft !== null;
   const queryClient = useQueryClient();
+  const restricted = useRestrictedMember();
   const priorities = useQuery({
     ...prioritiesQuery(),
-    enabled: open || advances.length > 0,
+    enabled: !restricted && (open || advances.length > 0),
   });
   const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
   const places = useMemo(() => priorityPlaces(rows), [rows]);
@@ -319,6 +326,8 @@ export function IssuePriorityLine({
       )}
     </>
   );
+
+  if (restricted) return null;
 
   if (page === null)
     return (

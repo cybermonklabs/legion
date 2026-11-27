@@ -18,6 +18,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -399,7 +402,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			return delivery.ListRuns(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", from)
 		}, &pop.applyRuns, &pop.jobsByRun),
 		func(ctx context.Context) (err error) {
-			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool)
+			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool, refs.VisibilityArg(model.ServerReader))
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -416,7 +419,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
 			}, &pop.windowRuns, &pop.windowJobs),
 			func(ctx context.Context) (err error) {
-				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "", refs.VisibilityArg(model.ServerReader))
 				return err
 			})
 	}
@@ -465,7 +468,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		}
 	}
 	var err error
-	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs); err != nil {
+	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs, events.EveryEvent); err != nil {
 		return deliveryPopulation{}, err
 	}
 	if pop.issues, err = s.deliveryIssueFacts(ctx, issueKeys); err != nil {

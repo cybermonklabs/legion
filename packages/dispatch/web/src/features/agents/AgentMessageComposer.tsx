@@ -118,34 +118,22 @@ export function AgentMessageComposer({
   // and consumed by the `onClose` that follows it.
   const sentJustNow = useRef(false);
   const box = useRef<HTMLDivElement>(null);
-  // `MentionComposer` disables its control fieldset while a send is in flight, including this
-  // textarea. The browser then hands focus back to the document, so focus returns the moment React
-  // re-enables the field - watched, rather than guessed at with a frame or timer, because the
-  // write's latency is the server's.
-  const refocusWatcher = useRef<MutationObserver | null>(null);
-  useEffect(() => () => refocusWatcher.current?.disconnect(), []);
-  /** Only the focus the disable took is the composer's to give back: through the whole round trip
-   *  it sits on the document, so a reader who has clicked something else in the meantime keeps
-   *  where they went - otherwise the next keys, `Ctrl+Enter` included, would land in the composer
-   *  they have already sent from, addressed to another agent. */
+  /** A reader who has just sent from this row is still writing to this agent, so a send made from
+   *  the composer's own Send gives the focus to its box once it lands: from the button, or from
+   *  the document where a browser that focuses no button on a click leaves it. `MentionComposer`
+   *  holds its fieldset with `aria-disabled` while the send is out, so a send made from the box
+   *  keeps the focus there, and a reader who moved the focus anywhere else meanwhile keeps where
+   *  they went - otherwise the next keys, `Ctrl+Enter` included, would land in the composer they
+   *  have already sent from, addressed to another agent. */
   const refocusComposer = () => {
     const field = box.current?.querySelector("textarea");
     if (field === null || field === undefined) return;
-    const takeBack = () => {
-      if (focusOnDocument()) field.focus();
-    };
-    refocusWatcher.current?.disconnect();
-    if (!field.matches(":disabled")) {
-      takeBack();
-      return;
-    }
-    const watcher = new MutationObserver(() => {
-      if (field.matches(":disabled")) return;
-      watcher.disconnect();
-      takeBack();
-    });
-    watcher.observe(field.closest("fieldset") ?? field, { attributeFilter: ["disabled"] });
-    refocusWatcher.current = watcher;
+    const active = document.activeElement;
+    const onOwnSend =
+      active instanceof HTMLButtonElement &&
+      active.type === "submit" &&
+      box.current?.contains(active) === true;
+    if (onOwnSend || focusOnDocument()) field.focus();
   };
   /** What the picker's selection reads while it is open, which is the reader's until they commit
    *  it: the select's own keys move it, `Enter`, or a pick made with the pointer or in the native
@@ -361,7 +349,6 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
-          // Focus went to the document when the field disabled itself; take it back.
           refocusComposer();
         }}
         owner={composerOwner}

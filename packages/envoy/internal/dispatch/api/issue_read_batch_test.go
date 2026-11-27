@@ -147,15 +147,16 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	served := directServer(deps)
 	ctx := context.Background()
 	pool := deps.Store.Pool
-	issue, progress, err := served.loadIssueWithProgress(ctx, pool, key)
+	viewer := refs.VisibilityArg(everyReader)
+	issue, progress, err := served.loadIssueWithProgress(ctx, pool, everyReader, key)
 	if err != nil {
 		t.Fatalf("load the issue: %v", err)
 	}
 	var blocks []string
-	if err := pool.QueryRow(ctx, issueBlocksStatement, issue.Key).Scan(&blocks); err != nil {
+	if err := pool.QueryRow(ctx, issueBlocksStatement, issue.Key, viewer).Scan(&blocks); err != nil {
 		t.Fatalf("read the issues it blocks: %v", err)
 	}
-	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
+	artifacts, err := served.loadArtifacts(ctx, pool, everyReader, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
@@ -163,7 +164,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}
-	rows, err := pool.Query(ctx, issueChildrenStatement, issue.Key)
+	rows, err := pool.Query(ctx, issueChildrenStatement, issue.Key, viewer)
 	if err != nil {
 		t.Fatalf("query the children: %v", err)
 	}
@@ -172,7 +173,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the children: %v", err)
 	}
-	gateRows, err := pool.Query(ctx, issueDesignGatesStatement, issue.Key, model.GatedStepsKnown)
+	gateRows, err := pool.Query(ctx, issueDesignGatesStatement, issue.Key, model.GatedStepsKnown, viewer)
 	if err != nil {
 		t.Fatalf("query the design gates: %v", err)
 	}

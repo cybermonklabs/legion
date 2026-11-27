@@ -33,24 +33,24 @@ var projectKinds = []string{
 // authorParty is, for an actor stored as jsonb at column, the party graphstore.AuthorOf names it
 // as: a person by their canonical login, a session by its id, a personal token's owner by theirs,
 // or null for an actor that names nobody. The login is canonical by model.CanonicalLogin's rule,
-// spelled in SQL (canonicalLoginSQL).
+// spelled in SQL (CanonicalLoginSQL).
 func authorParty(column string) string {
 	return `case
 		when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
-			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'id'`) + `
+			then '` + graphstore.KindPerson + `:' || ` + CanonicalLoginSQL(column+`->>'id'`) + `
 		when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> ''
 			then '` + graphstore.KindSession + `:' || (` + column + `->>'id')
 		when coalesce(` + column + `->>'owner', '') <> ''
-			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'owner'`) + `
+			then '` + graphstore.KindPerson + `:' || ` + CanonicalLoginSQL(column+`->>'owner'`) + `
 	end`
 }
 
-// canonicalLoginSQL is model.CanonicalLogin spelled in SQL over the text expression login: every
+// CanonicalLoginSQL is model.CanonicalLogin spelled in SQL over the text expression login: every
 // Unicode white space trimmed from both ends, as strings.TrimSpace trims it, and the ASCII letters
 // lowered and nothing else, as fold.ASCII lowers them. Postgres's lower() would fold a non-ASCII
 // letter too (U+212A KELVIN SIGN to "k"), and a btrim() with no set trims the space alone, so
 // either would name a person other than the one the writer names.
-func canonicalLoginSQL(login string) string {
+func CanonicalLoginSQL(login string) string {
 	return `translate(btrim(` + login + `, '` + whiteSpaceSQL + `'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`
 }
 

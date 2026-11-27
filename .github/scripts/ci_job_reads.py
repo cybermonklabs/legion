@@ -1995,6 +1995,23 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
 
+# The private-projects acceptance job, the step that runs c-blob-unchanged's driver, and the build
+# of this tree that the driver's two-build harness makes (its whole line, so the pin is exact); the
+# steps that run project-access.sh --all-public and --private-by-sql, and the two go commands that
+# driver holds.
+PROJECT_ACCESS = "dispatch-project-access"
+PROJECT_ACCESS_BLOB_STEP = "Compare what every caller reads at the merge base and at this tree"
+PROJECT_ACCESS_STEP = "Read PRIV's objects as its listed callers, every project public"
+PROJECT_ACCESS_PRIVATE_STEP = ("Read and write every route as the callers PRIV is hidden from, "
+                               "PRIV made private by the store write")
+PROJECT_ACCESS_CONNECTIONS_STEP = "Read the connections the sweep's stacks' Postgres must allow"
+PROJECT_ACCESS_DRIVER = "packages/dispatch/e2e/acceptance/project-access.sh"
+PROJECT_ACCESS_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/" ./cmd/dispatch ./internal/testnats/cmd/natsd ||'
+PROJECT_ACCESS_PROBES = ('go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes '
+                         '>"$work/probes.json" 2>"$work/probes.err" ||')
+TWO_BUILDS = "scripts/e2e/lib/two-builds.sh"
+TWO_BUILDS_HEAD_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/dispatch-head" ./cmd/dispatch ||'
+
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
 # plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves

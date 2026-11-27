@@ -31,8 +31,11 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -676,10 +679,12 @@ func (p *Population) readObservations(ctx context.Context, tx pgx.Tx, project st
 // readReported reads the issues of the project the daemon reports, against the `tree` it names
 // for each: legion.ReadCurrent's Reported, the read the Legion board makes too, of the whole
 // project rather than the window's keys (legion.TreeNode). The read's Newest, the board's cards,
-// go unused here: that is the cost of one read answering the rule for both readers.
+// go unused here: that is the cost of one read answering the rule for both readers. No route
+// serves the metrics, which read for no caller, so it reads as the server's own viewer, which
+// sees every project, as every other read of the population does.
 // readObservations takes the history of the issues whose timelines the metrics measure.
 func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string) error {
-	current, err := legion.ReadCurrent(ctx, tx, project)
+	current, err := legion.ReadCurrent(ctx, tx, project, refs.VisibilityArg(model.ServerReader))
 	if err != nil {
 		return err
 	}
@@ -846,14 +851,16 @@ func (p *Population) issueEnd(issue *Issue) time.Time {
 }
 
 // resolveTitles is each session's most recent known title (delivery.ResolveSessionTitles, which
-// reads the one index Dispatch keeps of them).
+// reads the one index Dispatch keeps of them), read as the server (events.EveryEvent): the titles
+// only say which role a session is, for the issues of the one project the population reads, and
+// whoever reads the population is held to that project's rule by the route that answers it.
 func resolveTitles(ctx context.Context, pool *store.Pool, sessions map[string]bool) (map[string]string, error) {
 	ids := make([]string, 0, len(sessions))
 	for id := range sessions {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	titles, err := delivery.ResolveSessionTitles(ctx, pool, ids)
+	titles, err := delivery.ResolveSessionTitles(ctx, pool, ids, events.EveryEvent)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the session titles: %w", err)
 	}

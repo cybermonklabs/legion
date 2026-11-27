@@ -504,6 +504,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("IssueAncestorsAsSeen", "IssueAncestorsAsSeen of CORE-1", func() error {
+		_, err := IssueAncestorsAsSeen(ctx, recorder, who, "CORE-1")
+		return err
+	})
 	return reads
 }
 

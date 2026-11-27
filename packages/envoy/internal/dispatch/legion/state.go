@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // The Go mirror of the part of a Legion daemon's `GET /legion/v1/state` Dispatch records. The
@@ -219,6 +220,68 @@ func (s State) Observations() []Observation {
 	}
 	return observations
 }
+
+// issueKeys is every key the state names as an issue of its record: the issues it carries and
+// the issues its admission block lists as holding a slot, waiting, a live tree or blocked. The
+// blockers an issue waits on are none of them: they are references to other issues, which the
+// board holds to its reader (api/legion_board.go's leaveOutHiddenIssues).
+func (s State) issueKeys() []string {
+	keys := slices.Collect(maps.Keys(s.Issues))
+	if admission := s.Admission; admission != nil {
+		keys = slices.Concat(keys, admission.Active, admission.Waiting, admission.Trees)
+		for _, blocked := range admission.Blocked {
+			keys = append(keys, blocked.Issue)
+		}
+	}
+	return keys
+}
+
+// keepProject cuts the state, in place, to what project's record keeps of it: the issues own
+// holds, which is Dispatch's own record of which keys are project's issues (projectIssues), since
+// the daemon's answer names no issue's project and a project's setting may name a daemon that
+// serves other projects as well. An issue of any other project, and a key no issue holds, is
+// recorded nowhere under project: not as an issue, not in the admission block's slots, waiting
+// line, live trees or blocked issues, which the board counts from. What an issue of project names
+// of another issue — the blockers it waits on, the tree root the daemon names for it — is kept as
+// the daemon said it, as a link stored across projects is: the board holds each to its reader.
+//
+// The settings the daemon reports keep project's own `projects` entry alone, and the daemon's
+// `project` only where it names project (the daemon may spell the key in another case), since
+// both name the projects the daemon serves, and a project of another's may be private. The rest
+// of the block is the daemon's own configuration, which names no project.
+func (s *State) keepProject(project string, own map[string]bool) {
+	notOwn := func(key string) bool { return !own[key] }
+	maps.DeleteFunc(s.Issues, func(key string, _ Issue) bool { return notOwn(key) })
+	if admission := s.Admission; admission != nil {
+		admission.Active = slices.DeleteFunc(admission.Active, notOwn)
+		admission.Waiting = slices.DeleteFunc(admission.Waiting, notOwn)
+		admission.Trees = slices.DeleteFunc(admission.Trees, notOwn)
+		admission.Blocked = slices.DeleteFunc(admission.Blocked, func(blocked BlockedIssue) bool {
+			return notOwn(blocked.Issue)
+		})
+	}
+	if raw, held := s.Settings[settingsProject]; held && !strings.EqualFold(JSONString(raw), project) {
+		delete(s.Settings, settingsProject)
+	}
+	if raw, held := s.Settings[settingsProjects]; held {
+		var projects map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &projects); err != nil {
+			// Not the object the daemon's own type writes: nothing of it can be told to be
+			// project's, so none of it is recorded.
+			delete(s.Settings, settingsProjects)
+		} else {
+			maps.DeleteFunc(projects, func(key string, _ json.RawMessage) bool { return !strings.EqualFold(key, project) })
+			s.Settings[settingsProjects] = encodeValue(projects)
+		}
+	}
+}
+
+// The two keys of the daemon's settings that name projects (packages/daemon/internal/api's
+// Settings): the daemon's own project, and each project's block by key.
+const (
+	settingsProject  = "project"
+	settingsProjects = "projects"
+)
 
 // encodeValue is value as the jsonb column holds it: its JSON, or `null` for a value that does not
 // encode, since a column that takes no half-written value is better left saying the read found

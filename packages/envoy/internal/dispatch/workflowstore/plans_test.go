@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -287,7 +288,7 @@ func TestADefaultPlanTakesALaterOwnersPlanWhole(t *testing.T) {
 		t.Fatalf("the default write after the owner's plan appended %d tuples, want none", len(after)-len(before))
 	}
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -555,7 +556,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	stepRun(t, pool, "LEGX-1", StepKindStep, "reviewer", 4, 1, new(minute(90)), new(minute(95)), ResultFailed)
 
 	counter := &storetest.StatementCounter{}
-	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -585,7 +586,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		t.Fatalf("the read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
 	}
 
-	other, err := ProjectPlans(context.Background(), pool, "LEGX", Window{})
+	other, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEGX", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEGX: %v", err)
 	}
@@ -627,7 +628,7 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	retroTwo := ratedRetro(t, pool, "LEG-2", 2, minute(32), minute(33), 5, "Two tasks fit the work.")
 	stepRun(t, pool, "LEG-2", StepKindMerge, "merger", 0, 2, nil, new(minute(40)), ResultPassed)
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -686,7 +687,7 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 1, "The plan was late.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The review came late.")
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -738,7 +739,7 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 	putPlan(t, pool, defaultPlan("1b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
 	putPlan(t, pool, defaultPlan("5b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -812,7 +813,7 @@ func TestAFinishedIssueNamesItsVariant(t *testing.T) {
 	run("LEG-3", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
 	run("LEG-3", 2, nil)
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -904,7 +905,7 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 		"both bounds": {Window{Since: &early, Until: &late}, []string{"LEG-2", "LEG-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
+			read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", bounded.window)
 			if err != nil {
 				t.Fatalf("read the plans of LEG: %v", err)
 			}
@@ -940,7 +941,7 @@ func TestProjectPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 		{"a nanosecond either side of the close", Window{Since: &before, Until: &after}, []string{"LEG-1"}},
 		{"both after the close in its microsecond", Window{Since: &after, Until: &later}, []string{}},
 	} {
-		read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
+		read, err := ProjectPlans(context.Background(), pool, model.ServerReader, "LEG", bounded.window)
 		if err != nil {
 			t.Fatalf("%s: read the plans of LEG: %v", bounded.name, err)
 		}

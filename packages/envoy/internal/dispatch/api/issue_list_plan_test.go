@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -117,13 +118,13 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 		{
 			name:      "the paged listing",
 			statement: listIssuesPageQuery,
-			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", 5, 10},
+			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader), 5, 10},
 			limit:     5,
 		},
 		{
 			name:      "the paged pinned listing",
 			statement: listPinnedIssuesPageQuery,
-			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", "alice", 2, 1},
+			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader), "alice", 2, 1},
 			limit:     2,
 		},
 	} {
@@ -172,7 +173,7 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 func TestAnUnpagedListingReadsEachResolvedTableOnce(t *testing.T) {
 	t.Parallel()
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "")
+	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader))
 	for _, relation := range []string{"issue_links", "issue_components", "projects"} {
 		read := 0
 		for _, node := range plan.everyNode() {
@@ -205,8 +206,8 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 		statement string
 		arguments []any
 	}{
-		"the listing":       {listIssuesQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", ""}},
-		"the paged listing": {listIssuesPageQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", 5, 10}},
+		"the listing":       {listIssuesQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader)}},
+		"the paged listing": {listIssuesPageQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader), 5, 10}},
 	} {
 		plan := planWithoutSeqScans(t, fixture.database, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "asks") {
@@ -247,7 +248,7 @@ func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
 			plan, text = analyzeGenericListingPlan(t, fixture.database, listing.moved)
 		} else {
 			plan, text = analyzePlan(t, fixture.database, listIssuesQuery,
-				"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, listing.moved, false, "", "")
+				"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, listing.moved, false, "", "", refs.VisibilityArg(everyReader))
 		}
 		reads, loops := 0, 0.0
 		for _, node := range plan.everyNode() {
@@ -269,8 +270,8 @@ func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
 
 // analyzeGenericListingPlan runs the unpaged listing of project LIST under the generic plan a
 // prepared statement settles on, which is planned without its arguments, and answers its root
-// node as analyzePlan does. The arguments are the request that filters by nothing, with moved the
-// one that varies.
+// node as analyzePlan does. The arguments are the request that filters by nothing, read as the
+// server's own viewer, with moved the one that varies.
 func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) (analyzedNode, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -297,8 +298,8 @@ func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) 
 	}()
 	var raw []byte
 	if err := conn.QueryRow(ctx, fmt.Sprintf(
-		"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '{}', false, null, null, '{}', false, false, %t, false, '', '')",
-		moved)).Scan(&raw); err != nil {
+		"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '{}', false, null, null, '{}', false, false, %t, false, '', '', '%s')",
+		moved, refs.VisibilityArg(everyReader))).Scan(&raw); err != nil {
 		t.Fatalf("explain the generic listing: %v", err)
 	}
 	var plans []struct {
@@ -315,7 +316,7 @@ func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) 
 func TestTheProjectListRunsNoSubqueryPerProject(t *testing.T) {
 	t.Parallel()
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, projectListQuery)
+	plan, text := analyzePlan(t, fixture.database, projectListQuery, refs.VisibilityArg(everyReader))
 	for _, node := range plan.everyNode() {
 		if node.Relationship == "SubPlan" {
 			t.Errorf("the project list runs %s as a subplan, want one grouped read for every project:\n%s", node.name(), text)

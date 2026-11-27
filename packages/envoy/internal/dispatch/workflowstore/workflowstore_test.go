@@ -956,7 +956,7 @@ func tryPut(pool *store.Pool, write StepWrite, at time.Time) (Step, error) {
 
 func issueSteps(t *testing.T, pool *store.Pool, issue string) []StepRead {
 	t.Helper()
-	steps, err := IssueSteps(context.Background(), pool, issue)
+	steps, err := IssueSteps(context.Background(), pool, model.ServerReader, issue)
 	if err != nil {
 		t.Fatalf("read the steps of %s: %v", issue, err)
 	}

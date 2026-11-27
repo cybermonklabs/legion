@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -556,3 +557,9 @@ func settleDeliveryAttempt[T any](
 	s.publish(ctx, event)
 	return attempt, nil
 }
+
+// roleReachesReaderSQL answers whether a role reaches the reader whose viewer $2 binds: its holder,
+// session $1, as the Envoy listener named it, passes access.SessionClause, and the project its
+// name works for, $3 (null for none), passes access.RoleProjectClause - the role rule's own
+// name half, which access.RoleClause splices beside the held_by holders it reads instead.
+var roleReachesReaderSQL = `select ` + access.SessionClause("$1::text", "$2") + ` and ` + access.RoleProjectClause("$3::text", "$2")

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type inboxIssue struct {
@@ -85,6 +87,8 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller, wh
 	}
 }
 
+// listInbox answers the open asks waiting on someone, as the caller may read them
+// (access.ItemOwnerClause): an ask of a project the caller does not see is in no one's Inbox it reads.
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -107,15 +111,18 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// ?assignee= filters on the person the ask waits on (askedOfPersonExpression), not on the
 	// issue's assignee: an ask handed to somebody is in that person's list and out of the
 	// assignee's, and an ask on an issue nobody holds is in the list of the person its project
-	// defaults to. askReadFrom joins all three tables that expression reads - the ask's issue as
+	// defaults to. askReadFromSeenBy joins all three tables that expression reads - the ask's issue as
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	// The issue's assignee is a person, named only to a caller who sees them (the rule of
+	// references, references_seen.go); the ask's own persons are left out by loadAskDetails.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
-		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
+		       i.key, i.title, case when `+access.PersonClause("i.assignee", "$5")+` then i.assignee end,
+		       i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
-		`+askReadFrom+`
+		`+askReadFromSeenBy("$5")+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)
@@ -123,9 +130,10 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
+		  and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$5")+`
 		order by i.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
-	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
+	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

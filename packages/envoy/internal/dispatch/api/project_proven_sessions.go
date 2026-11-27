@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -64,7 +65,7 @@ func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	project, err := scanListedProject(s.deps.Store.Pool.QueryRow(r.Context(), projectRowQuery, key))
+	project, err := scanListedProject(s.deps.Store.Pool.QueryRow(r.Context(), projectRowQuery, refs.VisibilityArg(who), key))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

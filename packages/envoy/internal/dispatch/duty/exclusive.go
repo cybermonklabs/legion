@@ -33,9 +33,11 @@ type Leases interface {
 // DISPATCH_TEST_HOOKS), a conditional edit's admission's
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
-// lockDeploymentIssueDependencies) and the boot's repository rename pass's
-// (store.repoRenameLockNamespace, "RNAM"), each a first key of its own, so a lease's second key,
-// its name's hashtext, separates the leases from each other and from nothing else.
+// lockDeploymentIssueDependencies), the boot's repository rename pass's
+// (store.repoRenameLockNamespace, "RNAM"), the Slack channels' (access's lockSlackChannels) and
+// the delivery change log's (store migration 0100's delivery_change_log, 6900), each a first key
+// of its own, so a lease's second key, its name's hashtext, separates the leases from each other
+// and from nothing else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both
@@ -64,12 +66,13 @@ type LeaseReader interface {
 // database's own, as every other advisory-lock read of this repository is: an advisory lock is
 // taken within one database, and two deployments on one server -- a test's database beside the
 // one the tests of another package run on -- would otherwise each read the other's lease as its
-// own.
+// own. Both catalogues are named by their schema, which is where Postgres finds them unnamed, so
+// the api's read-fragment census reads the statement as the catalogue read it is.
 const leaseHeld = `
 	select exists (
-		select 1 from pg_locks
+		select 1 from pg_catalog.pg_locks
 		where locktype = 'advisory' and granted and objsubid = 2
-		  and database = (select oid from pg_database where datname = current_database())
+		  and database = (select oid from pg_catalog.pg_database where datname = current_database())
 		  and classid = $1::oid and objid = hashtext($2)::oid)`
 
 // LeaseHeld reports whether some session of the database holds name's lease right now. It is the

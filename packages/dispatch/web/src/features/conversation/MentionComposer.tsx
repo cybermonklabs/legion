@@ -830,9 +830,8 @@ export function MentionComposer({
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
-   *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
-   *  unsent copy under the send name goes. */
+   *  control that could change or discard the draft (`stopHeldComposerInput`), from this task on.
+   *  From here on the held send keeps the draft, so the unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
@@ -840,9 +839,13 @@ export function MentionComposer({
       forgetUnsent();
       return sentRequest(refused);
     });
-  /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
-   *  fieldset's capture stops every key, click, input and change bound for a control in it - so
-   *  Escape raises no Discard prompt over a draft that is out. */
+  /** The hold on the draft from Send's own task on: the fieldset's capture stops every key,
+   *  click, input, change, paste and drop bound for a control in it - so no key writes into the
+   *  box, Escape raises no Discard prompt and Ctrl+Enter sends nothing over a draft that is out -
+   *  and while React shows the hold the fieldset is `aria-disabled` and its fields read-only. It
+   *  is never `disabled`: a browser takes the focus off a control that becomes disabled under it,
+   *  which would drop a keyboard reader who sent from the box or from Send to the page's body.
+   *  Tab alone goes through, so the hold keeps the reader's place and never traps them in it. */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
@@ -933,6 +936,7 @@ export function MentionComposer({
 
   const composerControls = (
     <fieldset
+      aria-disabled={sending ? true : undefined}
       className={
         compact
           ? "min-w-0 space-y-2 border-0 p-0"
@@ -940,11 +944,14 @@ export function MentionComposer({
             ? "min-w-0 border-0 p-0"
             : "min-w-0 space-y-3 border-0 p-0"
       }
-      disabled={sending}
       onChangeCapture={stopHeldComposerInput}
       onClickCapture={stopHeldComposerInput}
+      onDropCapture={stopHeldComposerInput}
       onInputCapture={stopHeldComposerInput}
-      onKeyDownCapture={stopHeldComposerInput}
+      onKeyDownCapture={(event) => {
+        if (event.key !== "Tab") stopHeldComposerInput(event);
+      }}
+      onPasteCapture={stopHeldComposerInput}
     >
       {/* The title repeats the submit button two rows below it, so the row exists only where it
           also carries Close - an anchored composer floating over a quote, where naming what is
@@ -980,7 +987,7 @@ export function MentionComposer({
           {standing ? null : (
             <button
               aria-label="Cancel reply"
-              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
               onClick={cancelReply}
               type="button"
             >
@@ -1061,7 +1068,7 @@ export function MentionComposer({
           }}
           onKeyDown={submitOnModifiedEnter}
           project={pickerProject}
-          readOnly={offered !== undefined}
+          readOnly={sending || offered !== undefined}
           writing={dispatchWritingBox("suggestion-replacement", "suggestion")}
         />
       ) : null}
@@ -1080,7 +1087,7 @@ export function MentionComposer({
         onPaste={homes.paste}
         onPickerOpenChange={setPickerOpen}
         project={pickerProject}
-        readOnly={changed !== undefined || offered !== undefined}
+        readOnly={sending || changed !== undefined || offered !== undefined}
         writing={dispatchWritingBox(box, writes)}
       />
       {/* A kind the closed issue refuses can send nothing, and a margin compose of that kind ends
@@ -1191,6 +1198,7 @@ export function MentionComposer({
                     }}
                     placeholder="Label"
                     project={pickerProject}
+                    readOnly={sending}
                     writing={dispatchWritingBox("ask-option-label", "ask")}
                   />
                   <MentionField
@@ -1202,6 +1210,7 @@ export function MentionComposer({
                     onChange={(change) => updateAskOption(index, "description", change.body)}
                     placeholder="Description (optional)"
                     project={pickerProject}
+                    readOnly={sending}
                     writing={dispatchWritingBox("ask-option-description", "ask")}
                   />
                 </div>

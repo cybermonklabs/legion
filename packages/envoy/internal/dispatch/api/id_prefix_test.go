@@ -555,29 +555,61 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 // prefix layer, so it judges the item the prefix named, and a credential scoped to one project
 // writes another project's ask as a credential that names no project does (INFRA-4799). It
 // resolves one ask of another project by its whole id and another by its prefix, and each
-// request reaches the handler, which answers 200 with the ask the path named, resolved.
+// request reaches the handler, which answers 200 with the ask the path named, resolved. Once a
+// project is private, an ask of a project its person does not see is one it does not see: by its
+// whole id the scope answers it exactly as an id nobody holds (its read of the ask's project binds
+// the project clause), and by its prefix the prefix layer finds no candidate and answers exactly
+// what a prefix nobody holds answers.
 func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
 	t.Parallel()
-	rig := newBrokerTokenRig(t)
-	caller := newBrokerCaller(t)
-	const token = "a-token-scoped-to-one-project"
-	rig.broker.Says(token, liveNamedToken(caller.jkt))
-	seedProject(t, rig, brokerTestProject, "Broker")
-	other := seedProject(t, rig, "OTH", "Other")
+	for _, private := range []bool{false, true} {
+		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			caller := newBrokerCaller(t)
+			const token = "a-token-scoped-to-one-project"
+			rig.broker.Says(token, liveNamedToken(caller.jkt))
+			seedProject(t, rig, brokerTestProject, "Broker")
+			other := seedProject(t, rig, "OTH", "Other")
 
-	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-	for _, spelling := range []struct{ name, id, written string }{
-		{"the whole id", chosenID("b0000001", 1), chosenID("b0000001", 1)},
-		{"its prefix", chosenID("b0000002", 1), "b0000002"},
-	} {
-		t.Run(spelling.name, func(t *testing.T) {
-			seedAsk(t, rig.database, other.issue, spelling.id, "Which way?")
-			resolved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+spelling.written+"/resolve", token, body))
-			if resolved.Code != http.StatusOK {
-				t.Fatalf("resolve %s's ask by %s: status=%d body=%s, want 200", other.key, spelling.name, resolved.Code, resolved.Body.String())
+			body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
+			for _, spelling := range []struct{ name, id, written string }{
+				{"the whole id", chosenID("b0000001", 1), chosenID("b0000001", 1)},
+				{"its prefix", chosenID("b0000002", 1), "b0000002"},
+			} {
+				t.Run(spelling.name, func(t *testing.T) {
+					seedAsk(t, rig.database, other.issue, spelling.id, "Which way?")
+					resolved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+spelling.written+"/resolve", token, body))
+					if resolved.Code != http.StatusOK {
+						t.Fatalf("resolve %s's ask by %s: status=%d body=%s, want 200", other.key, spelling.name, resolved.Code, resolved.Body.String())
+					}
+					if ask := decodeBody[model.Ask](t, resolved); ask.ID != spelling.id || ask.Resolution == nil {
+						t.Fatalf("the answer is ask %s with resolution %+v, want %s resolved", ask.ID, ask.Resolution, spelling.id)
+					}
+				})
 			}
-			if ask := decodeBody[model.Ask](t, resolved); ask.ID != spelling.id || ask.Resolution == nil {
-				t.Fatalf("the answer is ask %s with resolution %+v, want %s resolved", ask.ID, ask.Resolution, spelling.id)
+			if !private {
+				return
+			}
+			hiddenProject := seedProject(t, rig, "HIDE", "Hidden")
+			hideFromBrokerPerson(t, rig, hiddenProject.key)
+			const hiddenPrefix = "b0000003"
+			hiddenID := chosenID(hiddenPrefix, 1)
+			seedAsk(t, rig.database, hiddenProject.issue, hiddenID, "Which way, hidden?")
+
+			refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+hiddenID+"/resolve", token, body))
+			nobodysID := chosenID("b00000fe", 1)
+			missingID := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodysID+"/resolve", token, body))
+			if refused.Code != missingID.Code || strings.ReplaceAll(refused.Body.String(), hiddenID, nobodysID) != missingID.Body.String() {
+				t.Fatalf("the whole id: status=%d body=%s, want what an id nobody holds answers: status=%d body=%s",
+					refused.Code, refused.Body.String(), missingID.Code, missingID.Body.String())
+			}
+
+			hidden := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+hiddenPrefix+"/resolve", token, body))
+			const nobodys = "b00000ff"
+			missing := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodys+"/resolve", token, body))
+			if hidden.Code != missing.Code || strings.ReplaceAll(hidden.Body.String(), hiddenPrefix, nobodys) != missing.Body.String() {
+				t.Fatalf("its prefix: status=%d body=%s, want what a prefix nobody holds answers: status=%d body=%s",
+					hidden.Code, hidden.Body.String(), missing.Code, missing.Body.String())
 			}
 		})
 	}

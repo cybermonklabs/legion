@@ -22,6 +22,15 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("packages/contracts/schemas/dispatch-openapi.json",
      "`packages/dispatch/e2e/__tests__/stub-recordings.test.ts#documentPath` reads it at a new URL: the generated API "
      "document every committed recording's body is held to, which this job's test step runs"),
+    # why: .github/ci-notes/ci.md#dispatch_ui-the-route-index-and-the-github-proxys-expression-the-restricted-sweeps-tests-read
+    (f"{ENVOY}/internal/dispatch/api/testdata/routes.txt",
+     "`packages/dispatch/e2e/__tests__/restricted-sweep-index.ts#routeIndex` reads it at a new URL, which "
+     "restricted-sweep-fake.ts, restricted-sweep.test.ts, restricted-sweep-judging.test.ts and "
+     "restricted-sweep-split.test.ts import (restricted-sweep-sockets.test.ts through the fake), and "
+     "e2e/acceptance/restricted-sweep.sh, which they run: the route index the sweep walks row by row"),
+    (f"{ENVOY}/internal/dispatch/githubapi/proxy.go",
+     "`packages/dispatch/e2e/__tests__/restricted-sweep-index.ts#proxySource` reads it at a new URL, which "
+     "restricted-sweep.test.ts imports: the GitHub proxy's readable expression, which the sweep's proxy reads are held to"),
     (f"{ENVOY}/internal/dispatch/api/testdata/status-change/*.json", "`packages/dispatch/web/src/features/issue/parent-status/status-change-fixtures.ts#recorded` reads each of them under `packages/dispatch/web/src/features/issue/parent-status/status-change-fixtures.ts#FIXTURES`: the answers of POST /api/v1/issues/{key}/status-change that packages/envoy/internal/dispatch/api's TestStatusChangeAnswersMatchTheirFixtures writes, which the parent-status question's unit tests and the board's answer with"),
     (f"{ENVOY}/going/testdata/**", "`packages/proof-editor/tests/going-answer-no-link.test.ts#fixturePath`"),
     ("scripts/third-party-notices.ts", "`packages/dispatch/web/vite.config.ts#thirdPartyNotices` (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
@@ -44,6 +53,10 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
                                      f"which holds its server's port through it (`packages/dispatch/e2e/run-server.sh#held_port`); {at('dispatch-ui', 'Test dispatch dashboard')} runs that file"),
     ("packages/envoy-client/test/fake-dispatch.ts", f"`packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#startFakeDispatch` and `packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch` import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
     (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
+    *[(path, f"packages/dispatch/e2e/__tests__/project-access-blob-base.test.ts copies it beside the c-blob-unchanged "
+             f"driver, which sources it, and runs the driver; {at('dispatch-ui', 'Test dispatch dashboard')} runs the test")
+      for path in ("scripts/e2e/lib/two-builds.sh", "scripts/e2e/lib/rig.sh", "scripts/e2e/lib/loopback-dsn.sh",
+                   "scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/port-file.sh")],
 ) + envoy_client_dep("`packages/envoy-client/test/fake-dispatch.ts#DispatchServiceError` imports ../src/dispatch-http, which the two suites "
                      "above import, and `packages/dispatch/e2e/read-token-live.ts#brokerCredential` imports "
                      "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "

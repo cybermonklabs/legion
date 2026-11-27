@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 )
 
 // tupleColumns is what every tuple read answers, in the order scanTuples takes them.
@@ -157,7 +159,16 @@ func List(ctx context.Context, q Queryer) ([]Node, error) {
 // the other excludes it and takes priority_tuples_current. The column is `not null`, so the two
 // are every row out of the node and no row twice. The third leg binds to_kind to KindPriority,
 // which implies the inbound index's own predicate.
-func Timeline(ctx context.Context, q Queryer, id string) ([]Tuple, error) {
+//
+// A priority belongs to no project, but each `advances` tuple into it names the issue at its far
+// end, which does: the third leg answers a tuple only where the viewer bound at $2 (the visibility
+// argument, refs.VisibilityArg) sees that issue's project (access.IssueProjectClause over the
+// column advancing.from_id). A relation out of the node is held to the node at its own far end
+// the same way: one to a priority, which belongs to no project, is answered to every viewer, one
+// to an issue only where the viewer sees that issue's project, and one to a node of any other kind,
+// which this store writes none of, to no viewer, as a kind the graph's registry holds no rule for
+// answers nothing (refs.VisibleKind).
+func Timeline(ctx context.Context, q Queryer, id string, viewer any) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
 			select `+tupleColumns+`
@@ -167,13 +178,15 @@ func Timeline(ctx context.Context, q Queryer, id string) ([]Tuple, error) {
 			select `+tupleColumns+`
 			from priority_tuples
 			where from_kind = '`+KindPriority+`' and from_id = $1 and to_kind <> '`+KindValue+`'
+				and (to_kind = '`+KindPriority+`' or (to_kind = '`+KindIssue+`' and `+access.IssueProjectClause("to_id", "$2")+`))
 			union all
 			select `+tupleColumns+`
-			from priority_tuples
-			where to_kind = '`+KindPriority+`' and to_id = $1 and kind = '`+RelationAdvances+`'
+			from priority_tuples advancing
+			where advancing.to_kind = '`+KindPriority+`' and advancing.to_id = $1 and advancing.kind = '`+RelationAdvances+`'
+				and `+access.IssueProjectClause("advancing.from_id", "$2")+`
 		) stated
 		order by seq desc
-	`, id)
+	`, id, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read the history of priority %s: %w", id, err)
 	}

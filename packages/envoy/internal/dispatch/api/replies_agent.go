@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -406,7 +408,7 @@ func nameAgentSessions(ctx context.Context, tx pgx.Tx, rows []model.MyReplyRow) 
 	if len(sessions) == 0 {
 		return nil
 	}
-	titles, err := delivery.ResolveSessionTitles(ctx, tx, sessions)
+	titles, err := delivery.ResolveSessionTitles(ctx, tx, sessions, events.EveryEvent)
 	if err != nil {
 		return fmt.Errorf("name my agent threads' sessions: %w", err)
 	}

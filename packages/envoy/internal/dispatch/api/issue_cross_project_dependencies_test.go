@@ -292,103 +292,131 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		[]dependencyEdge{{alpha[6], beta[5]}, {beta[6], alpha[7]}},
 		[]dependencyEdge{{beta[5], beta[6]}, {alpha[7], alpha[6]}})
 
-	t.Run("a credential that names one project links a target of another project on create, on a PATCH, and on a PATCH that keeps it", func(t *testing.T) {
-		rig := newBrokerTokenRig(t)
-		caller := newBrokerCaller(t)
-		const token = "a-token-linking-across-projects"
-		rig.broker.Says(token, liveNamedToken(caller.jkt))
-		createProject := func(key string) {
-			t.Helper()
-			response := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key})
-			if response.Code != http.StatusCreated {
-				t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
-			}
+	for _, private := range []bool{false, true} {
+		name := "a credential that names one project links a target of another project on create, on a PATCH, and on a PATCH that keeps it"
+		if private {
+			name += ", and a hidden one is refused as a key nobody holds, once a project is private"
 		}
-		createIssue := func(project, title string) string {
-			t.Helper()
-			response := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-				"project": project, "title": title, "spec": "# Spec", "force": true,
+		t.Run(name, func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			caller := newBrokerCaller(t)
+			const token = "a-token-linking-across-projects"
+			rig.broker.Says(token, liveNamedToken(caller.jkt))
+			createProject := func(key string) {
+				t.Helper()
+				response := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key})
+				if response.Code != http.StatusCreated {
+					t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+				}
+			}
+			createIssue := func(project, title string) string {
+				t.Helper()
+				response := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+					"project": project, "title": title, "spec": "# Spec", "force": true,
+				})
+				if response.Code != http.StatusCreated {
+					t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
+				}
+				return decodeBody[model.Issue](t, response).Key
+			}
+			readBlockedBy := func(t *testing.T, key string) []string {
+				t.Helper()
+				read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
+				if read.Code != http.StatusOK {
+					t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
+				}
+				return decodeBody[model.Issue](t, read).BlockedBy
+			}
+			patchBlockedBy := func(t *testing.T, key string, targets []string) *httptest.ResponseRecorder {
+				t.Helper()
+				return rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+key, token, map[string]any{
+					"blocked_by": targets,
+				}))
+			}
+			createProject(brokerTestProject)
+			createProject("OTH")
+			own := createIssue(brokerTestProject, "Its own project's issue")
+			kept := createIssue(brokerTestProject, "An issue already waiting on another project")
+			sibling := createIssue(brokerTestProject, "Another issue of its own project")
+			outside := createIssue("OTH", "An issue of another project")
+			// The link the third row keeps is laid by a person, whose credential names no project, so
+			// that row starts from it whatever the rows before it answered.
+			if laid := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+kept, map[string]any{
+				"blocked_by": []string{outside},
+			}); laid.Code != http.StatusOK {
+				t.Fatalf("a person links %s to %s: status=%d body=%s", kept, outside, laid.Code, laid.Body.String())
+			}
+
+			if private {
+				// A target of a private project its person does not see is refused exactly as a key
+				// no issue holds, naming nothing of the project it belongs to.
+				createProject("HIDE")
+				hidden := createIssue("HIDE", "An issue of a project its person does not see")
+				hideFromBrokerPerson(t, rig, "HIDE")
+				refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+					"blocked_by": []string{hidden},
+				}))
+				missing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+					"blocked_by": []string{"NOPE-1"},
+				}))
+				if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", hidden) {
+					t.Fatalf("a scoped caller linking to a hidden issue: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
+						refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
+				}
+				read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
+				if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {
+					t.Fatalf("the refused write left blocked_by = %v, want []", got)
+				}
+			}
+
+			t.Run("an issue made with the link is 201", func(t *testing.T) {
+				created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+					"project": brokerTestProject, "title": "Made waiting on another project", "spec": "# Spec",
+					"blocked_by": []string{outside}, "force": true,
+				}))
+				if created.Code != http.StatusCreated {
+					t.Fatalf("a scoped caller making an issue that waits on %s: status=%d body=%s, want 201",
+						outside, created.Code, created.Body.String())
+				}
+				made := decodeBody[model.Issue](t, created).Key
+				if got := readBlockedBy(t, made); !slices.Equal(got, []string{outside}) {
+					t.Fatalf("blocked_by of %s read back = %v, want %v", made, got, []string{outside})
+				}
 			})
-			if response.Code != http.StatusCreated {
-				t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
-			}
-			return decodeBody[model.Issue](t, response).Key
-		}
-		readBlockedBy := func(t *testing.T, key string) []string {
-			t.Helper()
-			read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
-			if read.Code != http.StatusOK {
-				t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
-			}
-			return decodeBody[model.Issue](t, read).BlockedBy
-		}
-		patchBlockedBy := func(t *testing.T, key string, targets []string) *httptest.ResponseRecorder {
-			t.Helper()
-			return rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+key, token, map[string]any{
-				"blocked_by": targets,
-			}))
-		}
-		createProject(brokerTestProject)
-		createProject("OTH")
-		own := createIssue(brokerTestProject, "Its own project's issue")
-		kept := createIssue(brokerTestProject, "An issue already waiting on another project")
-		sibling := createIssue(brokerTestProject, "Another issue of its own project")
-		outside := createIssue("OTH", "An issue of another project")
-		// The link the third row keeps is laid by a person, whose credential names no project, so
-		// that row starts from it whatever the rows before it answered.
-		if laid := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+kept, map[string]any{
-			"blocked_by": []string{outside},
-		}); laid.Code != http.StatusOK {
-			t.Fatalf("a person links %s to %s: status=%d body=%s", kept, outside, laid.Code, laid.Body.String())
-		}
 
-		t.Run("an issue made with the link is 201", func(t *testing.T) {
-			created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-				"project": brokerTestProject, "title": "Made waiting on another project", "spec": "# Spec",
-				"blocked_by": []string{outside}, "force": true,
-			}))
-			if created.Code != http.StatusCreated {
-				t.Fatalf("a scoped caller making an issue that waits on %s: status=%d body=%s, want 201",
-					outside, created.Code, created.Body.String())
-			}
-			made := decodeBody[model.Issue](t, created).Key
-			if got := readBlockedBy(t, made); !slices.Equal(got, []string{outside}) {
-				t.Fatalf("blocked_by of %s read back = %v, want %v", made, got, []string{outside})
-			}
-		})
+			t.Run("a PATCH that sets the link is 200", func(t *testing.T) {
+				if set := patchBlockedBy(t, own, []string{outside}); set.Code != http.StatusOK {
+					t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 200", own, outside, set.Code, set.Body.String())
+				}
+				if got := readBlockedBy(t, own); !slices.Equal(got, []string{outside}) {
+					t.Fatalf("blocked_by of %s read back = %v, want %v", own, got, []string{outside})
+				}
+			})
 
-		t.Run("a PATCH that sets the link is 200", func(t *testing.T) {
-			if set := patchBlockedBy(t, own, []string{outside}); set.Code != http.StatusOK {
-				t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 200", own, outside, set.Code, set.Body.String())
-			}
-			if got := readBlockedBy(t, own); !slices.Equal(got, []string{outside}) {
-				t.Fatalf("blocked_by of %s read back = %v, want %v", own, got, []string{outside})
-			}
-		})
+			t.Run("a PATCH that writes again a list keeping the link, with one more target, is 200", func(t *testing.T) {
+				want := []string{outside, sibling}
+				slices.Sort(want)
+				if written := patchBlockedBy(t, kept, want); written.Code != http.StatusOK {
+					t.Fatalf("a scoped caller writing %v again on %s: status=%d body=%s, want 200", want, kept, written.Code, written.Body.String())
+				}
+				if got := readBlockedBy(t, kept); !slices.Equal(got, want) {
+					t.Fatalf("blocked_by of %s read back = %v, want %v", kept, got, want)
+				}
+			})
 
-		t.Run("a PATCH that writes again a list keeping the link, with one more target, is 200", func(t *testing.T) {
-			want := []string{outside, sibling}
-			slices.Sort(want)
-			if written := patchBlockedBy(t, kept, want); written.Code != http.StatusOK {
-				t.Fatalf("a scoped caller writing %v again on %s: status=%d body=%s, want 200", want, kept, written.Code, written.Body.String())
-			}
-			if got := readBlockedBy(t, kept); !slices.Equal(got, want) {
-				t.Fatalf("blocked_by of %s read back = %v, want %v", kept, got, want)
-			}
+			t.Run("a link to an issue that does not exist is 400 BLOCKED_BY_INPUT", func(t *testing.T) {
+				const missing = "OTH-999"
+				refused := patchBlockedBy(t, sibling, []string{missing})
+				if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "BLOCKED_BY_INPUT" || !strings.Contains(text, missing) {
+					t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 400 BLOCKED_BY_INPUT naming %s",
+						sibling, missing, refused.Code, refused.Body.String(), missing)
+				}
+				if got := readBlockedBy(t, sibling); len(got) != 0 {
+					t.Fatalf("the refused write left blocked_by of %s = %v, want []", sibling, got)
+				}
+			})
 		})
-
-		t.Run("a link to an issue that does not exist is 400 BLOCKED_BY_INPUT", func(t *testing.T) {
-			const missing = "OTH-999"
-			refused := patchBlockedBy(t, sibling, []string{missing})
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "BLOCKED_BY_INPUT" || !strings.Contains(text, missing) {
-				t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 400 BLOCKED_BY_INPUT naming %s",
-					sibling, missing, refused.Code, refused.Body.String(), missing)
-			}
-			if got := readBlockedBy(t, sibling); len(got) != 0 {
-				t.Fatalf("the refused write left blocked_by of %s = %v, want []", sibling, got)
-			}
-		})
-	})
+	}
 }
 
 // foreignChildOpenAnswer is the body of a 409 FOREIGN_CHILD_OPEN, declared here rather than taken
@@ -504,6 +532,53 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 			t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
 		}
 	})
+}
+
+// TestAnAcceptanceWriteCountsOnlyTheChildrenItsWriterSees: the open-child check reads a child as
+// its writer reads it (refuseOpenForeignChildren, access.ProjectClause), since a private project
+// answers as missing to a caller its list does not let in. PUB's issue has an open child in PRIV,
+// carol's project, made private. carol, who sees PRIV, is refused the acceptance write, and the
+// 409 names the child. alice, a full member PRIV's list does not name, does not see the child: her
+// same write is taken, as over an issue with no such child.
+//
+// Control: the check's read with its project clause taken out, as main writes it, fails the second
+// case: alice is refused, and the 409 names PRIV's child.
+func TestAnAcceptanceWriteCountsOnlyTheChildrenItsWriterSees(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	seedCredentialProjects(t, handler, database)
+	parent := issueIn(t, handler, accessCarol, publicProject)
+	child := issueIn(t, handler, accessCarol, privateProject)
+	// The routes of this build refuse a parent of another project, so the test writes the link
+	// itself, as TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject does.
+	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
+		t.Fatalf("put %s under %s: %v", child, parent, err)
+	}
+	makePrivate(t, database, privateProject)
+	patch := func(t *testing.T, login string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+parent, body, login)
+	}
+	if response := patch(t, accessCarol, map[string]any{"status": "in_progress"}); response.Code != http.StatusOK {
+		t.Fatalf("set %s to in_progress: status=%d body=%s", parent, response.Code, response.Body.String())
+	}
+	acceptance := map[string]any{"status": "retro", "refuse_open_foreign_children": true}
+
+	refused := patch(t, accessCarol, acceptance)
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("carol's acceptance write: status=%d body=%s, want 409 FOREIGN_CHILD_OPEN", refused.Code, refused.Body.String())
+	}
+	refusal := decodeBody[foreignChildOpenAnswer](t, refused)
+	if len(refusal.Issues) != 1 || refusal.Issues[0].Key != child || refusal.Issues[0].Project != privateProject {
+		t.Fatalf("carol's refusal %+v, want FOREIGN_CHILD_OPEN naming %s of %s", refusal, child, privateProject)
+	}
+
+	taken := patch(t, "alice", acceptance)
+	if taken.Code != http.StatusOK {
+		t.Fatalf("alice's acceptance write: status=%d body=%s, want 200: the open child is of a project she does not see", taken.Code, taken.Body.String())
+	}
+	if strings.Contains(taken.Body.String(), child) {
+		t.Fatalf("alice's answer names %s, a child of a project she does not see: %s", child, taken.Body.String())
+	}
 }
 
 // TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus: refuse_open_foreign_children asks for the

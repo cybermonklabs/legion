@@ -64,6 +64,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // speedCustomPlans is how many runs of a prepared statement on one connection Postgres plans for
@@ -416,7 +417,7 @@ func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) fl
 	ctx := context.Background()
 	var failed error
 	allocs := testing.AllocsPerRun(speedScanRuns, func() {
-		if _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
+		if _, err := corpus.server.readPriorities(ctx, refs.VisibilityArg(everyReader), []string{}, summary); err != nil {
 			failed = err
 		}
 	})
@@ -460,7 +461,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	t.Helper()
 	ctx := context.Background()
 	faults := func() string {
-		body, err := corpus.server.readPriorities(ctx, []string{}, false)
+		body, err := corpus.server.readPriorities(ctx, refs.VisibilityArg(everyReader), []string{}, false)
 		if err != nil {
 			t.Fatalf("read the priorities: %v", err)
 		}
@@ -479,7 +480,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	growth.body[0], growth.summary[0] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
 
 	copySeededRows(t, corpus.database, "priority_tuples", seededTupleColumns, corpus.moreRelations)
-	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities)
+	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities, refs.VisibilityArg(everyReader))
 	if err != nil {
 		t.Fatalf("read the advances relations: %v", err)
 	}
@@ -506,7 +507,7 @@ var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", s
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, "", "", limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, "", "", refs.VisibilityArg(everyReader), limit, offset,
 	}
 }
 

@@ -305,13 +305,13 @@ func recallOldSearch(ctx context.Context, srv *server, project, text string) ([]
 	if nodes == 0 {
 		return nil, nil
 	}
-	response, err := srv.runFusedSearchQuery(ctx, searchParameters{text: query, project: project, limit: suggestionSearchDepth})
+	response, err := srv.runFusedSearchQuery(ctx, searchParameters{text: query, project: project, limit: suggestionSearchDepth, who: everyReader})
 	return response.Results, err
 }
 
 // recallPick is the check's term selection (runRelatedCheck's stage 1): the text's rarest words.
 func recallPick(ctx context.Context, srv *server, project, text, title, exclude string) (relatedTerms, error) {
-	return srv.pickRelatedTerms(ctx, srv.deps.Store.Pool, project, text, title, relatedExclusion{issueKey: exclude}, probeUnknownTerms)
+	return srv.pickRelatedTerms(ctx, srv.deps.Store.Pool, everyReader, project, text, title, relatedExclusion{issueKey: exclude}, probeUnknownTerms)
 }
 
 // recallNewSearch runs the check's keyword statement (relatedKeywordQuery) over the picked

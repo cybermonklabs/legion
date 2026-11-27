@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -89,4 +93,64 @@ func (r *existenceTrace) take() []string {
 	r.statements = nil
 	r.generation++
 	return taken
+}
+
+// walkListenerCalls keeps every request the walk's fake Envoy listener was sent, as "METHOD path",
+// in the order it was sent them. It is not listenerCalls (listener_takeover_test.go), the count a
+// stand-in listener keeps of the calls it serves and holds.
+type walkListenerCalls struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *walkListenerCalls) add(r *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, r.Method+" "+r.URL.RequestURI())
+}
+
+// take answers the calls held and empties the record.
+func (c *walkListenerCalls) take() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	taken := c.calls
+	c.calls = nil
+	return taken
+}
+
+// rewritten is each of values with every key of written replaced by its value, longest key first,
+// so a record of the call naming nothing reads as the call naming the hidden object would have
+// read had it been answered as missing.
+func rewritten(values []string, written map[string]string) []string {
+	keys := make([]string, 0, len(written))
+	for key := range written {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(left, right string) int { return len(right) - len(left) })
+	out := make([]string, len(values))
+	for index, value := range values {
+		for _, key := range keys {
+			value = strings.ReplaceAll(value, key, written[key])
+		}
+		out[index] = value
+	}
+	return out
+}
+
+// firstDifference names where two records part: the index of the first entry that differs, and
+// each record's entry there ("(none)" past a record's end).
+func firstDifference(hidden, missing []string) string {
+	at := func(record []string, index int) string {
+		if index < len(record) {
+			return record[index]
+		}
+		return "(none)"
+	}
+	for index := range max(len(hidden), len(missing)) {
+		if at(hidden, index) != at(missing, index) {
+			return fmt.Sprintf("at %d of %d and %d: the hidden call %s; the call naming nothing %s",
+				index, len(hidden), len(missing), at(hidden, index), at(missing, index))
+		}
+	}
+	return ""
 }

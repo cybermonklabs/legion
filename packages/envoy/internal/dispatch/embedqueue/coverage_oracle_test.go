@@ -73,11 +73,12 @@ func (r coverageRow) String() string {
 	return fmt.Sprintf("%s indexed=%t items=%d current=%d failed=%d oldest=%s", r.kind, r.indexed, r.items, r.current, r.failed, oldest)
 }
 
-// coverageRowsOf reads every row statement answers for identity ($1) in tx: each whole row
-// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind.
-func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
+// coverageRowsOf reads every row statement answers for identity ($1), and for the rest of its
+// arguments after it, in tx: each whole row rendered, in sorted order, so two answers compare as
+// sets of rows, and the rows by kind.
+func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string, more ...any) ([]string, map[string]coverageRow) {
 	t.Helper()
-	rows, err := tx.Query(context.Background(), statement, identity)
+	rows, err := tx.Query(context.Background(), statement, append([]any{identity}, more...)...)
 	if err != nil {
 		t.Fatalf("run the coverage statement for %q: %v", identity, err)
 	}
@@ -143,7 +144,8 @@ func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity 
 // headRowsOf reads the coverage statement for identity in tx as Coverage runs it, under the
 // settings planCoverage sets, inside a savepoint that it rolls back, which undoes those settings
 // and leaves tx's snapshot as it was: a statement after it plans as though they had never been
-// set.
+// set. It reads as a reader who sees every project (everyProject), so it counts every row main's
+// statement, which knows no reader, counts.
 func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
@@ -155,7 +157,7 @@ func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]
 	if err := planCoverage(ctx, savepoint); err != nil {
 		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
 	}
-	return coverageRowsOf(t, savepoint, coverageQuery, identity)
+	return coverageRowsOf(t, savepoint, coverageQuery, identity, everyProjectArg)
 }
 
 // updateRow sets set (whose arguments are $3 on) on the embeddings row of kind and id ($1 and
@@ -571,7 +573,7 @@ func explainPlannedIn(t *testing.T, tx pgx.Tx, profile string) json.RawMessage {
 		mustExec(t, tx, profile)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity, everyProjectArg).Scan(&raw); err != nil {
 		t.Fatalf("explain the coverage statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)

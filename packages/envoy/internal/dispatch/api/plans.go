@@ -67,10 +67,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
+	key := r.PathValue("key")
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -78,7 +79,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a plan")
 	if !ok {
 		return
 	}
@@ -129,7 +130,8 @@ func (input planRecordInput) document() workflowstore.PlanDocument {
 }
 
 // listProjectPlans is each finished issue of one project, newest close first:
-// GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=.
+// GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=. The project is read
+// as the caller sees it first, so one it does not see answers as a key no project holds.
 func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -148,7 +150,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, who, key, window)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

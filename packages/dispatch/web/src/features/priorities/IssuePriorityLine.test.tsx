@@ -1,16 +1,17 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -68,11 +69,24 @@ const REVISION = 41;
 // document, and a sibling file's un-unmounted render would otherwise leak its links into a
 // `screen`-wide query. The picker's list is portalled to the body, so it is found there by its
 // own name, which no other surface carries, and read within itself.
-function renderLine(advances: Issue["advances"], closed = false, read: Priorities = body) {
+function renderLine(
+  advances: Issue["advances"],
+  closed = false,
+  read: Priorities = body,
+  memberKind?: "restricted"
+) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(read);
   const patchIssue = answerIssuePatches();
   patchIssue.mockResolvedValue({} as never);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (memberKind !== undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: memberKind,
+    });
+  }
   const invalidations = spyOn(queryClient, "invalidateQueries");
   const line = (entries: Issue["advances"], revision: number) => (
     <MemoryRouter>
@@ -134,6 +148,22 @@ test("the line names the priority an issue advances, by its order and title, and
     expect(
       within(listbox).getByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
     ).toHaveAttribute("aria-selected", "true");
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// The priorities are the whole deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED), and their pages answer them Page not found: an issue they read
+// draws no Advances line, so it reads no priority, links to no page of theirs and offers no
+// control over a list they cannot see.
+test("a restricted member's issue draws no Advances line and reads no priority", async () => {
+  const view = renderLine([{ id: "rocq-lean", inherited: false }], false, body, "restricted");
+  try {
+    await act(settle);
+    expect(view.listPriorities).not.toHaveBeenCalled();
+    expect(view.q.queryByTestId("issue-advances")).toBeNull();
+    expect(view.q.queryByRole("link")).toBeNull();
   } finally {
     view.unmountAll();
   }

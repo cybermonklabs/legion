@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -12,8 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/routing"
 )
 
@@ -483,4 +486,48 @@ const envoyRefillingRetryAfter = "5"
 func writeEnvoyRefilling(w http.ResponseWriter, retryAfter string) {
 	w.Header().Set("Retry-After", cmp.Or(retryAfter, envoyRefillingRetryAfter))
 	writeError(w, "ENVOY_REFILLING", http.StatusServiceUnavailable, "The agent list is refilling. Try again in a moment.")
+}
+
+// seenSessions is which of the sessions ids names the viewer may see (access.SessionClause), in one
+// statement: its own and those that have acted in a project it sees, and, for an open viewer, every
+// session but one that acted in a project it does not see. With no id it reads nothing.
+func (s *server) seenSessions(ctx context.Context, viewer any, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	if len(ids) == 0 {
+		return seen, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select named.id from unnest($1::text[]) as named(id)
+		where `+access.SessionClause("named.id", "$2"), ids, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
+	}
+	visible, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
+	}
+	for _, id := range visible {
+		seen[id] = true
+	}
+	return seen, nil
+}
+
+// sessionsHiddenFromReader reports which of ids the request's reader may not see
+// (access.SessionClause), read in one statement (seenSessions): sessionHiddenFromReader's rule over a
+// list of sessions. A context with no reader hides every session, failing closed, as
+// sessionHiddenFromReader does. A reader that sees every object - among them an open reader of a
+// deployment that holds no private project (R9) - sees every session and costs no read.
+func (s *server) sessionsHiddenFromReader(ctx context.Context, ids []string) (func(string) bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok {
+		return func(string) bool { return true }, nil
+	}
+	if seesEveryObject(reader) {
+		return func(string) bool { return false }, nil
+	}
+	seen, err := s.seenSessions(ctx, refs.VisibilityArg(reader), ids)
+	if err != nil {
+		return nil, err
+	}
+	return func(sessionID string) bool { return !seen[sessionID] }, nil
 }
