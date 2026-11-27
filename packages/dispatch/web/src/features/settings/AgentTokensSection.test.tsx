@@ -776,6 +776,59 @@ test("a restricted member's form and rows offer no scope, send none, and name on
   }
 });
 
+// A read-only token a restricted member made while they were a full member lists no project, and
+// Dispatch takes no edit of it, so it acts for nobody until they revoke it and make a token naming
+// their one project. The token list answers it holding `read` alone. Its row says that, with no
+// project picker, while the row of their other token keeps its note and its picker.
+//
+// Control: draw the restricted row's usual note whatever the token holds (drop the readOnly branch
+// of its scopes cell), and the row shows no word of what to do.
+test("a restricted member's read-only token's row says to replace it, and offers no picker", async () => {
+  listProjects.mockResolvedValue([project("ACC", "Access")]);
+  const reader: AgentToken = {
+    ...token,
+    id: "33333333-3333-3333-3333-333333333333",
+    name: "reader",
+    scopes: ["read"],
+  };
+  const theirs: AgentToken = { ...token, projects: ["ACC"], scopes: [] };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([reader, theirs]);
+  const updateAgentToken = spyOn(api, "updateAgentToken");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "erin@outside.example",
+    member_kind: "restricted",
+  });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    const name = await screen.findByRole("cell", { name: "reader" });
+    const row = name.closest("tr") as HTMLElement;
+    expect(
+      within(row).getByText(
+        "Read only, made before your access changed: it works nowhere now. Revoke it, then make a token that names your one project."
+      )
+    ).toBeInTheDocument();
+    expect(within(row).getByText("No project")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Projects \(reader\)/ })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Revoke reader" })).toBeEnabled();
+    expect(projectsPicker("architect").textContent).toBe("ACC");
+    expect(updateAgentToken).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
 /** The label of each word's box on the mint form. */
 const LABELS: Readonly<Record<DispatchTokenScope, string>> = {
   person: "Act as you",

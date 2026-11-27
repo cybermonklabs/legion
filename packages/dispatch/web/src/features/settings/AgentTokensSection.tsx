@@ -148,6 +148,14 @@ const NEW_TOKEN_SCOPES: readonly DispatchTokenScope[] = DISPATCH_SCOPES.filter(
 const RESTRICTED_TOKEN_NOTE =
   "Works as you in the one project it names, and approves nothing: no login, no token, no credential request.";
 
+/** What a restricted member's read-only token says in place of its scopes and its projects. Such a
+ *  token was made while they were a full member. It lists no project, and Dispatch takes no edit
+ *  of a read-only token (400 TOKEN_SCOPES_INPUT), so it acts for nobody (403 RESTRICTED_MEMBER)
+ *  until they revoke it and make a token that names their one project. The token list answers it
+ *  holding `read` alone, which is how the row knows it is read-only. */
+const RESTRICTED_READ_ONLY_NOTE =
+  "Read only, made before your access changed: it works nowhere now. Revoke it, then make a token that names your one project.";
+
 /** The words a token holds, `p0` and `read` among them. The route table carries them as plain
  *  strings; `DISPATCH_TOKEN_SCOPES` is the closed list each is one of, so a word this build does
  *  not know is left out rather than drawn as a box nobody can clear, and a token whose list came
@@ -662,7 +670,7 @@ export function AgentTokensSection(): ReactNode {
                       <td className="px-4 py-3">
                         {restricted ? (
                           <p className={`max-w-xs text-xs ${textMutedOnSurface}`}>
-                            {RESTRICTED_TOKEN_NOTE}
+                            {readOnly ? RESTRICTED_READ_ONLY_NOTE : RESTRICTED_TOKEN_NOTE}
                           </p>
                         ) : readOnly ? (
                           <ReadOnlyScopes held={held} subject={token.name} />
@@ -681,7 +689,7 @@ export function AgentTokensSection(): ReactNode {
                       <td className="px-4 py-3">
                         {readOnly ? (
                           <p className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-                            Public projects only
+                            {restricted ? "No project" : "Public projects only"}
                           </p>
                         ) : (
                           <TokenProjectsChoice
