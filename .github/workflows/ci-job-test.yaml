@@ -409,10 +409,11 @@ jobs:
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module, the build-cache prune's builds of a
-      # scratch module, the testcontainers link check's go list over fixture modules and the
-      # build-tag lister, none of which that entry is filled for. The daemon's go.mod is still the
-      # one Go pin of this repository's three modules that a job without one of its own reads.
+      # the CI-filter check's go list over a scratch module, the legion release path check's over
+      # a scratch pair of modules, the build-cache prune's builds of a scratch module, the
+      # testcontainers link check's go list over fixture modules and the build-tag lister, none of
+      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
+      # repository's three modules that a job without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
