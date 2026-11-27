@@ -233,11 +233,14 @@ func (p RetryPolicy) maxAttempts(ctx context.Context) int {
 	if !ok {
 		return 0
 	}
-	remaining := time.Until(deadline)
-	if remaining <= LockTimeout {
-		return 1
+	// As many whole attempt-and-pause cycles as fit before the deadline, and at least one, so the
+	// last attempt's lock_timeout ends — and its named give-up returns — at least Pause before the
+	// deadline, rather than being cut short into a bare context error.
+	cycle := LockTimeout + p.Pause
+	if remaining := time.Until(deadline); remaining > cycle {
+		return int(remaining / cycle)
 	}
-	return 1 + int((remaining-LockTimeout)/(LockTimeout+p.Pause))
+	return 1
 }
 
 // attemptsField is the value the retry logs under "attempts": the cap, or that it retries until the

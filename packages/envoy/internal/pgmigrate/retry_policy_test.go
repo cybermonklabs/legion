@@ -58,9 +58,9 @@ func TestMaxAttempts(t *testing.T) {
 	if got := DeadlineRetryPolicy().maxAttempts(long); got <= LockTimeoutAttempts {
 		t.Errorf("DeadlineRetryPolicy().maxAttempts(1h deadline) = %d, want more than production's %d", got, LockTimeoutAttempts)
 	}
-	// 20 s leaves 1 + floor((20-5)/(5+2)) = 3 attempts; allow a clock tick either way.
+	// 20 s holds floor(20/(5+2)) = 2 whole attempt-and-pause cycles; allow a clock tick either way.
 	if got := DeadlineRetryPolicy().maxAttempts(twentySeconds); got < 2 || got > 4 {
-		t.Errorf("DeadlineRetryPolicy().maxAttempts(20s deadline) = %d, want about 3", got)
+		t.Errorf("DeadlineRetryPolicy().maxAttempts(20s deadline) = %d, want about 2", got)
 	}
 }
 
