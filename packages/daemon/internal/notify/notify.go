@@ -211,11 +211,10 @@ func New(baseURL, token string) *HTTPPublisher {
 
 // newRequest is the request of method to ref, a route with or without its own query, carrying
 // body and the listener's bearer where the publisher has one. It goes to ref joined onto the
-// listener URL's path (urljoin.Join), the URL's query kept ahead of ref's own, where ref appended
-// to the URL's text would sit inside its query or its fragment and the listener would be asked
-// another path. A URL that does not parse or names no host is refused in fixed words: url.Parse's
-// error quotes the URL whole, user information and query included. A joined URL http.NewRequest
-// refuses (url.URL.String can write text url.Parse refuses) is named through oauth2call.Unanswered.
+// listener URL's path (urljoin.Join), the URL's query kept ahead of ref's own. A URL that does not
+// parse or names no host is refused in fixed words: url.Parse's error quotes the URL whole, user
+// information and query included. A joined URL http.NewRequest refuses (url.URL.String can write
+// text url.Parse refuses) is named through oauth2call.Unanswered.
 func (p *HTTPPublisher) newRequest(ctx context.Context, method, ref string, body io.Reader) (*http.Request, error) {
 	call, err := urljoin.Join(p.baseURL, ref)
 	if err != nil {

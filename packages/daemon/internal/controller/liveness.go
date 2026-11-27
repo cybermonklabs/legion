@@ -63,12 +63,11 @@ type Prober struct {
 }
 
 // NewProber is a Prober over opts. Its lookup goes to the controller token's role route joined
-// onto the Envoy URL's path (urljoin.Join), the URL's query kept, where the route appended to the
-// URL's text would sit inside its query or its fragment and the listener would be asked another
-// path; an Envoy URL that does not parse or names no host leaves it no lookup, and each probe then
-// answers Unknown in fixed words, since url.Parse's error quotes the URL whole. The lookup follows
-// no redirect (redirects.Refused): it carries the listener's bearer, which a followed redirect
-// would hand the host the Location names, and a 3xx is an answer the probe reads as Unknown.
+// onto the Envoy URL's path (urljoin.Join), the URL's query kept; an Envoy URL that does not parse
+// or names no host leaves it no lookup, and each probe then answers Unknown in fixed words, since
+// url.Parse's error quotes the URL whole. The lookup follows no redirect (redirects.Refused): it
+// carries the listener's bearer, which a followed redirect would hand the host the Location names,
+// and a 3xx is an answer the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
 		token:  opts.EnvoyToken,
@@ -138,15 +137,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		// live holder: every listener release writes its role refusal that way, the earliest with no
 		// reason at all. A 404 of anything else — a proxy's page, an empty body, JSON of another
 		// shape — says nothing of the role, so it reads as unknown, as a body this probe cannot read
-		// does (dispatch://INFRA-2045 R5). A path under /v1 that the listener does not serve is no
-		// such 404: the listener's catch-all (registerV1Routes, packages/envoy/cmd/listener/api.go)
-		// answers it `{"error":"not found"}`, which this reads as gone. That body is a JSON object
-		// with an error and no reason, which is all the earliest listener's refusal carries, so
-		// nothing in the body tells the two apart, and reading it as unknown would read every
-		// refusal of that listener as unknown too. The error, the reason, the state and the holder
-		// are the listener's words, so they are compared as they came and logged as the rule reads
-		// them (listenerwire.RoleRefusalAs), and a body that is no refusal is quoted as the rule
-		// reads the answer's words (Answer.Words), then cut (redact.Runes).
+		// does. A path under /v1 that the listener does not serve is no such 404: the listener's
+		// catch-all (registerV1Routes, packages/envoy/cmd/listener/api.go) answers it
+		// `{"error":"not found"}`, which this reads as gone. That body is a JSON object with an
+		// error and no reason, which is all the earliest listener's refusal carries, so nothing in
+		// the body tells the two apart, and reading it as unknown would read every refusal of that
+		// listener as unknown too.
 		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
 		if err := read.Decode(&refusal); err != nil || refusal.Error.IsEmpty() {
 			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup is not its role refusal; the controller is left as it is",

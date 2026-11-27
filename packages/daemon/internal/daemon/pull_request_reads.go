@@ -189,7 +189,6 @@ func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubre
 	}
 	if mergeable == record.MergeabilityConflicting {
 		if base.Name() == "" {
-			// The record's base, which the daemon's record holds, has none of GitHub's words.
 			base = recordedText(pr.Base)
 		}
 		rules := w.readBaseRules(ctx, github, pr, base)

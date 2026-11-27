@@ -13,6 +13,7 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
@@ -1085,7 +1086,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       return JSON.parse(raw);
     } catch {
       const named = bodyForText(raw, tokens(), "JSON");
-      throw new SyntaxError(`${method} ${shown(`${baseUrl}${path}`)} answered with ${named}`);
+      throw new SyntaxError(
+        `${method} ${shown(joinUrl(baseUrl, path).toString())} answered with ${named}`
+      );
     }
   };
 
@@ -1182,7 +1185,20 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     init: RequestInit,
     options: RequestOptions = {}
   ): Promise<string> => {
-    const url = `${baseUrl}${path}`;
+    // The route joined onto the configured URL's path, the configured query kept ahead of the
+    // route's own (`joinUrl`); the answer's error above names the same join.
+    let url: string;
+    try {
+      url = joinUrl(baseUrl, path).toString();
+    } catch {
+      // Nothing was sent: a URL that does not parse or has no host, or a route that is not a
+      // relative reference. Neither is printed: the URL can carry a credential in its user info
+      // or its query.
+      options.onNotSent?.();
+      throw new Error(
+        `${init.method ?? "GET"} was not sent: ${ENVOY_URL_SETTING} is not an absolute URL with a host, or its route is not a relative reference (neither is printed)`
+      );
+    }
     const tries = options.retry === false ? 1 : attempts;
     // Whether an earlier attempt got no answer or a 5xx, after which the listener may have acted
     // on the call: a later answer that it sent nothing then speaks for that attempt alone.

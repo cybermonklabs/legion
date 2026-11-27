@@ -447,8 +447,7 @@ type editorWorkload struct {
 // each one's schedule from the step's start to the window's end: updates at cfg.rate a second,
 // open-loop on stream 3+i of the step's RNG seed (openLoop). An update is scheduled whether or not
 // its editor is connected; one whose editor is not connected and synced is counted as not sent.
-// The durable probe reads its floors before the first editor connects. Each document's socket is
-// its path joined onto the Dispatch URL (joinSocketURL).
+// The durable probe reads its floors before the first editor connects.
 func (st *step) startEditors(ctx context.Context) *editorWorkload {
 	cfg := st.cfg.editors
 	if cfg.editors == 0 {
@@ -559,10 +558,8 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 
 // joinSocketURL is ref, a path with or without its own query, joined onto dispatch, Dispatch's
 // http(s) URL (urljoin.Join), under the scheme a websocket dials it by: ws for http, wss for
-// https. ref goes onto the URL's path and its query after the URL's own, and the fragment, which no
-// request sends, is dropped, where ref appended to the URL's text would sit inside a query or a
-// fragment and Dispatch would be asked another path. A URL that does not join, or that is neither
-// http nor https, is refused in fixed words, which quote none of it.
+// https. A URL that does not join, or that is neither http nor https, is refused in fixed words,
+// which quote none of it.
 func joinSocketURL(dispatch, ref string) (string, error) {
 	joined, err := urljoin.Join(dispatch, ref)
 	if err != nil {

@@ -55,8 +55,7 @@ func TestTheMetadataDocumentJoinsItsEndpointsOntoThePublicURL(t *testing.T) {
 // TestAProofIsCheckedAgainstThePathJoinedOntoThePublicURL: the htu the broker checks a session's
 // proof against is the request's path joined onto the public URL's path, the configured query
 // kept (joined) — the same join agent-secrets makes when it signs the proof. A proof naming the
-// path appended to that URL's text, which is what the broker compared against before the join, is
-// refused (appended), so the comparison can be seen to fail.
+// path appended to that URL's text is refused (appended), so the comparison can be seen to fail.
 func TestAProofIsCheckedAgainstThePathJoinedOntoThePublicURL(t *testing.T) {
 	ts := publicURLWithQuery(t)
 	const route = "/v1/secrets/WORKER_TOKEN/reread"

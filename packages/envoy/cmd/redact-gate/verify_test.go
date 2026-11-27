@@ -437,14 +437,12 @@ func judgeCase(t *testing.T, c verifyCase) (verifyRuns, string, int) {
 }
 
 // TestTheVerifyModeJudgesEachRunFromItsEventsAndReports: -verify's verdicts of recorded go test
-// events and Bun JUnit reports, which the check script's three bun judges gave before: a package
-// passes only when its go exited 0 and its events, each of which parses, end in its pass; a row
-// only when its test and its package passed; a package past its bound (its binary's panic, or the
-// go command's kill a minute later, at a line's start) with no test failed is UNKNOWN, and a t.Log
-// line quoting the panic is no such run; each failure prints why; a Bun row passes only on a
-// passing testcase of its full name; the print test only on a REDACT-PRINT line. The exit status
-// is 0, 1, or 3 for UNKNOWN with nothing failed. With the next test it replaces controls 31a-31c,
-// which ran the script with each judge cut short or failing.
+// events and Bun JUnit reports: a package passes only when its go exited 0 and its events, each
+// of which parses, end in its pass; a row only when its test and its package passed; a package
+// past its bound (its binary's panic, or the go command's kill a minute later, at a line's start)
+// with no test failed is UNKNOWN, and a t.Log line quoting the panic is no such run; each failure
+// prints why; a Bun row passes only on a passing testcase of its full name; the print test only
+// on a REDACT-PRINT line. The exit status is 0, 1, or 3 for UNKNOWN with nothing failed.
 func TestTheVerifyModeJudgesEachRunFromItsEventsAndReports(t *testing.T) {
 	for _, c := range verifyCases() {
 		t.Run(c.name, func(t *testing.T) {
@@ -475,13 +473,12 @@ func TestTheVerifyModeJudgesEachRunFromItsEventsAndReports(t *testing.T) {
 	}
 }
 
-// TestTheVerifyModePrintsOneVerdictForEachPackageRowBunFileAndThePrintTest: what the check
-// script's judged() enforced on its judges: for every run verifyCases judges, -verify prints
-// exactly one verdict line for each Go package, Go row, Bun file and Bun row and one for the print
-// test, then its count, and exits 0 only when each verdict passed, 1 when one failed and 3 when
-// none failed and one was UNKNOWN. Where it would print another number of verdicts - a package's
-// run missing, or a run no row names - it refuses with exit 2 and prints no count, so it cannot
-// pass a row it owes no verdict.
+// TestTheVerifyModePrintsOneVerdictForEachPackageRowBunFileAndThePrintTest: for every run
+// verifyCases judges, -verify prints exactly one verdict line for each Go package, Go row, Bun
+// file and Bun row and one for the print test, then its count, and exits 0 only when each
+// verdict passed, 1 when one failed and 3 when none failed and one was UNKNOWN. Where it would
+// print another number of verdicts - a package's run missing, or a run no row names - it refuses
+// with exit 2 and prints no count, so it cannot pass a row it owes no verdict.
 func TestTheVerifyModePrintsOneVerdictForEachPackageRowBunFileAndThePrintTest(t *testing.T) {
 	count := func(out string, pattern string) int {
 		return len(regexp.MustCompile("(?m)"+pattern).FindAllString(out, -1))

@@ -32,9 +32,12 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -53,35 +56,25 @@ const (
 	boundaryWrapper  = "BoundTokenSource"
 )
 
-// sortedKeys is set's members in order.
-func sortedKeys(set map[string]bool) []string {
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
+// under reports whether path is the package root or a package below it.
+func under(path, root string) bool { return path == root || strings.HasPrefix(path, root+"/") }
 
 // library reports whether path is a package of a library whose calls cross the boundary.
 func library(path string) bool {
-	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
-		path == impersonatePath || path == cloudSQLConnPath
+	return under(path, oauth2Path) || under(path, goOIDCPath) || path == impersonatePath || path == cloudSQLConnPath
 }
 
 // textOnly reports whether path is a library that hands back only the text of a refusal, with no
 // response or request to read its record from: each call of it must be read under CallScope.
 func textOnly(path string) bool {
-	return path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
-		path == oauth2Path+"/google" || strings.HasPrefix(path, oauth2Path+"/google/") ||
-		path == impersonatePath || path == cloudSQLConnPath
+	return under(path, goOIDCPath) || under(path, oauth2Path+"/google") || path == impersonatePath || path == cloudSQLConnPath
 }
 
 // dispatchLibrary reports whether library's exported types are used to resolve calls through an
 // interface. cloudsqlconn's Dialer implements io.Closer, so including it would turn every Close of
 // an unrelated io.Closer into a library call; its direct methods are already in the closed API.
 func dispatchLibrary(path string) bool {
-	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/")
+	return under(path, oauth2Path) || under(path, goOIDCPath)
 }
 
 func main() {
@@ -94,9 +87,6 @@ func main() {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	// The module is loaded once for each target and tag set, so a file a build constraint keeps
-	// from one of them (a darwin-only file on a Linux gate, an e2e file) is read under another.
-	// Each load's target is kept, so the summary names, for each target, what its builds read.
 	loaded := load.Modules("boundary", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo|packages.NeedImports, patterns...)
 	pkgs, targetOf := loaded.Packages, loaded.Target
 
@@ -162,7 +152,6 @@ func main() {
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
-			// A file that more than one load builds is read once, by the first.
 			if strings.HasSuffix(name, "_test.go") || walked[name] {
 				continue
 			}
@@ -177,16 +166,11 @@ func main() {
 				stack = append(stack, n)
 				if failure, checked := handoff(pkg.TypesInfo, n, tokenSource); checked {
 					handoffs++
-					pos := pkg.Fset.Position(n.Pos())
-					rel, err := filepath.Rel(root, pos.Filename)
-					if err != nil {
-						rel = pos.Filename
-					}
 					verdict := "ok"
 					if failure != "" {
 						verdict, failed = "FAIL", failed+1
 					}
-					lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\ttoken source or HTTP client handed to another module\t%s", verdict, rel, pos.Line, pos.Column, cmp.Or(failure, "a token source the boundary made, or a client RefusalClient made")))
+					lines = append(lines, fmt.Sprintf("%s\t%s\ttoken source or HTTP client handed to another module\t%s", verdict, listed(pkg.Fset, root, n.Pos()), cmp.Or(failure, "a token source the boundary made, or a client RefusalClient made")))
 				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
@@ -202,11 +186,6 @@ func main() {
 				}
 				refs++
 				fileRefs[name]++
-				pos := pkg.Fset.Position(id.Pos())
-				rel, err := filepath.Rel(root, pos.Filename)
-				if err != nil {
-					rel = pos.Filename
-				}
 				verdict, why := "ok", "called across redact.OAuth2"
 				scoped := throughScope(pkg.TypesInfo, stack)
 				switch {
@@ -228,7 +207,7 @@ func main() {
 				if via != "" {
 					why += "; called through " + via
 				}
-				lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\t%s\t%s", verdict, rel, pos.Line, pos.Column, key, why))
+				lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", verdict, listed(pkg.Fset, root, id.Pos()), key, why))
 				return true
 			})
 		}
@@ -237,13 +216,8 @@ func main() {
 	for _, line := range lines {
 		fmt.Println(line)
 	}
-	var paths []string
-	for path := range perPackage {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(sortedKeys(importedFor[path]), ", "))
+	for _, path := range slices.Sorted(maps.Keys(perPackage)) {
+		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(slices.Sorted(maps.Keys(importedFor[path])), ", "))
 	}
 	for _, target := range loaded.Order {
 		targetFiles, targetRefs := 0, 0
@@ -269,6 +243,17 @@ func main() {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// listed is p as a line of the listing names it: its file relative to root where filepath.Rel can
+// make it so, its line and its column.
+func listed(fset *token.FileSet, root string, p token.Pos) string {
+	pos := fset.Position(p)
+	rel, err := filepath.Rel(root, pos.Filename)
+	if err != nil {
+		rel = pos.Filename
+	}
+	return fmt.Sprintf("%s:%d:%d", rel, pos.Line, pos.Column)
 }
 
 // httpClientKind is the kind of a library function or method that answers an HTTP client or

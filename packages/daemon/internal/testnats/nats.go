@@ -37,6 +37,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -53,6 +54,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -277,16 +279,32 @@ func reset(t testing.TB) *server {
 }
 
 // external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
-// client URL and its monitoring endpoint's base URL, without a trailing slash, as the reset appends
-// /connz to it. Neither set is no external server, both empty; one set without the other is an
-// error naming both.
+// client URL and its monitoring endpoint's base URL, without a trailing slash, onto whose path the
+// reset (connectionsAt) and this package's tests (streamsDirectory) join their routes. Neither set
+// is no external server, both empty; one set without the other is an error naming both, each value
+// as shownSetting names it, since either URL can carry a credential.
 func external() (string, string, error) {
 	server, monitoring := os.Getenv(externalURLEnv), os.Getenv(externalMonitorEnv)
 	if (server == "") != (monitoring == "") {
-		return "", "", fmt.Errorf("set both %s and %s to use a running NATS server, or neither to start a container (%s is %q, %s is %q)",
-			externalURLEnv, externalMonitorEnv, externalURLEnv, server, externalMonitorEnv, monitoring)
+		return "", "", fmt.Errorf("set both %s and %s to use a running NATS server, or neither to start a container (%s is %s, %s is %s)",
+			externalURLEnv, externalMonitorEnv, externalURLEnv, shownSetting(server), externalMonitorEnv, shownSetting(monitoring))
 	}
 	return server, strings.TrimSuffix(monitoring, "/"), nil
+}
+
+// shownSetting is the value of a URL setting as an error names it: "" for one not set, else the
+// URL as oauth2call.AskedURL names a URL a request asks (its scheme, host and path, never its user
+// information, query or fragment), which is redact.NotPrinted where the URL rule refuses the rest,
+// a nats:// client URL among them, or where the value does not parse.
+func shownSetting(value string) string {
+	if value == "" {
+		return `""`
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return oauth2call.AskedURL(nil)
+	}
+	return oauth2call.AskedURL(u)
 }
 
 // take holds a server of the pool for t until t ends: the one freed last, or, when every server
@@ -478,16 +496,29 @@ var readConnections = clientConnections
 func clientConnections(s *server) ([]Connection, error) { return connectionsAt(s.monitor) }
 
 // connectionsAt lists the open client connections of the server whose monitoring endpoint's base
-// URL is monitor, each by id and name, by reading its /connz: a pooled server's
-// (clientConnections) or a test's own (armServerLeakCheck).
+// URL is monitor, each by id and name, by reading its /connz, joined onto monitor's path with its
+// query kept (urljoin.Join): a pooled server's (clientConnections) or a test's own
+// (armServerLeakCheck). A monitor that is no absolute URL with a host is refused in urljoin's
+// words, which quote none of it. monitor can carry a credential in its user information or its
+// query: a read that got no answer is oauth2call.Unanswered's, and every other error names the URL
+// asked as oauth2call.AskedURL names it.
 func connectionsAt(monitor string) ([]Connection, error) {
-	response, err := monitorClient.Get(monitor + "/connz")
+	asked, err := urljoin.Join(monitor, "/connz")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read the NATS server's connections: its monitoring endpoint's base URL: %w", err)
+	}
+	shown := oauth2call.AskedURL(asked)
+	request, err := http.NewRequest(http.MethodGet, asked.String(), nil)
+	if err != nil {
+		return nil, errors.New("read the NATS server's connections: its monitoring endpoint's URL joined with /connz does not parse (it is not printed)")
+	}
+	response, err := monitorClient.Do(request)
+	if err != nil {
+		return nil, oauth2call.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, oauth2call.StatusLine(response.StatusCode))
+		return nil, fmt.Errorf("GET %s answered %s", shown, oauth2call.StatusLine(response.StatusCode))
 	}
 	var connz struct {
 		Connections []struct {
@@ -497,10 +528,10 @@ func connectionsAt(monitor string) ([]Connection, error) {
 	}
 	answer, err := oauth2call.ReadAnswer(response, 16<<20)
 	if err != nil {
-		return nil, fmt.Errorf("read %s/connz: %w", monitor, err)
+		return nil, fmt.Errorf("read %s: %w", shown, err)
 	}
 	if err := answer.Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
+		return nil, fmt.Errorf("decode %s: %w", shown, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {

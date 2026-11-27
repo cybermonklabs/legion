@@ -540,13 +540,8 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	if !failed {
 		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(token)+"/retry", retry, printClaim)
 	}
-	_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
+	list, ok := c.readClaims(ctx, op)
 	if !ok {
-		return 1
-	}
-	var list api.OperatorClaims
-	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(claimsRoute), err)
 		return 1
 	}
 	code := 0
@@ -554,16 +549,27 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 		if supervise.ClaimState(held.State) != supervise.StateFailed {
 			continue
 		}
-		// The token is the daemon's word, and the retry's path names it, which a retry that gets
-		// no answer, or an answer that does not read, prints (request, printAnswer, operator.do).
-		// So a claim is asked for only by a token in a shape the daemon makes one in
-		// (legionclaim.Token.Shaped), and any other is not retried and is named as claimWord names it.
 		if !held.Token.Shaped() || c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
 			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), claimWord(held.Token))
 			code = 1
 		}
 	}
 	return code
+}
+
+// readClaims reads the daemon's list of claims. A request that fails is reported by request, and
+// an answer that does not read is reported as printAnswer reports one; either answers false.
+func (c *claimsCall) readClaims(ctx context.Context, op operator) (api.OperatorClaims, bool) {
+	_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
+	if !ok {
+		return api.OperatorClaims{}, false
+	}
+	var list api.OperatorClaims
+	if err := decodeAnswer(answer, &list); err != nil {
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(claimsRoute), err)
+		return api.OperatorClaims{}, false
+	}
+	return list, true
 }
 
 // suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
@@ -611,13 +617,8 @@ func (c *claimsCall) suspend(ctx context.Context, token string) int {
 // no longer than the operator asked for.
 func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token) ([]byte, bool) {
 	for {
-		_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
+		list, ok := c.readClaims(ctx, op)
 		if !ok {
-			return nil, false
-		}
-		var list api.OperatorClaims
-		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(claimsRoute), err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })

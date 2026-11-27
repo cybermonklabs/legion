@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Every listener request now joins its route onto the listener URL's path (`ENVOY_URL`, or
+  envoy.json's `envoy.url`), with the URL's query kept ahead of the route's own. A listener URL
+  with a path and a query (`http://host/prefix?key=v`) put the route inside the query, so every
+  call asked `/prefix` with the query `?key=v/v1/sessions`; it now asks `/prefix/v1/sessions?key=v`.
+  A URL or a route the join refuses fails the call before it is sent, in fixed words that quote
+  neither. Every dashboard link a dispatch command prints now joins its page onto the path of
+  `DISPATCH_PUBLIC_URL`, else the Dispatch URL: a dashboard served under `http://host/prefix` was
+  linked at `http://host/issues/<key>`, and is now linked at `http://host/prefix/issues/<key>`. A
+  dashboard URL under that path, given as a `ref`, reads as its page's reference. A URL with no
+  path is asked and linked as before.
+time: 2026-11-27T00:07:16Z
+custom:
+    Issue: pr4368

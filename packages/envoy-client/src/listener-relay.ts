@@ -135,8 +135,7 @@ const BunWebSocket = WebSocket as unknown as new (
 
 /** The relay socket of `session` at the listener `url`, in its http(s) form: what the proof of
  *  the upgrade names as its `htu`, less any query (`DpopKey.proof`). The route is joined onto the
- *  URL's path, its query kept (`joinUrl`): appended to the text of a URL with a query, it would
- *  sit inside the query and the upgrade would ask the URL's own path. */
+ *  URL's path, its query kept (`joinUrl`). */
 export function relaySocketUrl(url: string, session: string): string {
   return joinUrl(url, `v1/sessions/${encodeURIComponent(session)}/relay`).href;
 }

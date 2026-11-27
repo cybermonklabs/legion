@@ -183,9 +183,6 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 		for i, raw := range page {
 			ev, err := parseReplayEvent(raw)
 			if err != nil {
-				// The decoder's error can quote the value it could not read (time.Time's does): the
-				// words of Dispatch, or of whatever answers in its place, which can echo the bearer.
-				// The error names the event's place in the page, and none of it.
 				return lg, fmt.Errorf("%s events after %d: event %d of the page is not an event replay-fetch reads", key, after, i+1)
 			}
 			if !eventInShape(ev) {

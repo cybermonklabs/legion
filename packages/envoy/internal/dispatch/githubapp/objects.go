@@ -14,8 +14,7 @@ package githubapp
 // A listing's own type is its one member table: each member is named once, in its json tag, which
 // is where encoding/json reads it from and where objectOf reads it to build the map. A member
 // added to a listing is therefore in the map its readers take, and one left out of the map is
-// impossible; the hand-written map of each listing dropped latest_check_runs_count from the check
-// suites while every test of this package stayed green.
+// impossible.
 
 import (
 	"bytes"

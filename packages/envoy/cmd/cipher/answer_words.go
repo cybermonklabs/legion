@@ -111,18 +111,14 @@ const (
 	stateExpired   requestState = "expired"
 )
 
-// requestStates are the states of a request this CLI acts on.
-var requestStates = []requestState{statePending, stateGranted, stateDenied, stateCancelled, stateExpired}
+// requestStates are the states of a request this CLI acts on, as stateOf reads them.
+var requestStates = []string{string(statePending), string(stateGranted), string(stateDenied), string(stateCancelled), string(stateExpired)}
 
 // stateOf is the one of requestStates the broker's state is, compared as it came
-// (RemoteText.Equal), and "" for any other.
+// (RemoteText.OneOf), and "" for any other.
 func stateOf(state redact.RemoteText) requestState {
-	for _, known := range requestStates {
-		if state.Equal(string(known)) {
-			return known
-		}
-	}
-	return ""
+	known, _ := state.OneOf(requestStates...)
+	return requestState(known)
 }
 
 // notSentBack is what a line says of an id the broker answered that this client does not send
@@ -172,11 +168,17 @@ func projectsWordsOf(base cipheraddr.Address, projects []redact.RemoteText) stri
 	if len(projects) == 0 {
 		return "-"
 	}
-	shown := make([]string, len(projects))
-	for i, project := range projects {
-		shown[i] = base.WordsOf(project)
+	return oauthwire.JoinProjects(wordsOfEach(base, projects))
+}
+
+// wordsOfEach is each of fields as base lets the broker's words print
+// (cipheraddr.Address.WordsOf), in order, for a line that names several of one answer's fields.
+func wordsOfEach(base cipheraddr.Address, fields []redact.RemoteText) []string {
+	shown := make([]string, len(fields))
+	for i, field := range fields {
+		shown[i] = base.WordsOf(field)
 	}
-	return oauthwire.JoinProjects(shown)
+	return shown
 }
 
 // plainAddress reports whether base, as written, has no user info, no query, no fragment and no

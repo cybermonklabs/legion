@@ -738,7 +738,8 @@ const cacheAsk = 30 * time.Second
 // cacheNotReady is why the repository cache is not ready to stream, or "" when its /healthz
 // answers 200 with ready set, within timeout; an answer askCache refuses is the error. The ask
 // carries no credential: the cache answers its health to anyone, and its token goes with the tar
-// alone (unpackCache).
+// alone (unpackCache). Each reason names the URL asked as every line about the ask does
+// (askedCache).
 func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Duration) (string, error) {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -750,9 +751,9 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	if err != nil {
 		return "", err
 	}
-	cache := strings.TrimSuffix(request.CacheURL, "/")
+	asked := askedCache(request, "/healthz")
 	if response.StatusCode != http.StatusOK {
-		return fmt.Sprintf("GET %s/healthz answered %s", cache, oauth2call.StatusLine(response.StatusCode)), nil
+		return fmt.Sprintf("GET %s answered %s", asked, oauth2call.StatusLine(response.StatusCode)), nil
 	}
 	var health struct {
 		Ready bool `json:"ready"`
@@ -762,31 +763,44 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 		err = answer.Decode(&health)
 	}
 	if err != nil {
-		return fmt.Sprintf("GET %s/healthz answered a body that is not the cache's health: %v", cache, err), nil
+		return fmt.Sprintf("GET %s answered a body that is not the cache's health: %v", asked, err), nil
 	}
 	if !health.Ready {
-		return fmt.Sprintf("GET %s/healthz answered not ready", cache), nil
+		return fmt.Sprintf("GET %s answered not ready", asked), nil
 	}
 	return "", nil
 }
 
+// askedCache is the URL askCache asks for path as every line about that ask names it: the joined
+// URL as Unanswered names the URL a request asked (oauth2call.AskedURL: its scheme, host and path,
+// never its user information, query or fragment), so a line names the route asked and no
+// credential the cache URL carries. A cache URL the join refuses is never asked (askCache).
+func askedCache(request FetchRequest, path string) string {
+	joined, err := urljoin.Join(request.CacheURL, path)
+	if err != nil {
+		return oauth2call.AskedURL(nil)
+	}
+	return oauth2call.AskedURL(joined)
+}
+
 // askCache is GET <cache><path>: the cache's URL with path joined onto its path (urljoin.Join), its
-// query kept and its fragment, which no request sends, dropped, where path appended to the URL's
-// text would sit inside a query or a fragment and the cache would be asked another path. It
-// carries the cache's bearer token when withToken is set. It answers (nil, the transport's failure)
-// when the cache could not be reached, which is worth another ask, and (nil, a refusal in its own
-// words) for a cache URL that does not parse or names no host, or whose joined URL does not parse
-// again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape): url.Parse's
-// error, which http.NewRequest's carries, quotes the URL whole, user information and query
-// included. An answer that refuses the token (401) to a request that carried it, a redirect (3xx),
-// or one whose CacheRepositoryHeader is not the request's repository, comes back with the refusal
-// as its error: the caller closes the body and takes nothing it carries.
+// query kept and its fragment, which no request sends, dropped. It carries the cache's bearer token
+// when withToken is set. It answers (nil, the transport's failure) when the cache could not be
+// reached, which is worth another ask, and (nil, a refusal in its own words) for a cache URL that
+// does not parse or names no host, or whose joined URL does not parse again (url.URL.String can
+// write text url.Parse refuses, such as an IPv6 zone escape): url.Parse's error, which
+// http.NewRequest's carries, quotes the URL whole, user information and query included. An answer
+// that refuses the token (401) to a request that carried it, a redirect (3xx), or one whose
+// CacheRepositoryHeader is not the request's repository, comes back with the refusal as its error:
+// the caller closes the body and takes nothing it carries. Its lines name the URL it asked as
+// askedCache does.
 func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
-	asked, err := urljoin.Join(request.CacheURL, path)
+	joined, err := urljoin.Join(request.CacheURL, path)
 	if err != nil {
 		return nil, errors.New("ask the repository cache: its URL does not parse (the URL is not printed)")
 	}
-	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, asked.String(), nil)
+	asked := oauth2call.AskedURL(joined)
+	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, joined.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("ask the repository cache: the URL of its %s does not parse (the URL is not printed)", path)
 	}
@@ -795,7 +809,6 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		// --cache-url can carry user information or a query; Unanswered drops them.
 		return nil, oauth2call.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
@@ -849,10 +862,10 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return 0, OutsideVolume(stream.stalledBy(err))
 	}
-	// The URL this pod asked, never the answer's own (response.Request.URL), which a redirect
-	// would have named.
+	// The URL this pod asked (askedCache), never the answer's own (response.Request.URL), which a
+	// redirect would have named.
 	if response.StatusCode != http.StatusOK {
-		return 0, OutsideVolume(fmt.Errorf("GET %s/tar answered %s", strings.TrimSuffix(request.CacheURL, "/"), oauth2call.StatusLine(response.StatusCode)))
+		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", askedCache(request, "/tar"), oauth2call.StatusLine(response.StatusCode)))
 	}
 	// The tar is data unpacked as it arrives (oauth2call.StreamAnswer), as long as the
 	// repository needs; FeedEntry bounds what it writes.

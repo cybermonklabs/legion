@@ -44,6 +44,7 @@
 
 import { createSign } from "node:crypto";
 import { writeSync } from "node:fs";
+import { joinUrl } from "../../../packages/contracts/src/url-join";
 
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
 export type AppRole = "implement" | "review";
@@ -459,6 +460,17 @@ async function githubRead(
   }
 }
 
+/** `route` joined onto the GitHub API URL's path, its query kept (joinUrl). A URL joinUrl refuses
+ * is named by its place and never quoted: it can carry a credential in its user information or
+ * its query. */
+function githubUrl(api: string, route: string): string {
+  try {
+    return joinUrl(api, route).href;
+  } catch {
+    throw new Error("the GitHub API URL is not an absolute URL with a host (not printed)");
+  }
+}
+
 /** The App JWT the PEM `key` signs for the App `appId`, the credential GitHub takes on the two
  * routes below: `{"alg":"RS256","typ":"JWT"}` over `{"iss":<app_id>,"iat":…,"exp":…}`, each part
  * base64url. `iat` is a minute behind `now` so a GitHub whose clock trails this one still takes
@@ -498,7 +510,7 @@ async function mintedInstallationToken(
   source: AppCredentialSource,
   app: string,
   field: string,
-  base: string,
+  api: string,
   now: () => Date
 ): Promise<string> {
   let key: string;
@@ -513,7 +525,7 @@ async function mintedInstallationToken(
   if (key === "") throw new Error(`${app}: ${field} produced empty output`);
   const jwt = appJwt(key, source.appId, now(), app, field);
   const read = `GET /app/installations as ${app}`;
-  const listed = await githubRead(read, `${base}/app/installations`, jwt, {}, "Bearer");
+  const listed = await githubRead(read, githubUrl(api, "/app/installations"), jwt, {}, "Bearer");
   if (!Array.isArray(listed.answer)) {
     throw new Error(`${read} answered no list of installations: ${listed.head}`);
   }
@@ -527,7 +539,7 @@ async function mintedInstallationToken(
   const mint = `POST /app/installations/${installation}/access_tokens as ${app}`;
   const minted = await githubRead(
     mint,
-    `${base}/app/installations/${encodeURIComponent(String(installation))}/access_tokens`,
+    githubUrl(api, `/app/installations/${encodeURIComponent(String(installation))}/access_tokens`),
     jwt,
     { method: "POST" },
     "Bearer"
@@ -557,13 +569,12 @@ export async function appLogin(
 ): Promise<string> {
   const app = `the ${role} App (app_id ${source.appId})`;
   const field = `github_apps.${role}.${source.kind}`;
-  const base = api.replace(/\/+$/, "");
   /** How a message names where the token this proves came from, which is the field's doing
    * either way: a token_command releases one, a private_key_command's key mints one. */
   const gave = source.kind === "token_command" ? `${field} released` : `${field}'s key minted`;
   let token: string;
   if (source.kind === "private_key_command") {
-    token = await mintedInstallationToken(source, app, field, base, now);
+    token = await mintedInstallationToken(source, app, field, api, now);
   } else {
     try {
       token = firstInstallationToken(
@@ -592,7 +603,7 @@ export async function appLogin(
       throw new Error(`${app}: ${reason}`);
     }
   }
-  const viewer = await githubRead(`GraphQL viewer as ${app}`, `${base}/graphql`, token, {
+  const viewer = await githubRead(`GraphQL viewer as ${app}`, githubUrl(api, "/graphql"), token, {
     method: "POST",
     body: JSON.stringify({ query: "{viewer{login}}" }),
   });
@@ -607,7 +618,7 @@ export async function appLogin(
   const read = `GET /apps/${slug} as ${app}`;
   const { answer, head } = await githubRead(
     read,
-    `${base}/apps/${encodeURIComponent(slug)}`,
+    githubUrl(api, `/apps/${encodeURIComponent(slug)}`),
     token
   );
   const id = member(answer, "id");

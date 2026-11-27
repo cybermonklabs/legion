@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { holdsMarker, marker } from "./gh-words";
 import {
   expectNoMissingHelpers,
   nameMissingHelpers,
@@ -34,16 +35,6 @@ const root = join(import.meta.dir, "..", "..", "..");
 const script = join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh");
 const assignment = scriptAssignments(script);
 const makeDir = temporaryDirectories("stage4b-gh-words");
-
-const marker = "not-a-secret-token";
-
-// holdsMarker: whether text holds a run of eight characters of the marker (redacttest.Piece's run).
-function holdsMarker(text: string): boolean {
-  for (let at = 0; at + 8 <= marker.length; at++) {
-    if (text.includes(marker.slice(at, at + 8))) return true;
-  }
-  return false;
-}
 
 // expectNoMarker fails the row, quoting what the site printed, when that holds the marker.
 function expectNoMarker(printed: string): void {
@@ -622,8 +613,7 @@ describe("commit_conflict, the proof human's conflicting commit on the base", ()
 describe("await_merge_forward, the head the merge forward left", () => {
   const site: Site = {
     entry: ["await_merge_forward"],
-    // pr_base: the base's name, which the note before this change printed.
-    setup: `conflict_head=${head} pr_base=main`,
+    setup: `conflict_head=${head}`,
     body: "await_merge_forward",
   };
   const call = "*pulls/42 --jq .head.sha";
@@ -1607,8 +1597,6 @@ describe("full_agent_role_checks, full_agent_common_asserts and full_agent_summa
     setup: [
       'mkdir -p "$evidence/full-agent-tools"',
       `declare -A fa_nonce=([architect]=${nonce})`,
-      // The loop's variable, which the role's checks read before they were a function of their own.
-      "role=architect",
     ].join("\n"),
     body: "full_agent_role_checks architect",
   };

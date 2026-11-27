@@ -126,9 +126,8 @@ func TestTheHelperJoinsItsBrokerCallsOntoTheAddress(t *testing.T) {
 // a path, a query, user information and a port, and agent-secrets asks sign-launcher for a proof of
 // each operator call's URL as the broker checks it (proof.TargetURI): the address's path with the
 // route joined onto it, and no query or user information. The helper signs exactly those four
-// routes there (query), where it compared the URL with the address's text and so refused every one
-// of them; a route not under the address's path is still refused. Control: an address with neither
-// signs the same routes (no-query).
+// routes there (query); a route not under the address's path is still refused. Control: an
+// address with neither signs the same routes (no-query).
 func TestSignLauncherSignsTheOperatorRoutesOfAnAddressWithAQuery(t *testing.T) {
 	const id = "0f9a6c1e-2b7d-4c3a-9e5f-8a1b2c3d4e5f"
 	for _, c := range []struct{ name, address string }{

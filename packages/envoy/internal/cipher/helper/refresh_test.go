@@ -20,7 +20,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -458,7 +457,7 @@ func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
 	release := heldRefresh(t, f, b)
 	waiting := make(chan struct{})
 	b.testBeforeDrop = func() { close(waiting) }
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := launcherInvalid()
 	refused := make(chan error, 1)
 	go func() { refused <- b.clearOnInvalid(context.Background(), signed, rejected) }()
 	<-waiting

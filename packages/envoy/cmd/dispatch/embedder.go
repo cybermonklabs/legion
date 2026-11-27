@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -167,8 +166,7 @@ func resolveAzureEmbedder(env settingValues) (embedderConfig, error) {
 	if err := credentialURLRefusal("DISPATCH_AZURE_EMBED_ENDPOINT", "an endpoint's URL", endpoint); err != nil {
 		return embedderConfig{}, err
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
+	if !httpsBaseURL(endpoint) {
 		return embedderConfig{}, fmt.Errorf("DISPATCH_AZURE_EMBED_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)", redact.URL(endpoint))
 	}
 	cfg.AzureEndpoint = endpoint
@@ -177,10 +175,11 @@ func resolveAzureEmbedder(env settingValues) (embedderConfig, error) {
 	if quota == "" {
 		return embedderConfig{}, errors.New("DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE is required when DISPATCH_EMBEDDER is azure: the deployment's tokens-per-minute quota")
 	}
-	cfg.AzureTokensPerMinute, err = strconv.Atoi(quota)
-	if err != nil || cfg.AzureTokensPerMinute <= 0 {
+	tokens, err := strconv.Atoi(quota)
+	if err != nil || tokens <= 0 {
 		return embedderConfig{}, fmt.Errorf("DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE=%q (expected a positive integer, the deployment's tokens-per-minute quota)", quota)
 	}
+	cfg.AzureTokensPerMinute = tokens
 
 	cfg.AzureKey, err = fileSetting(env, "DISPATCH_AZURE_EMBED_KEY")
 	if err != nil {

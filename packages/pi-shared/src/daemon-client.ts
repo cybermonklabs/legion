@@ -54,6 +54,7 @@ import {
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { z } from "zod";
 
@@ -648,7 +649,7 @@ export function createLegionDaemonClient(
     readonly text: string;
     readonly daemonContract: number | undefined;
   }> => {
-    const response = await fetchFn(`${endpoint}${path}`, {
+    const response = await fetchFn(joinUrl(endpoint, path).href, {
       method,
       headers: {
         [PLUGIN_CONTRACT_HEADER]: String(pluginContract),

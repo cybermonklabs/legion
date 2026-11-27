@@ -25,9 +25,7 @@ import (
 
 // RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
 // https://api.github.com. The repository's path is joined onto endpoint's own path
-// (urljoin.Join), so an endpoint configured with a path and a query keeps both: the path
-// appended to the endpoint's text would sit inside its query's last value, and every call under
-// the base would ask the endpoint's own path with the repository written into that value.
+// (urljoin.Join), so an endpoint configured with a path and a query keeps both.
 //
 // It is "" where endpoint cannot be read as an absolute URL with a host, the one way the join
 // can fail here: a call under such a base is refused by the join its own read makes (callURL),
@@ -111,8 +109,6 @@ func (c Client) send(ctx context.Context, method, path, shown string, body, into
 // callURL is the URL of a call to path under the client's REST base (API): path, with its own
 // query where it has one, joined onto the base as urljoin.Join joins them - the base's path with
 // path under it, the base's query ahead of path's own, its user information, host and port kept.
-// path appended to the base's text would sit inside the base's query where it has one, so the
-// call would ask the base's own path with the call's path written into that query value.
 //
 // A base that cannot be read as an absolute URL with a host is the one failure, and it names the
 // call alone, shown or else path: neither URL prints, since url.Parse's error quotes the URL

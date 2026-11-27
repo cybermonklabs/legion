@@ -506,6 +506,22 @@ gh_shown() {
   gh_form shown "$@"
   printf '%s' "$shown"
 }
+# gh_to_files NAME ARG... runs gh ARG... with its stderr kept in $evidence/gh/NAME.err and its
+# answer in $evidence/gh/NAME.answer, and prints the answer once gh has succeeded. A failure is said
+# in the lib's own words, naming the file, and returns gh's status, and a caller prints an answer
+# only as the closed value it holds it to (a pull request's number, a commit id, a state), naming
+# the file otherwise.
+gh_to_files() {
+  local name=$1 status=0
+  shift
+  mkdir -p "$evidence/gh"
+  gh "$@" >"$evidence/gh/$name.answer" 2>"$evidence/gh/$name.err" || status=$?
+  if [ "$status" != 0 ]; then
+    printf 'gh exited %s on the call %s; its own words are in %s\n' "$status" "$name" "$evidence/gh/$name.err" >&2
+    return "$status"
+  fi
+  cat -- "$evidence/gh/$name.answer"
+}
 
 # ---- the proof human on the smoke repository ------------------------------------------------------
 

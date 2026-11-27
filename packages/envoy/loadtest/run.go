@@ -114,7 +114,7 @@ type runConfig struct {
 	xactInterval time.Duration
 	editors      editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
-	// values redacted and the URL passwords removed (recordedArgs).
+	// values redacted and each URL without its userinfo and its query (recordedArgs).
 	args []string
 	// copyMeta is the -copy-meta file's JSON object, which meta.json records under copy; nil
 	// without the flag.
@@ -460,8 +460,7 @@ type session struct {
 type reqRec struct {
 	route  string
 	status int
-	// code is the error code of a non-2xx answer's body ({"code": ...}), empty for none. It is
-	// Dispatch's word, so the report prints it as it prints itself (redact.RemoteText).
+	// code is the error code of a non-2xx answer's body ({"code": ...}), empty for none.
 	code redact.RemoteText
 	// tolerated says the action expected this non-2xx answer (the CLI's own 404 on an absent
 	// optional resource): it is no failure.

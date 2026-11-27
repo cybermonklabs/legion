@@ -988,14 +988,12 @@ export function requestCredentials(url: string, options: FetchOptions): string[]
     if (name.toLowerCase() === "content-type") contentType = value.toLowerCase();
     if (isPublicRequestName("header", name, route)) continue;
     const authorization = ["authorization", "proxy-authorization"].includes(name.toLowerCase());
-    const space = value.trim().indexOf(" ");
+    const trimmed = value.trim();
+    const space = trimmed.indexOf(" ");
     if (!authorization || space < 0) credentials.push(value);
     if (space < 0) continue;
-    const scheme = value.trim().slice(0, space);
-    const credential = value
-      .trim()
-      .slice(space + 1)
-      .trim();
+    const scheme = trimmed.slice(0, space);
+    const credential = trimmed.slice(space + 1).trim();
     credentials.push(credential);
     if (scheme.toLowerCase() !== "basic") continue;
     const pair = decodedBase64(credential);

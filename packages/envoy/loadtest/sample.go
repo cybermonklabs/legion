@@ -576,10 +576,8 @@ func (s *sampler) all() []sample {
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
 // routeURL is route, a path with or without its own query, joined onto base, an endpoint's URL
-// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to
-// the URL's text would sit inside a query or a fragment and the endpoint would be asked another
-// path. A base that does not join is refused in fixed words that name the route: url.Parse's
-// error quotes the URL whole, user information and query included.
+// (urljoin.Join). A base that does not join is refused in fixed words that name the route:
+// url.Parse's error quotes the URL whole, user information and query included.
 func routeURL(base, route string) (string, error) {
 	joined, err := urljoin.Join(base, route)
 	if err != nil {
@@ -591,13 +589,12 @@ func routeURL(base, route string) (string, error) {
 // errJoinedURLUnparsed refuses a route joined onto an endpoint's URL that does not parse
 // (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape), in fixed words:
 // url.Parse's error, which http.NewRequest's carries, quotes the URL whole, user information and
-// query included. getOK and guardGet refuse such a URL with it.
+// query included.
 var errJoinedURLUnparsed = errors.New("the endpoint's URL joined with the route does not parse (it is not printed)")
 
 // getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
 // printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
-// which closing the stream closes. url is a route joined onto an endpoint's URL; one that does not
-// parse is refused (errJoinedURLUnparsed).
+// which closing the stream closes.
 func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

@@ -334,11 +334,7 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry,
 // runs past it.
 func (m GitHubApp) revokeToken(ctx context.Context, mint *mintRetry, token string) error {
 	const what = "revoke GitHub App installation token"
-	target, err := m.at("/installation/token")
-	if err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
-	}
-	request, err := githubRequest(ctx, http.MethodDelete, target, token, nil)
+	request, err := m.request(ctx, http.MethodDelete, "/installation/token", token, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
@@ -703,12 +699,16 @@ func (m GitHubApp) at(ref string) (string, error) {
 	return joined.String(), nil
 }
 
-// githubRequest is a call to GitHub's API with bearer as its credential (the App's JWT, or an
-// installation token revoking itself), carrying body as JSON when it is not nil. target is a URL
-// GitHubApp.at joined, which url.Parse took; one url.URL.String writes as text it refuses again
-// (an IPv6 zone escape) is named in fixed words, since http.NewRequest's error carries
-// url.Parse's, which quotes the URL whole, user information and query included.
-func githubRequest(ctx context.Context, method, target, bearer string, body []byte) (*http.Request, error) {
+// request is a call to GitHub's API at ref joined onto its URL (at), with bearer as its credential
+// (the App's JWT, or an installation token revoking itself), carrying body as JSON when it is not
+// nil. A joined URL url.URL.String writes as text url.Parse refuses again (an IPv6 zone escape) is
+// named in fixed words, since http.NewRequest's error carries url.Parse's, which quotes the URL
+// whole, user information and query included.
+func (m GitHubApp) request(ctx context.Context, method, ref, bearer string, body []byte) (*http.Request, error) {
+	target, err := m.at(ref)
+	if err != nil {
+		return nil, err
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -729,11 +729,7 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 	const what = "list GitHub App installations"
 	var installations []githubInstallation
 	for page := 1; ; page++ {
-		target, err := m.at(fmt.Sprintf("/app/installations?per_page=100&page=%d", page))
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
-		}
-		request, err := githubRequest(ctx, http.MethodGet, target, jwt, nil)
+		request, err := m.request(ctx, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 		}
@@ -772,11 +768,7 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 // logs.
 func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, appID string, installationID int64, body []byte, check bool) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
-	target, err := m.at("/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens")
-	if err != nil {
-		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
-	}
-	request, err := githubRequest(ctx, http.MethodPost, target, jwt, body)
+	request, err := m.request(ctx, http.MethodPost, "/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)
 	if err != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}

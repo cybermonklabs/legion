@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -773,11 +772,6 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 // between the two reads is the same answer, so a role is never resolved to a session the
 // listener no longer holds.
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
-	// The holder's session id is sent back to the listener by the session read below
-	// (RemoteText.SendBack): only where the rule prints it as it came, with every credential the
-	// lookup carried redacted first (decodeAnswer), so the route that read names, and any error
-	// that names the route, holds no more of the listener's words than a print of them shows, and
-	// never the bearer an answer in the listener's place echoed as a holder.
 	var refusal listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]
 	if err := decodeAnswer(response, &refusal); err != nil {
 		return Session{}, listenerRefusal(response, redact.RemoteText{})
@@ -792,7 +786,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		}
 	}
 	err := listenerRefusal(response, refusal.Error)
-	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
+	if _, noHolder := refusal.Reason.OneOf(roleholder.NoHolderReasons...); noHolder && !errors.Is(err, ErrUnavailable) {
 		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
 	return Session{}, err
@@ -1075,8 +1069,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 // keptSend reads the send route's 202, a send for a role the listener kept for the role's next
 // holder (listenerwire.KeptSendResponse), as the envelope the role's kept lane holds, whose walk
 // hands it to the session that holds the role, live. A 202 naming no kept copy is no answer a
-// send gets, and is ErrUnavailable. The answer is read through decodeAnswer, as every answer of
-// this client is.
+// send gets, and is ErrUnavailable.
 func keptSend(response *http.Response) (SendResult, error) {
 	var answer listenerwire.KeptSendResponse
 	if err := decodeAnswer(response, &answer); err != nil {

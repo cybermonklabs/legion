@@ -40,12 +40,12 @@ func (e Event) DaemonActor() bool {
 // DecodeEvent decodes one event as Dispatch's durable stream carries it: the bytes of a stream
 // message, which answer no request of the daemon's. An absent, null or empty created_at is the
 // zero time. An event that does not decode is an error in fixed text naming the member and the
-// JSON kind it held (oauth2call.DecodeError), and a created_at that is not an RFC 3339 time one
-// naming the member, neither quoting a value of the event.
+// JSON kind it held (oauth2call.UnmarshalData), and a created_at that is not an RFC 3339 time
+// one naming the member, neither quoting a value of the event.
 func DecodeEvent(data []byte) (Event, error) {
 	var event streamEvent
-	if err := json.Unmarshal(data, &event); err != nil {
-		return Event{}, oauth2call.DecodeError(err, data, &event)
+	if err := oauth2call.UnmarshalData(data, &event); err != nil {
+		return Event{}, err
 	}
 	at, ok := eventTime(event.CreatedAt)
 	if !ok {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -36,15 +35,7 @@ func TestTheFieldCensusListsItsFindingsInOneOrder(t *testing.T) {
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOFLAGS", "")
 	dir := t.TempDir()
-	for name, text := range orderModule {
-		path := filepath.Join(dir, "m", name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeTree(t, filepath.Join(dir, "m"), orderModule)
 	listed, err := goList(filepath.Join(dir, "m"), hostBuild(), true, "./p")
 	if err != nil {
 		t.Fatal(err)

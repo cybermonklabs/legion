@@ -216,6 +216,10 @@ func (op operator) urlOf(route string) (*url.URL, error) {
 	return asked, nil
 }
 
+// unparsedDaemonURL is how a line names an API root that does not parse (shown, shownRoot): by
+// what it is.
+const unparsedDaemonURL = "the daemon's URL (it does not parse, and is not printed)"
+
 // shown is the URL a request of route asks (urlOf) as a line names it: through the URL rule
 // (redact.URLCredentials), which removes its user information and its query, where the root can
 // carry a credential — as do names it in the error of an answer it could not read, and
@@ -224,7 +228,7 @@ func (op operator) urlOf(route string) (*url.URL, error) {
 func (op operator) shown(route string) string {
 	asked, err := op.urlOf(route)
 	if err != nil {
-		return "the daemon's URL (it does not parse, and is not printed)"
+		return unparsedDaemonURL
 	}
 	return redact.URLCredentials(asked.String())
 }

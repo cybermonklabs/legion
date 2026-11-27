@@ -127,8 +127,6 @@ func fetchInputs(ws workspaceProcess, repo, feed, cacheURL string) (fetchInput, 
 	}
 	inputs := fetchInput{repository: repository}
 	if cacheURL != "" {
-		// The refusal names the flag alone: the URL as written is where a credential would be,
-		// and one with no "://" passes the URL rule on stderr (newRoot) as written.
 		if parsed, err := url.Parse(cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
 			return fetchInput{}, errors.New("--cache-url must be an http:// URL with a host")
 		}

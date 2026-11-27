@@ -45,7 +45,7 @@ func TestRefSeedGoesOnPastALandedVersionToTheDocumentItAlreadyKnows(t *testing.T
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"artifact":{"id":"a"}}`)
+		_, _ = io.WriteString(w, `{"artifact":{"id":"`+refDocID+`"}}`)
 	}))
 	defer srv.Close()
 
@@ -56,7 +56,7 @@ func TestRefSeedGoesOnPastALandedVersionToTheDocumentItAlreadyKnows(t *testing.T
 	if want := []string{refTargetKey(0, 1), refTargetKey(0, 2), refTargetKey(0, 3)}; !slices.Equal(writes, want) {
 		t.Errorf("the seed sent %v, want each version once: %v", writes, want)
 	}
-	if want := []string{"/api/v1/artifacts/a/text", "/api/v1/artifacts/a/text"}; !slices.Equal(reads, want) {
+	if want := []string{"/api/v1/artifacts/" + refDocID + "/text", "/api/v1/artifacts/" + refDocID + "/text"}; !slices.Equal(reads, want) {
 		t.Errorf("the seed read %v, want the document's token read before versions 2 and 3: %v", reads, want)
 	}
 }

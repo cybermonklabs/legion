@@ -131,14 +131,10 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 }
 
 // knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind is, compared as it
-// came, and "" for any other kind.
+// came (RemoteText.OneOf), and "" for any other kind.
 func knownKind(kind redact.RemoteText) string {
-	for _, known := range []string{MemberFull, MemberRestricted, MemberNone} {
-		if kind.Equal(known) {
-			return known
-		}
-	}
-	return ""
+	known, _ := kind.OneOf(MemberFull, MemberRestricted, MemberNone)
+	return known
 }
 
 // stored is the member kind as the broker keeps it and passes it on (Keeper.KeepPersonAnswer,

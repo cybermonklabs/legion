@@ -266,11 +266,6 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
-	// Each owner the read answered is served and logged as a message may print it
-	// (githubrest.ShownLogin), in the read's order: discovery takes any login GitHub lists, one
-	// that echoes the App's JWT the read carried among them, and such a name is said only as
-	// githubrest.NotALogin, so the controller and the operator still see an entry is there. The
-	// route decides on none of them.
 	listed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
 	installed := githubrest.ShownLogins(listed)
 	answer := ControllerCredentialResponse{

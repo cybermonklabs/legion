@@ -143,6 +143,13 @@ func TestRefWriterAuthorBytes(t *testing.T) {
 	}
 }
 
+// refDocID and refOtherDocID are artifact ids in Dispatch's shape, which are the only ids the seed
+// keeps (isDispatchID): the ids the seed's fakes answer with.
+const (
+	refDocID      = "6f9619ff-8b86-4011-b42d-00c04fc964ff"
+	refOtherDocID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+)
+
 // TestRefSeedTakesALandedWriteAsMade: a write of the reference seed that landed before its answer
 // was lost (409 KEY_COMMITTED) made its version, so the seed counts it and goes on to the next
 // write; a refusal still stops the seed. The read of the document's token before each later
@@ -159,7 +166,7 @@ func TestRefSeedTakesALandedWriteAsMade(t *testing.T) {
 	var keys []string
 	refused := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/artifacts/a/text" {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/artifacts/"+refDocID+"/text" {
 			_, _ = io.WriteString(w, `{"token":"t"}`)
 			return
 		}
@@ -179,7 +186,7 @@ func TestRefSeedTakesALandedWriteAsMade(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "closed", "code": "ISSUE_CLOSED"})
 		default:
 			w.WriteHeader(http.StatusCreated)
-			_, _ = io.WriteString(w, `{"artifact":{"id":"a"}}`)
+			_, _ = io.WriteString(w, `{"artifact":{"id":"`+refDocID+`"}}`)
 		}
 	}))
 	defer srv.Close()
@@ -223,8 +230,8 @@ func TestRefSeedReadsBackTheDocumentALandedFirstVersionMade(t *testing.T) {
 			mu.Unlock()
 			switch r.URL.Path {
 			case "/api/v1/issues/LGB-1/artifacts":
-				_, _ = io.WriteString(w, `[{"id":"other","name":"ref-target-1.md"},{"id":"d","name":"ref-target-0.md"}]`)
-			case "/api/v1/artifacts/d/text":
+				_, _ = io.WriteString(w, `[{"id":"`+refOtherDocID+`","name":"ref-target-1.md"},{"id":"`+refDocID+`","name":"ref-target-0.md"}]`)
+			case "/api/v1/artifacts/" + refDocID + "/text":
 				_, _ = io.WriteString(w, `{"token":"t"}`)
 			default:
 				w.WriteHeader(http.StatusNotFound)
@@ -242,7 +249,7 @@ func TestRefSeedReadsBackTheDocumentALandedFirstVersionMade(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"artifact":{"id":"d"}}`)
+		_, _ = io.WriteString(w, `{"artifact":{"id":"`+refDocID+`"}}`)
 	}))
 	defer srv.Close()
 
@@ -253,7 +260,7 @@ func TestRefSeedReadsBackTheDocumentALandedFirstVersionMade(t *testing.T) {
 	if want := []string{refTargetKey(0, 1), refTargetKey(0, 2), refTargetKey(0, 3)}; !slices.Equal(writes, want) {
 		t.Errorf("the seed sent %v, want each version once: %v", writes, want)
 	}
-	if want := []string{"/api/v1/issues/LGB-1/artifacts", "/api/v1/artifacts/d/text", "/api/v1/artifacts/d/text"}; !slices.Equal(reads, want) {
+	if want := []string{"/api/v1/issues/" + p.targets[0].issue + "/artifacts", "/api/v1/artifacts/" + refDocID + "/text", "/api/v1/artifacts/" + refDocID + "/text"}; !slices.Equal(reads, want) {
 		t.Errorf("the seed read %v, want the issue's documents read back once, then the token of the one named %s before versions 2 and 3: %v",
 			reads, "ref-target-0.md", want)
 	}

@@ -79,7 +79,7 @@ func TestARegistrationPrintsNoCredentialItsListenerURLCarries(t *testing.T) {
 			t.Fatalf("register = %v; want the listener's 200 taken", err)
 		}
 		redacttest.RequireNoPiece(t, "refillrig.register-url/registered", said, redacttest.User, redacttest.Password, redacttest.Token)
-		if want := "registered 1 sessions through " + redact.NotPrinted + "/v1/interests/subscribe in "; !strings.HasPrefix(said, want) {
+		if want := "registered 1 sessions through " + redact.NotPrinted + " in "; !strings.HasPrefix(said, want) {
 			t.Errorf("register printed %q; want it to begin %q", said, want)
 		}
 	})

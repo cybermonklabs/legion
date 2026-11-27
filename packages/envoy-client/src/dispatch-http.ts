@@ -564,8 +564,11 @@ function reviewNoRouteRefusal(
   version: number
 ): DispatchServiceError {
   const shown = urlForText(baseUrl, DISPATCH_URL_SETTING);
-  // Its health route, by the URL where that prints, and by its path on that server otherwise.
-  const health = isCleanUrl(baseUrl) ? `${baseUrl}/healthz` : "/healthz on that server";
+  // Its health route joined onto the URL's path (`joinUrl`, which a clean URL never fails) where
+  // that URL prints, and by its path on that server otherwise.
+  const health = isCleanUrl(baseUrl)
+    ? joinUrl(baseUrl, "healthz").toString()
+    : "/healthz on that server";
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
@@ -3335,8 +3338,7 @@ export class DispatchClient {
   /**
    * The request URL of `path`, each segment escaped, with `query`'s members as its own query: the
    * path joined onto the configured URL's path, the configured query kept ahead of the request's
-   * own (`joinUrl`). Resolved against the URL's text with a slash appended, a URL with a query
-   * would take the slash into the query and lose both its query and its path.
+   * own (`joinUrl`).
    */
   #url(path: readonly string[], query?: object): string {
     const params = new URLSearchParams();

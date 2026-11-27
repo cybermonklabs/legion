@@ -2,6 +2,7 @@ package githubrest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,15 +13,20 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // GraphQLEndpoint is GitHub's GraphQL endpoint under endpoint, GitHub's API root; empty is
-// https://api.github.com/graphql. A Client whose API is this sends queries (Client.GraphQL).
+// https://api.github.com/graphql. /graphql is joined onto endpoint's own path (urljoin.Join), so an
+// endpoint configured with a path and a query keeps both. It is "" where endpoint cannot be read as
+// an absolute URL with a host, and GraphQL refuses a client whose API is not one, in fixed words.
+// A Client whose API is this sends queries (Client.GraphQL).
 func GraphQLEndpoint(endpoint string) string {
-	if endpoint == "" {
-		endpoint = "https://api.github.com"
+	joined, err := urljoin.Join(cmp.Or(endpoint, "https://api.github.com"), "/graphql")
+	if err != nil {
+		return ""
 	}
-	return strings.TrimRight(endpoint, "/") + "/graphql"
+	return joined.String()
 }
 
 // graphQLAccept is the media type a query asks for: the merge-info preview, under which GitHub
@@ -147,6 +153,9 @@ const BudgetGraphQL Budget = "graphql"
 // RemoteText into holds is held with the record of the query's request. What the answer is - a
 // rate limit, an answer with data - is decided on its words as they came.
 func (c Client) GraphQL(ctx context.Context, query string, variables map[string]any, into any) error {
+	if _, err := urljoin.Join(c.API, ""); err != nil {
+		return fmt.Errorf("send the GitHub GraphQL query: its endpoint: %w", err)
+	}
 	encoded, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return fmt.Errorf("encode the GraphQL query: %w", err)

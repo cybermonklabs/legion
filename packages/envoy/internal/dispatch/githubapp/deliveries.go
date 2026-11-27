@@ -464,9 +464,8 @@ func rateLimitWait(header http.Header) time.Duration {
 // them prints with no user information and no query or fragment value, and a body the rule
 // cannot read prints as redact.WordsNotReadable, under every verb, in JSON and in a log field.
 type StatusError struct {
-	Status int
-	body   redact.RemoteText
-	// message is the `message` of the body, read when the error is made (responseMessage).
+	Status  int
+	body    redact.RemoteText
 	message redact.RemoteText
 }
 
@@ -489,7 +488,7 @@ func (e *StatusError) LogValue() slog.Value { return slog.StringValue(e.Error())
 func (e *StatusError) PrintedBody() string { return ShownBody(e.body.String()) }
 
 // Message is the `message` of the body, the JSON GitHub answers a refused request with, and empty
-// for a body that is not JSON or names none (responseMessage). It prints itself as the body does.
+// for a body that is not JSON or names none (answerMessage). It prints itself as the body does.
 func (e *StatusError) Message() redact.RemoteText { return e.message }
 
 // shownBodyRunes is how many runes of GitHub's text a line or an error shows (ShownBody): the

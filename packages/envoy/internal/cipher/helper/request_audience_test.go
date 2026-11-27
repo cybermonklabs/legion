@@ -21,11 +21,10 @@ import (
 // session's, which sign-request answers (signRequest) - and the broker verifies each for its own
 // public URL exactly (record.VerifyRequestObject). Its audience is proof.Audience of the address
 // (Broker.audience): the address's scheme, host, port and path, with none of the query or user
-// information it carries (query, user-information), where it was the address's whole text and
-// the broker refused every such object. Control: an address with neither is the audience as
-// written (plain). A stand-in at the address records the login's request object, answers it 400,
-// and enrols the session; it takes a route at the end of the path or of the query, so a call
-// whose route sat inside the address's query still reaches it.
+// information it carries (query, user-information). Control: an address with neither is the
+// audience as written (plain). A stand-in at the address records the login's request object,
+// answers it 400, and enrols the session; it takes a route at the end of the path or of the
+// query, so a call whose route sat inside the address's query still reaches it.
 func TestARequestObjectTheHelperSignsNamesTheBrokersURL(t *testing.T) {
 	logins := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

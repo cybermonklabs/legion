@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { holdsMarker, marker } from "./gh-words";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
 // The harness of the Stage 3 proofs' gh sites (stage3-4b13b-gh-words.test.ts,
@@ -19,17 +20,10 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 // site's controls run it with no marker anywhere and hold it to how it ended before: the fix
 // changes only what is printed.
 
-export const marker = "not-a-secret-token";
+export { marker };
+
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
-
-/** Whether text holds a run of eight characters of the marker (redacttest.Piece's run). */
-function holdsMarker(text: string): boolean {
-  for (let at = 0; at + 8 <= marker.length; at++) {
-    if (text.includes(marker.slice(at, at + 8))) return true;
-  }
-  return false;
-}
 
 /**
  * Reads the script `script` under scripts/e2e once and returns `span`, which gives the lines from

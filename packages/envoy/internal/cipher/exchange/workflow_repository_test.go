@@ -9,9 +9,9 @@ import (
 
 // TestAWorkflowsRepositoryIsHeldToGitHubsOwnShape: the shape of a workflow entry's repository is
 // githubname's one rule for GitHub's own words, so a name no repository in a path can hold — "."
-// and "..", which name the directory and its parent — is refused where this package's own
-// grammar took it. Every other refusal the entry already gave stands
-// (TestNewSetRefusesEntriesWithoutPrintingThem), and a repository GitHub can hold is taken.
+// and "..", which name the directory and its parent — is refused. Every other refusal the entry
+// already gave stands (TestNewSetRefusesEntriesWithoutPrintingThem), and a repository GitHub can
+// hold is taken.
 func TestAWorkflowsRepositoryIsHeldToGitHubsOwnShape(t *testing.T) {
 	entry := func(repo string) []exchange.WorkflowEntry {
 		return []exchange.WorkflowEntry{{Repository: repo, Workflow: workflow, Ref: ref, Project: project, Person: person}}

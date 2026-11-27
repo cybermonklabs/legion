@@ -97,10 +97,11 @@ func TestTheInventoryHoldsTheDeviceSignInEchoRows(t *testing.T) {
 // TestTheChecksStatementNamesWhatItsResultsDoNotEstablish: the statement the check prints of what
 // its results do not establish names, among others, github.com/coreos/go-oidc among the libraries
 // whose errors the censuses hold; a call into one of those libraries made through reflection
-// (reflect.Value.MethodByName(...).Call), which no census lists; the JSON-key form of the
+// (reflect.Value.MethodByName(...).Call), which no census lists; what redact.Unmarshal fills from
+// an answer's bytes, printed, which no census follows past the call; the JSON-key form of the
 // fixture's known residual (split-user-info-json-key) beside the bare one; a credential cut into
-// pieces shorter than redact.TokenPiece, which the rule does not redact; and a public name's
-// route match, which reads the request's whole escaped path.
+// pieces shorter than redact.TokenPiece, which the rule does not redact; and a public name's route
+// match, which reads the request's whole escaped path.
 func TestTheChecksStatementNamesWhatItsResultsDoNotEstablish(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "check-redact-remote-text.sh"))
 	if err != nil {
@@ -123,6 +124,7 @@ func TestTheChecksStatementNamesWhatItsResultsDoNotEstablish(t *testing.T) {
 	for _, want := range []struct{ what, text string }{
 		{"github.com/coreos/go-oidc among the libraries whose errors the censuses hold", "go-oidc"},
 		{"a library call made through reflection, which no census lists", "MethodByName"},
+		{"what redact.Unmarshal fills from an answer's bytes, printed", "what redact.Unmarshal fills from the bytes"},
 		{"the known-residual row split-user-info-json-key, the JSON-key form of a bare label: name@host", "JSON"},
 		{"a credential cut into pieces shorter than the rule's shortest redacted run", "pieces shorter than redact.TokenPiece"},
 		{"a public name's route match, which reads the request's whole escaped path", "whole escaped path"},

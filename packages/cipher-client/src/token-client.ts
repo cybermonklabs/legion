@@ -832,8 +832,6 @@ export class BrokerTokenClient {
       form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
-    // Joined, not appended: appended to the text of a broker URL with a query, the route would sit
-    // inside the query and the trade would ask the URL's own path.
     const endpoint = joinUrl(this.#brokerUrl, TOKEN_PATH).href;
     const raw: { body: unknown } = { body: undefined };
     const config = callLibrary(

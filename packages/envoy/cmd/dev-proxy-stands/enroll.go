@@ -30,10 +30,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -60,7 +62,7 @@ type enrollReport struct {
 func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev-airlock-stands enroll-pod", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	url := fs.String("url", "", "the broker's base `<url>`, which is also the request object's audience")
+	url := fs.String("url", "", "the broker's base `<url>`, whose scheme, host and path are also the request object's audience")
 	service := fs.String("service", "legion-daemon", "the service `<name>` BROKER_SERVICE_LOGINS lists the registrar account for")
 	tokenFile := fs.String("token-file", "", "`<path>` of the registrar account's projected ServiceAccount token")
 	podTokenFile := fs.String("pod-token-file", "", "`<path>` of the pod's own projected token, for the broker's audience")
@@ -95,8 +97,9 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
 		return 1
 	}
-	// The enrolment's URL is also the htu its launcher proof signs, one join for both: the broker
-	// refuses a proof whose htu is not its own address followed by the path the proof was sent to.
+	// The enrolment's launcher proof signs TargetURI of this same join: the broker refuses a proof
+	// whose htu is not its own address followed by the path the proof was sent to, which holds none
+	// of the query or user information --url may carry.
 	enrollURL, err := brokerRoute(base, "/v1/enrollments")
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
@@ -118,9 +121,17 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: generate the launcher key: %v\n", err)
 		return 1
 	}
+	// The request object names the broker's own URL as its audience (proof.Audience): the broker
+	// verifies it for its public URL exactly, which holds none of the query, fragment or user
+	// information --url may carry. brokerRoute has refused a --url that does not parse.
+	audience, err := proof.Audience(cipheraddr.New(base))
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: --url %q: %s\n", redact.NotPrinted, redact.ClassNotAURL)
+		return 1
+	}
 	// The request object names one launcher_credential detail whose service is the one the
 	// broker holds the registrar account for; it refuses a login that names another.
-	request, err := record.Sign(key, base, []record.AuthorizationDetail{
+	request, err := record.Sign(key, audience, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: *service, Service: *service},
 	}, "", "", nil, time.Now())
 	if err != nil {
@@ -130,7 +141,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	var login struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := call(ctx, http.MethodPost, loginURL, nil,
+	if err := call(ctx, http.MethodPost, loginURL.String(), nil,
 		map[string]string{"token": registrarToken, "request": request}, &login); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the service login: %v\n", err)
 		return 1
@@ -149,7 +160,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if *session != "" {
 		body["session_id"] = *session
 	}
-	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, enrollURL, time.Now())
+	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, proof.TargetURI(enrollURL), time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: sign the launcher proof: %v\n", err)
 		return 1
@@ -158,7 +169,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		EnrollmentID   string    `json:"enrollment_id"`
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := call(ctx, http.MethodPost, enrollURL, map[string]string{"Proof": signed}, body, &enrolled); err != nil {
+	if err := call(ctx, http.MethodPost, enrollURL.String(), map[string]string{"Proof": signed}, body, &enrolled); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the enrolment: %v\n", err)
 		return 1
 	}
@@ -195,12 +206,12 @@ func readToken(path string) (string, error) {
 // appended to base's text would sit inside a query or a fragment and the broker would be asked
 // another path. A base that does not parse or names no host is refused by --url and the class
 // alone: url.Parse's error quotes it whole, user information and query included.
-func brokerRoute(base, route string) (string, error) {
+func brokerRoute(base, route string) (*url.URL, error) {
 	joined, err := urljoin.Join(base, route)
 	if err != nil {
-		return "", fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
+		return nil, fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
 	}
-	return joined.String(), nil
+	return joined, nil
 }
 
 // call makes one JSON call and reads its answer into out. A refusal is an error naming the call by

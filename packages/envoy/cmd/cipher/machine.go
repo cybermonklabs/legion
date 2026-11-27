@@ -62,10 +62,11 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	// line of its own or rewrite this one.
 	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
-		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
-		// URL, redact.NotPrinted otherwise - beside the setting that names its origin, which is
-		// where a person who pasted a credential in place of Dispatch's address finds it.
-		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
+		// The page is /credentials/machine joined onto AGENT_SECRETS_APPROVE_URL's path
+		// (machinePage) and prints as internal/redact's URL prints it - whole when it is a plain
+		// http(s) URL, redact.NotPrinted otherwise - beside the setting that names its origin,
+		// which is where a person who pasted a credential in place of Dispatch's address finds it.
+		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", machinePage(base))
 	} else if resp.VerificationURI != "" {
 		// The broker's page, as the helper relayed it, prints as the page above does: whole
 		// when it is a plain http(s) URL, redact.NotPrinted otherwise, so a user, a password, a
@@ -99,6 +100,18 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		time.Sleep(backoff)
 		backoff = nextBackoff(backoff)
 	}
+}
+
+// machinePage is the machine-login page, /credentials/machine joined onto base (cipheraddr's Join,
+// as every route here is joined), printed as internal/redact's URL prints it: the route after the
+// setting's path, never inside its query or its fragment where the setting's text with the route
+// written after it put it, and redact.NotPrinted for a base the join refuses.
+func machinePage(base string) string {
+	page, err := cipheraddr.New(base).Join("/credentials/machine")
+	if err != nil {
+		return redact.NotPrinted
+	}
+	return redact.URL(page.String())
 }
 
 // cmdMachineLoginStatus implements "machine login-status": a read-only, single-shot query of

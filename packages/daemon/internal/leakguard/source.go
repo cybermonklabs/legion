@@ -60,9 +60,7 @@ type Source struct {
 	// carries the download's own token, and a renamed repository's route with a 301 to
 	// /repositories/<id> on the API's own origin. The read sends its token on only to a redirect
 	// on the origin it asked (originToken, which sets the CheckRedirect of a copy of Client, so
-	// Client's own is never asked). A read that got no answer names its failure through
-	// oauth2call.Unanswered, which prints none of net/http's own words for it, nor any part of a
-	// redirect's target on another host.
+	// Client's own is never asked).
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -166,9 +164,8 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	//
 	// The tarball's path is joined onto the repository's REST base (urljoin.Join), so an API
 	// address configured with a path and a query asks that path with the tarball's under it and
-	// keeps the query: appended to the base's text, the tarball's path would sit inside the
-	// query's last value and the read would ask the base's own path. A base that cannot be read
-	// as an absolute URL with a host is refused in the join's fixed words, which print no URL.
+	// keeps the query. A base that cannot be read as an absolute URL with a host is refused in the
+	// join's fixed words, which print no URL.
 	target, err := urljoin.Join(githubrest.RepositoryAPI(s.API, s.Repository), "/tarball/"+tag)
 	if err != nil {
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err))
@@ -237,8 +234,7 @@ func (s *Source) readFailure(ctx context.Context, tag string, bound time.Duratio
 // on only to a redirect on the read's own origin (keepTokenOnOrigin). net/http copies the read's
 // Authorization onto a redirect's request wherever its host name is the API's or a name under it,
 // whatever its scheme and port (shouldCopyHeaderOnRedirect, net/http/client.go of go1.27.3, lines
-// 700-705 and 1017-1039), so a redirect to another port of the API's host, or to plain http on
-// it, was sent the token. GitHub's redirect to its download host needs none: its URL carries the
+// 700-705 and 1017-1039). GitHub's redirect to its download host needs none: its URL carries the
 // download's own token. A renamed repository's 301 to /repositories/<id> on the API's origin
 // needs it to read a private repository. A copy, as redirects.Refused makes: the caller's client
 // is its own.

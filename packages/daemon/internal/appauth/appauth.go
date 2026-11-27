@@ -128,9 +128,7 @@ func (m *Manager) transient(request *http.Request, response *http.Response, read
 // newRequest is one request of the Manager to path, a path of GitHub's API with its own query
 // where it has one, under the base URL the daemon is configured with (Options.BaseURL): path is
 // joined onto the base's own path, and the base's query is kept ahead of path's own
-// (urljoin.Join). path appended to the base's text would sit inside the base's query where it
-// has one, so the request would go to the base's own path with the call's path written into that
-// query value, and GitHub would be asked something else entirely.
+// (urljoin.Join).
 //
 // A base that cannot be read as an absolute URL with a host is the join's one failure here, and
 // it is refused naming the setting alone: neither the base nor the path prints, since url.Parse's
@@ -919,10 +917,6 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 	}
 	installations := map[string]string{}
 	for page := 1; ; page++ {
-		// The page is asked in the read's own query, which the join puts after the base URL's
-		// where the daemon is configured with one (newRequest). Its two values are written in
-		// the order url.Values.Encode wrote them before, so a base with no query of its own is
-		// asked the URL it was asked before, character for character.
 		request, err := m.newRequest(ctx, http.MethodGet, "/app/installations?page="+strconv.Itoa(page)+"&per_page=100", nil)
 		if err != nil {
 			return nil, fmt.Errorf("GitHub App installation discovery: %w", err)

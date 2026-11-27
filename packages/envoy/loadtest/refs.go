@@ -351,7 +351,7 @@ func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, e
 func refReadBack(ctx context.Context, a *api, issue, name string) (string, error) {
 	res := a.callRetry(ctx, "GET", "/api/v1/issues/"+issue+"/artifacts", who{}, nil)
 	if !res.ok() {
-		return "", fmt.Errorf("read back %s on %s: %d %s %v, want 200", name, issue, res.status, trunc(res.body), res.err)
+		return "", fmt.Errorf("read back %s on %s: %d %s %v, want 200", name, issue, res.status, res.text(), res.err)
 	}
 	var rows []struct {
 		ID   string `json:"id"`
@@ -365,7 +365,7 @@ func refReadBack(ctx context.Context, a *api, issue, name string) (string, error
 			return row.ID, nil
 		}
 	}
-	return "", fmt.Errorf("read back %s on %s: the landed write made no document of that name in %s", name, issue, trunc(res.body))
+	return "", fmt.Errorf("read back %s on %s: the landed write made no document of that name in %s", name, issue, res.text())
 }
 
 // writeRefSources writes one references.md per LGA issue that cites at least one target. Each
@@ -404,8 +404,8 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 }
 
 // refsAnswer is what the shape check reads of a references answer: the author list of every
-// version row of every member, as data (the answer's bytes, callResult.body), since the check
-// compares and measures each list's compact JSON and prints none of it.
+// version row of every member, as data, since the check compares and measures each list's compact
+// JSON and prints none of it.
 type refsAnswer struct {
 	Members []struct {
 		Artifact struct {
@@ -449,8 +449,8 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		var answer refsAnswer
-		if err := json.Unmarshal(res.body, &answer); err != nil {
-			return fmt.Errorf("references of %s: %w", is.Key, redact.DecodeError(err, res.body, &answer))
+		if err := redact.Unmarshal(res.answer, &answer); err != nil {
+			return fmt.Errorf("references of %s: %w", is.Key, err)
 		}
 		seen := map[string]bool{}
 		r, ab := 0, 0

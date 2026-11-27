@@ -326,8 +326,6 @@ export async function postSlackReply(
       `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
     );
   }
-  // Joined, not appended: appended to the text of a URL with a query, the method would sit inside
-  // the query (`/api?team=T1/chat.postMessage`) and the post would ask `/api`.
   const url = joinUrl(apiUrl, "chat.postMessage").href;
   const { PATH: searchPath = "" } = env;
   const client = Bun.which("agent-secrets", { PATH: searchPath });

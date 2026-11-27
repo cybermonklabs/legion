@@ -672,8 +672,7 @@ export function liveDispatch(config: DispatchConfig): DispatchWrites {
     ops: [{ op: "insert", markdown: sentence, after: "end" }],
   });
   return {
-    // Public: it is sent no token. The route is joined onto the Dispatch URL's path, its query
-    // kept (`joinUrl`): appended to the text of a URL with a query, it would sit inside the query.
+    // Public: it is sent no token.
     healthz: () =>
       readJson(
         joinUrl(config.url, "healthz").href,

@@ -22,8 +22,9 @@ import (
 // /prefix/v1/enrollments?key=... (query), where the route appended to the URL's text sat inside
 // the query and the broker was asked /prefix with the query's value changed. A URL with a path and
 // no query asks where it did (no-query). In both, the launcher proof the enrolment carries signs
-// the URL the enrolment asked, byte for byte (its htu). A stand-in records the path and the query
-// each call reaches it with, answering the calls in order.
+// TargetURI of the URL the enrolment asked (its htu): its scheme, host and path, without the query,
+// as the broker compares it. A stand-in records the path and the query each call reaches it with,
+// answering the calls in order.
 func TestAnEnrolmentGoesToTheRoutesJoinedOntoTheBrokerURL(t *testing.T) {
 	for _, c := range []struct{ name, suffix, query string }{
 		{"query", "/prefix?key=k3y-7Qz4k", "key=k3y-7Qz4k"},
@@ -32,12 +33,12 @@ func TestAnEnrolmentGoesToTheRoutesJoinedOntoTheBrokerURL(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var asked []url.URL
-			var asks, proofs []string
+			var targets, proofs []string
 			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
 				asked = append(asked, *r.URL)
-				asks = append(asks, "http://"+r.Host+r.URL.RequestURI())
+				targets = append(targets, "http://"+r.Host+r.URL.EscapedPath())
 				proofs = append(proofs, r.Header.Get("Proof"))
 				w.Header().Set("Content-Type", "application/json")
 				if len(asked) == 1 {
@@ -65,8 +66,8 @@ func TestAnEnrolmentGoesToTheRoutesJoinedOntoTheBrokerURL(t *testing.T) {
 					t.Errorf("--url ending %q: call %d reached path %q with query %q; want path %q with query %q", c.suffix, i, got.Path, got.RawQuery, want[i], c.query)
 				}
 			}
-			if htu := proofURL(t, proofs[1]); htu != asks[1] {
-				t.Errorf("--url ending %q: the launcher proof signs %q; want %q, the URL the enrolment asked", c.suffix, htu, asks[1])
+			if htu := proofURL(t, proofs[1]); htu != targets[1] {
+				t.Errorf("--url ending %q: the launcher proof signs %q; want %q, the enrolment's URL without its query", c.suffix, htu, targets[1])
 			}
 			if code != 0 || !strings.Contains(stdout.String(), `"enrollment_id": "enrollment-1"`) {
 				t.Errorf("--url ending %q: exit %d, stdout %q, stderr %q; want 0 and the enrolment's report", c.suffix, code, stdout.String(), stderr.String())
@@ -97,11 +98,11 @@ func proofURL(t *testing.T, compact string) string {
 
 // TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt: --url with redacttest's credentials in its user
 // information and its query. One url.Parse refuses (an invalid escape in its path) fails enroll-pod
-// by --url and the class alone, before any call (unparsed); http.NewRequest's error for the URL with
-// the service login's route appended, which enroll-pod printed before, quotes it whole (twin). One
-// url.Parse takes, whose joined URL, as url.URL.String writes it, url.Parse refuses again (an IPv6
-// zone holding a byte that is not ASCII, which String escapes as %FD), fails the service login by
-// its method, the URL as redact.URL prints it and the class (reparsed); its twin shows
+// by --url and the class alone, before any call (unparsed); http.NewRequest's error for the URL
+// with the service login's route appended quotes it whole (twin). One url.Parse takes, whose
+// joined URL, as url.URL.String writes it, url.Parse refuses again (an IPv6 zone holding a byte
+// that is not ASCII, which String escapes as %FD), fails the service login by its method, the
+// URL as redact.URL prints it and the class (reparsed); its twin shows
 // http.NewRequest's error for the joined URL holds the credentials. Captures
 // dev-proxy-stands.enroll-url/<case>.
 func TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {

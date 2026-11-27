@@ -32,6 +32,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
@@ -83,12 +84,11 @@ func run(args []string) int {
 	results := make([]result, len(cfg.artifacts)*cfg.peers)
 	var wg sync.WaitGroup
 	for a, artifact := range cfg.artifacts {
+		room, roomErr := roomURL(cfg.baseURL, artifact)
 		for p := range cfg.peers {
 			index := a*cfg.peers + p
-			results[index] = result{artifact: artifact, peer: p}
-			room, err := roomURL(cfg.baseURL, artifact)
-			if err != nil {
-				results[index].err = err
+			results[index] = result{artifact: artifact, peer: p, err: roomErr}
+			if roomErr != nil {
 				continue
 			}
 			wg.Go(func() {
@@ -151,7 +151,7 @@ func parseFlags(args []string) (config, error) {
 
 	base, err := url.Parse(rawURL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return config{}, fmt.Errorf("-url must be http(s)://host:port, got %q", rawURL)
+		return config{}, fmt.Errorf("-url must be http(s)://host:port, got %q", redact.URL(rawURL))
 	}
 	cfg.baseURL = base
 	if strings.TrimSpace(cfg.identityHeader) == "" {
@@ -201,11 +201,7 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 // roomURL is artifact's document websocket at base, at the schema version the dashboard presents,
 // so the room takes the peer's edits rather than holding it read-only. The room's path is joined
 // onto base's path and the schema version follows base's own query, which is kept
-// (urljoin.JoinURL): writing the room's query over base's dropped a configured one, so
-// http://host/dispatch?key=K reached /dispatch/ws/doc/<artifact>?schema_version=N and the server
-// was asked without key=K. base's fragment, which no request sends, is dropped. urljoin.ErrRef is
-// the only error, and this ref, fixed text with a url.PathEscape element in it, never draws it; a
-// peer that somehow did is refused by the room it could not name, never by a text that quotes base.
+// (urljoin.JoinURL).
 func roomURL(base *url.URL, artifact string) (string, error) {
 	ref := "/ws/doc/" + url.PathEscape(artifact) +
 		"?" + url.Values{"schema_version": {strconv.Itoa(pmdoc.SchemaVersion())}}.Encode()

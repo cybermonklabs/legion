@@ -20,9 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -89,26 +87,12 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// callFailure is a failed call as legion_reads keeps it and the board's header carries it: the
-// transport's own reason, without the address Dispatch called. net/http wraps a transport failure
-// in a *url.Error carrying the whole URL, and the dial under it in a *net.OpError carrying the
-// host and port it resolved to; the daemon's address belongs to the deployment, and every reader
-// of the project's board reads this text (legion_reads.error, the board's header), so only the
-// innermost reason is kept — "connect: connection refused", "context deadline exceeded".
-func callFailure(err error) error {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		err = urlErr.Err
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		err = opErr.Err
-	}
-	return err
-}
-
 // State reads the daemon's own state: the state it answered and the bytes it sent, which the
 // sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable.
+//
+// A call that got no answer is named by the route and the failure's class (redact.Class), never
+// net/http's text, since legion_reads keeps it and the board's header shows it to every reader of
+// the project.
 //
 // The read goes to StatePath joined onto the path of the daemon's URL, that URL's query kept
 // (urljoin.Join). A daemon URL that does not parse, or a URL joined from it that does not, is a
@@ -131,7 +115,7 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return State{}, 0, fmt.Errorf("%w: GET %s: %v", ErrUnavailable, StatePath, callFailure(err))
+		return State{}, 0, fmt.Errorf("%w: GET %s: %v", ErrUnavailable, StatePath, redact.Class(err))
 	}
 	defer response.Body.Close()
 	answer, read, err := readBounded(response)
@@ -185,10 +169,7 @@ func (answered answeredState) with(kept keptState) State {
 }
 
 // readBounded reads at most ResponseLimit bytes of response's body, through redact.ReadAnswer,
-// and refuses one carrying more. It reads one byte past the cap to tell a body exactly at it from
-// one over it, so the refusal is never a parse of a truncated document; the count it returns for
-// such a body is where the read stopped, the cap and one byte, since nothing counts past a body
-// it refused.
+// and refuses one carrying more.
 func readBounded(response *http.Response) (redact.Answer, int, error) {
 	answer, err := redact.ReadAnswer(response, ResponseLimit)
 	if errors.Is(err, redact.ErrAnswerTooLarge) {

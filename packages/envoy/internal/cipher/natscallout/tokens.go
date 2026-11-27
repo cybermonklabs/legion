@@ -56,8 +56,6 @@ func (p PlatformTokens) Verify(ctx context.Context, raw string) (account string,
 		}
 		return token.Identity.Account, true, token.IssuedAt, token.Expiry, nil
 	}
-	// The issuer is the presented token's own claim, read before the token is verified: the
-	// presenter's word, so the refusal names it by what it is and never by its value.
 	return "", false, time.Time{}, time.Time{}, errors.New("natscallout: no NATS audience of this broker takes tokens of the issuer the token names (the value is not printed)")
 }
 

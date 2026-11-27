@@ -29,7 +29,9 @@ import (
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // A start that fails after Docker created the container — here a readiness wait that can never
@@ -134,8 +136,8 @@ func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
 
 // A running server is named by both of its variables, the monitoring endpoint's trailing slash
-// dropped, since the reset appends its path; neither set is no external server, and one set without
-// the other is refused naming both, never taken as an instruction to start a container.
+// dropped; neither set is no external server, and one set without the other is refused naming
+// both, never taken as an instruction to start a container.
 func TestAnExternalServerIsNamedByBothVariables(t *testing.T) {
 	for _, tc := range []struct {
 		name, server, monitoring string
@@ -329,21 +331,30 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 }
 
 // streamsDirectory is the directory the server t holds keeps its streams in: its JetStream store,
-// as its monitoring endpoint reports it, and in that the global account's directory, $G, which
-// holds every stream of a server with no accounts configured. The row that reads it acts on that
-// path where the server runs, so an external server's store must be on this host, writable by the
-// tests' user, and named by an absolute path (README.md says so); a relative one, which the
-// server resolves from its own working directory, fails t by name.
+// as its monitoring endpoint reports it at /jsz, joined onto the endpoint's path with its query
+// kept (urljoin.Join), and in that the global account's directory, $G, which holds every stream of
+// a server with no accounts configured. The row that reads it acts on that path where the server
+// runs, so an external server's store must be on this host, writable by the tests' user, and named
+// by an absolute path (README.md says so); a relative one, which the server resolves from its own
+// working directory, fails t by name. Each failure names the URL asked as connectionsAt's do.
 func streamsDirectory(t *testing.T) string {
 	t.Helper()
-	monitorURL := heldServer(t).monitor
-	response, err := monitorClient.Get(monitorURL + "/jsz")
+	asked, err := urljoin.Join(heldServer(t).monitor, "/jsz")
 	if err != nil {
-		t.Fatalf("read the NATS server's JetStream configuration: %v", err)
+		t.Fatalf("read the NATS server's JetStream configuration: its monitoring endpoint's base URL: %v", err)
+	}
+	shown := oauth2call.AskedURL(asked)
+	request, err := http.NewRequest(http.MethodGet, asked.String(), nil)
+	if err != nil {
+		t.Fatal("read the NATS server's JetStream configuration: its monitoring endpoint's URL joined with /jsz does not parse (it is not printed)")
+	}
+	response, err := monitorClient.Do(request)
+	if err != nil {
+		t.Fatalf("read the NATS server's JetStream configuration: %v", oauth2call.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s/jsz answered %s", monitorURL, response.Status)
+		t.Fatalf("GET %s answered %s", shown, oauth2call.StatusLine(response.StatusCode))
 	}
 	var jsz struct {
 		Config struct {
@@ -351,13 +362,13 @@ func streamsDirectory(t *testing.T) string {
 		} `json:"config"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&jsz); err != nil {
-		t.Fatalf("decode %s/jsz: %v", monitorURL, err)
+		t.Fatalf("decode %s: %v", shown, err)
 	}
 	if jsz.Config.StoreDir == "" {
-		t.Fatalf("%s/jsz names no store directory", monitorURL)
+		t.Fatalf("%s names no store directory", shown)
 	}
 	if !filepath.IsAbs(jsz.Config.StoreDir) {
-		t.Fatalf("%s/jsz names the store directory %q, a relative path this test cannot resolve: start the server with an absolute -sd", monitorURL, jsz.Config.StoreDir)
+		t.Fatalf("%s names the store directory %q, a relative path this test cannot resolve: start the server with an absolute -sd", shown, jsz.Config.StoreDir)
 	}
 	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
 }

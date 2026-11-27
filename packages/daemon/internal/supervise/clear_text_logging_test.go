@@ -70,7 +70,7 @@ func sinkClaim(t *testing.T) supervise.Claim {
 // (RemoteText.carried: githubrest's limitHeaders reads each header through oauth2call.Header into
 // Answer.Limit, and the body through Words into Answer.Body), carried on appauth.AnswerError, and
 // the error is that refusal inside the two wraps of the runtime's own: provision's of the mint
-// (runtime/sandbox's podkind.go:517) and the launch's (relaunch.go:400).
+// (runtime/sandbox's podkind.go) and the launch's (relaunch.go).
 //
 // It fails t unless the stand-in was asked, every Authorization it was sent held oauth2calltest.Token,
 // the API was asked nothing the launch's path to the mint does not ask, and the error is that
@@ -424,15 +424,13 @@ func launchRefusedByTheMint(t *testing.T, c supervise.Claim, refused error) (*su
 //
 // No decision of the machine reaches this state, which is the limit of the five rows that start
 // here: a launch the runtime refuses fails a claim that holds no process. launchNow lets the old
-// process go before its start (machine.go:2879, letGo), letGo moves the claim's locator off it
-// (machine.go:3953-3955), and recordEnd records nothing for a claim with no locator
-// (endedwork.go:224). The only fail of a sentence that carries the runtime's error is
-// failLaunch's (machine.go:2973 and 2993, through 3005), so recordEnd records nothing then; every
-// other fail (budgets.go:128 and 212, machine.go:3522, providererror.go:77, turnoutcome.go:124)
-// carries no runtime error. CodeQL's flows into the sinks that read the record run from that
-// failure's sentence through fail into it all the same, so this calls fail itself (Harness.Fail),
-// under the machine's lock as a decision holds it, and every sink that reads the record is then
-// driven by the events its own tests use.
+// process go before its start (letGo), letGo moves the claim's locator off it, and recordEnd
+// records nothing for a claim with no locator (endedwork.go). The only fail of a sentence that
+// carries the runtime's error is failLaunch's, so recordEnd records nothing then; every other fail
+// (budgets.go, machine.go, providererror.go, turnoutcome.go) carries no runtime error. CodeQL's
+// flows into the sinks that read the record run from that failure's sentence through fail into it
+// all the same, so this calls fail itself (Harness.Fail), under the machine's lock as a decision
+// holds it, and every sink that reads the record is then driven by the events its own tests use.
 func failedRecordingTheRefusal(t *testing.T, c supervise.Claim, refused error) (*supervise.Harness, *testlog.Buffer) {
 	t.Helper()
 	launched, _ := launchRefusedByTheMint(t, c, refused)
@@ -612,10 +610,9 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 			// As TestAnUnansweredHoldAtAResumeChargesNothing: the resume of a suspended claim whose
 			// start answers errHoldUnanswered, here from the runtime's Resume and joined to its
 			// refusal. That is the limit of this row: no runtime answers errHoldUnanswered. Only
-			// this package's hold makes it, of the store's answer (sessionhold.go:546, 549, 754
-			// and 756), and start holds the session's names before it asks the runtime anything
-			// (machine.go:3223-3224 before Resume at 3227, and 3262-3263 before 3266), so the
-			// branch's error (machine.go:2948) never carries the runtime's. The line logs that
+			// this package's hold makes it, of the store's answer (sessionhold.go), and start holds
+			// the session's names before it asks the runtime anything (machine.go's start, before
+			// each Resume), so the branch's error never carries the runtime's. The line logs that
 			// answer joined to stopPrevious's, which is nil: the suspension let the process go.
 			drive: func(t *testing.T, c supervise.Claim, refused error) (*testlog.Buffer, any) {
 				h, log := sinkHarness(t, c)
@@ -640,12 +637,11 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 			// As TestAPromptPastTheStartFrameFailsTheClaimChargingNoLaunchFailure: a spawn the
 			// runtime refuses with a runtime.PromptTooLarge, here joined to the runtime's refusal of
 			// the mint. That is the limit of this row: the Sandbox runtime makes a PromptTooLarge
-			// only when it measures the start frame (launcher.go:1056), in prepare
-			// (manifest.go:733-734), which relaunch runs before anything else (relaunch.go:233),
-			// and again after the pod is provisioned (relaunch.go:492-493), past the mint, whose
-			// refusal ends the launch first (relaunch.go:399-400); so no answer carries both. The
-			// line logs that answer joined to stopPrevious's, which is nil: a queued claim's spawn
-			// lets no process go.
+			// only when it measures the start frame (launcher.go's checkStartFrame), in prepare
+			// (manifest.go), which relaunch runs before anything else, and again after the pod is
+			// provisioned (relaunch.go), past the mint, whose refusal ends the launch first; so no
+			// answer carries both. The line logs that answer joined to stopPrevious's, which is nil:
+			// a queued claim's spawn lets no process go.
 			drive: func(t *testing.T, c supervise.Claim, refused error) (*testlog.Buffer, any) {
 				h, log := sinkHarness(t, c)
 				tooLarge := errors.Join(&runtime.PromptTooLarge{Role: c.Role, Bytes: 1_100_000, Frame: 1_100_400}, refused)

@@ -7,6 +7,7 @@ import type {
   DispatchEvent,
   Issue,
 } from "../../packages/contracts/src/dispatch-api";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
@@ -392,7 +393,7 @@ function parseArguments(argv: readonly string[]): RunOptions {
 
 /** One read of Dispatch that goes around DispatchClient (`run`'s issue lists), as JSON. */
 export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
-  const url = `${config.url}${path}`;
+  const url = joinUrl(config.url, path).href;
   // The bearer, or the access token this machine traded its own identity for, with the proof
   // that goes with it: this read goes around DispatchClient, so it presents the credential itself,
   // under the bound DispatchClient puts on each of its own requests.

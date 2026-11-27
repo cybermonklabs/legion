@@ -1706,7 +1706,8 @@ func recordRefused(err error) bool {
 	case http.StatusForbidden:
 		return refusal.Code.Equal(steprecord.CodeWriter)
 	case http.StatusConflict:
-		return refusal.Code.Equal(steprecord.CodeOtherIssue) || refusal.Code.Equal(steprecord.CodePlanOtherIssue)
+		_, other := refusal.Code.OneOf(steprecord.CodeOtherIssue, steprecord.CodePlanOtherIssue)
+		return other
 	}
 	return false
 }

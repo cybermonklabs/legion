@@ -471,18 +471,35 @@ func (e *bothCredentialFormsError) Error() string {
 // each URL without its credentials (recordedArgs, redactEndpoint); no flag holds a token.
 var urlFlags = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-pg"}
 
-// redactURL is raw without its userinfo and without a password query parameter, for every place
-// that records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way).
-// The whole userinfo goes, the user name too: nats.go takes a user name with no password as the
-// auth token. raw is read whole by url.Parse, as net/http reads it. A value that does not parse,
-// or names no scheme, is redacted whole, since no credential in it can be found for sure. A -pg
-// value is never read here (redactPG).
+// redactURL is raw as the URL rule names a URL a request asked (redact.AskedURL): its scheme, host
+// and path, with its user information, its query and its fragment removed, for every place that
+// records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way). The
+// whole userinfo goes, the user name too: nats.go takes a user name with no password as the auth
+// token; and the whole query goes, since a value under any name can be a credential (an
+// access_token, a signature). A ws or wss URL, a socket the load test dials, is read as the http
+// or https URL it upgrades from and keeps its own scheme. raw is read whole by url.Parse, as
+// net/http reads it. A value that does not parse, or names no scheme, is redacted whole, since no
+// credential in it can be found for sure, and one the rule cannot read as clean is
+// redact.NotPrinted. A -pg value is never read here (redactPG).
 func redactURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme == "" {
 		return redacted
 	}
-	return withoutCredentials(u).String()
+	socket := strings.ToLower(u.Scheme)
+	switch socket {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	default:
+		return redact.AskedURL(u)
+	}
+	shown := redact.AskedURL(u)
+	if shown == redact.NotPrinted {
+		return shown
+	}
+	return socket + strings.TrimPrefix(shown, u.Scheme)
 }
 
 // redactEndpoint is the value of endpoint flag flag as it is recorded or printed: a -nats value is
@@ -511,13 +528,13 @@ func redactEndpoint(flag, raw string) string {
 	return strings.Join(servers, ",")
 }
 
-// withoutCredentials is u with no userinfo and no password query parameter.
+// withoutCredentials is u, a NATS server's URL, with no userinfo, query or fragment: nats.go reads
+// a user, a password or a token from the userinfo, and a query or a fragment can carry a
+// credential under any name.
 func withoutCredentials(u *url.URL) *url.URL {
 	u.User = nil
-	if q := u.Query(); q.Has("password") {
-		q.Del("password")
-		u.RawQuery = q.Encode()
-	}
+	u.RawQuery, u.ForceQuery = "", false
+	u.Fragment, u.RawFragment = "", ""
 	return u
 }
 
@@ -726,9 +743,7 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
 // the listener answers /v1/sessions with the stack's API token and refuses any other token (a
 // listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here. Each route is joined
-// onto its endpoint's URL (urljoin.Join; the listener client joins its own), and a refusal names
-// the URL it asked without its credentials (redactURL).
+// production Dispatch hold other tokens, so a mistaken target fails here.
 func checkStack(ctx context.Context, e endpoints) error {
 	client := redirects.Refused(shortClient)
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
@@ -777,8 +792,7 @@ func joinRedacted(base, route string) string {
 
 // checkNATSServerName confirms that the NATS server monitored at monURL names itself name, so a
 // command that publishes (a step, a backlog run) reaches the stack's own NATS and no other. An
-// empty name skips the check. /varz is joined onto monURL (urljoin.Join), and a monitor URL that
-// does not join is refused in fixed words.
+// empty name skips the check.
 func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name string) error {
 	if name == "" {
 		return nil
@@ -788,8 +802,6 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 		return errors.New("guard: nats check failed: the NATS monitor URL is not an absolute URL with a host (it is not printed)")
 	}
 	varzURL := joined.String()
-	// The server name is the monitor's words, so it is compared as it came and printed as the rule
-	// reads it.
 	var varz struct {
 		ServerName redact.RemoteText `json:"server_name"`
 	}
@@ -809,8 +821,6 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	return nil
 }
 
-// guardGet is one GET of url, a route joined onto an endpoint's URL, with bearer when it is not
-// empty. A url that does not parse is refused (errJoinedURLUnparsed).
 func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

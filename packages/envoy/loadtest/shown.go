@@ -33,9 +33,7 @@ const issueKeyDigits = 10
 // isIssueKey says whether s is an issue key as Dispatch names one: a project key and a hyphen, as
 // contracts.IssueProject reads them, then a positive decimal of at most issueKeyDigits digits with
 // no leading zero. It reads the project key through IssueProject, the package that owns that
-// grammar, and not by editing the text of contracts.ProjectKeyPattern: the pattern this was built
-// from by trimming that text's "$" would have matched no key at all, and said nothing, the moment
-// the pattern stopped ending in one.
+// grammar, and not by editing the text of contracts.ProjectKeyPattern.
 func isIssueKey(s string) bool {
 	project, ok := contracts.IssueProject(s)
 	if !ok {

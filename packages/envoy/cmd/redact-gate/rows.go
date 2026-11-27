@@ -595,8 +595,32 @@ func stall(text string) string {
 	return strings.Join(shown, "\n")
 }
 
+// baselinePassed is stage 4's PASS line for gated, each of whose tests passed unmutated: how many,
+// the longest correct run, and the bound of each kind of row the stage ran, each as its run takes
+// it: a Go row's is row_timeout plus four times its start-up run (runBound), a Bun row's is
+// row_timeout alone (runBun).
+func baselinePassed(gated []*row, longest time.Duration, longestRow string, rowTimeout time.Duration) string {
+	var goRows, bunRows int
+	for _, r := range gated {
+		if r.bun {
+			bunRows++
+		} else {
+			goRows++
+		}
+	}
+	var bounds []string
+	if goRows > 0 {
+		bounds = append(bounds, fmt.Sprintf("each Go row's run is bounded by row_timeout, %s, plus four times its start-up run", rowTimeout))
+	}
+	if bunRows > 0 {
+		bounds = append(bounds, fmt.Sprintf("each Bun row's run is bounded by row_timeout, %s, alone", rowTimeout))
+	}
+	return fmt.Sprintf("PASS stage 4 (baseline): %d rows' tests pass unmutated (%d Go, %d Bun); the longest correct run is %s (row %s); %s",
+		len(gated), goRows, bunRows, longest.Round(time.Second), longestRow, strings.Join(bounds, "; "))
+}
+
 func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) result {
-	pkg := strings.Join(strings.SplitN(r.File, "/", 3)[:2], "/")
+	pkg := bunPackage(r.File)
 	report := filepath.Join(g.work, "junit.xml")
 	_ = os.Remove(report)
 	res.bound = g.rowTimeout

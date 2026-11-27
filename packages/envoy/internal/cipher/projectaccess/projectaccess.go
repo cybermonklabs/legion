@@ -50,7 +50,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"sync"
 	"time"
 
@@ -641,7 +640,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if code.IsEmpty() || slices.ContainsFunc(outageCodes, code.Equal) {
+			if _, outage := code.OneOf(outageCodes...); code.IsEmpty() || outage {
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		}

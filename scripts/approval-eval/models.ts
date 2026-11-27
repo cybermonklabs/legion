@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import { CannotRunError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
 
 /**
@@ -193,7 +194,8 @@ export interface JevAsk {
   options: JevOptions;
 }
 
-/** The gateway is not named, or its key could not be read, so no Claude call can be made. */
+/** The gateway is not named, its URL is no absolute URL, or its key could not be read, so no
+ *  Claude call can be made. */
 export class GatewayError extends CannotRunError {
   override readonly name = "GatewayError";
 }
@@ -244,6 +246,14 @@ async function claudeEndpoint(): Promise<{ url: string; key: string }> {
   if (!base) {
     throw new GatewayError("ANTHROPIC_BASE_URL names the model gateway, and it is not set");
   }
+  let url: string;
+  try {
+    url = joinUrl(base, CLAUDE_PATH).href;
+  } catch {
+    // The route is a fixed relative path, so what is refused is the gateway's URL, named by its
+    // setting: it can carry a credential in its user information or its query.
+    throw new GatewayError("ANTHROPIC_BASE_URL is not an absolute URL with a host (not printed)");
+  }
   let key: string;
   try {
     key = (await readFile(CLAUDE_KEY_FILE, "utf8")).replace(/[\r\n]+$/, "");
@@ -252,7 +262,7 @@ async function claudeEndpoint(): Promise<{ url: string; key: string }> {
   }
   if (key === "") throw new GatewayError(`${CLAUDE_KEY_FILE} holds no key`);
   remember(key);
-  return { url: `${base.replace(/\/+$/, "")}${CLAUDE_PATH}`, key };
+  return { url, key };
 }
 
 /** What a credential is written as once it is taken out of a text. */

@@ -128,24 +128,6 @@ soft() {
 operator_dispatch_hold_token
 # The daemon's database is this run's own in the shared Postgres container, read with the host psql.
 db_value() { PGPASSWORD=$(cat "$work/postgres-password") psql -h 127.0.0.1 -p "$port_pg" -U "$pg_user" -d "$legion_db" -tAc "$1"; }
-# gh_to_files NAME ARG... runs gh ARG... with its stderr kept in $evidence/gh/NAME.err and its
-# answer in $evidence/gh/NAME.answer, and prints the answer once gh has succeeded. Whatever answers
-# gh's call in GitHub's place holds gh's token and writes both: gh's stderr (the answer's message,
-# `gh: <message> (HTTP 404)`, or the client's own error) and the answer. So this script prints
-# neither: a failure is said in this script's own words, naming the file, and returns gh's status,
-# and a caller prints an answer only as the closed value it holds it to (a pull request's number, a
-# commit id, a state), naming the file otherwise. The evidence directory is kept on every exit.
-gh_to_files() {
-  local name=$1 status=0
-  shift
-  mkdir -p "$evidence/gh"
-  gh "$@" >"$evidence/gh/$name.answer" 2>"$evidence/gh/$name.err" || status=$?
-  if [ "$status" != 0 ]; then
-    printf 'gh exited %s on the call %s; its own words are in %s\n' "$status" "$name" "$evidence/gh/$name.err" >&2
-    return "$status"
-  fi
-  cat -- "$evidence/gh/$name.answer"
-}
 # short_commits LINES FILE prints the first eight characters of each line of LINES that is a commit
 # id (40 hex digits, the one form of a commit id GitHub answers), and in place of a line that is
 # none words that name FILE, where gh's answer is kept.

@@ -133,12 +133,10 @@ func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer
 }
 
 // newRequest is a request of method with body for route, joined onto the listener's URL
-// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to the
-// URL's text would sit inside a query or a fragment and the listener would be asked another path.
-// It carries the client's bearer (authorize). A URL that does not join, or whose joined URL does
-// not parse again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape),
-// is refused in fixed words: url.Parse's error, which http.NewRequest's carries, quotes the URL
-// whole, user information and query included.
+// (urljoin.Join). It carries the client's bearer (authorize). A URL that does not join, or whose
+// joined URL does not parse again (url.URL.String can write text url.Parse refuses, such as an
+// IPv6 zone escape), is refused in fixed words: url.Parse's error, which http.NewRequest's
+// carries, quotes the URL whole, user information and query included.
 func (c *Client) newRequest(ctx context.Context, method, route string, body io.Reader) (*http.Request, error) {
 	joined, err := urljoin.Join(c.URL, route)
 	if err != nil {

@@ -61,8 +61,6 @@ func main() {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	// The module is loaded once for each target and tag set, as the boundary census loads it, so a
-	// file a build constraint keeps from one of them is read under another.
 	pkgs := load.Modules("wholeuse", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo, patterns...).Packages
 	if len(pkgs) == 0 {
 		fmt.Fprintln(os.Stderr, "wholeuse: UNKNOWN: the patterns matched no package")
@@ -81,7 +79,6 @@ func main() {
 		}
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
-			// A file that more than one load builds is read once, by the first.
 			if strings.HasSuffix(name, "_test.go") || walked[name] {
 				continue
 			}
@@ -137,6 +134,12 @@ func redactCall(info *types.Info, call *ast.CallExpr) (string, bool) {
 	return fn.Pkg().Path() + "." + fn.Name(), fn.Pkg().Path() == redactPath
 }
 
+// newRetrieveErrorCall reports whether call calls redact.NewRetrieveError.
+func newRetrieveErrorCall(info *types.Info, call *ast.CallExpr) bool {
+	name, inRedact := redactCall(info, call)
+	return inRedact && strings.HasSuffix(name, ".NewRetrieveError")
+}
+
 func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 	var id *ast.Ident
 	switch f := ast.Unparen(call.Fun).(type) {
@@ -158,11 +161,7 @@ func redactMadeFields(pkgs []*packages.Package) map[*types.Var]bool {
 	made := map[*types.Var]bool{}
 	record := func(info *types.Info, field *types.Var, value ast.Expr) {
 		call, ok := ast.Unparen(value).(*ast.CallExpr)
-		safe := false
-		if ok {
-			name, inRedact := redactCall(info, call)
-			safe = inRedact && strings.HasSuffix(name, ".NewRetrieveError")
-		}
+		safe := ok && newRetrieveErrorCall(info, call)
 		earlier, seen := made[field]
 		made[field] = safe && (!seen || earlier)
 	}
@@ -261,19 +260,16 @@ func usedAt(stack []ast.Node) (ast.Node, []ast.Node) {
 }
 
 func classify(info *types.Info, stack []ast.Node, e ast.Expr, madeByRedact map[*types.Var]bool) (string, bool) {
+	parent, above := usedAt(stack)
 	// A read of a struct field that only redact.NewRetrieveError writes holds the rule's reading.
 	if sel, ok := e.(*ast.SelectorExpr); ok {
 		if field, ok := info.Uses[sel.Sel].(*types.Var); ok && madeByRedact[field] {
-			parent, _ := usedAt(stack)
 			return "whole value redact.NewRetrieveError made (" + describe(info, parent) + ")", false
 		}
 	}
-	if call, ok := e.(*ast.CallExpr); ok {
-		if name, inRedact := redactCall(info, call); inRedact && strings.HasSuffix(name, ".NewRetrieveError") && trustNewRetrieveError {
-			return "made by redact.NewRetrieveError", false
-		}
+	if call, ok := e.(*ast.CallExpr); ok && newRetrieveErrorCall(info, call) && trustNewRetrieveError {
+		return "made by redact.NewRetrieveError", false
 	}
-	parent, above := usedAt(stack)
 	switch p := parent.(type) {
 	case *ast.SelectorExpr:
 		sel := info.Selections[p]

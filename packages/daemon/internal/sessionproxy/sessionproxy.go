@@ -244,11 +244,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		_ = listener.Close()
 		return nil, fmt.Errorf("sessionproxy: build the dialer for %s: %w", cfg.Instance, err)
 	}
-	proofCtx, cancelProof := context.WithTimeout(ctx, cfg.DialTimeout)
-	proof, err := dialer.Dial(proofCtx, cfg.Instance)
-	// proofCtx's own error is read before cancelProof, which would set it either way.
-	timedOut := errors.Is(proofCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-	cancelProof()
+	proof, timedOut, err := boundedDial(ctx, dialer, cfg.Instance, cfg.DialTimeout)
 	if err != nil {
 		cancel()
 		_ = listener.Close()
@@ -409,12 +405,7 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	if p.admit != nil && !p.admitted(client) {
 		return
 	}
-	dialCtx, cancelDial := context.WithTimeout(ctx, p.dialTimeout)
-	upstream, err := p.dialer.Dial(dialCtx, p.instance)
-	// dialCtx's own error is read before cancelDial, which would set it either way. The upstream
-	// a dial hands back outlives its context: the dial's context bounds the dial alone.
-	timedOut := errors.Is(dialCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-	cancelDial()
+	upstream, timedOut, err := boundedDial(ctx, p.dialer, p.instance, p.dialTimeout)
 	if err != nil {
 		// Nothing is written back: a client that reads a Postgres error here would believe the
 		// database answered it.
@@ -449,6 +440,18 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	_, _ = io.Copy(client, upstream)
 	stop()
 	copies.Wait()
+}
+
+// boundedDial is dialer's Dial of instance under ctx, bounded by timeout, and whether that bound,
+// and not ctx, ended it. The upstream a dial hands back outlives the bound: it bounds the dial
+// alone.
+func boundedDial(ctx context.Context, dialer Dialer, instance string, timeout time.Duration) (net.Conn, bool, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	conn, err := dialer.Dial(dialCtx, instance)
+	// dialCtx's own error is read before cancel, which would set it either way.
+	timedOut := errors.Is(dialCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	return conn, timedOut, err
 }
 
 // admitted asks Admit about the process that made client. It closes a connection whose peer it
@@ -635,19 +638,11 @@ func connectorOptions(ctx context.Context, signer Signer, endpoints googleEndpoi
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s: %w", account, err)
 		}
-		adminScope := oauth2call.Scope[oauth2.TokenSource](ctx)
-		api, err = oauth2call.Call(adminScope.Read(impersonate.CredentialsTokenSource(adminScope.Context(), impersonate.CredentialsConfig{
-			TargetPrincipal: account,
-			Scopes:          []string{sqlAdminScope, cloudPlatformScope},
-		}, option.WithHTTPClient(adminScope.Client(iam)))))
+		api, err = impersonatedSource(ctx, iam, account, sqlAdminScope, cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
 		}
-		loginScope := oauth2call.Scope[oauth2.TokenSource](ctx)
-		login, err = oauth2call.Call(loginScope.Read(impersonate.CredentialsTokenSource(loginScope.Context(), impersonate.CredentialsConfig{
-			TargetPrincipal: account,
-			Scopes:          []string{sqlLoginScope},
-		}, option.WithHTTPClient(loginScope.Client(iam)))))
+		login, err = impersonatedSource(ctx, iam, account, sqlLoginScope)
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
 		}
@@ -674,6 +669,17 @@ func podTokenSource(ctx context.Context, timeout time.Duration, scopes ...string
 		return nil, err
 	}
 	return credentials.TokenSource, nil
+}
+
+// impersonatedSource is a source of account's tokens for scopes, minted through iam, the IAM
+// Credentials client (impersonationClient). CredentialsTokenSource is a text-only library call, so
+// it runs under a scope of its own, which iam's requests are recorded in.
+func impersonatedSource(ctx context.Context, iam *http.Client, account string, scopes ...string) (oauth2.TokenSource, error) {
+	s := oauth2call.Scope[oauth2.TokenSource](ctx)
+	return oauth2call.Call(s.Read(impersonate.CredentialsTokenSource(s.Context(), impersonate.CredentialsConfig{
+		TargetPrincipal: account,
+		Scopes:          scopes,
+	}, option.WithHTTPClient(s.Client(iam)))))
 }
 
 // impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken

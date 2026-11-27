@@ -70,11 +70,12 @@ func controlWindowsBody(resp *http.Response) error {
 }
 `)
 		}},
-	{id: "30", what: "an answer's words taken out through the shapes a type shows: httputil.DumpResponse and NewRemoteText as function values, json.Unmarshal of StreamTo's bytes into a holder of the box, a box's UnmarshalJSON called directly, net/http.ReadResponse with no request, a response printed whole, and a package-level function of the box's package that takes an Answer", stage: 2,
+	{id: "30", what: "an answer's words taken out through the shapes a type shows: httputil.DumpResponse and NewRemoteText as function values, json.Unmarshal of StreamTo's bytes and oauth2call.UnmarshalData into a holder of the box, a box's UnmarshalJSON called directly, net/http.ReadResponse with no request, a response printed whole, and a package-level function of the box's package that takes an Answer", stage: 2,
 		each: [][]string{
 			{"answer census", plantDir + "control_reach.go", "controlDumpValue", "httputil.DumpResponse", "referred to other than by its call"},
 			{"answer census", plantDir + "control_reach.go", "controlMakerValue", "redact.NewRemoteText", "referred to other than by its call"},
 			{"answer census", plantDir + "control_reach.go", "controlUnmarshalHolder", "fills a *oauth2call.CodedRefusal, which holds the box"},
+			{"answer census", plantDir + "control_reach.go", "controlUnmarshalDataHolder", "oauth2call.UnmarshalData fills a *oauth2call.CodedRefusal, which holds the box"},
 			{"answer census", plantDir + "control_reach.go", "controlUnmarshalBox", "fills a redact.RemoteText, which holds the box"},
 			{"answer census", plantDir + "control_reach.go", "controlNoRequest", "given no request"},
 			{"answer census", plantDir + "control_reach.go", "controlWhole", "a response handed whole"},
@@ -125,6 +126,13 @@ func controlUnmarshalHolder(resp *http.Response) error {
 	_, _ = answer.StreamTo(&b)
 	var refusal oauth2call.CodedRefusal
 	_ = json.Unmarshal(b.Bytes(), &refusal)
+	return fmt.Errorf("refused: %s", refusal.Error)
+}
+
+// controlUnmarshalDataHolder fills a holder of the box through oauth2call.UnmarshalData.
+func controlUnmarshalDataHolder(data []byte) error {
+	var refusal oauth2call.CodedRefusal
+	_ = oauth2call.UnmarshalData(data, &refusal)
 	return fmt.Errorf("refused: %s", refusal.Error)
 }
 

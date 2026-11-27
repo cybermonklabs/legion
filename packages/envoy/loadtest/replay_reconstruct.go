@@ -441,10 +441,7 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 			if err != nil || !ok {
 				return err
 			}
-			// The key is the event's, so an issue key (eventInShape). The listing is read as the
-			// fetch's own are (readListing): none of it is named, since its decoder's error can
-			// quote a time it could not read, and one that names an artifact by an id out of
-			// Dispatch's shape is refused.
+			// The key is the event's, so an issue key (eventInShape).
 			listing, err := readListing(k, body)
 			if err != nil {
 				return err
@@ -822,9 +819,7 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 				if err != nil || !ok {
 					return refused(err)
 				}
-				// The id is an anchor's, so in Dispatch's shape (eventInShape). The answer is
-				// Dispatch's: none of it is named (decodeCached), since its decoder's error can
-				// quote a time.
+				// The id is an anchor's, so in Dispatch's shape (eventInShape).
 				if err := decodeCached("the answer", meta, &la); err != nil {
 					return fmt.Errorf("artifact %s: %w", id, err)
 				}

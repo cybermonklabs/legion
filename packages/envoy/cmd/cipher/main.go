@@ -1439,12 +1439,8 @@ func projectHint(stderr io.Writer, detail *redact.RemoteText) {
 // only where this run asked for it (releasedName).
 func reportLeftOut(stderr io.Writer, base cipheraddr.Address, asked []string, values GrantValues) {
 	for _, line := range values.LeftOut {
-		entries := make([]string, len(line.Entries))
-		for i, entry := range line.Entries {
-			entries[i] = base.WordsOf(entry)
-		}
 		fmt.Fprintf(stderr, "agent-secrets: the profile %s left out %s for %s, since the installation there does not hold them\n",
-			releasedName(line.Profile, asked), strings.Join(entries, ", "), base.WordsOf(line.Account))
+			releasedName(line.Profile, asked), strings.Join(wordsOfEach(base, line.Entries), ", "), base.WordsOf(line.Account))
 	}
 }
 

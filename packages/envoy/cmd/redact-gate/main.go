@@ -56,14 +56,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -282,35 +280,23 @@ type census struct {
 // the same way is type-checked once for each set of files its package is compiled from, and
 // answers the same findings each time.
 func (c *census) dedupe() {
-	seenCall := map[entry]bool{}
-	calls := c.Calls[:0]
-	for _, e := range c.Calls {
-		if !seenCall[e] {
-			seenCall[e] = true
-			calls = append(calls, e)
-		}
-	}
-	c.Calls = calls
+	c.Calls = unique(c.Calls)
 	for _, list := range []*[]finding{&c.Box, &c.Holders, &c.Reflect, &c.Whole, &c.Boundary, &c.Fields, &c.Answers} {
-		seen := map[finding]bool{}
-		kept := (*list)[:0]
-		for _, f := range *list {
-			if !seen[f] {
-				seen[f] = true
-				kept = append(kept, f)
-			}
-		}
-		*list = kept
+		*list = unique(*list)
 	}
-	seenUnknown := map[string]bool{}
-	unknown := c.Unknown[:0]
-	for _, u := range c.Unknown {
-		if !seenUnknown[u] {
-			seenUnknown[u] = true
-			unknown = append(unknown, u)
+	c.Unknown = unique(c.Unknown)
+}
+
+func unique[T comparable](list []T) []T {
+	seen := map[T]bool{}
+	kept := list[:0]
+	for _, v := range list {
+		if !seen[v] {
+			seen[v] = true
+			kept = append(kept, v)
 		}
 	}
-	c.Unknown = unknown
+	return kept
 }
 
 // finding is one thing a structural census listed: a use of the box's storage (Box), a type that
@@ -483,7 +469,7 @@ func run(repo, inventoryPath string, o options, out io.Writer) int {
 	if g.unknowns > 0 {
 		return g.stopUnknown(4, "baseline")
 	}
-	fmt.Fprintf(out, "PASS stage 4 (baseline): %d rows' tests pass unmutated; the longest correct run is %s (row %s); each run's bound is row_timeout, %s, plus four times its start-up run\n", len(gated), g.longest.Round(time.Second), g.longestRow, g.rowTimeout)
+	fmt.Fprintln(out, baselinePassed(gated, g.longest, g.longestRow, g.rowTimeout))
 	for _, r := range gated {
 		g.gateRow(r, ranges[r])
 	}
@@ -741,12 +727,7 @@ func (g *gate) changed(dir string, match func(string) bool) (map[string]map[int]
 }
 
 func (g *gate) exemptFile(name string) bool {
-	for _, f := range g.inv.Gate.ExemptFiles {
-		if f == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g.inv.Gate.ExemptFiles, name)
 }
 
 func (g *gate) exempt(file, function string) string {
@@ -976,86 +957,6 @@ func (g *gate) locate(r *row, c census) ([2]int, error) {
 	}
 	at := fn[0] + strings.Index(body, r.Mutation.Preimage)
 	return [2]int{at, at + len(r.Mutation.Preimage)}, nil
-}
-
-// goFunction is the byte range of the function named name (types.Func.FullName's form) in a Go
-// file of the snapshot at root, found by syntax alone.
-func goFunction(data []byte, root, file, name string) ([2]int, bool) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, file, data, parser.SkipObjectResolution)
-	if err != nil {
-		return [2]int{}, false
-	}
-	path, ok := goImportPath(root, file)
-	if !ok {
-		return [2]int{}, false
-	}
-	for _, d := range f.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && goFuncName(path, fd) == name {
-			return [2]int{fset.Position(fd.Pos()).Offset, fset.Position(fd.End()).Offset}, true
-		}
-	}
-	return [2]int{}, false
-}
-
-// goImportPath is the import path of the package a Go file of the snapshot at root is in: the
-// path its module's go.mod names (the nearest one above the file: packages/envoy's, the daemon's,
-// a nested module's), followed by the file's directory under that module. A file under no go.mod
-// has none.
-func goImportPath(root, file string) (string, bool) {
-	dir := filepath.Dir(filepath.FromSlash(file))
-	for mod := dir; mod != "." && mod != string(filepath.Separator); mod = filepath.Dir(mod) {
-		data, err := os.ReadFile(filepath.Join(root, mod, "go.mod"))
-		if err != nil {
-			continue
-		}
-		path := modfileModule(data)
-		if path == "" {
-			return "", false
-		}
-		rel, err := filepath.Rel(mod, dir)
-		if err != nil {
-			return "", false
-		}
-		if rel == "." {
-			return path, true
-		}
-		return path + "/" + filepath.ToSlash(rel), true
-	}
-	return "", false
-}
-
-// modfileModule is the module path a go.mod's module directive names, or "".
-func modfileModule(data []byte) string {
-	for _, line := range strings.Split(string(data), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.Trim(strings.TrimSpace(rest), `"`)
-		}
-	}
-	return ""
-}
-
-// goFuncName is types.Func.FullName of fd, from syntax: "pkg.F", "(pkg.T).M" or "(*pkg.T).M".
-func goFuncName(path string, fd *ast.FuncDecl) string {
-	if fd.Recv == nil || len(fd.Recv.List) == 0 {
-		return path + "." + fd.Name.Name
-	}
-	t := fd.Recv.List[0].Type
-	star := ""
-	if s, ok := t.(*ast.StarExpr); ok {
-		star, t = "*", s.X
-	}
-	if ix, ok := t.(*ast.IndexExpr); ok {
-		t = ix.X
-	}
-	if ix, ok := t.(*ast.IndexListExpr); ok {
-		t = ix.X
-	}
-	id, _ := t.(*ast.Ident)
-	if id == nil {
-		return path + ".?." + fd.Name.Name
-	}
-	return "(" + star + path + "." + id.Name + ")." + fd.Name.Name
 }
 
 func set(xs []string) map[string]bool {

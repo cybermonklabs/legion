@@ -671,9 +671,6 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 0
 	}
 
-	// The state decodes through the answer (Answer.Decode, into servedState), whose error names
-	// the member that did not decode and never its value, which encoding/json's errors and
-	// time.Time's quote.
 	var state servedState
 	if err := answer.Decode(&state); err != nil {
 		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", redact.URL(address), err)
