@@ -166,11 +166,12 @@ if (
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long after a pull request's event, measured from its publish, the results route may take
- *  to compare a check with the head that event reports: v-head-no-settings says "within 5
- *  seconds of the event". The intake, bound before any case publishes (the setup waits for it),
- *  takes the envelope, reads the pull request from GitHub and writes its head row; nothing else is
- *  waited on, since every other answer is computed while the results are read. */
+/** How long after a pull request's event, measured from its publish to the route's answer of the
+ *  read that shows it (awaitResults), the results route may take to compare a check with the head
+ *  that event reports: v-head-no-settings says "within 5 seconds of the event". The intake, bound
+ *  before any case publishes (the setup waits for it), takes the envelope, reads the pull request
+ *  from GitHub and writes its head row; nothing else is waited on, since every other answer is
+ *  computed while the results are read. */
 const headAfterEventMs = 5_000;
 /** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
 const onePassWaitMs = 120_000;
@@ -5450,20 +5451,55 @@ function resultLineAt(printed: string, commit: string): string {
 }
 
 /** Reads `dispatch results --issue <key>` every pollMs until `accept` holds of what it printed, or
- *  until `waitMs` past `from` (milliseconds since the epoch, an event's publish), and answers the
- *  last text, whether `accept` held of it, and how long after `from` that read ended. */
+ *  until `waitMs` past `from` (milliseconds since the epoch, an event's publish). It answers the
+ *  last text, whether `accept` held of it, `ended`, how long after `from` that read's command
+ *  ended, and `ms`, how long after `from` the results route answered that read: the time the
+ *  server's log gives its GET (resultsAnsweredAt). The command's own start takes seconds on a
+ *  loaded machine, and none of it is the route's: on 2026-11-27, at a load of 280 on 288 CPUs, the
+ *  route answered a read 4.0 s after the event, in 36 ms, and the command ended 7.7 s after it.
+ *  Where `accept` never held, or the log holds no such line, `ms` is `ended`. */
 async function awaitResults(
   key: string,
   accept: (printed: string) => boolean,
   from: number,
   waitMs = headReadWaitMs
-): Promise<{ readonly met: boolean; readonly ms: number; readonly text: string }> {
+): Promise<{
+  readonly ended: number;
+  readonly met: boolean;
+  readonly ms: number;
+  readonly text: string;
+}> {
+  let offset = logLength();
   let text = await resultsCommand(key);
   while (!accept(text) && Date.now() - from < waitMs) {
     await Bun.sleep(pollMs);
+    offset = logLength();
     text = await resultsCommand(key);
   }
-  return { met: accept(text), ms: Date.now() - from, text };
+  const ended = Date.now() - from;
+  const met = accept(text);
+  const answered = met ? await resultsAnsweredAt(key, offset) : undefined;
+  return { ended, met, ms: answered === undefined ? ended : answered - from, text };
+}
+
+/** When the results route answered the first GET of `key`'s results that the server logged past
+ *  byte `offset` of its log, from the line's `time=`, in milliseconds since the epoch. The server
+ *  logs a request once it has answered it, so the line can land after the command has ended: the
+ *  read waits up to a second for it, and answers undefined where none comes. */
+async function resultsAnsweredAt(key: string, offset: number): Promise<number | undefined> {
+  const path = ` path=/api/v1/issues/${key}/results `;
+  const deadline = Date.now() + 1_000;
+  for (;;) {
+    const logged = readFileSync(dispatchLog)
+      .subarray(offset)
+      .toString("utf8")
+      .split("\n")
+      .find((line) => line.includes('msg="dispatch: request" method=GET ') && line.includes(path));
+    const at = logged === undefined ? undefined : /^time=(\S+) /.exec(logged)?.[1];
+    if (at !== undefined) return Date.parse(at);
+    if (Date.now() >= deadline) return undefined;
+    await Bun.sleep(50);
+  }
 }
 
 /** An issue of a head check in `project`, with the before_merge check k1, in `repo` where it is
@@ -5550,8 +5586,10 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
   const { expect, failure } = expectations();
   for (const kind of headKinds) {
     const commit = (n: string) => seededSha(`${kind.prefix}${n}`);
-    const late = (ms: number, met: boolean) =>
-      `took ${ms} ms${met ? "" : `, not within ${headReadWaitMs} ms`}`;
+    const late = (read: { readonly ended: number; readonly met: boolean; readonly ms: number }) =>
+      read.met
+        ? `the route answered ${read.ms} ms after it, and the command ended ${read.ended} ms after it`
+        : `took ${read.ms} ms, not within ${headReadWaitMs} ms`;
     note(`${kind.name}: ${kind.repo}`);
 
     const key = await seedHeadIssue(`The change in ${kind.repo}`, kind.own);
@@ -5568,10 +5606,12 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
         passStands(k1Line(text), "yes"),
       opened.at
     );
-    note(`S1 ${key}, ${s1.ms} ms after the opening of #${kind.pr}: ${k1Line(s1.text)}`);
+    note(
+      `S1 ${key}, answered ${s1.ms} ms after the opening of #${kind.pr} (the command ended ${s1.ended} ms after it): ${k1Line(s1.text)}`
+    );
     expect(
       s1.met && s1.ms <= headAfterEventMs,
-      `S1 ${kind.name}: dispatch results compares k1 with the head of #${kind.pr} and a pass stands within ${headAfterEventMs} ms of the event (${late(s1.ms, s1.met)})`
+      `S1 ${kind.name}: dispatch results compares k1 with the head of #${kind.pr} and a pass stands within ${headAfterEventMs} ms of the event (${late(s1)})`
     );
 
     // A late copy of an older push: GitHub's answer no longer holds it, so the fake stays as it is.
@@ -5595,11 +5635,13 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
         passStands(k1Line(text), "no"),
       pushed.at
     );
-    note(`S2 ${s2.ms} ms after the push to C2: ${k1Line(s2.text)}`);
+    note(
+      `S2 answered ${s2.ms} ms after the push to C2 (the command ended ${s2.ended} ms after it): ${k1Line(s2.text)}`
+    );
     note(`S2 ${resultLineAt(s2.text, commit("1"))}`);
     expect(
       s2.met && s2.ms <= headAfterEventMs,
-      `S2 ${kind.name}: within ${headAfterEventMs} ms of the push the pass at C1 stands at none of the compared commits and no pass stands (${late(s2.ms, s2.met)})`
+      `S2 ${kind.name}: within ${headAfterEventMs} ms of the push the pass at C1 stands at none of the compared commits and no pass stands (${late(s2)})`
     );
     await recordHeadPass(key, commit("2"), "tester");
     const atNewHead = await resultsCommand(key);
@@ -5620,10 +5662,12 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
       (text) => k1Line(text).includes(`pull request #${kind.pr3} at ${commit("3")}`),
       opened3.at
     );
-    note(`S3 ${key3}, ${s3.ms} ms after the opening of #${kind.pr3}: ${k1Line(s3.text)}`);
+    note(
+      `S3 ${key3}, answered ${s3.ms} ms after the opening of #${kind.pr3} (the command ended ${s3.ended} ms after it): ${k1Line(s3.text)}`
+    );
     expect(
       s3.met && s3.ms <= headAfterEventMs,
-      `S3 ${kind.name}: with no result yet dispatch results names #${kind.pr3} within ${headAfterEventMs} ms of the event (${late(s3.ms, s3.met)})`
+      `S3 ${kind.name}: with no result yet dispatch results names #${kind.pr3} within ${headAfterEventMs} ms of the event (${late(s3)})`
     );
     await recordHeadPass(key3, commit("3"), "implementer");
     const atHead3 = await resultsCommand(key3);
