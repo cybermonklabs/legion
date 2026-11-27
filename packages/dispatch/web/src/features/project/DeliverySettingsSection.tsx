@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { agentSession } from "../../api/agent-session";
@@ -20,6 +20,7 @@ import type {
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
   dangerText,
@@ -232,6 +233,130 @@ function draftOf(record: ProjectDeliverySettings | null): Draft {
   };
 }
 
+/** The later of two versions of the record, by when Dispatch wrote each (`updated_at`): `held`,
+ *  as a reader of it has it, and `other`, which may be newer - a save's own answer, or the
+ *  cache's record beside the one the fields were handed - and wins a tie. No record, or none read
+ *  yet, gives way to any record. */
+function laterRecord(
+  held: ProjectDeliverySettings | null | undefined,
+  other: ProjectDeliverySettings | null | undefined
+): ProjectDeliverySettings | null {
+  if (other == null) return held ?? null;
+  if (held == null) return other;
+  return compareTimestamps(other.updated_at, held.updated_at) >= 0 ? other : held;
+}
+
+/** A deploy source's fields as typed, each a leaf of the draft of its own (`leavesOf`). */
+const SOURCE_FIELDS = [
+  "kind",
+  "repo",
+  "deploy_workflow_path",
+  "production_job_names",
+  "production_apply_step_name",
+  "staging_e2e_job_name",
+  "staging_apply_job_name",
+  "pr_checks_workflow_path",
+  "pr_checks_rollup_job_name",
+] as const satisfies readonly (keyof SourceDraft)[];
+
+/** One thing the reader changes as a whole, which a record that changes under the form either
+ *  keeps as they typed it or takes from the record: the switch, a text box, the failure sources
+ *  (sorted, as the boxes show no order), a target box (`target:<slug>`), the deploy sources' keys
+ *  in their order (`sources`), or one field of one source (`source:<key>:<field>`). */
+type Leaf = boolean | string | readonly string[];
+
+/** A draft's leaves by name (`leavesOf`). */
+type Leaves = Readonly<Record<string, Leaf>>;
+
+function sameLeaf(left: Leaf | undefined, right: Leaf | undefined): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((entry, at) => entry === right[at]);
+  }
+  return left === right;
+}
+
+/** `draft` as its leaves. */
+function leavesOf(draft: Draft): Leaves {
+  const leaves: Record<string, Leaf> = {
+    delivery: draft.delivery,
+    excluded_repos: draft.excluded_repos,
+    failure_sources: [...draft.failure_sources].sort(),
+    failures_measured_since: draft.failures_measured_since,
+    population_authors: draft.population_authors,
+    sources: draft.sources.map((source) => source.key),
+  };
+  for (const slug of TARGET_SLUGS) leaves[`target:${slug}`] = draft.targets[slug];
+  for (const source of draft.sources) {
+    for (const field of SOURCE_FIELDS) leaves[`source:${source.key}:${field}`] = source[field];
+  }
+  return leaves;
+}
+
+/** The draft `leaves` holds: each of its sources, in their order, with every field of it. */
+function draftOfLeaves(leaves: Leaves): Draft {
+  const text = (name: string) => leaves[name] as string;
+  const targets = {} as Record<TargetSlug, string>;
+  for (const slug of TARGET_SLUGS) targets[slug] = text(`target:${slug}`);
+  return {
+    delivery: leaves.delivery as boolean,
+    excluded_repos: text("excluded_repos"),
+    failure_sources: leaves.failure_sources as readonly string[],
+    failures_measured_since: text("failures_measured_since"),
+    population_authors: text("population_authors"),
+    sources: (leaves.sources as readonly string[]).map(
+      (key) =>
+        ({
+          key,
+          ...Object.fromEntries(
+            SOURCE_FIELDS.map((field) => [field, leaves[`source:${key}:${field}`]])
+          ),
+        }) as SourceDraft
+    ),
+    targets,
+  };
+}
+
+/** The leaves of `next` that differ from `stored`'s: what the reader has changed. */
+function changedLeaves(next: Leaves, stored: Leaves): Leaves {
+  const changed: Record<string, Leaf> = {};
+  for (const [name, leaf] of Object.entries(next)) {
+    if (!sameLeaf(leaf, stored[name])) changed[name] = leaf;
+  }
+  return changed;
+}
+
+/** The leaves of `sent` that `edited` still holds as sent: the ones this tab's Save sent that the
+ *  reader has not changed since. */
+function stillSent(sent: Leaves, edited: Leaves): Leaves {
+  const kept: Record<string, Leaf> = {};
+  for (const [name, leaf] of Object.entries(sent)) {
+    if (sameLeaf(edited[name], leaf)) kept[name] = leaf;
+  }
+  return kept;
+}
+
+/** What the reader has changed over the record, and what this tab's newest Save sent of it. */
+interface Changes {
+  /** The leaves the reader has changed, as typed. */
+  readonly edited: Leaves;
+  /** The newest Save's: the leaves it sent that the reader has not changed since (`stillSent`),
+   *  and the Save itself, so only its own landing retires them. `null` before any Save, and once
+   *  Dispatch has refused it or its landing has retired them. */
+  readonly sent: { readonly fields: Leaves; readonly save: object } | null;
+}
+
+const NO_CHANGES: Changes = { edited: {}, sent: null };
+
+/** `changes` once the Save `save` has landed and the record holds what it sent: the leaves it
+ *  sent that the reader has not changed since follow the record again. Where a newer Save is out
+ *  or this one was refused, nothing changes. */
+function retired(changes: Changes, save: object): Changes {
+  if (changes.sent?.save !== save) return changes;
+  const edited = { ...changes.edited };
+  for (const name of Object.keys(changes.sent.fields)) delete edited[name];
+  return { edited, sent: null };
+}
+
 /** The fields of the record a save starts from: every field it read, one this build does not know
  *  included, so a field of a newer build survives a save of this one; but not its targets, each a
  *  version of its eval that another write may have moved since the read, which a save names only
@@ -303,30 +428,31 @@ function parsedTarget(text: string): number | typeof TARGET_OFF | undefined {
   return trimmed === "" || !Number.isFinite(value) ? undefined : value;
 }
 
-/** Each target the reader changed since the fields were drawn from the record (`initial`), as a
- *  save sends it. A box that holds what it was drawn with, or nothing, keeps its eval's target, so
- *  the save leaves it out: a target another write moved while the form was open stands. */
+/** Each target the reader changed over the record as the form now holds it (`stored`), as a save
+ *  sends it. A box that holds the record's target, or nothing, keeps its eval's target, so the
+ *  save leaves it out: a target another write moved while the form was open stands, and a box the
+ *  reader did not touch shows it once the record is read again. */
 function editedTargets(
   draft: Draft,
-  initial: Draft
+  stored: Draft
 ): NonNullable<ProjectDeliverySettingsInput["targets"]> {
   const targets: NonNullable<ProjectDeliverySettingsInput["targets"]> = {};
   for (const slug of TARGET_SLUGS) {
     const target = parsedTarget(draft.targets[slug]);
-    if (target !== undefined && target !== parsedTarget(initial.targets[slug])) {
+    if (target !== undefined && target !== parsedTarget(stored.targets[slug])) {
       targets[slug] = target;
     }
   }
   return targets;
 }
 
-/** The save of a project with delivery on: built from the record it read (sending back every field
- *  the form does not edit, one it does not know included, but the targets: `recordFields`),
- *  overwriting the fields the form edits, and naming each target the reader changed
- *  (`editedTargets`). `refusalOf` passed the draft first. */
+/** The save of a project with delivery on: built from the record the fields follow (sending back
+ *  every field the form does not edit, one it does not know included, but the targets:
+ *  `recordFields`), overwriting the fields the form edits, and naming each target the reader
+ *  changed (`editedTargets`). `refusalOf` passed the draft first. */
 function draftInput(
   draft: Draft,
-  initial: Draft,
+  stored: Draft,
   record: ProjectDeliverySettings | null
 ): ProjectDeliverySettingsInput {
   return {
@@ -339,7 +465,7 @@ function draftInput(
       draft.failure_sources.includes(value)
     ),
     failures_measured_since: textOrNull(draft.failures_measured_since),
-    targets: editedTargets(draft, initial),
+    targets: editedTargets(draft, stored),
   };
 }
 
@@ -413,8 +539,18 @@ interface DeliverySettingsSectionProps {
  * and Save sends the stored fields back unchanged; a save names only the targets the reader
  * changed, so a target another write moved while the form was open stands. Save updates the
  * project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under
- * the form as the server wrote it and the draft stays. A save starts the fields over from the
- * record the server stored, and so does anyone else's save once the record is read again.
+ * the form as the server wrote it and the draft stays. A save writes Dispatch's answer as the
+ * record, and refreshes the record and the evals the save moves.
+ *
+ * Its groups, in this order, each on a line of its own: Heading (the title and what the settings
+ * are); Fields - the switch, the default repository and, with delivery on, Deploy sources (each
+ * source a group of its own: Kind and Remove, then its fields; then the Add controls),
+ * Population, Failure sources and Targets, whose fields are two columns from `sm` and one below
+ * it; Save; and under them the refusal of a save, or that it saved. A one-line value longer than
+ * its field ends in an ellipsis with the whole value as its title; a list wraps inside its own
+ * box. The fields the reader has changed stay as they typed them when the record changes under
+ * them - anyone's save - and the rest follow the record, as does a changed field once this tab's
+ * Save of it has landed: that Save's answer is the record from then on.
  */
 export function DeliverySettingsSection({
   project,
@@ -435,8 +571,11 @@ export function DeliverySettingsSection({
     onSettled: () => submitGuard.release(),
     onSuccess: (answer) => {
       const settingsKey = projectDeliverySettingsQuery(project).queryKey;
+      // The answer is the record from now on, written where the fields and every other reader of
+      // it read it, unless a newer one is there already: another writer's, read meanwhile. The
+      // fields this save sent follow it in the render that takes it in (`retired`).
       if (answer !== null) {
-        queryClient.setQueryData(settingsKey, answer);
+        queryClient.setQueryData(settingsKey, (current) => laterRecord(current, answer));
       }
       void queryClient.invalidateQueries({ queryKey: settingsKey });
       // Each target the save changed is a new version of the project's eval, which the Evals
@@ -472,13 +611,10 @@ export function DeliverySettingsSection({
       save.isSuccess && (save.data === null || save.data.updated_at === record?.updated_at);
     body = (
       <>
-        {/* Keyed by the record's write time, so a save (anyone's) starts the fields over from
-            the record as the server stored it. */}
         <DeliverySettingsFields
           defaultRepo={defaultRepo}
-          key={record?.updated_at ?? "unset"}
           onRefused={() => save.reset()}
-          onSave={(input) => submitGuard.guard(() => save.mutate(input))}
+          onSave={(input, press) => submitGuard.guard(() => save.mutate(input, press))}
           pending={save.isPending}
           project={project}
           record={record}
@@ -524,12 +660,21 @@ export function DeliverySettingsSection({
   );
 }
 
+/** What one Save's landing or refusal tells the fields that sent it. */
+interface SavePress {
+  readonly onError: () => void;
+  readonly onSuccess: (answer: ProjectDeliverySettings | null) => void;
+}
+
 interface DeliverySettingsFieldsProps {
   readonly project: string;
+  /** The record as the section read it, which the cache's own may be newer than. */
   readonly record: ProjectDeliverySettings | null;
   readonly defaultRepo: string | null;
   readonly pending: boolean;
-  readonly onSave: (input: ProjectDeliverySettingsInput) => void;
+  /** Sends `input`, telling `press` of its landing or refusal, unless a save is out: whether it
+   *  sent. */
+  readonly onSave: (input: ProjectDeliverySettingsInput, press: SavePress) => boolean;
   /** Save refused the draft before sending: the last save's outcome no longer speaks for it. */
   readonly onRefused: () => void;
   /** Why every save is refused before sending, whatever the draft holds: an agent viewer that
@@ -547,15 +692,42 @@ function DeliverySettingsFields({
   unnamedWriter,
 }: DeliverySettingsFieldsProps): ReactNode {
   const id = useId();
-  // The fields as they were drawn from the record, which a save compares each target box against
-  // (`editedTargets`). A re-read with a new write time draws the fields, and this, again (the
-  // section's `key`); one that answers a target another write moved does not, so the box still
-  // holds what it was drawn with and the save leaves that target out.
-  const [initial] = useState(() => draftOf(record));
-  const [draft, setDraft] = useState<Draft>(initial);
+  // The record the fields follow: the one the section was handed, or the cache's where that is
+  // newer. A save writes its own answer there before the callback that retires the fields it sent
+  // runs (the section's `onSuccess`), and this read of the cache takes it in that same render,
+  // while TanStack Query has not yet told the section of it - in a browser, a timer later.
+  const cached = useQuery({ ...projectDeliverySettingsQuery(project), enabled: false }).data;
+  const written = laterRecord(record, cached);
+  const storedDraft = draftOf(written);
+  const stored = leavesOf(storedDraft);
+  // What the reader has changed, over the record as the server now holds it: a save from anywhere
+  // refreshes what the reader has not touched and keeps what they have as they typed it, so a
+  // line break typed to start a list's next entry stays, and the caret after it; a target box the
+  // reader left shows a target another write moved, and a save leaves it out (`editedTargets`).
+  // `sent` holds the changes this tab's newest Save sent, as typed, until the reader changes one
+  // again; a refusal of that Save drops them all. That Save's own landing retires them: they
+  // follow the record its answer is, so a list typed with a trailing line break or with commas,
+  // which Save rewrites, shows as saved, and a source Add made shows as the one Dispatch stored.
+  // While the Save is out, a record - another writer's - is no answer to it and keeps every
+  // change as typed.
+  const [changes, setChanges] = useState<Changes>(NO_CHANGES);
+  const { edited, sent } = changes;
+  const kept = changedLeaves(edited, stored);
+  if (Object.keys(kept).length !== Object.keys(edited).length) {
+    setChanges({ edited: kept, sent: sent && { ...sent, fields: stillSent(sent.fields, kept) } });
+  }
+  // The leaves the fields drew last: a source the reader's changed list still holds once another
+  // writer's save has removed it from the record keeps its fields as they were drawn.
+  const drawn = useRef<Leaves>(stored);
+  const draft = draftOfLeaves({ ...drawn.current, ...stored, ...edited });
+  drawn.current = leavesOf(draft);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const update = (next: Draft) => {
-    setDraft(next);
+    const changed = changedLeaves(leavesOf(next), stored);
+    setChanges({
+      edited: changed,
+      sent: sent && { ...sent, fields: stillSent(sent.fields, changed) },
+    });
     setRefusal(null);
   };
   const updateSource = (index: number, patch: Partial<SourceDraft>) =>
@@ -572,17 +744,34 @@ function DeliverySettingsFields({
       onRefused();
       return;
     }
-    if (!draft.delivery) {
-      onSave(storedInput(record));
-      return;
+    let input: ProjectDeliverySettingsInput;
+    if (draft.delivery) {
+      const refused = refusalOf(draft, defaultRepo);
+      setRefusal(refused);
+      if (refused !== null) {
+        onRefused();
+        return;
+      }
+      input = draftInput(draft, storedDraft, written);
+    } else {
+      input = storedInput(written);
     }
-    const refused = refusalOf(draft, defaultRepo);
-    setRefusal(refused);
-    if (refused !== null) {
-      onRefused();
-      return;
-    }
-    onSave(draftInput(draft, initial, record));
+    // This Save, by identity: its own landing, and no record that arrives meanwhile, retires what
+    // it sent, and the landing of an earlier Save leaves a newer one's changes as typed.
+    const press = {};
+    const sending = onSave(input, {
+      onError: () =>
+        setChanges((current) =>
+          current.sent?.save === press ? { ...current, sent: null } : current
+        ),
+      onSuccess: (answer) => {
+        // A `PUT` goes under no key (`goesUnderKey`), so Dispatch keeps nothing under one for it
+        // and answers each with the record it stored: a landing with no answer (`null`) is a keyed
+        // write's alone, and here the type's only.
+        if (answer !== null) setChanges((current) => retired(current, press));
+      },
+    });
+    if (sending) setChanges({ edited, sent: { fields: edited, save: press } });
   };
 
   return (
@@ -625,6 +814,7 @@ function DeliverySettingsFields({
                 id={`${id}-default-repo`}
                 placeholder="None"
                 readOnly
+                title={defaultRepo ?? undefined}
                 value={defaultRepo ?? ""}
               />
             </label>
@@ -926,6 +1116,7 @@ function GitHubWorkflowFields({
             onChange={(event) => onChange({ repo: event.target.value })}
             placeholder={defaultRepo ?? "owner/name"}
             spellCheck={false}
+            title={source.repo === "" ? undefined : source.repo}
             value={source.repo}
           />
         </label>
@@ -943,6 +1134,7 @@ function GitHubWorkflowFields({
           onChange={(event) => onChange({ deploy_workflow_path: textOrEmpty(event.target.value) })}
           placeholder=".github/workflows/<deploy>.yml"
           required
+          title={source.deploy_workflow_path === "" ? undefined : source.deploy_workflow_path}
           value={source.deploy_workflow_path}
         />
       </label>
@@ -956,6 +1148,7 @@ function GitHubWorkflowFields({
           }
           placeholder=".github/workflows/<checks>.yml"
           required
+          title={source.pr_checks_workflow_path === "" ? undefined : source.pr_checks_workflow_path}
           value={source.pr_checks_workflow_path}
         />
       </label>
@@ -993,6 +1186,11 @@ function GitHubWorkflowFields({
             id={`${id}-production-apply-step`}
             onChange={(event) => onChange({ production_apply_step_name: event.target.value })}
             placeholder="The step whose success means the job applied (optional)"
+            title={
+              source.production_apply_step_name === ""
+                ? undefined
+                : source.production_apply_step_name
+            }
             value={source.production_apply_step_name}
           />
         </label>
@@ -1010,6 +1208,7 @@ function GitHubWorkflowFields({
             id={`${id}-${key}`}
             onChange={(event) => onChange({ [key]: event.target.value })}
             placeholder={placeholder}
+            title={source[key] === "" ? undefined : source[key]}
             value={source[key]}
           />
         </label>

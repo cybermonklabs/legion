@@ -1,11 +1,13 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { evalsProjectKey } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
-import type { DeliverySessionGroup } from "../../api/types";
+import type { DeliverySessionGroup, ProjectTimelineResponse } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { QueryError } from "../../components/QueryError";
+import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
   borderStrong,
@@ -22,6 +24,7 @@ import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { applyDelta } from "./lib/applyDelta";
 import { storedSessionTitle } from "./lib/sessionTitles";
 
 /** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
@@ -36,28 +39,144 @@ interface GroupChange {
   readonly what: string;
 }
 
+/** A card's rename draft, as the reader typed it, and its newest Rename while the draft is still
+ *  as that Rename sent it: the press, so only that Rename's own landing clears the draft, and,
+ *  once that Rename landed with no group of its own to clear the draft by, the version of the
+ *  group in effect at that landing (`over`), to tell a later version apart. */
+interface RenameDraft {
+  readonly draft: string | null;
+  readonly sent: { readonly over?: DeliverySessionGroup; readonly press: object } | null;
+}
+
+const NO_RENAME: RenameDraft = { draft: null, sent: null };
+
+/** The Evals tab's reads of `project` that hold the groups: its merge timeline, an entry per view
+ *  (`projectTimelineViewQuery`). */
+function groupReads(project: string) {
+  return { queryKey: [...evalsProjectKey(project), "timeline"] };
+}
+
+/** The later of two versions of a group, by when Dispatch wrote each (`updated_at`): `held`, as
+ *  the editor was handed it or a read holds it, and `other`, which may be newer - a Rename's
+ *  answer, or the group as another read holds it - and wins a tie.
+ *
+ *  This order can be wrong today, and why: `updated_at` is the transaction's start. Dispatch's
+ *  `UpdateSessionGroup` (`packages/envoy/internal/dispatch/delivery/groups.go`) writes it as
+ *  `now()`, which Postgres fixes when the transaction begins, before `lockSessionGroups` takes
+ *  the groups' lock, so a write that began first and waited for the lock commits last with the
+ *  older time. Where that write is another tab's and the newer time is this tab's Rename, this
+ *  tab's answer wins here over the group Dispatch holds, in two places: the card shows this tab's
+ *  name, and `writeGroup` puts this tab's answer over the other tab's newer delta in the cache's
+ *  groups reads where that delta landed first. Both stand until a later version of that group
+ *  reaches the editor, or the editor is opened again. A Rename's answer carries no place in
+ *  Dispatch's change log, so the card cannot order by that instead. A server change under
+ *  INFRA-5200 makes the update time follow commit order (`UpdateSessionGroup`, `groups.go`):
+ *  taken after the lock, it makes this rule exact, and the window above goes with it. */
+function laterGroup(
+  held: DeliverySessionGroup,
+  other: DeliverySessionGroup | undefined
+): DeliverySessionGroup {
+  return other !== undefined && compareTimestamps(other.updated_at, held.updated_at) >= 0
+    ? other
+    : held;
+}
+
+/** Writes `group`, a Rename's answer, into each of `project`'s groups reads that holds an older
+ *  version of it, as Dispatch's delta for the rename will (`applyDelta`): in that one's place, in
+ *  Dispatch's order. */
+function writeGroup(queryClient: QueryClient, project: string, group: DeliverySessionGroup): void {
+  queryClient.setQueriesData<ProjectTimelineResponse>(groupReads(project), (body) => {
+    const held = body?.session_groups?.find((each) => each.id === group.id);
+    if (body === undefined || held === undefined || laterGroup(held, group) === held) return body;
+    // The delta as `applyDelta` reads it: the list's change alone. Its place in the change log
+    // (`sub`, `seq`, `revs`) is the socket's own, and Dispatch's delta for the rename brings it.
+    return applyDelta(body, {
+      changed_at: null,
+      counts: {},
+      items: { session_groups: { remove: [], upsert: [group] } },
+      maps: {},
+      revs: {},
+      seq: "",
+      set: {},
+      sub: "",
+      type: "delta",
+    });
+  });
+}
+
+/** Whether `group` is a version other than `over`, the one in effect when a card's Rename landed
+ *  with no answer: the card holds its draft until such a version arrives. */
+function arrivedSince(over: DeliverySessionGroup, group: DeliverySessionGroup): boolean {
+  return group.updated_at !== over.updated_at || group.name !== over.name;
+}
+
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership. */
+ *  second click cannot race the one request that decides the membership.
+ *
+ *  Its groups, in this order, each on a line of its own: Name (the name's field and Rename),
+ *  Sessions (its members as chips, each with its ✕: the first ten, then "+N" for the rest) and
+ *  Actions (Add selected, Delete group). A chip shrinks to the list's width and its name wraps
+ *  inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is
+ *  `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end in no
+ *  ellipsis. */
 function GroupCard({
+  project,
   group,
   storedTitle,
   selected,
   pending,
   write,
 }: {
+  /** The project whose Evals tab opened the editor, whose reads hold the groups. */
+  project: string;
   group: DeliverySessionGroup;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
-  write: (change: GroupChange) => void;
+  write: (
+    change: GroupChange,
+    press?: { onError?: () => void; onSuccess?: (answer: unknown) => void }
+  ) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
-  const [name, setName] = useState(group.name);
+  const queryClient = useQueryClient();
+  // The reader's rename draft, kept as they typed it while the group changes under it (a member
+  // added, a rename from another tab): null while the reader has typed nothing, so the field
+  // shows the group's name as it now stands, and back to null once the group's name is the draft.
+  // `sent` is this card's newest Rename while the draft is still as that Rename sent it: typing
+  // drops it, and so does Dispatch refusing that Rename. That Rename's own landing clears the
+  // draft, and its answer (`landed`) is the group from then on, until the editor is handed a newer
+  // one. Taken in the render the draft clears in, it shows while TanStack Query has not yet told
+  // the editor's host of the write - in a browser, a timer later. Where Dispatch had no answer to
+  // give, the draft stays until a version of the group other than the one in effect at that
+  // landing arrives: the read the landing starts, never a rename from another tab that arrived
+  // while the Rename was out. A rename that arrives while the Rename is out is no answer to it,
+  // and keeps the draft as typed.
+  const [rename, setRename] = useState<RenameDraft>(NO_RENAME);
+  const [landed, setLanded] = useState<DeliverySessionGroup | undefined>(undefined);
+  const current = laterGroup(group, landed);
+  // The version this render draws, which a landing with no answer reads as the one in effect then.
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  if (
+    rename.draft !== null &&
+    (rename.draft === current.name ||
+      (rename.sent?.over !== undefined && arrivedSince(rename.sent.over, current)))
+  ) {
+    setRename(NO_RENAME);
+  }
+  const name = rename.draft ?? current.name;
+  /** Rename `press` landed with `renamed` as its answer: that group stands until the editor is
+   *  handed a newer one, and the draft goes where it is still as that Rename sent it. */
+  const land = (press: object, renamed: DeliverySessionGroup) => {
+    setLanded((before) => (before === undefined ? renamed : laterGroup(before, renamed)));
+    setRename((now) => (now.sent?.press === press ? NO_RENAME : now));
+  };
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
@@ -68,37 +187,69 @@ function GroupCard({
         <input
           className={fieldClass}
           id={`${id}-name`}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => setRename({ draft: event.target.value, sent: null })}
           value={name}
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
-            write({
-              group,
-              method: "PATCH",
-              run: (bounds) =>
-                api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
-              what: `the rename of the group ${group.name}`,
-            })
-          }
+          disabled={pending || name.trim() === "" || name.trim() === current.name}
+          onClick={() => {
+            // This Rename, by identity: its own landing, and no rename that arrives meanwhile,
+            // clears the draft, and only while the draft is still as this Rename sent it.
+            const press = {};
+            setRename({ draft: name, sent: { press } });
+            write(
+              {
+                group,
+                method: "PATCH",
+                run: (bounds) =>
+                  api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
+                what: `the rename of the group ${group.name}`,
+              },
+              {
+                onError: () =>
+                  setRename((now) => (now.sent?.press === press ? { ...now, sent: null } : now)),
+                onSuccess: (answer) => {
+                  if (answer === null) {
+                    // Dispatch took the Rename and had no answer to give for it. The group stands
+                    // as the reads this landing starts answer it - the editor's own `onSuccess`
+                    // asks the tab's reads again, the write store reads every query again for
+                    // a landing with no answer, and Dispatch sends its delta - so the draft stays
+                    // as typed until a version other than the one in effect now arrives, and
+                    // never takes that one back. A rename from another tab that arrived while
+                    // this one was out is that version, and no answer to this Rename.
+                    const over = currentRef.current;
+                    setRename((now) =>
+                      now.sent?.press === press ? { ...now, sent: { over, press } } : now
+                    );
+                    return;
+                  }
+                  // A rename's answer is the group as renamed (`updateDeliverySessionGroup`),
+                  // written into the tab's groups reads as Dispatch's delta for it will be.
+                  const renamed = answer as DeliverySessionGroup;
+                  writeGroup(queryClient, project, renamed);
+                  land(press, renamed);
+                },
+              }
+            );
+          }}
           type="button"
         >
           Rename
         </button>
       </div>
-      <ul className="flex flex-wrap gap-1">
+      <CappedGroup
+        className="flex flex-wrap gap-1 [&>li]:min-w-0 [&>li]:max-w-full"
+        label="sessions"
+        list={`Sessions in ${group.name}`}
+        name="group-sessions"
+      >
         {(group.sessions ?? []).map((session) => (
-          <li
-            className={`flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${borderStrong}`}
+          <span
+            className={`flex min-w-0 max-w-full items-center gap-1 rounded border px-2 py-0.5 text-xs ${borderStrong}`}
             key={session}
           >
-            <AgentName
-              className="max-w-48 truncate"
-              sessionId={session}
-              storedTitle={storedTitle(session)}
-            />
+            <AgentName sessionId={session} storedTitle={storedTitle(session)} />
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
@@ -116,9 +267,9 @@ function GroupCard({
             >
               ✕
             </button>
-          </li>
+          </span>
         ))}
-      </ul>
+      </CappedGroup>
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
@@ -163,7 +314,17 @@ function GroupCard({
  *  agents the tab draws: it reaches the tab's live views (its evals, items and timeline views) as
  *  Dispatch's own delta, so it refreshes only the tab's reads of `project` that are not live
  *  (`evalsProjectKey`), and a refusal shows as the server wrote it, after the change it refused. A
- *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
+ *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted.
+ *
+ *  Its groups, in this order, each on a line of its own: Heading (the title, Close at the right),
+ *  the note on what a group is, Sessions (the window's sessions, one row each), New group (the
+ *  name field and Create group), the refusal, and Groups (one `GroupCard` each). A session's row
+ *  has two groups: Session (its checkbox and name, with its live link) and Membership (its pull
+ *  request count and its group's name); a row too narrow for both moves Membership to a line of
+ *  its own, whose text wraps inside it, so a long group name never pushes the session's name
+ *  aside. A card is keyed by its group's id, so a change to the group redraws it in place and
+ *  keeps the reader's rename draft, and the sessions it opened past their "+N" (`CappedGroup`'s
+ *  own state). */
 export function SessionGroupsEditor({
   project,
   onClose,
@@ -276,12 +437,15 @@ export function SessionGroupsEditor({
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
             return (
-              <li className="flex items-center gap-2 text-sm" key={session}>
+              <li className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm" key={session}>
                 {/* The checkbox's label keeps the name; the agent's live link sits beside it. */}
                 <AgentName
-                  className="flex min-w-0 flex-1 items-center"
+                  className="flex min-w-0 flex-1 basis-40 items-center"
                   control={(agentName) => (
-                    <label className="flex min-w-0 flex-1 items-center gap-2" title={session}>
+                    <label
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                      title={`${text.sessionShown(session, storedTitle(session))} (${session})`}
+                    >
                       <input
                         checked={selected.includes(session)}
                         onChange={() => toggle(session)}
@@ -294,7 +458,9 @@ export function SessionGroupsEditor({
                   sessionId={session}
                   storedTitle={storedTitle(session)}
                 />
-                <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
+                <span
+                  className={`min-w-0 max-w-full text-xs [overflow-wrap:anywhere] ${textMutedOnSurface}`}
+                >
                   {count} PR{count === 1 ? "" : "s"}
                   {inGroup === undefined ? "" : ` · ${inGroup}`}
                 </span>
@@ -348,11 +514,12 @@ export function SessionGroupsEditor({
           {groups.map((group) => (
             <GroupCard
               group={group}
-              key={`${group.id}:${group.updated_at}`}
+              key={group.id}
               pending={save.isPending}
+              project={project}
               selected={selected}
               storedTitle={storedTitle}
-              write={(change) => save.mutate(change)}
+              write={(change, press) => save.mutate(change, press)}
             />
           ))}
         </section>
