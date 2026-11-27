@@ -17,17 +17,17 @@ import (
 func TestTheStepReadsTheFilesAtItsCommitAndNotTheWorkingTree(t *testing.T) {
 	binary := cmdtest.Build(t, "ci-report")
 	dir, commit := checkout(t, filepath.Join("testdata", "committed-spec"))
-	file := filepath.Join(dir, ".dispatch", "spec", "probe.md")
+	file := filepath.Join(dir, ".dispatch", "spec", "probe.yaml")
 	text, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const committed = `selector="example.com/acc/probe TestBeta" job="go-checks"`
+	const committed = "selector: example.com/acc/probe TestBeta\n  job: go-checks\n"
 	if !strings.Contains(string(text), committed) {
 		t.Fatalf("the fixture holds no %s", committed)
 	}
 	// A step before this one rewrites the spec file and commits nothing.
-	writeFile(t, file, strings.Replace(string(text), committed, `selector="example.com/acc/probe TestBeta" job="lint"`, 1))
+	writeFile(t, file, strings.Replace(string(text), committed, "selector: example.com/acc/probe TestBeta\n  job: lint\n", 1))
 	report, err := filepath.Abs(filepath.Join("testdata", "beta-fails.jsonl"))
 	if err != nil {
 		t.Fatal(err)

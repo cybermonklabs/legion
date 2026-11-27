@@ -24,9 +24,13 @@ func verdictOf(calls []call, check string) string {
 
 // A test's own pass or fail decides its result, even when its output quotes the words that go test
 // writes when it kills a test at its time limit, and the test that go test really killed is
-// could_not_run. testdata/timeout-words.jsonl holds the events of real `go test -json` runs of a
-// module example.com/acc: TestSaysTimedOut passes and TestFailsSayingTimedOut fails, each after a
-// t.Log that quotes "panic: test timed out after", and TestSlow is killed at its -timeout.
+// could_not_run. testdata/timeout-words.jsonl is two real `go test -json -count=1 -trimpath` runs
+// of a module example.com/acc, whole, each package's start and end events included, without which
+// the reader gives no test an outcome: in ./output/, TestSaysTimedOut passes and
+// TestFailsSayingTimedOut fails, each after a t.Log that quotes "panic: test timed out after", and
+// in ./slow/, run with -timeout 3s, TestSlow is killed at its time limit.
+// testdata/timeout-words/make-report.sh makes it again from the packages of
+// testdata/timeout-words/cases, and refuses a report that names a path of the machine that ran it.
 func TestATestThatQuotesTheTimeoutWordsKeepsItsOwnOutcome(t *testing.T) {
 	binary := cmdtest.Build(t, "ci-report")
 	dir, commit := checkout(t, filepath.Join("testdata", "timeout-words-spec"))

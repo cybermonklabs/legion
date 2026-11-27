@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // stubDispatch is the stand-in for the dispatch command that the tests hand ci-report through
 // --dispatch-cli. It is this test's own program, not the real command. Each call writes its
 // arguments, NUL-separated, to <n>.args, its standard input to <n>.stdin and the value of
@@ -93,6 +95,27 @@ EOF
 // brokerRefusal is what the stub prints in refuse mode: the broker's refusal of
 // an exchange for a ref that no result entry admits.
 const brokerRefusal = "BROKER_EXCHANGE_REFUSED: the broker refused the exchange of the job's token: invalid_request: no result entry admits ref refs/heads/a/b/c/d"
+
+// quickReadCheck is a spec file's one check of the job go-checks whose test ran and passed in
+// testdata/report.jsonl: a file of it that the reporter reads gives one more line and one more
+// call than stored() holds.
+const quickReadCheck = `---
+type: check
+id: a-read-of-one-claim-ends-in-time-here
+serves: a-read-of-the-claims-ends-in-time
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe/slow TestTheQuickReadEnds
+  job: go-checks
+claim: A read of one claim ends in 1 second or less.
+procedure_text:
+  - The program writes one claim and reads it.
+  - The read must end in 1 second or less.
+failing_example:
+  - A read that waits for a lock that nobody holds.
+`
 
 // answerLost is the code that the dispatch command gives a write whose 2xx it got and whose body
 // it could not read: the client's own code, DISPATCH_ANSWER_LOST in
@@ -220,32 +243,26 @@ func TestTheBuiltBinary(t *testing.T) {
 		change func(t *testing.T, spec string)
 	}{
 		{"a spec file that the working tree deleted after the commit is read as the commit holds it", func(t *testing.T, spec string) {
-			if err := os.Remove(filepath.Join(spec, "probe.md")); err != nil {
+			if err := os.Remove(filepath.Join(spec, "probe.yaml")); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"a check's test that the working tree changed after the commit is read as the commit names it", func(t *testing.T, spec string) {
-			file := filepath.Join(spec, "probe.md")
+			file := filepath.Join(spec, "probe.yaml")
 			text, err := os.ReadFile(file)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// The commit's check names the test that failed; the working tree's names one that passed.
-			const committed = `selector="example.com/acme/probe/claims TestTheOwnerStaysAfterARestart"`
+			const committed = "selector: example.com/acme/probe/claims TestTheOwnerStaysAfterARestart\n"
 			if !strings.Contains(string(text), committed) {
 				t.Fatalf("the fixture holds no %s", committed)
 			}
-			writeFile(t, file, strings.Replace(string(text), committed, `selector="example.com/acme/probe/claims TestTheClaimStaysAfterARestart"`, 1))
+			writeFile(t, file, strings.Replace(string(text), committed, "selector: example.com/acme/probe/claims TestTheClaimStaysAfterARestart\n", 1))
 		}},
 		{"a spec file that the working tree added and the commit does not hold is not read", func(t *testing.T, spec string) {
 			// A check of the job whose test ran and passed: read, it would get a line and a call.
-			writeFile(t, filepath.Join(spec, "added.md"), `:::check{#a-read-of-one-claim-ends-in-time-here serves="a-read-of-the-claims-ends-in-time" subject="code" procedure="program" runner="go" selector="example.com/acme/probe/slow TestTheQuickReadEnds" job="go-checks"}
-Claim: A read of one claim ends in 1 second or less.
-Procedure: The program writes one claim and reads it.
-The read must end in 1 second or less.
-Failing example: A read that waits for a lock that nobody holds.
-:::
-`)
+			writeFile(t, filepath.Join(spec, "added.yaml"), quickReadCheck)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -264,15 +281,28 @@ Failing example: A read that waits for a lock that nobody holds.
 		})
 	}
 
+	// A spec file is a regular file directly in the directory whose name ends in .yaml
+	// (specgraph.IsFile), the rule Dispatch's results route reads a commit's spec directory by. A
+	// spec file of the old markdown form and a node written to a file ending in .yml are no spec
+	// files: each holds a check of the job whose test ran and passed, so either one read would add
+	// a line and a call.
 	t.Run("each entry of the directory at the commit that is not a spec file is a warning, a submodule included", func(t *testing.T) {
 		t.Parallel()
 		spec := copyOf(t, filepath.Join("testdata", "spec"))
 		writeFile(t, filepath.Join(spec, "notes.txt"), "Not a spec file.\n")
+		writeFile(t, filepath.Join(spec, "added.md"), `:::check{#a-read-of-one-claim-ends-in-time-here serves="a-read-of-the-claims-ends-in-time" subject="code" procedure="program" runner="go" selector="example.com/acme/probe/slow TestTheQuickReadEnds" job="go-checks"}
+Claim: A read of one claim ends in 1 second or less.
+Procedure: The program writes one claim and reads it.
+The read must end in 1 second or less.
+Failing example: A read that waits for a lock that nobody holds.
+:::
+`)
+		writeFile(t, filepath.Join(spec, "added.yml"), quickReadCheck)
 		if err := os.Mkdir(filepath.Join(spec, "sub"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		writeFile(t, filepath.Join(spec, "sub", "inner.md"), "# Inside a directory\n")
-		if err := os.Symlink("probe.md", filepath.Join(spec, "link.md")); err != nil {
+		writeFile(t, filepath.Join(spec, "sub", "inner.yaml"), quickReadCheck)
+		if err := os.Symlink("probe.yaml", filepath.Join(spec, "link.yaml")); err != nil {
 			t.Fatal(err)
 		}
 		dir, first := checkout(t, spec)
@@ -292,7 +322,9 @@ Failing example: A read that waits for a lock that nobody holds.
 			}
 		}
 		want := []string{
-			"ci-report: warning: " + filepath.Join(specDir, "link.md") + ": not a spec file (symbolic link); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "added.md") + ": not a spec file (file); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "added.yml") + ": not a spec file (file); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "link.yaml") + ": not a spec file (symbolic link); the importer passes over it",
 			"ci-report: warning: " + filepath.Join(specDir, "module") + ": not a spec file (submodule); the importer passes over it",
 			"ci-report: warning: " + filepath.Join(specDir, "notes.txt") + ": not a spec file (file); the importer passes over it",
 			"ci-report: warning: " + filepath.Join(specDir, "sub") + ": not a spec file (directory); the importer passes over it",
@@ -554,8 +586,8 @@ Failing example: A read that waits for a lock that nobody holds.
 	t.Run("a refused tree writes no result, names each problem of Parse and of Validate in specgraph.Judge's order, and exits 2", func(t *testing.T) {
 		t.Parallel()
 		spec := copyOf(t, filepath.Join("testdata", "spec"))
-		writeFile(t, filepath.Join(spec, "lonely.md"), ":::requirement{#a-lonely-statement kind=\"behavior\"}\nThe daemon keeps one claim.\n:::\n")
-		writeFile(t, filepath.Join(spec, "loose.md"), "A line outside any block.\n")
+		writeFile(t, filepath.Join(spec, "lonely.yaml"), "---\ntype: requirement\nid: a-lonely-statement\nkind: behavior\ntext:\n  - The daemon keeps one claim.\n")
+		writeFile(t, filepath.Join(spec, "loose.yaml"), "A line outside any document.\n")
 		dir, _ := checkout(t, spec)
 		stub := newStub(t)
 		got := runReporter(t, binary, dir, stub.env("store"), "--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
@@ -563,7 +595,7 @@ Failing example: A read that waits for a lock that nobody holds.
 			t.Errorf("exit %d, stdout %q; want exit 2 and no line", got.code, got.stdout)
 		}
 		specDir := filepath.Join(dir, ".dispatch", "spec")
-		problem := "ci-report: " + filepath.Join(specDir, "lonely.md") + ":1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it\n"
+		problem := "ci-report: " + filepath.Join(specDir, "lonely.yaml") + ":1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it\n"
 		if !strings.Contains(got.stderr, problem) {
 			t.Errorf("stderr holds no line %q:\n%s", problem, got.stderr)
 		}
@@ -576,7 +608,7 @@ Failing example: A read that waits for a lock that nobody holds.
 			want = append(want, fmt.Sprintf("ci-report: %s:%d: %s: %s", filepath.Join(specDir, p.Pos.File), p.Pos.Line, p.Node, p.Detail))
 			rules = append(rules, p.Rule)
 		}
-		if !slices.Equal(rules, []string{"leaf-without-check", "text-outside-block"}) {
+		if !slices.Equal(rules, []string{"leaf-without-check", "schema"}) {
 			t.Fatalf("Judge finds %q in the files, want the problem of Validate, then the one of Parse", rules)
 		}
 		var printed []string
@@ -618,7 +650,7 @@ Failing example: A read that waits for a lock that nobody holds.
 			sha := strings.TrimSpace(git(t, dir, "hash-object", "-w", blob))
 			var index strings.Builder
 			for i := range row.files {
-				fmt.Fprintf(&index, "100644 %s\t.dispatch/spec/f%04d.md\n", sha, i)
+				fmt.Fprintf(&index, "100644 %s\t.dispatch/spec/f%04d.yaml\n", sha, i)
 			}
 			cmd := exec.Command("git", "update-index", "--index-info")
 			cmd.Dir, cmd.Stdin = dir, strings.NewReader(index.String())
@@ -655,7 +687,7 @@ Failing example: A read that waits for a lock that nobody holds.
 	t.Run("a spec file over the size bound refuses the tree before specgraph.Judge reads it, and no result is written", func(t *testing.T) {
 		t.Parallel()
 		spec := copyOf(t, filepath.Join("testdata", "spec"))
-		writeFile(t, filepath.Join(spec, "big.md"), strings.Repeat("\n", notes.MaxFileSize+1))
+		writeFile(t, filepath.Join(spec, "big.yaml"), strings.Repeat("\n", notes.MaxFileSize+1))
 		dir, _ := checkout(t, spec)
 		stub := newStub(t)
 		got := runReporter(t, binary, dir, stub.env("store"), "--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
@@ -664,7 +696,7 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 		specDir := filepath.Join(dir, ".dispatch", "spec")
 		for _, want := range []string{
-			fmt.Sprintf("ci-report: file too large: %s is %d bytes (limit %d)\n", filepath.Join(specDir, "big.md"), notes.MaxFileSize+1, notes.MaxFileSize),
+			fmt.Sprintf("ci-report: file too large: %s is %d bytes (limit %d)\n", filepath.Join(specDir, "big.yaml"), notes.MaxFileSize+1, notes.MaxFileSize),
 			"ci-report: " + specDir + ": the tree is refused, so no result is written\n",
 		} {
 			if !strings.Contains(got.stderr, want) {

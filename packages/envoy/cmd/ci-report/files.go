@@ -13,14 +13,16 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // filesAt is the set of spec files in dir at commit, read through git from the commit's tree and
 // never from the working tree, so a step before the last one that changes the spec files and
 // commits nothing changes no check (R12: "the check nodes of the files at its commit"). It reads
 // the tree as Dispatch's results route reads the files of a run's commit from GitHub's listing
-// (githubapp.Client.Dir and DirFiles): an entry is a spec file when notes.IsNote keeps it, read
-// with notes.GitKind from its type and mode, and each other entry is in Rejected; the set is
+// (githubapp.Client.Dir and DirFiles): an entry is a spec file when specgraph.IsFile keeps it, a
+// regular file directly in the directory whose name ends in specgraph.FileSuffix, read with
+// notes.GitKind from its type and mode, and each other entry is in Rejected; the set is
 // checked with notes.CheckSet (notes.MaxFiles files, notes.MaxSetSize bytes in sum) and every
 // spec file with notes.CheckSize, both from the listed sizes before any file is read, and both
 // again from the files read, in notes.ReadSet's order. Its answers are notes.ReadSet's:
@@ -75,7 +77,7 @@ func filesAt(dir, commit string) (notes.Set, error) {
 			return set, fmt.Errorf("cannot be read: git ls-tree printed the entry %q", entry)
 		}
 		path := filepath.Join(dir, name)
-		if kind := notes.GitKind(fields[1], fields[0]); !notes.IsNote(name, kind) {
+		if kind := notes.GitKind(fields[1], fields[0]); !specgraph.IsFile(name, kind) {
 			set.Rejected = append(set.Rejected, notes.Rejected{Path: path, Kind: kind})
 			continue
 		}

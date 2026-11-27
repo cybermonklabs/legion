@@ -12,7 +12,8 @@
 // directory at that commit, through git from the commit's tree (filesAt), and never the files of
 // the working tree, so a step before it that changes a spec file and commits nothing changes no
 // check (R12). It reads them as Dispatch's results route reads the files at the run's commit: an
-// entry is a spec file as notes.IsNote decides of the tree's entry, a directory that the commit
+// entry is a spec file as specgraph.IsFile decides of the tree's entry (a regular file directly in
+// the directory whose name ends in specgraph.FileSuffix, ".yaml"), a directory that the commit
 // does not hold is the empty tree, and then specgraph.Judge with no retired list, so a tree has
 // one answer in both places. It reads the report with specgraph.ReadGoTestJSON. planReports
 // decides the outcome of each check of the job. For each pass, fail and could_not_run it runs
