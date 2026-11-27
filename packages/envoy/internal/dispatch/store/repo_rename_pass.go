@@ -14,9 +14,9 @@ import (
 
 // The rename pass writes the new name of each rename pair (RepoRename) in place of its old name,
 // in every stored repository field of Dispatch. The boot runs it once before it serves
-// (cmd/dispatch/main.go). From this release on, each write of these fields stores the new name
-// (refs.Renames.Canonical and CanonicalURL), so a later pass finds nothing to write. The exception
-// is a row that a build before this one writes during a roll: the next boot's pass writes it.
+// (cmd/dispatch/main.go). Writers that use refs.Renames store the new name from then on.
+// Delivery intake and reconcile can still use the old name until the pass rewrites their
+// settings. A previous release can also write an old name during a roll.
 //
 // The fields are the lines of repoRenameLines, read from the schema, and the pass writes them in
 // that order. Each line is one transaction, so a line that fails leaves the lines before it
@@ -187,6 +187,15 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, 0)`, repoRenameLockNamespace); err != nil {
 		return 0, 0, fmt.Errorf("take the pass's lock: %w", err)
 	}
+	// Lock every pair's rows before the first write. A trigger for an earlier pair must not
+	// take the change log's lock ahead of a later pair's rows.
+	if line.lockRows != nil {
+		for _, statement := range line.lockRows(renames) {
+			if _, err := tx.Exec(ctx, statement); err != nil {
+				return 0, 0, fmt.Errorf("lock the delivery rows before rewriting them: %w", err)
+			}
+		}
+	}
 	type written struct {
 		field string
 		rows  int64
@@ -323,6 +332,8 @@ type repoRenameLine struct {
 	fields string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
+	// lockRows names the rows a delivery line writes, in the order intake takes them.
+	lockRows func([]repoRename) []string
 }
 
 // repoRenameStep is one statement of a line. table is the table that the statement writes or
@@ -409,6 +420,15 @@ func excludedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(excluded_repos) e(repo) where ` + r.named("e.repo") + `)`
 }
 
+// anyRepoRename joins the row predicates for a line that takes its locks across all pairs.
+func anyRepoRename(renames []repoRename, predicate func(repoRename) string) string {
+	terms := make([]string, 0, len(renames))
+	for _, r := range renames {
+		terms = append(terms, predicate(r))
+	}
+	return strings.Join(terms, " or ")
+}
+
 // repoRenameLines are the stored repository fields of Dispatch, in the order the pass writes them,
 // one transaction for each line. They are each column of the schema that holds a repository name
 // or a URL that names one, but for those the package comment says the pass never writes.
@@ -482,6 +502,12 @@ var repoRenameLines = []repoRenameLine{
 		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
 		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
+		lockRows: func(renames []repoRename) []string {
+			where := anyRepoRename(renames, func(r repoRename) string {
+				return r.named("repo") + " or " + r.urlNamed("url") + " or " + citedNamed(r)
+			})
+			return []string{`select 1 from delivery_pull_requests where ` + where + ` order by repo, number for update`}
+		},
 		steps: func(r repoRename) []repoRenameStep {
 			where := citedNamed(r)
 			return []repoRenameStep{
@@ -508,6 +534,18 @@ var repoRenameLines = []repoRenameLine{
 		// jsonb, so it carries every column of the table, a column a later migration adds
 		// included.
 		fields: "delivery_runs.repo, .url with delivery_run_jobs.repo",
+		lockRows: func(renames []repoRename) []string {
+			runs := anyRepoRename(renames, func(r repoRename) string {
+				return r.named("repo") + " or " + r.urlNamed("url")
+			})
+			jobs := anyRepoRename(renames, func(r repoRename) string { return r.named("repo") })
+			// Copying a run logs a change before its jobs move. Lock runs before jobs as
+			// intake does, with the stronger lock needed to delete runs and move job keys.
+			return []string{
+				`select 1 from delivery_runs where ` + runs + ` order by repo, run_id for update`,
+				`select 1 from delivery_run_jobs where ` + jobs + ` order by repo, run_id, name collate "C" for update`,
+			}
+		},
 		steps: func(r repoRename) []repoRenameStep {
 			where := r.named("repo")
 			return []repoRenameStep{
@@ -539,6 +577,12 @@ var repoRenameLines = []repoRenameLine{
 		// searchProgressScope writes from the settings stays the scope the line after this one
 		// writes into the stored progress.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
+		lockRows: func(renames []repoRename) []string {
+			where := anyRepoRename(renames, func(r repoRename) string {
+				return r.named("deploy_repo") + " or " + excludedNamed(r)
+			})
+			return []string{`select 1 from delivery_settings where ` + where + ` for no key update`}
+		},
 		steps: func(r repoRename) []repoRenameStep {
 			where := excludedNamed(r)
 			return []repoRenameStep{

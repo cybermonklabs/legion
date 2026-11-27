@@ -478,6 +478,7 @@ func TestADirectChangeWaitsForTheWriterBeforeItSoNoCursorSkipsIt(t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting)
 		return err == nil && waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })
@@ -581,6 +582,65 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 		t.Fatalf("PutSettings changed: %v", err)
 	}
 	assertKinds("a settings change", before, "settings")
+}
+
+func TestACursorAtSeqZeroIsLostOnceThePruneTookAChange(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	if _, err := pool.Exec(ctx, `truncate delivery_changes restart identity`); err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := ChangesHead(ctx, pool)
+	if err != nil || cursor.Seq != 0 {
+		t.Fatalf("empty log head = %+v, %v", cursor, err)
+	}
+	var checked time.Time
+	if err := pool.QueryRow(ctx, `select now()`).Scan(&checked); err != nil {
+		t.Fatal(err)
+	}
+	cursor.ReadAt = checked.Add(-26 * time.Hour)
+	if _, err := pool.Exec(ctx, `insert into delivery_changes (kind, at) values ('settings', now() - interval '25 hours')`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := PruneChanges(ctx, pool); n != 1 || err != nil {
+		t.Fatalf("prune removed %d changes, %v; want one", n, err)
+	}
+	if lost, err := CursorLost(ctx, pool, cursor, checked); !lost || err != nil {
+		t.Errorf("CursorLost at seq 0 after pruning an unread change = %t, %v; want true", lost, err)
+	}
+	cursor.ReadAt = checked
+	if lost, err := CursorLost(ctx, pool, cursor, checked); lost || err != nil {
+		t.Errorf("CursorLost after reading the empty log again = %t, %v; want false", lost, err)
+	}
+}
+
+func TestAChangeCursorStampsOnlyAPageThatReadsToTheEnd(t *testing.T) {
+	t.Parallel()
+	before := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	stamped := before.Add(time.Minute)
+	checked := before.Add(2 * time.Minute)
+	cursor := ChangeCursor{Seq: 1, At: &before, ReadAt: before}
+	for _, tc := range []struct {
+		name     string
+		page     []Change
+		seq      int64
+		at, read time.Time
+	}{
+		{"full", []Change{{Seq: 2, At: before}, {Seq: 3, At: stamped}}, 3, stamped, before},
+		{"short", []Change{{Seq: 2, At: stamped}}, 2, stamped, checked},
+		{"empty", nil, 1, before, checked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cursor.Through(tc.page, 2, checked)
+			if n := len(tc.page); n > 0 {
+				tc.page[n-1].At = checked
+			}
+			if got.Seq != tc.seq || got.At == nil || !got.At.Equal(tc.at) || !got.ReadAt.Equal(tc.read) {
+				t.Errorf("Through returned seq %d, at %v, read at %v; want %d, %v, %v",
+					got.Seq, got.At, got.ReadAt, tc.seq, tc.at, tc.read)
+			}
+		})
+	}
 }
 
 // TestDeletingAPullRequestLogsItsOldMergeTime: a deleted pull request logs its merge time as the

@@ -81,11 +81,14 @@ const ChangesChannel = "delivery_changes"
 // deadlock. The writers that take it, by position:
 //
 //   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
-//     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
-//     in one statement.
+//     the settings), and a run's jobs write (UpsertRunJobs), which locks the run for no key
+//     update, then its jobs in name order, then the change log.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
+//   - After its row locks, in the repository rename pass (store.RewriteRenamedRepositories):
+//     the pass locks the rows each delivery line writes before any of its triggers can run.
+//     It locks runs before jobs and locks a run's jobs in name order.
 //   - First, with this statement queued ahead of its writes (queueLockChanges): every write of
 //     the session groups (writeSessionGroup, after the reads that decide it).
 //   - First, in SQL: the drain (DrainPending), whose function delivery_changes_drain takes it
@@ -96,10 +99,9 @@ const ChangesChannel = "delivery_changes"
 // foreign key check before its change trigger, so the checks of rows 2..n take FOR KEY SHARE on
 // the rows they reference after row 1's trigger took the lock (AttributePullRequests' issues, and
 // the fixtures' inserts of many pull requests or jobs). No cycle follows: FOR KEY SHARE waits only
-// for FOR UPDATE, a delete or a change of the row's key, and no path that takes the lock holds one
-// of those on an issue, a project or a run. TestNoForUpdateOnOwnerTables (api) refuses `for update`
-// on issues and projects anywhere in the module, and no statement outside the tests deletes an
-// issue, a project or a run, changes their keys or locks a run for update.
+// for FOR UPDATE, a delete or a change of the row's key. Intake takes no such lock on an issue,
+// project or run. The rename pass locks the runs it will delete before locking the jobs and
+// before taking the change log's lock.
 //
 // A path that takes it last holds it for its last statement and its commit; one that takes it
 // first, for the rest of its transaction, so those transactions are short and do their reads
@@ -130,9 +132,9 @@ const drainBatch = 250
 // 20261117100001), never a statement of a caller's transaction, and moves another batch while a
 // whole one moved. So it holds the change log's lock for one batch's statement and its commit at
 // a time, whatever the burst: each batch takes the lock first, before the pending rows it deletes,
-// and moves the lowest pending ids in id order, keeping each row's at. Where nothing is pending it
-// answers 0 and takes no lock. Two drains take turns on the lock, and each pending row is moved
-// exactly once.
+// and moves the lowest pending ids in id order. It stamps each moved row from the database clock
+// under the lock so its time follows the earlier sequences. Where nothing is pending it answers
+// 0 and takes no lock. Two drains take turns on the lock, and each pending row is moved once.
 //
 // A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
 // drains move rows in, not the order their writers committed in; every seq is still drawn under
@@ -278,15 +280,12 @@ func (c ChangeCursor) Through(changes []Change, limit int, checked time.Time) Ch
 // was pruned in its time and is no loss: that read took every change the log then held, so every
 // change the reader has not read was recorded since, is younger than the retention and is still in
 // the log. That is the routine prune of a quiet day, which takes the change a cursor rests on
-// whenever a day brings no newer one. A cursor with no At is judged by ReadAt alone. A cursor at 0
-// has read nothing and lost nothing.
+// whenever a day brings no newer one. A cursor with no At, including one at seq 0, is judged by
+// ReadAt alone: the prune can take unread changes even if the cursor has never held a row.
 //
 // The change at the cursor, the log's newest seq and the database's clock are one statement's,
 // so they describe one log.
 func CursorLost(ctx context.Context, q Querier, cursor ChangeCursor, now time.Time) (bool, error) {
-	if cursor.Seq == 0 {
-		return false, nil
-	}
 	var held *time.Time
 	var latest int64
 	var clock time.Time

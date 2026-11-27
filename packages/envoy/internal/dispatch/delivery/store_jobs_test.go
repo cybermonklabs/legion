@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestJobsReadBeforeARunEndsLeaveItForTheBackfill: jobs read while the run was still running leave
@@ -256,8 +258,6 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {
@@ -289,10 +289,10 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
-	if err := <-jobsDone; err != nil {
+	if err := testwait.Receive(t, "the jobs write to finish", jobsDone); err != nil {
 		t.Errorf("UpsertRunJobs: %v", err)
 	}
-	if err := <-runDone; err != nil {
+	if err := testwait.Receive(t, "the run write to finish", runDone); err != nil {
 		t.Errorf("UpsertRun: %v", err)
 	}
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 803)
@@ -309,19 +309,12 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 }
 
-// TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock: two listings of one run's
-// jobs at once, the second naming them in the opposite order (UpsertRunJobs). The statement locks
-// each stored job's row as it reaches it, so in the order its listing gave each write would lock
-// one job and then wait for the other, which the other write holds while it waits for the first:
-// Postgres would refuse one of them as a deadlock (40P01). The first write is paused at its first
-// job's update, holding that job's row, by a trigger of this test's own, until the second write
-// waits too, at its own first job's update or behind the first write; then both go on, and both
-// land.
+// TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock pauses the first write
+// during its first job's update. The other write lists the jobs in reverse order but waits
+// behind the first on the run row. Both writes must finish once the first can continue.
 func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *testing.T) {
 	shared, ctx := deliveryTestPool(t)
 	pool := wideTestPool(t, shared)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(813, DeliveryRunKindDeploy, started, started)); err != nil {
 		t.Fatalf("UpsertRun: %v", err)
@@ -356,16 +349,6 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 			t.Fatalf("pause the jobs' updates: %v", err)
 		}
 	}
-	t.Cleanup(func() {
-		for _, statement := range []string{
-			`drop trigger if exists delivery_test_pause_jobs on delivery_run_jobs`,
-			`drop function if exists delivery_test_pause_jobs()`,
-		} {
-			if _, err := shared.Exec(context.Background(), statement); err != nil {
-				t.Errorf("drop the pause: %v", err)
-			}
-		}
-	})
 	gate, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the gate: %v", err)
@@ -379,13 +362,13 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 	// The first jobs write reaches its first job's update.
 	storetest.WaitForLockWaiters(t, gate, 1)
 	second := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, reversed, true) })
-	// The second jobs write waits, at its first job's update or behind the first write.
+	// The second jobs write queues behind the first write.
 	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the writes on: %v", err)
 	}
-	requireNotDeadlocked(t, "the first jobs write", (<-first).err)
-	requireNotDeadlocked(t, "the jobs write in the opposite order", (<-second).err)
+	requireNotDeadlocked(t, "the first jobs write", testwait.Receive(t, "the first write to finish", first).err)
+	requireNotDeadlocked(t, "the jobs write in the opposite order", testwait.Receive(t, "the second write to finish", second).err)
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 813)
 	if err != nil || len(stored) != len(names) {
 		t.Fatalf("jobs after both writes = %d, %v; want %d", len(stored), err, len(names))
@@ -393,6 +376,138 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 	for _, job := range stored {
 		if job.CompletedAt == nil || !job.CompletedAt.Equal(finished) {
 			t.Errorf("job %s completed at %v after both writes; want %v", job.Name, job.CompletedAt, finished)
+		}
+	}
+}
+
+// jobsForLockTest seeds two unfinished jobs so both writers have existing rows to lock.
+func jobsForLockTest(t *testing.T, pool *store.Pool, runID int64) []DeliveryRunJob {
+	t.Helper()
+	ctx := t.Context()
+	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	run := changeTestRun(runID, DeliveryRunKindDeploy, started, started)
+	if err := UpsertRun(ctx, pool, run); err != nil {
+		t.Fatal(err)
+	}
+	jobs := []DeliveryRunJob{
+		{Repo: run.Repo, RunID: runID, Name: "build", StartedAt: &started},
+		{Repo: run.Repo, RunID: runID, Name: "test", StartedAt: &started},
+	}
+	if err := UpsertRunJobs(ctx, pool, run.Repo, runID, jobs, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := range jobs {
+		jobs[i].CompletedAt = new(started.Add(time.Minute))
+		jobs[i].Conclusion = new(DeliveryJobConclusionSuccess)
+	}
+	return jobs
+}
+
+func TestAJobsWriteOfThePreviousReleaseAndOneOfThisBuildNeverDeadlock(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	const repo, runID = "acme/widgets", 814
+	jobs := jobsForLockTest(t, pool, runID)
+	previous, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer previous.Rollback(ctx)
+	// The previous release updates the run before sending its jobs upsert. No mark needs
+	// clearing, so the update holds the run row but does not log a change.
+	if _, err := previous.Exec(ctx, `
+		update delivery_runs
+		set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $3
+		where repo = $1 and run_id = $2`, repo, runID, true); err != nil {
+		t.Fatal(err)
+	}
+	head := goTimed(func() error { return UpsertRunJobs(ctx, pool, repo, runID, jobs, true) })
+	storetest.WaitForLockWaiters(t, previous, 1)
+
+	_, err = previous.Exec(ctx, `
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		select $1, $2, name, $4, $5, 'success', null, null from unnest($3::text[]) as job(name)
+		on conflict (repo, run_id, name) do update set
+			started_at = excluded.started_at, completed_at = excluded.completed_at, conclusion = excluded.conclusion,
+			apply_step = excluded.apply_step, apply_step_conclusion = excluded.apply_step_conclusion
+		where delivery_run_jobs.completed_at is null or excluded.completed_at is not null`,
+		repo, runID, []string{"build", "test"}, jobs[0].StartedAt, jobs[0].CompletedAt)
+	requireNotDeadlocked(t, "the previous release's jobs write", err)
+	if err == nil {
+		requireNotDeadlocked(t, "the previous release's commit", previous.Commit(ctx))
+	} else {
+		_ = previous.Rollback(ctx)
+	}
+	requireNotDeadlocked(t, "this build's jobs write", testwait.Receive(t, "this build's jobs write to finish", head).err)
+}
+
+func TestAJobsWriteTakesItsJobRowsInNameOrder(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	const repo, runID = "acme/widgets", 815
+	jobs := jobsForLockTest(t, pool, runID)
+	reader, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback(ctx)
+	const lockJob = `select 1 from delivery_run_jobs where repo = $1 and run_id = $2 and name = $3 for no key update`
+	if err := reader.QueryRow(ctx, lockJob, repo, runID, "build").Scan(new(int)); err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(jobs)
+	head := goTimed(func() error { return UpsertRunJobs(ctx, pool, repo, runID, jobs, true) })
+	storetest.WaitForLockWaiters(t, reader, 1)
+
+	err = reader.QueryRow(ctx, lockJob, repo, runID, "test").Scan(new(int))
+	requireNotDeadlocked(t, "the reader locking the next job", err)
+	_ = reader.Rollback(ctx)
+	requireNotDeadlocked(t, "the jobs write", testwait.Receive(t, "the jobs write to finish", head).err)
+}
+
+func TestTheRenamePassAndARunsJobsWriteNeverDeadlock(t *testing.T) {
+	t.Parallel()
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	const repo, renamed, runID = "acme/widgets", "acme/renamed", 816
+	jobs := jobsForLockTest(t, pool, runID)
+	// Pause the jobs write after it locks a job. Without prelocking the runs line can
+	// copy the run and take the change log's lock while the jobs write is paused.
+	for _, sql := range []string{
+		`create function pause_rename_test_job() returns trigger language plpgsql as $$
+		begin perform pg_advisory_xact_lock(816); return new; end $$`,
+		`create trigger pause_rename_test_job before update on delivery_run_jobs for each row
+		when (new.repo = 'acme/widgets' and old.repo = new.repo)
+		execute function pause_rename_test_job()`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(816)`); err != nil {
+		t.Fatal(err)
+	}
+	write := goTimed(func() error { return UpsertRunJobs(ctx, pool, repo, runID, jobs, true) })
+	storetest.WaitForLockWaiters(t, gate, 1)
+	pass := goTimed(func() error {
+		return store.RewriteRenamedRepositories(ctx, pool, []store.RepoRename{{From: repo, To: renamed}}).Err()
+	})
+	// The pass is now waiting on a row the paused jobs write holds, not just running beside it.
+	storetest.WaitForLockWaiters(t, gate, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireNotDeadlocked(t, "the old-name jobs write", testwait.Receive(t, "the old-name jobs write to finish", write).err)
+	requireNotDeadlocked(t, "the rename pass", testwait.Receive(t, "the rename pass to finish", pass).err)
+	if !t.Failed() {
+		stored, err := ListRunJobs(ctx, pool, renamed, runID)
+		if err != nil || len(stored) != 2 || stored[0].CompletedAt == nil || stored[1].CompletedAt == nil {
+			t.Fatalf("jobs under the new name = %+v, %v; want both completed jobs", stored, err)
 		}
 	}
 }

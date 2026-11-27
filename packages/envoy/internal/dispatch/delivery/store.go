@@ -705,18 +705,11 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // itself the "it is fetchable after all" signal, the same way a successful UpsertPullRequest
 // clears unfetchable_at/unfetchable_reason.
 //
-// The run's bookkeeping and its job rows are written by one statement, the run row's update and
-// every job's upsert (none for an empty listing) in one data-modifying `with`, so they commit
-// together. Every other writer of a delivery_runs row is one statement too, which takes the row's
-// lock and then, in its change trigger, the change log's advisory lock (0100): this one takes its
-// jobs' row locks, then the run row's (the `with`, which runs after the insert), and the change
-// log's lock last, in the triggers that fire at the statement's end (lockChangesStatement), so a
-// run's own completion written beside its jobs waits for one of them rather than deadlocking with
-// it, and the change log's lock is held for that statement's triggers and its commit alone. It
-// takes the job rows in one order, their names' byte order, whatever order the listing gave them
-// in: the jobs are sorted before the statement, and the statement inserts them in that order too.
-// Two listings of one run that named its jobs in opposite orders would otherwise each lock a job
-// the other then waited for.
+// One statement locks the run for no key update, then upserts its jobs in name order, then takes
+// the change log's advisory lock in its triggers (lockChangesStatement). The insert reads the
+// locked run so it cannot reach a job row first. Taking the run first keeps the order of the
+// previous release and of the repository rename pass. Sorting by name also keeps this write
+// from cycling with a transaction that locks job rows alone.
 func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64, jobs []DeliveryRunJob, complete bool) error {
 	if complete {
 		for _, job := range jobs {
@@ -769,14 +762,17 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone:
 	// its arrays are empty, and the jobs' upsert inserts nothing.
 	if _, err := pool.Exec(ctx, `
-		with run as (
-			update delivery_runs
-			set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $9
-			where repo = $1 and run_id = $2
+		with locked as materialized (
+			select repo, run_id from delivery_runs where repo = $1 and run_id = $2 for no key update
+		), run as (
+			update delivery_runs r
+			set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = r.jobs_complete or $9
+			from locked
+			where r.repo = locked.repo and r.run_id = locked.run_id
 		)
 		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-		select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
-		from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
+		select locked.repo, locked.run_id, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
+		from locked cross join unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
 			as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
 		order by job.name collate "C"
 		on conflict (repo, run_id, name) do update set

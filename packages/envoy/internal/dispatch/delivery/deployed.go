@@ -51,13 +51,11 @@ type shippedPullRequest struct {
 // and sets that marker, each in a transaction of its own; it answers how many it wrote. Which run
 // shipped a pull request is shippingRunJoin's rule, the one the timeline's waiting line reads, so
 // the event names the run the Delivery page shows. Once per pull request: the marker is set in the
-// event's transaction, under the row's lock and only while still null, so a second pass writes
-// nothing, and of intake and the reconcile running at once, which both call this, the second finds
-// the row marked and appends nothing. A pull request whose issue was deleted between the read and
-// the write (its issue_key set null by the foreign key) is skipped the same way. A failed row ends
-// the pass with its error: the rows before it stay written, the rest wait for the next call. The
-// payload is IssueDeployedEventPayload; the actor DeployedEventActor. The marker is the database's
-// now(): only whether it is null is ever read.
+// event's transaction, under the row's lock and only while still null. If two passes cross, or
+// the row no longer names the same issue, the pass that cannot set the marker rolls back the
+// event it appended. A failed row ends the pass with its error: the rows before it stay written,
+// and the rest wait for the next call. The event uses IssueDeployedEventPayload and
+// DeployedEventActor. The marker uses the database's now() because readers only check for null.
 func RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings DeliverySettings, broker *events.Broker) (int, error) {
 	shipped, err := listUnrecordedShipped(ctx, pool, settings.DeployRepo, settings.Production())
 	if err != nil {
@@ -120,11 +118,11 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 // read before the update could only be read again by the update itself. The update is the
 // transaction's last statement, after the append, because its change trigger takes the change
 // log's lock (lockChangesStatement): after every row lock the transaction takes, the issue's
-// included, and held for that statement and the commit alone. Every other writer of a
-// delivery_pull_requests row is one statement that takes the row's lock and then the change
-// log's, so the two wait on each other in one order. Of two passes that cross here, intake's and
-// the reconcile's, the second finds deployed_event_at set, or the row naming another issue: its
-// update marks nothing, and it rolls back with the event it appended, so it writes nothing.
+// included, and held for that statement and the commit alone. Intake takes a pull request's row
+// before the change log in one statement. The repository rename pass locks all the pull requests
+// its line writes before any trigger takes the change log's lock. If intake and reconcile cross,
+// the second finds deployed_event_at set or another issue on the row. Its update marks nothing,
+// and it rolls back the event it appended.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

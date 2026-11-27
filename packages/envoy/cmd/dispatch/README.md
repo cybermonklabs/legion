@@ -2879,6 +2879,10 @@ Migration `20261117100001_delivery_changes_pending` creates the change log's out
 Migrations `20261117100002_issue_facts_changes` and `20261117100019_issue_filings_changes` add the triggers `issue_facts_changed` and `issue_filings_changed`, which record each changed row as one pending change (`issue_facts`: the project, the issue and its close time before and after; `issue_filings`: the project, the filed issue and its filing time before and after), and record none for an update that moves only `updated_at`.
 New tables and triggers on them, and a check constraint rebuilt on `delivery_changes`, which the migration holds `ACCESS EXCLUSIVE` on for the rebuild's one scan of the table: the previous release neither reads nor writes the new tables, writes only the kinds the old constraint admitted, and each census answers `0`.
 
+Migration `20261127133240_delivery_changes_drain_at` replaces `delivery_changes_drain` so each moved row takes its `at` from the database clock under the change log's lock.
+This keeps a delayed outbox row from aging out before a change with an earlier sequence.
+The migration changes one function without reading or rewriting any stored row, so its census answers `0`.
+
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
 The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.

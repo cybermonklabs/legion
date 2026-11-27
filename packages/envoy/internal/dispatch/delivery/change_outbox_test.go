@@ -4,7 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,15 +25,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The change log's outbox (delivery_changes_pending, migration 20261117100001, which the eval and
-// Legion tables' triggers record into) and its drain (DrainPending), and the order every path
-// takes the change log's lock in (lockChangesStatement): first, before any row lock, or last, in
-// the statement that ends its transaction. R19 holds a path to at most 100 ms of the lock; these tests
-// assert the structure that bounds the hold (which transaction takes the lock, when, and how much
-// a drain moves under it) and log the times, since the wall clock is the build farm's measure
-// (k20) and a busy runner would fail it here.
+// The outbox and lock-order tests assert which writes take the change log's lock and when.
+// They log hold times without asserting them, since the build farm measures the timing bound.
 
 // The two keys of the change log's lock, pg_advisory_xact_lock(6900, 0) (lockChangesStatement).
 const (
@@ -34,8 +37,7 @@ const (
 	changeLockObject = 0
 )
 
-// clearPending deletes every pending change row, so a test of the outbox reads only its own: the
-// package's tests share one database.
+// clearPending removes any pending changes from the clone's seed so the test reads only its own.
 func clearPending(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `delete from delivery_changes_pending`); err != nil {
@@ -146,13 +148,12 @@ func TestEachPendingChangeIsMovedOnceUnderConcurrentDrains(t *testing.T) {
 	before := latestChange(t, ctx, pool)
 	const recorded, trickled, drains = 3000, 300, 8
 	recordPending(t, ctx, pool, "BURST", recorded)
+	gate := takeChangeLock(t, ctx, pool)
 
 	var moved atomic.Int64
-	start := make(chan struct{})
 	var running sync.WaitGroup
 	for range drains {
 		running.Go(func() {
-			<-start
 			for range 5 {
 				n, err := DrainPending(ctx, pool)
 				if err != nil {
@@ -164,7 +165,6 @@ func TestEachPendingChangeIsMovedOnceUnderConcurrentDrains(t *testing.T) {
 		})
 	}
 	running.Go(func() {
-		<-start
 		for n := 1; n <= trickled; n++ {
 			if _, err := pool.Exec(ctx, `select delivery_change_log_pending('issue_facts', null, 'TRICKLE', $1, null, null)`, fmt.Sprintf("TRICKLE-%d", n)); err != nil {
 				t.Errorf("record a pending change: %v", err)
@@ -172,7 +172,11 @@ func TestEachPendingChangeIsMovedOnceUnderConcurrentDrains(t *testing.T) {
 			}
 		}
 	})
-	close(start)
+	// Two drains must reach the database before either can move a row.
+	storetest.WaitForLockWaiters(t, gate, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	running.Wait()
 	last, err := DrainPending(ctx, pool)
 	if err != nil {
@@ -307,9 +311,7 @@ type drainTransaction struct {
 
 // recordDrainTransactions makes every statement that inserts into delivery_changes record, in a
 // table of the test's own, its transaction's id, how many rows it inserted and whether its backend
-// held the change log's lock then, and answers what the transactions recorded since the last call
-// read, in the order they recorded it. The trigger and the table are dropped when the test ends,
-// since the package's tests share one database.
+// held the change log's lock then. It returns a reader of the records in insertion order.
 func recordDrainTransactions(t *testing.T, ctx context.Context, pool *store.Pool) func() []drainTransaction {
 	t.Helper()
 	for _, statement := range []string{
@@ -330,17 +332,6 @@ func recordDrainTransactions(t *testing.T, ctx context.Context, pool *store.Pool
 			t.Fatalf("record the drain's transactions: %v", err)
 		}
 	}
-	t.Cleanup(func() {
-		for _, statement := range []string{
-			`drop trigger if exists outbox_test_record_drain on delivery_changes`,
-			`drop function if exists outbox_test_record_drain()`,
-			`drop table if exists outbox_test_drains`,
-		} {
-			if _, err := pool.Exec(context.Background(), statement); err != nil {
-				t.Errorf("drop the drain recorder: %v", err)
-			}
-		}
-	})
 	return func() []drainTransaction {
 		t.Helper()
 		rows, err := pool.Query(ctx, `
@@ -425,8 +416,8 @@ func TestTheDrainMovesABurstABatchPerTransaction(t *testing.T) {
 	}
 }
 
-// TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain: DrainPendingBatch, the drain an eval write
-// runs before its route answers, moves one batch of the lowest pending ids and no more, and says
+// TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain checks that DrainPendingBatch
+// moves one batch of the lowest pending ids and no more, and says
 // rows may remain exactly when a whole batch moved, which is when DrainPending moves another. Of
 // 260 pending changes it moves 250, then 10, then none; of 250 it moves 250 and says more may
 // remain, then finds none. Each batch is the lowest ids still pending, in id order.
@@ -449,6 +440,13 @@ func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 	} {
 		project := fmt.Sprintf("ONEBATCH%d", burst.rows)
 		recordPending(t, ctx, pool, project, burst.rows)
+		// A delayed pending change must not age out before an earlier sequence in the log.
+		if _, err := pool.Exec(ctx, `update delivery_changes_pending set at = now() - interval '25 hours'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `insert into delivery_changes (kind) values ('settings')`); err != nil {
+			t.Fatal(err)
+		}
 		taken := 0
 		for index, want := range burst.batches {
 			var head int64
@@ -476,8 +474,50 @@ func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 				t.Errorf("batch %d of %d pending changes moved %v, want the %d lowest pending ids in id order, %v", index, burst.rows, refs, want.moved, wanted)
 			}
 			taken += len(refs)
+			var early int
+			if err := pool.QueryRow(ctx, `
+				select count(*) from delivery_changes moved
+				where moved.seq > $1 and exists (
+					select 1 from delivery_changes earlier where earlier.seq < moved.seq and earlier.at > moved.at
+				)`, head).Scan(&early); err != nil {
+				t.Fatal(err)
+			}
+			if early != 0 {
+				t.Errorf("batch %d moved %d changes whose at precedes an earlier seq", index, early)
+			}
 		}
 	}
+
+	t.Run("after waiting for the change log lock", func(t *testing.T) {
+		recordPending(t, ctx, pool, "LATE", 1)
+		gate := takeChangeLock(t, ctx, pool)
+		drained := goTimed(func() error {
+			n, more, err := DrainPendingBatch(ctx, pool)
+			if err != nil {
+				return err
+			}
+			if n != 1 || more {
+				return fmt.Errorf("drained %d, more %t; want one and false", n, more)
+			}
+			return nil
+		})
+		storetest.WaitForLockWaiters(t, gate, 1)
+		var earlier Change
+		// A direct writer can stamp a change after the drain's transaction has already started.
+		if err := gate.QueryRow(ctx, `insert into delivery_changes (kind) values ('settings') returning seq, at`).Scan(&earlier.Seq, &earlier.At); err != nil {
+			t.Fatal(err)
+		}
+		if err := gate.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := testwait.Receive(t, "the waiting drain to finish", drained).err; err != nil {
+			t.Fatal(err)
+		}
+		got := changesAfter(t, ctx, pool, earlier.Seq)
+		if len(got) != 1 || got[0].Ref != "LATE-1" || got[0].At.Before(earlier.At) {
+			t.Errorf("drain wrote %+v after seq %d at %v; want LATE-1 stamped no earlier", got, earlier.Seq, earlier.At)
+		}
+	})
 }
 
 // TestARunsJobsWriteTakesTheChangeLogLockLast: a run's jobs write (UpsertRunJobs) of 400 jobs, sent
@@ -535,7 +575,7 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the lock go: %v", err)
 	}
-	answer := <-done
+	answer := testwait.Receive(t, "the jobs write to finish", done)
 	if answer.err != nil {
 		t.Fatalf("UpsertRunJobs: %v", answer.err)
 	}
@@ -610,7 +650,8 @@ func TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequ
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the lock go: %v", err)
 	}
-	deployedAnswer, retitleAnswer := <-deployed, <-retitle
+	deployedAnswer := testwait.Receive(t, "the deployed write to finish", deployed)
+	retitleAnswer := testwait.Receive(t, "the retitle to finish", retitle)
 	requireNotDeadlocked(t, "the deployed write", deployedAnswer.err)
 	requireNotDeadlocked(t, "the pull request's write", retitleAnswer.err)
 	if t.Failed() {
@@ -643,17 +684,12 @@ func inGroupTransaction(ctx context.Context, pool *store.Pool, write func(pgx.Tx
 	}
 }
 
-// clearSessionGroups deletes the groups named names now and when the test ends, since the
-// package's tests share one database.
+// clearSessionGroups removes the named groups from the clone's seed.
 func clearSessionGroups(t *testing.T, pool *store.Pool, names ...string) {
 	t.Helper()
-	remove := func() {
-		if _, err := pool.Exec(context.Background(), `delete from delivery_session_groups where name = any($1)`, names); err != nil {
-			t.Errorf("clear the groups: %v", err)
-		}
+	if _, err := pool.Exec(t.Context(), `delete from delivery_session_groups where name = any($1)`, names); err != nil {
+		t.Fatalf("clear the groups: %v", err)
 	}
-	remove()
-	t.Cleanup(remove)
 }
 
 // TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock: a session group's create runs every
@@ -707,7 +743,7 @@ func TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the reads on: %v", err)
 	}
-	answer := <-create
+	answer := testwait.Receive(t, "the group create to finish", create)
 	holds := stop()
 	if answer.err != nil {
 		t.Fatalf("the group's create: %v", answer.err)
@@ -748,6 +784,13 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 	}))
 	// The group's update waits for the change log's lock.
 	storetest.WaitForLockWaiters(t, gate, 1)
+	var groupsFree bool
+	if err := pool.QueryRow(ctx, `select pg_try_advisory_xact_lock(hashtext('delivery-session-groups'))`).Scan(&groupsFree); err != nil {
+		t.Fatal(err)
+	}
+	if groupsFree {
+		t.Error("the update waits for the change log's lock without the session groups' lock")
+	}
 	if rowLockedByAnother(t, ctx, pool, `select 1 from delivery_session_groups where id = $1::uuid`, crew.ID) {
 		t.Error("the group's update waits for the change log's lock holding its group's row: it writes before it takes the lock")
 	}
@@ -766,7 +809,9 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the lock go: %v", err)
 	}
-	updateAnswer, runAnswer, secondAnswer := <-update, <-run, <-second
+	updateAnswer := testwait.Receive(t, "the group update to finish", update)
+	runAnswer := testwait.Receive(t, "the run write to finish", run)
+	secondAnswer := testwait.Receive(t, "the second group create to finish", second)
 	requireNotDeadlocked(t, "the group's update", updateAnswer.err)
 	requireNotDeadlocked(t, "the run write", runAnswer.err)
 	requireNotDeadlocked(t, "the second group's create", secondAnswer.err)
@@ -825,13 +870,8 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 		}, model.Actor{Kind: "user", ID: "another-editor"})
 		return err
 	}))
-	select {
-	case answer := <-edit:
-		if answer.err != nil {
-			t.Fatalf("the edit that changes nothing: %v", answer.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the edit that changes nothing waited for the change log's lock: it writes")
+	if answer := testwait.Receive(t, "the unchanged edit to answer while the change log's lock is held", edit).err; answer != nil {
+		t.Fatalf("the edit that changes nothing: %v", answer)
 	}
 	if err := gate.Rollback(ctx); err != nil {
 		t.Fatalf("let the change log's lock go: %v", err)
@@ -856,4 +896,219 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 		}
 	}
 	t.Logf("the edit answered with the change log's lock held elsewhere and logged none of the %d changes after seq %d", len(changes), seq)
+}
+
+func TestAFactsAndAFilingsWriteTakeNoChangeLogLock(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('OUT', 'Outbox', 'alice')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ kind, sql string }{
+		{ChangeKindIssueFacts, `insert into issue_facts (project_key, issue_key) values ('OUT', 'OUT-1')`},
+		{ChangeKindIssueFilings, `insert into issue_filings (project_key, issue_key, filed_at, filer_role, class)
+			values ('OUT', 'OUT-1', now(), 'architect', 'out_of_tree')`},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, tc.sql); err != nil {
+				t.Fatal(err)
+			}
+			var locked bool
+			if err := tx.QueryRow(ctx, `select exists (
+				select 1 from pg_locks where pid = pg_backend_pid() and locktype = 'advisory'
+				and classid = $1 and objid = $2 and objsubid = 2 and granted
+			)`, changeLockClass, changeLockObject).Scan(&locked); err != nil {
+				t.Fatal(err)
+			}
+			if locked {
+				t.Errorf("%s trigger took the change log's lock (6900)", tc.kind)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var pending, logged int
+			if err := pool.QueryRow(ctx, `
+				select (select count(*) from delivery_changes_pending where kind = $1 and repo = 'OUT' and ref = 'OUT-1'),
+				       (select count(*) from delivery_changes where kind = $1 and repo = 'OUT' and ref = 'OUT-1')`,
+				tc.kind).Scan(&pending, &logged); err != nil {
+				t.Fatal(err)
+			}
+			if pending != 1 || logged != 0 {
+				t.Errorf("%s wrote %d pending rows and %d log rows; want 1 and 0", tc.kind, pending, logged)
+			}
+		})
+	}
+}
+
+// deliverySource parses the production files in this package so inventory tests see new files too.
+func deliverySource(t *testing.T) map[string]*ast.File {
+	t.Helper()
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	sources := map[string]*ast.File{}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[path] = file
+	}
+	return sources
+}
+
+func TestEveryChangeKindIsAdmittedByTheChangeLog(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	// No writer in this slice records these reserved kinds.
+	reserved := []string{"eval_readings", "eval_versions", "eval_days"}
+	all, pending := slices.Clone(reserved), slices.Clone(reserved)
+	for _, file := range deliverySource(t) {
+		for _, decl := range file.Decls {
+			decl, ok := decl.(*ast.GenDecl)
+			if !ok || decl.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range decl.Specs {
+				spec := spec.(*ast.ValueSpec)
+				for i, name := range spec.Names {
+					if !strings.HasPrefix(name.Name, "ChangeKind") {
+						continue
+					}
+					if i >= len(spec.Values) {
+						t.Fatalf("%s must declare its value", name)
+					}
+					literal, ok := spec.Values[i].(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						t.Fatalf("%s must declare a string literal", name)
+					}
+					kind, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					all = append(all, kind)
+					if name.Name == "ChangeKindIssueFacts" || name.Name == "ChangeKindIssueFilings" {
+						pending = append(pending, kind)
+					}
+				}
+			}
+		}
+	}
+	literal := regexp.MustCompile(`'([^']+)'`)
+	for _, tc := range []struct {
+		table string
+		want  []string
+	}{
+		{"delivery_changes", all},
+		{"delivery_changes_pending", pending},
+	} {
+		var definition string
+		if err := pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
+			where conrelid = $1::text::regclass and conname = $1 || '_kind_check'`, tc.table).Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, match := range literal.FindAllStringSubmatch(definition, -1) {
+			got = append(got, match[1])
+		}
+		slices.Sort(got)
+		slices.Sort(tc.want)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s admits %v; want %v", tc.table, got, tc.want)
+		}
+	}
+}
+
+func TestEveryTakerOfTheChangeLogLockIsListed(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	const (
+		direct = "TestADirectChangeWaitsForTheWriterBeforeItSoNoCursorSkipsIt"
+		drain  = "TestTheDrainMovesABurstABatchPerTransaction"
+		jobs   = "TestARunsJobsWriteTakesTheChangeLogLockLast"
+		pr     = "TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequestWrite"
+		groups = "TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows"
+	)
+	remaining := map[string]string{
+		"function delivery_change_log":                                                  direct,
+		"function delivery_changes_drain":                                               drain,
+		"function delivery_pull_requests_changed":                                       pr,
+		"function delivery_runs_changed":                                                jobs,
+		"function delivery_run_jobs_changed":                                            jobs,
+		"function delivery_settings_changed":                                            direct,
+		"function delivery_session_groups_changed":                                      groups,
+		"trigger delivery_pull_requests.delivery_pull_requests_changed":                 pr,
+		"trigger delivery_runs.delivery_runs_changed":                                   jobs,
+		"trigger delivery_run_jobs.delivery_run_jobs_changed":                           jobs,
+		"trigger delivery_settings.delivery_settings_changed":                           direct,
+		"trigger delivery_session_groups.delivery_session_groups_changed":               groups,
+		"trigger delivery_session_group_members.delivery_session_group_members_changed": groups,
+		"Go changes.go:queueLockChanges -> lockChangesStatement":                        groups,
+		"Go groups.go:writeSessionGroup -> queueLockChanges":                            groups,
+		"Go groups.go:DeleteSessionGroup -> queueLockChanges":                           groups,
+	}
+	seen := map[string]bool{}
+	check := func(taker string) {
+		if _, listed := remaining[taker]; !listed && !seen[taker] {
+			t.Errorf("unlisted change log lock taker: %s", taker)
+		}
+		delete(remaining, taker)
+		seen[taker] = true
+	}
+	// The catalog does not record call dependencies within PL/pgSQL bodies.
+	rows, err := pool.Query(ctx, `
+		with recursive funcs as (
+			select p.oid, p.proname, pg_get_functiondef(p.oid) as definition
+			from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+			where n.nspname = any(current_schemas(false)) and p.prokind in ('f', 'p')
+		), takers as (
+			select oid, proname from funcs
+			where definition ~* 'pg_(try_)?advisory_(xact_)?lock(_shared)?[[:space:]]*\([[:space:]]*6900[[:space:]]*,[[:space:]]*0[[:space:]]*\)'
+			union
+			select f.oid, f.proname from funcs f join takers t
+			on f.oid <> t.oid and f.definition ~* ('\m' || t.proname || '[[:space:]]*\(')
+		)
+		select 'function ' || proname from takers
+		union all
+		select 'trigger ' || c.relname || '.' || g.tgname from pg_trigger g
+		join pg_class c on c.oid = g.tgrelid join takers t on t.oid = g.tgfoid
+		where not g.tgisinternal`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	takers, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, taker := range takers {
+		check(taker)
+	}
+	for path, file := range deliverySource(t) {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				id, ok := node.(*ast.Ident)
+				if ok && (id.Name == "queueLockChanges" || id.Name == "lockChangesStatement") {
+					check(fmt.Sprintf("Go %s:%s -> %s", path, fn.Name.Name, id.Name))
+				}
+				return true
+			})
+		}
+	}
+	for taker, test := range remaining {
+		t.Errorf("listed change log lock taker not found: %s (%s)", taker, test)
+	}
 }
