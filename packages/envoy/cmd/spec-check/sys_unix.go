@@ -87,8 +87,7 @@ func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 // and the group gid with -1 for one that it did not ask for, and the way out of a refusal of it,
 // which depends on whether the process is root. A run as root that asked for an owner is told to
 // run as the owner of of. A run as root that asked for the group alone asked it for an entry that
-// root already owns, so it is told to run as a user in that group, as on a rootless bind mount
-// where the group is unmapped and the system refuses it to root too. A run as a user, which asked
+// root already owns, so it is told to run as a user in that group. A run as a user, which asked
 // only for a group that it already belongs to, is told to run as root.
 func refusedOwner(of string, uid, gid int, root bool) (asked, wayOut string) {
 	switch {

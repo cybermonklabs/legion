@@ -164,9 +164,11 @@ func sameOwnerAsks(t *testing.T, name string, uid, gid int, want string) {
 }
 
 // A refusal names what print asked the system for, the owner alone, the group alone or both, and
-// a way out that fits the process: a run as root, which may give any owner and group, is told to
-// run as the owner, not as root, which it already is; a run as a user, which asked only for a
-// group that it already belongs to, is told to run as root, not as a member of that group.
+// a way out that depends on whether the process is root (refusedOwner). A run as root that asked
+// for an owner is told to run as the owner, not as root, which it already is. A run as root that
+// asked for the group alone asked it for an entry that root already owns, so it is told to run as
+// a user in that group. A run as a user, which asked only for a group that it already belongs to,
+// is told to run as root, not as a member of that group.
 func TestARefusalOfAnOwnerNamesWhatPrintAskedFor(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
