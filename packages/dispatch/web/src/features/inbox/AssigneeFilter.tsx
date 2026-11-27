@@ -62,6 +62,8 @@ export function AssigneeFilter({
 
   return (
     <MultiSelect
+      // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+      chevron={false}
       emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
       error={people.isError ? "Could not load the people list." : null}
       label="Assignee"

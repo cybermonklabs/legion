@@ -14,6 +14,7 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -2159,8 +2160,9 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
-    expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
+    expect(screen.getAllByRole("button", { name: pickNamed("Version") })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: pickNamed("Version") }));
+    await user.click(screen.getByRole("option", { name: "Version 1 — Initial design" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
         "/issues/CORE-1/artifacts/design?v=1"

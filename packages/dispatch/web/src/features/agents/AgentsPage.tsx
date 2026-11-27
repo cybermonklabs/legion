@@ -424,13 +424,11 @@ function AgentMessageList({
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
   // A retry's hold through this conversation's read, and why that read has not settled once the
-  // hold ran out (`useReadBound`).
-  const [unsettled, holdThrough] = useReadBound();
+  // hold ran out, which every caller of the read shares (`useReadBound`).
+  const messagesKey = agentMessagesQuery(agent.session_id).queryKey;
+  const [unsettled, holdThrough] = useReadBound(messagesKey);
   const holdThroughRead = (press: WritePress) =>
-    holdThrough(
-      invalidateWaitingForPaused(queryClient, agentMessagesQuery(agent.session_id).queryKey),
-      press
-    );
+    holdThrough(invalidateWaitingForPaused(queryClient, messagesKey), press);
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
   const unread = exchangesAfter(all, clearedBefore);

@@ -243,6 +243,8 @@ export function IssueLabels({
           // `setOpenState` is what refuses to reopen until the save has landed, and `aria-disabled`
           // is how the reader is told it is busy without focus being taken away.
           ariaDisabled={saving}
+          // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+          chevron={false}
           disabled={disabled}
           emptyMessage="No labels yet."
           error={inputError}

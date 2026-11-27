@@ -86,6 +86,9 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
       {filtersExpanded ? (
         <div className="mb-4 flex flex-wrap items-end gap-3" id="project-issue-filters">
           <MultiSelect
+            // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this
+            // page.
+            chevron={false}
             emptyMessage="No labels yet."
             label="Labels"
             onChange={setLabels}
