@@ -326,7 +326,7 @@ func (m *Machine) repairWrite(ctx context.Context) bool {
 // what it held (dropOwedWrite) — rather than made again at every decision.
 func (m *Machine) repairRetirement(ctx context.Context) {
 	id, c := m.owedWrite.retire, m.stored()
-	err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.RetireDelivery(ctx, c, id) })
+	err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.RetireDelivery(ctx, c, id) })
 	switch {
 	case err == nil:
 		m.rowState = c.State
@@ -497,8 +497,11 @@ const (
 )
 
 // errWritesWait is the answer of a claim write the machine does not send to the store while the
-// writes of a refused claim wait out the probe interval (D5 of dispatch://INFRA-4099's plan). The
-// row memory holds was not judged, so the rule owes it, and the write is made after the wait.
+// writes of a refused claim wait out the probe interval after the read of its row (withheld,
+// Machine.writesWaitUntil, D5 of dispatch://INFRA-4099's plan). The row memory holds was not
+// judged, so the rule owes it, and the repair makes the write at the first decision after the
+// window. It is no write that landed or that the store failed: nothing the owed mark holds for a
+// write is settled by it.
 var errWritesWait = errors.New("supervise: the claim's writes wait out the probe interval after a refused write")
 
 // WriteRefusal is one claim write the rule refused, as the machine tells it (Deps.ClaimWriteRefused,

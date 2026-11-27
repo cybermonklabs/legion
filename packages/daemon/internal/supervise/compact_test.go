@@ -303,6 +303,9 @@ func TestACompactionGivesBackAReadyClaimReady(t *testing.T) {
 			t.Fatalf("Oh My Pi was asked for %d compactions, want none: the claim was never taken", got)
 		}
 		h.store.fail("PutClaim", nil)
+		// The next compaction comes a probe interval on, past the window in which no claim write
+		// of the refused claim reaches the store (D5 of dispatch://INFRA-4099's plan).
+		h.advance(testProbe)
 
 		if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
 			t.Fatalf("compact: %v", err)

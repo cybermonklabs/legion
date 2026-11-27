@@ -272,10 +272,11 @@ func TestAReplayedRefusalTakesBackATaskAForeignTurnConfirmed(t *testing.T) {
 
 // A refusal can land after settle retired the task it names: the suspension's retire, or the
 // turn end's, failed, so the fence let the refusal through. A retire the rule refuses left the task
-// held, and the settle before the row retired it; one whose write the rule owes retired it in
-// memory at once and owed the write (retirePending, D8 of dispatch://INFRA-4099's plan), which the
-// row's own decision makes first (repair). Either way the row finds no pending task, and it must
-// have nothing to do rather than end the daemon.
+// held, and the settle before the row retired it, the refusal coming past the window in which no
+// claim write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's plan); one
+// whose write the rule owes retired it in memory at once and owed the write (retirePending, D8),
+// which the row's own decision makes first (repair). Either way the row finds no pending task,
+// and it must have nothing to do rather than end the daemon.
 func TestARefusalOfATaskRetiredUnderItHasNothingToDo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -322,6 +323,12 @@ func TestARefusalOfATaskRetiredUnderItHasNothingToDo(t *testing.T) {
 						held, !failure.owed)
 				}
 				h.store.fail("RetireDelivery", nil)
+				if !failure.owed {
+					// The next event comes a probe interval on, past the window in which no
+					// claim write of the refused claim reaches the store (D5 of
+					// dispatch://INFRA-4099's plan).
+					h.advance(testProbe)
+				}
 
 				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: "the model provider refused the request", Replayed: tc.replayed})
 
@@ -585,10 +592,11 @@ func TestALateAcknowledgementOfATaskWhoseTurnRanWaitsForItsResult(t *testing.T) 
 
 // A send's outcome can arrive after settle retired its task: the prompt's turn and its result were
 // decided before the send's acknowledgement (sending), and the result's retire failed. A retire the
-// rule refuses left the task held, and the next event's settle retires it; one whose write the
-// rule owes retired it in memory at once and owed the write (retirePending), which the next event's
-// repair makes. The acknowledgement then has no task to mark, and it must record nothing rather
-// than end the daemon.
+// rule refuses left the task held, and the settle of the next event, past the window in which no
+// claim write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's plan), retires
+// it; one whose write the rule owes retired it in memory at once and owed the write
+// (retirePending), which the next event's repair makes. The acknowledgement then has no task to
+// mark, and it must record nothing rather than end the daemon.
 func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 	for _, failure := range []struct {
 		name string
@@ -617,6 +625,12 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 				t.Fatalf("the result's retire = %v, want it to fail with the store's error", err)
 			}
 			h.store.fail("RetireDelivery", nil)
+			if !failure.owed {
+				// The acknowledgement comes a probe interval on, past the window in which no claim
+				// write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's
+				// plan). The clock alone moves: the send it acknowledges is held until the end.
+				h.clock.Advance(testProbe)
+			}
 			if held := h.claim().Pending != nil; held == failure.owed {
 				t.Fatalf("the failed retire left a task held = %t, want %t: a refused retire leaves the task as the row holds it, an owed one retires it in memory and owes the write",
 					held, !failure.owed)

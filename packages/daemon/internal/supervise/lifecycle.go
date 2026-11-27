@@ -53,8 +53,8 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	}
 	c := m.stored()
 	// A refusal this decision met stands for the admission too, which reaches no store (D2 of
-	// dispatch://INFRA-4099's plan).
-	bound, err := Claim{}, m.refused()
+	// dispatch://INFRA-4099's plan), and so does the window after a refused write's read (D5).
+	bound, err := Claim{}, m.withheld()
 	if err == nil {
 		bound, err = m.deps.Store.AdmitClaim(ctx, c)
 	}
@@ -263,6 +263,9 @@ func (c Claim) Gone() bool { return IsGone(c.State) }
 func (m *Machine) Retree(ctx context.Context, tree string) error {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return err
+	}
 	if m.claim.Tree == tree {
 		return nil
 	}

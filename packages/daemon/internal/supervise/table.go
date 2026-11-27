@@ -212,6 +212,12 @@ const (
 	// parked launch's wake takes its start out of the gate at the end of that decision, naming
 	// that end, and disarms it (endPodPark).
 	TimerPodStart TimerKind = "pod_start"
+	// TimerReread is the next try of the read of the claim's row after a refused claim write
+	// whose read failed or found no row (settleRefusal, D5 of dispatch://INFRA-4099's plan): until
+	// a read lands, the machine decides nothing, and this timer tries the read at each probe
+	// interval (awaitRead). It is decided before the table is read (handle), so its rows are named
+	// ignores: a read that lands builds the machine again and disarms it with every other timer.
+	TimerReread TimerKind = "reread"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -968,6 +974,8 @@ const (
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
+	// The next try of the read after a refused write whose read failed (awaitRead).
+	onRereadTimer eventKind = timerPrefix + eventKind(TimerReread)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1368,6 +1376,13 @@ func fillTable(t *builder) {
 	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
 		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
 		StateSuspended, StateFailed, StateRetired)
+
+	// The next try of the read of the claim's row after a refused claim write whose read failed
+	// (settleRefusal, D5 of dispatch://INFRA-4099's plan). While that read is owed, handle decides
+	// every event before the table (awaitRead), this timer's firing among them, so no state reaches
+	// a row of it: the read that lands builds the machine again, and the build arms no such timer.
+	t.ignore(onRereadTimer, "no read of the claim is owed: a read after a refused claim write that landed built the machine again over the row, which leaves this timer disarmed",
+		slices.Concat(live, processless)...)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,

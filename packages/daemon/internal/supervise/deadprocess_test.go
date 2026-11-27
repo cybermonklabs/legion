@@ -465,7 +465,10 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 			if !tc.owed {
 				// The refusal built the machine again over its row, as a daemon start builds it, so
 				// what the read found of the process is gone with the rest of memory (D3 of
-				// dispatch://INFRA-4099's plan): the process is read again, as after a restart.
+				// dispatch://INFRA-4099's plan): the process is read again, as after a restart, a
+				// probe interval on, past the window in which no claim write of the refused claim
+				// reaches the store (D5).
+				h.advance(testProbe)
 				h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 				if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
 					t.Fatalf("the read of the rebuilt claim's process answered %q, want %q", got, ProcessGone)

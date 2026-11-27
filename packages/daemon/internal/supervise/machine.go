@@ -1711,6 +1711,29 @@ type Machine struct {
 	// ends by reading the claim's row and building the machine again over it (settleRefusal), which
 	// clears it.
 	refusal *claimRefusal
+	// rereadOwed is a read of the claim's row after a refused claim write that failed or found no
+	// row (settleRefusal, D5 of dispatch://INFRA-4099's plan), false once one lands. While it
+	// stands the machine decides nothing: memory is what the refused decision left, given back of
+	// what it held (giveBackHeld), and no reader reads it — Claim answers the view published
+	// before that decision, and unlock publishes nothing. Its one timer (TimerReread) tries the
+	// read at each probe interval; a request, and every other locked section, answers a wait
+	// until that try (rereadWait), and every other event is dropped (awaitRead).
+	rereadOwed bool
+	// rereadDropped is how many events of each kind a read owed dropped (awaitRead), named in the
+	// line of the read that lands (rereadLine) and cleared with it; nil for none.
+	rereadDropped map[eventKind]int
+	// writesWaitUntil is the end of the window after a read that landed (D5 of
+	// dispatch://INFRA-4099's plan), the zero time for none: until then no claim write reaches the
+	// store, and each answers errWritesWait, which the rule owes (withheld). So a claim whose every
+	// write is refused tries one write in each probe interval, the first decision after the window,
+	// which is the repair of what the window left owed.
+	writesWaitUntil time.Time
+	// askDelivered is the update round whose ask a publish delivered and whose mark the store
+	// refused (PublishUpdateAsk, D9 of dispatch://INFRA-4099's plan), "" for none: the row read
+	// again holds no mark, and the sweep asks every claim of a round whose stored mark is unset, so
+	// the rebuild keeps it, and a later ask of that round publishes nothing. It is memory only: a
+	// restart loses it, and the round is asked once more.
+	askDelivered string
 	// lostTold is the forget of the claim's session a launch made in the decision now running
 	// (startFresh), held for Deps.SessionLost until that decision ends with no claim write refused
 	// (unlock), nil for none: the forget reaches the store only with a claim write, and a refused
@@ -2380,7 +2403,13 @@ type TurnOutcomeAnswer struct {
 func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (TurnOutcomeAnswer, error) {
 	var answer TurnOutcomeAnswer
 	err := m.handle(ctx, r, func() {
-		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
+		// While a read of the claim's row is owed, memory holds what a refused decision left, so
+		// the run is read off the claim published before it, as Claim reads it (Machine.rereadOwed).
+		c := &m.claim
+		if m.rereadOwed {
+			c = &m.view.Load().Claim
+		}
+		answer = TurnOutcomeAnswer{RefusedRun: c.RefusedRun(), Failed: m.turnOutcomeFailed}
 		m.turnOutcomeFailed = false
 	})
 	if m.turnOutcomeDecided != nil {
@@ -2397,7 +2426,8 @@ func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (
 // reads the claim: the place and the credit an event carried, HandleTurnOutcome's answer, and
 // unlock, which publishes. It makes nothing more of the decision once the refusal stands — no
 // settle, and no wake parked again, whose place it gives up instead — and it returns the refusal,
-// joined to whatever else the decision returned (D2 of dispatch://INFRA-4099's plan).
+// joined to whatever else the decision returned (D2 of dispatch://INFRA-4099's plan). While that
+// read is owed, having failed, no event is decided at all (awaitRead, D5).
 func (m *Machine) handle(ctx context.Context, ev Event, read func()) (err error) {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
@@ -2437,6 +2467,12 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) (err error)
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
+	}
+	// While the read of the claim's row after a refused claim write is owed, nothing is decided over
+	// the memory that decision left: not the repair, not the settle, no row (D5 of
+	// dispatch://INFRA-4099's plan).
+	if m.rereadOwed {
+		return m.awaitRead(ctx, ev)
 	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
@@ -2532,6 +2568,9 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) (err error)
 func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return false, err
+	}
 	if m.claim.State != StateLaunchUncertain || m.claim.Locator != nil {
 		return false, nil
 	}
@@ -2565,8 +2604,10 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 }
 
 // ErrMachineBusy is PublishUpdateAsk finding the machine's lock held — a decision in flight, or
-// another locked section — so it published nothing and marked nothing. The caller asks again
-// later; nothing of the ask happened.
+// another locked section — or the claim's writes held back after a claim write the store refused
+// (D9 of dispatch://INFRA-4099's plan), so it published nothing and marked nothing. The caller asks
+// again later, at the moment the answer names where it names one (wait.UntilAt); nothing of the
+// ask happened.
 var ErrMachineBusy = errors.New("the claim's machine is busy")
 
 // UpdateAskOutcome is what PublishUpdateAsk did with one ask of an update round.
@@ -2613,7 +2654,11 @@ const (
 //     role-message lane of this claim's issue, one row at a time (record.LaneKey), so a caller
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
-//     the first publish.
+//     the first publish. So it answers, with a wait until the claim's writes reach the store
+//     again, while they are held after a claim write the store refused: a read of the claim's
+//     row owed (rereadWait), the window after a read that landed (writesWait), and a repair the
+//     store refuses at the head of this section, before anything is read (D9 of
+//     dispatch://INFRA-4099's plan). A publish then would be marked by no write the store takes.
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
@@ -2643,9 +2688,14 @@ const (
 //     UpdateAskDelivered with the store's error: the row stays queued, its next attempt makes the
 //     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
 //     error for as long as the write stays owed. A write the rule refuses is not owed
-//     (SortClaimWriteFailure): the mark stays in memory alone, the row's next attempt finds it
-//     and finishes, and after a restart, which loads the claim without it, the sweep asks the
-//     role again under a new row's dedupe key.
+//     (SortClaimWriteFailure): the section ends by building the machine again over the claim's
+//     row read again (settleRefusal), which holds no mark, so the call answers UpdateAskDelivered
+//     with no error, the publish having happened, and the row ends. The machine keeps that the
+//     ask of round reached the role (Machine.askDelivered) across that rebuild, and a later ask of
+//     round answers UpdateAskAlreadyDelivered and publishes nothing: the sweep queues a row at
+//     each tick for a round whose stored mark is unset, so without it the role would read the ask
+//     once a minute. A restart loses it, and the sweep asks the role once more under a new row's
+//     dedupe key, as a restart before an owed write is made does.
 //
 // What is left is a daemon that dies between a delivered publish and the write of its mark, a
 // crash rather than a stop, which the write outlives. It boots with the row still queued and the
@@ -2662,10 +2712,18 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return 0, ErrMachineBusy
 	}
 	defer m.unlock()
+	if err := m.askHeld(); err != nil {
+		return 0, err
+	}
 	m.repair(ctx)
+	if m.refusal != nil {
+		return 0, fmt.Errorf("%w: %w", ErrMachineBusy, writesHeldUntil(m.deps.Clock.Now().Add(m.deps.Timeouts.Probe)))
+	}
 	switch {
 	case m.claim.UpdateRound != round:
 		return UpdateAskOutOfRound, nil
+	case m.askDelivered == round:
+		return UpdateAskAlreadyDelivered, nil
 	case m.claim.UpdateTaskedAt != nil && m.owedWrite != nil:
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
@@ -2684,7 +2742,34 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	at := m.deps.Clock.Now()
 	m.claim.UpdateTaskedAt = &at
-	return UpdateAskDelivered, m.persist(context.WithoutCancel(ctx))
+	err = m.persist(context.WithoutCancel(ctx))
+	if m.refusal != nil {
+		m.askDelivered = round
+		return UpdateAskDelivered, nil
+	}
+	return UpdateAskDelivered, err
+}
+
+// askHeld is PublishUpdateAsk's answer while the claim's writes are held after a claim write the
+// store refused, nil while they are not (D9 of dispatch://INFRA-4099's plan): ErrMachineBusy, as for
+// a lock held, and a wait until they reach the store again — the read's next try while a read of
+// the claim's row is owed (rereadWait), the end of the window after a read that landed
+// (writesWait).
+func (m *Machine) askHeld() error {
+	if err := m.rereadWait(); err != nil {
+		return fmt.Errorf("%w: %w", ErrMachineBusy, err)
+	}
+	if until, waits := m.writesWait(); waits {
+		return fmt.Errorf("%w: %w", ErrMachineBusy, writesHeldUntil(until))
+	}
+	return nil
+}
+
+// writesHeldUntil is the wait of an ask whose claim's writes are held back until at after a claim
+// write the store refused (askHeld, PublishUpdateAsk).
+func writesHeldUntil(at time.Time) error {
+	return wait.Until(at, fmt.Sprintf("its claim writes are held after a claim write the store refused, until %s",
+		at.UTC().Format(time.RFC3339)))
 }
 
 // markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
@@ -2694,6 +2779,9 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return false, err
+	}
 	if m.claim.UpdateRound != round || *mark != nil {
 		return false, nil
 	}
@@ -2752,6 +2840,9 @@ func (c Claim) ReleasedLaunch() bool {
 func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return err
+	}
 	m.dropEndedPauseHold()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
@@ -2809,6 +2900,9 @@ func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliv
 func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return err
+	}
 	if entry <= m.claim.GivenEntry {
 		return nil
 	}
@@ -2940,9 +3034,15 @@ func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired 
 
 // Claim is a copy of the claim as the machine holds it now. It waits for the decision in flight,
 // so what it reports is what that decision left: a check a decision must not race reads it here.
+// While a read of the claim's row is owed after a refused claim write, memory holds what that
+// decision left, which no reader may read, and Claim answers the claim published before it
+// (Machine.rereadOwed, D5 of dispatch://INFRA-4099's plan).
 func (m *Machine) Claim() Claim {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.rereadOwed {
+		return copyClaim(m.view.Load().Claim)
+	}
 	return m.current()
 }
 
@@ -3112,10 +3212,14 @@ func (p *publishedView) due() time.Time {
 }
 
 // stoppingProcess marks the claim's process as being stopped for good, for View, until the runtime
-// call that stops it returns; the end of the decision publishes what it left. The caller holds mu.
+// call that stops it returns; the end of the decision publishes what it left. A decision in which
+// the store has refused a claim write publishes nothing of what it left (Machine.refusal), this
+// mark included. The caller holds mu.
 func (m *Machine) stoppingProcess() func() {
 	m.stopping = true
-	m.publish()
+	if m.refusal == nil {
+		m.publish()
+	}
 	return func() { m.stopping = false }
 }
 
@@ -3129,7 +3233,9 @@ func (m *Machine) stoppingProcess() func() {
 // (endPodPark), settles the session load of a process the decision left registered, or ends the
 // load of one it left no longer booting, which gives its issue pod's start to the next role
 // (endPodLoad), tells the daemon of a wait for the wake pacing that began or ended in the decision
-// (tellWakeQueue), publishes the claim, says the machine decides nothing, then releases mu.
+// (tellWakeQueue), publishes the claim, says the machine decides nothing, then releases mu. While
+// a read of the claim's row is owed after a refused claim write (Machine.rereadOwed), it publishes
+// nothing: memory holds what that decision left, and the view stays the one published before it.
 //
 // Every decision of a machine ends here, which is what makes it the place those are kept: every
 // locked section that can change the wake, the credit, the intent or the claim's process, or write
@@ -3150,7 +3256,9 @@ func (m *Machine) unlock() {
 	m.endPodPark()
 	m.endPodLoad()
 	m.tellWakeQueue()
-	m.publish()
+	if !m.rereadOwed {
+		m.publish()
+	}
 	m.decide(nil)
 	m.mu.Unlock()
 }
@@ -5404,7 +5512,9 @@ func (m *Machine) forgetSend() {
 // A decision in which the store has refused a claim write makes no other write: while the refusal
 // stands (Machine.refusal) each call answers it and reaches no store, and the decision ends by
 // building the machine again over the claim's row (settleRefusal, D2 of dispatch://INFRA-4099's
-// plan).
+// plan). A claim write comes here through writeClaim, which also holds it back in the window
+// after that row's read (withheld, D5); HoldSessions, which writes no claim row, comes here
+// directly.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	if err := m.refused(); err != nil {
 		return err
@@ -5492,7 +5602,7 @@ func (m *Machine) putClaim(ctx context.Context) error {
 		m.publishAnswered(err)
 		return err
 	}
-	err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaim(ctx, c) })
+	err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaim(ctx, c) })
 	m.publishAnswered(err)
 	if err != nil {
 		return err
@@ -5546,7 +5656,7 @@ func (m *Machine) writeCarried(ctx context.Context) error {
 // marks nothing and puts nothing to the rule: a delivery write that fails has a mark of its own
 // (saved, settle), and its caller puts the failure to the rule (writeFailed).
 func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
-	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutDelivery(ctx, m.claim.Token, d) })
+	return m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.PutDelivery(ctx, m.claim.Token, d) })
 }
 
 // putClaimAndDelivery writes the claim c and the delivery d in the store's one transaction, under
@@ -5565,7 +5675,7 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // to the rule itself (claimWriteFailed, writeFailed). A write that lands moves the row to c's
 // state (Machine.rowState), whatever else of c is ahead of memory.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
-	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) }); err != nil {
+	if err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) }); err != nil {
 		return err
 	}
 	m.rowState = c.State

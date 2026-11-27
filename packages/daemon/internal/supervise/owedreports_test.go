@@ -320,9 +320,12 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		}
 
 		// Nor does a later write make them true. The store takes claim writes again, the task is
-		// delivered again, a turn starts on it and its write lands, and the daemon is told of that
-		// turn's working alone, not of the two the drop took.
+		// delivered again a probe interval on, past the window in which no claim write of the
+		// refused claim reaches the store (D5 of dispatch://INFRA-4099's plan), a turn starts on it
+		// and its write lands, and the daemon is told of that turn's working alone, not of the two
+		// the drop took.
 		h.store.fail("PutClaim", nil)
+		h.advance(testProbe)
 		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
 		h.must(StreamTurnStart{Claim: testToken})
 		h.wantState(StateWorking)

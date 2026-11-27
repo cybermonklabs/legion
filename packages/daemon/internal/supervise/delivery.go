@@ -1393,6 +1393,9 @@ var ErrTaskSending = wait.New("the task is on its way to the agent")
 func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return false, err
+	}
 	d := m.claim.Pending
 	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
 		return false, nil
@@ -1569,7 +1572,7 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0
-	err := m.write(ctx, func(ctx context.Context) error {
+	err := m.writeClaim(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
 	// The row holds a delivery this machine is not retiring, so what it lacks is exactly the

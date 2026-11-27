@@ -351,7 +351,7 @@ func (m *Machine) owedStops() []PauseStop {
 // launch that delivers it (holdsTask), which a later write of an owed stop reads afresh.
 func (m *Machine) putStop(ctx context.Context, c Claim, stop PauseStop) error {
 	stop.LaunchOwed = stop.LaunchOwed || m.holdsTask()
-	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.PauseStopped(ctx, c, stop) }); err != nil {
+	if err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.PauseStopped(ctx, c, stop) }); err != nil {
 		return err
 	}
 	m.rowState = c.State

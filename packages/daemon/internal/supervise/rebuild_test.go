@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -28,13 +29,14 @@ import (
 // claim writes of R1 a decision asks for, the refused one included, and refuses each call that
 // refuse picks with err, writing nothing, as a server that judged the row refuses it. It is the
 // project pause's stop transaction too (PauseStopped, written as stopTransaction writes it), so
-// every claim write is counted in one place. The rest of the store, ReadClaim among it, is
-// memStore's.
+// every claim write is counted in one place. It counts the reads of the claim too (ReadClaim),
+// which are memStore's, as is the rest of the store.
 type refusingStore struct {
 	*memStore
 	err    error
 	mu     sync.Mutex
 	calls  []string
+	reads  int
 	refuse func(method string, c Claim) bool
 }
 
@@ -150,6 +152,21 @@ func (s *refusingStore) PauseStopped(ctx context.Context, c Claim, _ PauseStop) 
 		return s.memStore.PutClaimAndDelivery(ctx, StoredClaim(c), *c.Pending)
 	}
 	return s.memStore.PutClaim(ctx, c)
+}
+
+// ReadClaim is memStore's read of the claim, counted (readCount).
+func (s *refusingStore) ReadClaim(ctx context.Context, token claim.Token) (Claim, bool, error) {
+	s.mu.Lock()
+	s.reads++
+	s.mu.Unlock()
+	return s.memStore.ReadClaim(ctx, token)
+}
+
+// readCount is how many times the claim has been read now.
+func (s *refusingStore) readCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
 }
 
 // rowMachine is the machine a daemon start builds over the claim's row (NewMachine over
@@ -309,6 +326,11 @@ var rebuildFields = map[string]string{
 	"enrollmentSent":        "kept: where the row records its process",
 	"helloKey":              "kept: where the row records its process",
 	"podLoad":               "kept: where the row records its process, since a load has a bound once started",
+	"askDelivered":          "kept: a publish of an update round's ask that happened and whose mark the store refused (D9)",
+	"refusal":               "set by the rebuild: the state of the rule itself, cleared as the rebuild begins",
+	"rereadOwed":            "set by the rebuild: the state of the rule itself, set while no read of the row has landed (D5)",
+	"rereadDropped":         "set by the rebuild: the events a read owed dropped, named when the read lands (D5)",
+	"writesWaitUntil":       "set by the rebuild: the state of the rule itself, the end of the window after a read that lands (D5)",
 	"registeredPods":        built + ": the row's joined with memory's, and no fake process registers in a pod",
 	"claim":                 built,
 	"timers":                built,
@@ -318,7 +340,6 @@ var rebuildFields = map[string]string{
 	"unsaved":               built,
 	"owedWrite":             built,
 	"rowState":              built,
-	"refusal":               built,
 	"lostTold":              built,
 	"sessionFrom":           built,
 	"lostCause":             built,
@@ -661,7 +682,8 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 // (c-refusal-logged of dispatch://INFRA-4099's plan): the claim, the store call, the state the row
 // holds and the state it refused, the SQLSTATE and the constraint. A second refusal of the same
 // write, with the same key, is logged and told again: what is told once for a key is the daemon's
-// to decide (D11), not the machine's.
+// to decide (D11), not the machine's. The second is made a probe interval after the first, past
+// the window in which no claim write reaches the store (D5).
 func TestAClaimWriteRefusedForGoodIsLogged(t *testing.T) {
 	var mu sync.Mutex
 	var told []WriteRefusal
@@ -677,6 +699,9 @@ func TestAClaimWriteRefusedForGoodIsLogged(t *testing.T) {
 	s.refuseCalls("PutClaim")
 
 	for n := 1; n <= 2; n++ {
+		if n > 1 {
+			h.advance(testProbe)
+		}
 		if err := h.handle(StreamTurnStart{Claim: h.token}); !errors.Is(err, s.err) {
 			t.Fatalf("turn start %d returned %v, want the store's refusal", n, err)
 		}
@@ -929,4 +954,257 @@ func TestARebuiltClaimAsksBeforeItSends(t *testing.T) {
 		t.Fatalf("the rebuilt claim's task is confirmed at %s, want it unconfirmed as the row holds it", p.ConfirmedAt)
 	}
 	h.wantAskedBeforeSent(conn)
+}
+
+// A refused claim write whose read of the row fails, or finds no row, decides nothing until a read
+// lands (c-read-fails of dispatch://INFRA-4099's plan, D5): the store answers every read with a
+// broken connection (08006). Until then an event is dropped, a request and every other locked
+// section answer a wait until the read's next try, the claim reads as it was published before the
+// refused decision, and nothing is written or asked of the runtime or the agent; the read is tried
+// again at the probe interval, and once it lands the machine is the one a daemon start builds over
+// the row. A read that lands opens a window of one probe interval in which no claim write reaches
+// the store, so a claim whose every write is refused tries one write in each probe interval, the
+// first decision after each window's, and a launch in the window starts no process: its own
+// launching write is held, and the launch ends at it.
+func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
+	t.Run("a read that fails holds every decision until the read at the probe interval lands", func(t *testing.T) {
+		h, s := refusingHarness(t, queuedClaim())
+		conn := h.connectOrdered()
+		h.reach(StateReady)
+		conn.take()
+		before, loc := h.m.View().Claim, h.locator()
+		h.store.fail("ReadClaim", brokenConnection())
+		s.refuseCalls("PutClaim")
+		next := h.clock.Now().Add(testProbe)
+		if err := h.handle(StreamTurnStart{Claim: h.token}); !errors.Is(err, s.err) {
+			t.Fatalf("the turn start returned %v, want the store's refusal", err)
+		}
+		if lines := h.records.of(rereadFailedLine); len(lines) != 1 || lines[0].level != slog.LevelWarn {
+			t.Fatalf("the failed read was logged as %+v, want one line at Warn", lines)
+		}
+		writes, calls, reads := s.mark(), len(h.rt.Calls()), s.readCount()
+
+		for _, ev := range []Event{
+			RuntimeObservation{Observation: runtime.Observation{Locator: loc, Kind: runtime.Alive, At: h.clock.Now()}},
+			StreamTurnStart{Claim: h.token},
+		} {
+			if err := h.handle(ev); err != nil {
+				t.Fatalf("%T while the read is owed returned %v, want it dropped", ev, err)
+			}
+		}
+		wantWait := func(what string, err error) {
+			t.Helper()
+			if at, until := wait.UntilAt(err); !errors.Is(err, wait.ErrWaiting) || !until || !at.Equal(next) {
+				t.Errorf("%s while the read is owed answered %v, want a wait until the read's next try, %s", what, err, next)
+			}
+		}
+		wantWait("a request", h.handle(RequestDeliver{Claim: h.token, Task: "review the plan"}))
+		wantWait("the entry given", h.m.EntryGiven(h.ctx, 3))
+		if read := h.m.ReadProcess(h.ctx); read != ProcessUnanswered {
+			t.Fatalf("the read of the process while the read of the claim is owed answered %s, want %s: nothing is asked", read, ProcessUnanswered)
+		}
+		if asked := s.since(writes); len(asked) != 0 {
+			t.Fatalf("the machine asked for the claim writes %v while its read was owed, want none", asked)
+		}
+		if made := h.rt.Calls()[calls:]; len(made) != 0 {
+			t.Fatalf("the machine made the runtime calls %+v while its read was owed, want none", made)
+		}
+		if asked := conn.take(); len(asked) != 0 {
+			t.Fatalf("the machine asked the agent %v while its read was owed, want nothing", asked)
+		}
+		if got := h.claim(); !reflect.DeepEqual(got, before) {
+			t.Fatalf("Claim answers\n%+v\nwant the claim published before the refused decision\n%+v", got, before)
+		}
+		if got := h.m.View().Claim; !reflect.DeepEqual(got, before) {
+			t.Fatalf("View answers\n%+v\nwant the claim published before the refused decision\n%+v", got, before)
+		}
+
+		h.store.fail("ReadClaim", nil)
+		h.advance(testProbe)
+
+		if tried := s.readCount() - reads; tried != 1 {
+			t.Fatalf("the claim was read %d times since the failed read, want one try again at the probe interval", tried)
+		}
+		h.wantBuiltAsAtStart(false)
+		h.wantMemoryIsTheRow()
+		lines := h.records.of(rereadLine)
+		if len(lines) != 1 {
+			t.Fatalf("the read that landed was logged %d times, want once", len(lines))
+		}
+		if dropped, ok := lines[0].attr("dropped"); !ok || dropped.String() != "2" {
+			t.Fatalf("the read's line names %v (%t) events dropped while it was owed, want the observation and the turn start, 2", dropped, ok)
+		}
+	})
+
+	t.Run("a claim whose every write is refused tries one write in each probe interval and starts no process", func(t *testing.T) {
+		h, s := refusingHarness(t, queuedClaim())
+		h.reach(StateReady)
+		loc := h.locator()
+		starts := func() int { return len(h.rt.CallsOf("Spawn")) + len(h.rt.CallsOf("Resume")) }
+		started := starts()
+		s.refuseWhere(func(string, Claim) bool { return true })
+		events := []func() Event{
+			func() Event { return StreamTurnStart{Claim: h.token} },
+			func() Event {
+				return RuntimeObservation{Observation: runtime.Observation{Locator: loc, Kind: runtime.Gone, At: h.clock.Now()}}
+			},
+			func() Event { return RequestDeliver{Claim: h.token, Task: "review the plan"} },
+			func() Event {
+				return RuntimeObservation{Observation: runtime.Observation{Locator: loc, Kind: runtime.Alive, At: h.clock.Now()}}
+			},
+		}
+		step := testProbe / time.Duration(len(events))
+		for interval := range 10 {
+			writes, reads := s.mark(), s.readCount()
+			for _, event := range events {
+				_ = h.handle(event())
+				h.advance(step)
+			}
+			if tried := s.since(writes); len(tried) != 1 {
+				t.Errorf("probe interval %d tried the claim writes %v, want one: the first decision after the window", interval, tried)
+			}
+			if read := s.readCount() - reads; read > 1 {
+				t.Errorf("probe interval %d read the claim %d times, want at most once", interval, read)
+			}
+		}
+		// Each process found gone in a window raised a launch there, whose launching write the
+		// window held, so the launch ended at that write and started nothing.
+		held := 0
+		for _, line := range h.records.of("supervise: the launch could not be written; trying it again at the probe interval") {
+			if got, ok := line.attr("error"); ok {
+				if err, isErr := got.Any().(error); isErr && errors.Is(err, errWritesWait) {
+					held++
+				}
+			}
+		}
+		if held == 0 {
+			t.Fatal("no launch met the window: this row proves nothing of a launch in it")
+		}
+		if n := starts() - started; n != 0 {
+			t.Fatalf("the claim whose every write is refused started %d processes, want none", n)
+		}
+	})
+}
+
+// A delivered ask of an update round whose mark the store refuses is asked no more (D9 of
+// dispatch://INFRA-4099's plan): the ask answers delivered with no error, so its row ends, and the
+// machine keeps that the ask of the round was delivered across the rebuild, so a later ask of the
+// round answers already delivered and publishes nothing, though the row read again holds no mark.
+// An ask that meets a refusal of the repair at its head, the window after a refusal or a read of the
+// claim owed publishes nothing and answers the machine's busy answer (ErrMachineBusy), a wait until
+// the claim's writes reach the store again; and a mark the store owes keeps the answer it has.
+func TestARefusedMarkOfADeliveredAskPublishesItNoMore(t *testing.T) {
+	inRound := func(t *testing.T) (*harness, *refusingStore) {
+		t.Helper()
+		h, s := refusingHarness(t, queuedClaim(), func(h *harness) { h.deps.PluginContract = PodUpdateContract })
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		return h, s
+	}
+	// wantBusy is an ask answered the machine's busy answer, a wait until at, and published nothing
+	// more than published.
+	wantBusy := func(t *testing.T, h *harness, publisher *askPublisher, published int, at time.Time) {
+		t.Helper()
+		outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, publisher.publish)
+		due, until := wait.UntilAt(err)
+		if outcome != 0 || !errors.Is(err, ErrMachineBusy) || !errors.Is(err, wait.ErrWaiting) || !until || !due.Equal(at) {
+			t.Fatalf("the ask = %v, %v; want no outcome and the machine's busy answer, a wait until %s", outcome, err, at)
+		}
+		if publisher.calls != published {
+			t.Fatalf("the ask was published %d times, want %d", publisher.calls, published)
+		}
+	}
+	wantStoredMark := func(t *testing.T, h *harness, marked bool) {
+		t.Helper()
+		if stored := h.store.load(h.token); (stored.UpdateTaskedAt != nil) != marked {
+			t.Fatalf("the row holds the ask's mark %v, want a mark %t", stored.UpdateTaskedAt, marked)
+		}
+	}
+
+	t.Run("a delivered ask whose mark the store refuses answers delivered, and the round is asked no more", func(t *testing.T) {
+		h, s := inRound(t)
+		reached := &askPublisher{delivered: true}
+		s.refuseCalls("PutClaim")
+		refusedAt := h.clock.Now()
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the delivered ask whose mark the store refused = %v, %v; want it delivered with no error, so its row ends", outcome, err)
+		}
+		h.wantMemoryIsTheRow()
+		if c := h.claim(); c.UpdateTaskedAt != nil {
+			t.Fatalf("the rebuilt claim holds the mark %v, want none: the row holds none", c.UpdateTaskedAt)
+		}
+		wantBusy(t, h, reached, 1, refusedAt.Add(testProbe))
+
+		s.refuseWhere(nil)
+		h.advance(testProbe)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+			t.Fatalf("a later ask of the round = %v, %v; want it already delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask was published %d times, want once", reached.calls)
+		}
+		wantStoredMark(t, h, false)
+	})
+
+	t.Run("a repair the store refuses at the head of the ask publishes nothing", func(t *testing.T) {
+		h, s := inRound(t)
+		h.store.fail("PutClaim", brokenConnection())
+		if err := h.handle(StreamTurnStart{Claim: h.token}); err == nil {
+			t.Fatal("the turn start over a broken connection returned no error, want its owed write's")
+		}
+		h.store.fail("PutClaim", nil)
+		s.refuseCalls("PutClaim")
+		reached := &askPublisher{delivered: true}
+		wantBusy(t, h, reached, 0, h.clock.Now().Add(testProbe))
+		h.wantMemoryIsTheRow()
+		wantStoredMark(t, h, false)
+	})
+
+	t.Run("an ask in the window after a refusal publishes nothing until the window ends", func(t *testing.T) {
+		h, s := inRound(t)
+		s.refuseCalls("PutClaim")
+		refusedAt := h.clock.Now()
+		if err := h.handle(StreamTurnStart{Claim: h.token}); !errors.Is(err, s.err) {
+			t.Fatalf("the turn start returned %v, want the store's refusal", err)
+		}
+		s.refuseWhere(nil)
+		reached := &askPublisher{delivered: true}
+		wantBusy(t, h, reached, 0, refusedAt.Add(testProbe))
+
+		h.advance(testProbe)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the ask after the window = %v, %v; want it delivered", outcome, err)
+		}
+		wantStoredMark(t, h, true)
+	})
+
+	t.Run("an ask while the read of the claim is owed publishes nothing", func(t *testing.T) {
+		h, s := inRound(t)
+		h.store.fail("ReadClaim", brokenConnection())
+		s.refuseCalls("PutClaim")
+		refusedAt := h.clock.Now()
+		if err := h.handle(StreamTurnStart{Claim: h.token}); !errors.Is(err, s.err) {
+			t.Fatalf("the turn start returned %v, want the store's refusal", err)
+		}
+		reached := &askPublisher{delivered: true}
+		wantBusy(t, h, reached, 0, refusedAt.Add(testProbe))
+		wantStoredMark(t, h, false)
+	})
+
+	t.Run("a mark the store owes keeps its answer", func(t *testing.T) {
+		h, _ := inRound(t)
+		h.store.fail("PutClaim", brokenConnection())
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); outcome != UpdateAskDelivered || SortClaimWriteFailure(err) != WriteOwed {
+			t.Fatalf("the delivered ask whose mark is owed = %v, %v; want it delivered, with the owed write's error", outcome, err)
+		}
+		h.store.fail("PutClaim", nil)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+			t.Fatalf("the next ask once the store answers = %v, %v; want it already delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask was published %d times, want once", reached.calls)
+		}
+		wantStoredMark(t, h, true)
+	})
 }

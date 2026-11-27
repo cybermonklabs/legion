@@ -234,6 +234,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return ReleasedNames{}, err
+	}
 	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
 	// database that has stopped answering does not hold the machine's lock for the outage.
 	reading, cancel := m.bounded(ctx)
@@ -305,8 +308,9 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	// The exception to write's retry (Machine.write): made once under its bound, since a second try
 	// after a cut whose first try freed the names would free none and answer an empty Freed as a
 	// success, losing the names the first try freed. A refusal this section met stands for it
-	// too, and the release reaches no store (D2 of dispatch://INFRA-4099's plan).
-	if err = m.refused(); err == nil {
+	// too, and so does the window after a refused write's read, and the release reaches no store
+	// (withheld, D2 and D5 of dispatch://INFRA-4099's plan).
+	if err = m.withheld(); err == nil {
 		releasing, cancel := m.bounded(ctx)
 		released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
 		cancel()

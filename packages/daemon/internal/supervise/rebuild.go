@@ -2,23 +2,32 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A claim write the store refused makes memory the stored row again (R2 of dispatch://INFRA-4099's
 // spec): the refusal stands for the rest of its decision (Machine.refusal), and the decision ends
 // by reading the claim's row and building the machine again over it, as a daemon start builds one
-// (settleRefusal). The decisions D1 to D4 of that issue's plan are the design this file builds.
+// (settleRefusal). A read that lands opens a window of one probe interval in which no claim write
+// reaches the store (withheld); a read that fails holds every decision until a read lands
+// (awaitRead). The decisions D1 to D5 and D9 of that issue's plan are the design this file builds.
 
 // rereadLine is the line of a claim read again after a refused claim write, at Info
-// (settleRefusal): the refused write's own line (refusedWriteLine) says what was refused, and this
-// one what the machine holds now, the state of the row it was built again over and the pending
-// delivery that row holds. It is pinned as a constant for the reason refusedWriteLine is: an
-// operator and a production check read the pair of lines whole.
+// (settleRefusal, reread): the refused write's own line (refusedWriteLine) says what was refused,
+// and this one what the machine holds now, the state of the row it was built again over, the
+// pending delivery that row holds and the end of the window its writes wait out
+// (Machine.writesWaitUntil); a read that lands after one that failed adds the events the wait
+// dropped (Machine.rereadDropped). It is pinned as a constant for the reason refusedWriteLine
+// is: an operator and a production check read the pair of lines whole.
 const rereadLine = "supervise: the claim was read again from the store after a refused write"
 
-// rereadFailedLine is the line of a read after a refused claim write that answered no row, at Warn
-// (settleRefusal).
+// rereadFailedLine is the line of a read after a refused claim write that failed or answered no
+// row, at Warn, at each try (reread): the claim decides nothing until a read lands, and the read
+// is tried again at the probe interval.
 const rereadFailedLine = "supervise: the claim could not be read again from the store after a refused write"
 
 // claimRefusal is a claim write the rule refused (refusedWrite), as the decision that met it holds
@@ -35,12 +44,52 @@ type claimRefusal struct {
 
 // refused is the claim write the store refused in the decision now running, nil for none: the
 // answer of every claim write the decision makes after it, none of which reaches the store
-// (Machine.write, revive's admission, ReleaseNames' release; D2 of dispatch://INFRA-4099's plan).
+// (Machine.write, and withheld, which every claim write asks; D2 of dispatch://INFRA-4099's plan).
 func (m *Machine) refused() error {
 	if m.refusal == nil {
 		return nil
 	}
 	return m.refusal.err
+}
+
+// withheld is the answer of a claim write the machine does not send to the store, nil for one it
+// sends: the refusal the decision met (refused), and, in the window after a read of the row that
+// landed (writesWait, D5 of dispatch://INFRA-4099's plan), errWritesWait. The rule owes that one
+// (SortClaimWriteFailure), so the decision goes on over memory as it stands, and the first
+// decision after the window makes the write (repair). Every claim write asks it first: the writes
+// through writeClaim, revive's admission and ReleaseNames' release.
+func (m *Machine) withheld() error {
+	if err := m.refused(); err != nil {
+		return err
+	}
+	if _, waits := m.writesWait(); waits {
+		return errWritesWait
+	}
+	return nil
+}
+
+// writeClaim is write for a claim write (SortClaimWriteFailure names the seven): a write withheld
+// answers is not made, and every other is made as write makes it.
+func (m *Machine) writeClaim(ctx context.Context, call func(context.Context) error) error {
+	if err := m.withheld(); err != nil {
+		return err
+	}
+	return m.write(ctx, call)
+}
+
+// writesWait is the end of the window after a read that landed (Machine.writesWaitUntil), and
+// whether the clock is still inside it. A window that has ended is cleared, so a machine past it
+// reads no clock here again.
+func (m *Machine) writesWait() (time.Time, bool) {
+	until := m.writesWaitUntil
+	if until.IsZero() {
+		return until, false
+	}
+	if m.deps.Clock.Now().Before(until) {
+		return until, true
+	}
+	m.writesWaitUntil = time.Time{}
+	return time.Time{}, false
 }
 
 // lostSession is a forget of the claim's session held for Deps.SessionLost (Machine.lostTold): the
@@ -69,13 +118,7 @@ func (m *Machine) tellLost() {
 // event, and unlock, the end of every other locked section (D2 of dispatch://INFRA-4099's plan).
 //
 // It gives back first what the refused decision held (giveBackHeld), then reads the claim and its
-// pending delivery from the store (Store.ReadClaim), once, under the claim-write bound (bounded),
-// and builds the machine again over the row it read (rebuild, D3).
-//
-// A read that fails, or that finds no row, builds nothing: what the decision held is given back
-// all the same, and the line says so (rereadFailedLine). D5 of the plan holds the claim's decisions
-// until a read lands and tries the read again at the probe interval; this decision leaves memory as
-// the give-back left it.
+// pending delivery from the store and builds the machine again over the row it read (reread).
 func (m *Machine) settleRefusal(ctx context.Context) {
 	refusal := m.refusal
 	if refusal == nil {
@@ -83,19 +126,91 @@ func (m *Machine) settleRefusal(ctx context.Context) {
 	}
 	m.refusal = nil
 	m.giveBackHeld()
+	m.reread(ctx, "store", refusal.store)
+}
+
+// reread reads the claim and its pending delivery from the store (Store.ReadClaim), once, under
+// the claim-write bound (bounded), after a refused claim write: settleRefusal's read, and each try
+// of it again while it is owed (awaitRead). attrs name the refused write, for the lines.
+//
+// A read that lands builds the machine again over the row it read (rebuild, D3), and opens the
+// window of D5 of dispatch://INFRA-4099's plan: until a probe interval from now no claim write
+// reaches the store (Machine.writesWaitUntil, withheld). So a claim whose every write is refused
+// tries one write in each probe interval, and a launch in the window starts no process, since a
+// launch's first step is its launching write and the launch ends where that write fails (writeTry).
+//
+// A read that fails, or that finds no row, builds nothing: the read is owed (Machine.rereadOwed)
+// and tried again at the probe interval (TimerReread), and the claim decides nothing until one
+// lands (awaitRead). What the refused decision held is given back all the same, and that
+// decision's end gives back the rest (unlock's endPodPark, endRefreshLane and tellWakeQueue); it
+// publishes nothing, so every reader reads the claim as it was published before that decision.
+func (m *Machine) reread(ctx context.Context, attrs ...any) {
 	reading, cancel := m.bounded(ctx)
 	row, found, err := m.deps.Store.ReadClaim(reading, m.claim.Token)
 	cancel()
+	probe := m.deps.Timeouts.Probe
 	if err != nil || !found {
-		m.log.Warn(rereadFailedLine, "store", refusal.store, "found", found, "error", err)
+		m.rereadOwed = true
+		m.arm(TimerReread, probe, "")
+		m.log.Warn(rereadFailedLine, append(attrs, "found", found, "error", err, "retry", probe)...)
 		return
 	}
+	owed, dropped := m.rereadOwed, m.rereadDropped
+	m.rereadOwed, m.rereadDropped = false, nil
 	m.rebuild(ctx, row)
+	m.writesWaitUntil = m.deps.Clock.Now().Add(probe)
 	delivery := ""
 	if row.Pending != nil {
 		delivery = row.Pending.ID
 	}
-	m.log.Info(rereadLine, "store", refusal.store, "state", row.State, "generation", row.Generation, "delivery", delivery)
+	attrs = append(attrs, "state", row.State, "generation", row.Generation, "delivery", delivery,
+		"writesWaitUntil", m.writesWaitUntil)
+	if owed {
+		total := 0
+		for _, n := range dropped {
+			total += n
+		}
+		attrs = append(attrs, "dropped", total, "droppedEvents", dropped)
+	}
+	m.log.Info(rereadLine, attrs...)
+}
+
+// awaitRead is handle while a read of the claim's row is owed after a refused claim write
+// (Machine.rereadOwed, D5 of dispatch://INFRA-4099's plan): it decides nothing over the memory
+// that decision left. The read's own timer tries the read (reread). A request is answered a wait
+// until that timer's next try (rereadWait), and so is the end of a compaction, whose answer is
+// what Machine.Compact reads of it; the caller asks again then. Every other event is dropped,
+// counted by its kind (Machine.rereadDropped), and named in the line of the read that lands.
+func (m *Machine) awaitRead(ctx context.Context, ev Event) error {
+	if timer, ok := ev.(Timer); ok && timer.Kind == TimerReread {
+		if pass, err := m.fence(ctx, ev); !pass {
+			return err
+		}
+		m.reread(ctx)
+		return nil
+	}
+	_, request := requestName(ev)
+	if _, ending := ev.(CompactEnded); request || ending {
+		return m.rereadWait()
+	}
+	if m.rereadDropped == nil {
+		m.rereadDropped = map[eventKind]int{}
+	}
+	m.rereadDropped[kindOf(ev)]++
+	return nil
+}
+
+// rereadWait is the answer of a request, and of every locked section of the machine, while a read
+// of the claim's row is owed (Machine.rereadOwed): a wait until the read's next try (TimerReread),
+// at which the caller asks again, nothing of its ask having happened. It is nil when no read is
+// owed.
+func (m *Machine) rereadWait() error {
+	if !m.rereadOwed {
+		return nil
+	}
+	next := m.timers[TimerReread].due
+	return wait.Until(next, fmt.Sprintf("claim %s decides nothing until its row is read again after a refused claim write; the read is tried again at %s",
+		m.claim.Token, next.UTC().Format(time.RFC3339)))
 }
 
 // giveBackHeld is the first half of the rebuild (D3 of dispatch://INFRA-4099's plan), run before
@@ -145,6 +260,13 @@ func (m *Machine) giveBackHeld() {
 //     fence reads steppedAt.
 //   - podPark, refreshCredit, queueTold: kept to the end of the decision, and settled there by
 //     unlock against the rebuilt claim (giveBackHeld).
+//   - askDelivered: a publish of an update round's ask that happened and whose mark the store
+//     refused (PublishUpdateAsk, D9), which the row read again does not hold.
+//
+// Set by the rebuild, the state of the rule itself (D5): refusal, cleared as the rebuild begins
+// (settleRefusal); rereadOwed and rereadDropped, set while no read of the row has landed and
+// cleared by the read that lands; writesWaitUntil, the end of the window that read opens
+// (reread).
 //
 // Kept in part:
 //
