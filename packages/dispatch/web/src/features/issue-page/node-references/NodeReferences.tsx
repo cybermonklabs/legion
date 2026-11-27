@@ -74,13 +74,16 @@ function useIssueItemWords(
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
  *
- * Each row names the citing node by words the page already holds for it: a comment, a message
- * or a question of this issue by all of its words, drawn whole with no cut and no clamp, beside
- * its word, each reference in them named from the page's one batched read of what references
- * point at (`useKnownReferences`), as the outline's row names it; and any other node by the
- * word of its tie or of its kind alone, with its issue and its time. The read's excerpt is the
- * node's stored text, the markdown its author typed with every address it cites, and is drawn
- * nowhere. The rows are drawn 20 at a time, with Show more under them (`ReferenceList`).
+ * Each row names the citing node by words the page holds for it: a comment, a message
+ * or a question of this issue by all of its words, drawn whole with no cut and no clamp; any
+ * other node by the first line of its own words, from the server's reading of the read's excerpt,
+ * cut as the outline cuts a row's one line (decision 560), so two tasks of one plan that serve
+ * the row read apart; each beside its word, and each reference in them named from the page's
+ * one batched read of what references point at (`useKnownReferences`), as the outline's row
+ * names it. A node with no words is named by the word of its tie or of its kind alone, with its
+ * issue and its time. The read's excerpt is the node's stored text, the markdown its author
+ * typed with every address it cites, and is drawn nowhere. The rows are drawn 20 at a time, with
+ * Show more under them (`ReferenceList`).
  *
  * It costs no request on the first load and none per node. Two gates hold that: the
  * reader opens the list, and Details is open around it, which on the issue page it is not when
@@ -226,10 +229,11 @@ function ReferenceList({
           // The edge's own word where the model gives the tuple one, and the kind of node where
           // it does not, which is every mention: the old panel's own rule.
           const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
-          // A comment, a message or a question of this issue is named by its words, whole, which
-          // wrap within the row; every other node, and an item whose read has not answered, by
-          // its word alone, which is then the link: its stored text is markup, and an address, a
-          // slug or an id is no name.
+          // A citing node is named by its words - a comment, a message or a question of this
+          // issue by all of them, which wrap within the row, any other node by its first line -
+          // beside its word; a node with no words, and an item whose read has not answered and
+          // whose excerpt the read sent no reading of, by its word alone, which is then the link:
+          // its stored text is markup, and an address, a slug or an id is no name.
           const named = row.words !== "";
           const elsewhere = row.source !== undefined && row.source !== issueKey;
           const text = named ? row.words : (word ?? "");

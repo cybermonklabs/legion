@@ -50,6 +50,7 @@ import {
   followAsk,
   getAsk,
   getIssue,
+  getIssueCoverage,
   getIssueEvents,
   getMyState,
   patchIssue,
@@ -139,12 +140,15 @@ import {
   isOlderPageRead,
   newestHistoryEntry,
   olderPageAnswered,
+  putPlan,
   putStepExperiment,
   rowFacts,
   runValuesUnread,
   type StepsReads,
   seededHistoryEntry,
   stepRun,
+  stepTask,
+  taskRuns,
   watchStepsReads,
   whollyInHistoryView,
 } from "./issue-page-m";
@@ -5366,6 +5370,109 @@ test("what references the focused row opens from its facts, and each row leads t
   );
 });
 
+/** The first lines of the two tasks of the plan the row below seeds, each serving the statement:
+ *  each task holds a second sentence after it, which its row does not draw. */
+const SERVING_TASK_LINES = [
+  "Draw the history in Details.",
+  "Read the history from the event log.",
+] as const;
+
+// Decision 560: each row of what references the focused row names the node that references it by
+// the first line of its own words, as the outline names a row, beside its tie's word and its day.
+// A statement that two tasks of one plan serve drew two rows that each read "served by" and a day
+// alone, which a reader cannot tell apart; each now reads its own task's first line, the two
+// differ, and no row draws an address, a slug, an id or the task's words past its first line.
+// SLOW(>=2s): a statement and a plan of two tasks written, the plan's index waited for, and one
+// load of the issue with the list opened.
+test("what references the focused row names each task that serves it by the task's first line", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+        title: "Two tasks serve a statement",
+      });
+      const statement = `dispatch://${issue.key}/spec#b-r-served`;
+      const plan = await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `:::plan_task{#t-draw serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[0]} Each entry keeps its day.\n:::\n\n` +
+          `:::plan_task{#t-read serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[1]} It pages two hundred at a time.\n:::\n`,
+        name: "plan.md",
+      });
+      // The serving edges are read from the block index of the version just written, which the
+      // coverage read counts too: the list is read once, when the reader opens it, so the seed
+      // waits for both tasks to stand there first.
+      await expect
+        .poll(
+          async () =>
+            (await getIssueCoverage(issue.key)).requirements?.find(
+              (row) => row.block_id === "r-served"
+            )?.plan_tasks,
+          `the plan's two tasks never came to serve ${statement}`
+        )
+        .toBe(2);
+      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
+        (artifact) => artifact.primary
+      );
+      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      return {
+        key: issue.key,
+        planSlug: plan.artifact.slug,
+        specSlug: spec.slug,
+        statement: blockNode(spec.slug, "r-served"),
+      };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.statement);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      const rows = references.locator("li");
+      await expect(rows, "the list does not draw one row per serving task").toHaveCount(2);
+      // Each row's link names its task by the task's first line alone, beside "served by".
+      for (const line of SERVING_TASK_LINES) {
+        await expect(
+          rows.getByRole("link", { exact: true, name: line }),
+          `no row names its task by the task's first line "${line}"`
+        ).toHaveCount(1);
+      }
+      // The rows are drawn and settled: each link was found by its line above, so one read of
+      // their text is the state the row means to check.
+      for (const text of await rows.allTextContents()) {
+        expect(text, "a task's row does not say what the task does for the statement").toContain(
+          NODE_REFERENCES_WORDS.edges.serves
+        );
+        for (const name of [
+          "dispatch://",
+          seeded.planSlug,
+          seeded.specSlug,
+          "#b-",
+          "t-draw",
+          "t-read",
+          ":::",
+          "Each entry keeps its day.",
+          "It pages two hundred at a time.",
+        ]) {
+          expect(
+            text,
+            `a row of what references the statement names its task by "${name}"`
+          ).not.toContain(name);
+        }
+      }
+    }
+  );
+});
+
 /** The agent session that asks the question of the row below, with the title and the tmux target
  *  its writes stamp, which its copy handles hold. */
 const factsAsker = {
@@ -6652,6 +6759,200 @@ test("the history names the experiment and the variant of the newest run once un
       ).toHaveCount(0);
       await expect(history.locator("[data-step-variant]")).toHaveCount(0);
     }
+  });
+});
+
+/**
+ * An issue whose steps ran from a plan, written as Legion's daemon writes them: the plan of the
+ * first run (`putPlan`), then each run (`putStep`). `planned`'s plan gives four tasks: `docs`, an
+ * implementation, and `default`, an implementation and a review, each needing no task; `release`,
+ * a test, which needs both; and `cleanup`, a review, written with no needs, so its needs are not
+ * recorded. `docs`' implementation and `default`'s passed and `default`'s review runs; no step of
+ * `release` or `cleanup` ran; and a run of `earlier`, a task the plan does not hold, passed.
+ */
+async function seedPlannedSteps(): Promise<{ planned: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const planned = await createIssue({ project: "CORE", title: "Runs of a plan" });
+  await putPlan(planned.key, [
+    { id: "docs", needs: [], steps: ["implementer"] },
+    { id: "default", needs: [], steps: ["implementer", "reviewer"] },
+    { id: "release", needs: ["docs", "default"], steps: ["tester"] },
+    { id: "cleanup", steps: ["reviewer"] },
+  ]);
+  // A run of step `step` of `task` that started at `from`, and passed at `to` where it is given.
+  const run = (task: string, step: number, role: string, from: string, to?: string) => {
+    const input: Parameters<typeof putStep>[2] = {
+      agent: `legion-core-${planned.key.toLowerCase()}-${role}`,
+      generation: 1,
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      role,
+      started_at: stepAt(from),
+      step,
+      task,
+      type: role === "reviewer" ? "review" : "implementation",
+    };
+    return putStep(
+      planned.key,
+      crypto.randomUUID(),
+      to === undefined ? input : { ...input, ended_at: stepAt(to), result: "passed" }
+    );
+  };
+  await run("earlier", 1, "implementer", "07:00", "07:30");
+  await run("docs", 1, "implementer", "08:00", "08:30");
+  await run("default", 1, "implementer", "09:00", "09:40");
+  await run("default", 2, "reviewer", "10:00");
+  return { planned: planned.key };
+}
+
+/** The issue of `seedPlannedSteps`, and `unrun`, whose plan gives `default` and `docs`, which
+ *  needs `default`, and none of whose steps ran. */
+async function seedPlannedAndUnrunSteps(): Promise<{ planned: string; unrun: string }> {
+  const seeded = await seedPlannedSteps();
+  const unrun = await createIssue({ project: "CORE", title: "A plan none of whose steps ran" });
+  await putPlan(unrun.key, [
+    { id: "default", needs: [], steps: ["implementer", "reviewer"] },
+    { id: "docs", needs: ["default"], steps: ["implementer"] },
+  ]);
+  return { ...seeded, unrun: unrun.key };
+}
+
+// Each task of the plan draws the tasks of the plan it needs on a line of its own, in its group
+// under the History heading, directly under the group's heading and above its planned steps, in
+// the words of today's Steps tab: "Needs docs, default" for `release`, which needs both, and
+// "Needs not recorded" for `cleanup`, whose plan node was written with no needs. `docs` and
+// `default`, which need none, and `earlier`, a task the plan does not hold, draw no such line;
+// `earlier` holds a run and nothing the plan says of a task, so the history draws it as its run's
+// entry alone, with no group.
+// SLOW(>=2s): a plan and four step records written, and the issue loaded and Details opened.
+test("the history names the tasks of the plan each task needs, and says where its plan recorded none", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    await expect(
+      historyPanel(page).locator("[data-step-run]"),
+      `the history of ${seeded.planned} does not draw its four runs`
+    ).toHaveCount(4);
+    await expect(
+      stepTask(page, "release").locator("[data-step-needs]"),
+      "the history does not name the two tasks of the plan release needs"
+    ).toHaveText("Needs docs, default");
+    await expect(
+      stepTask(page, "release").locator("h3 + [data-step-needs] + [data-step-planned]"),
+      "release's line of needs is not directly under its heading and above its planned steps"
+    ).toHaveCount(1);
+    await expect(
+      stepTask(page, "cleanup").locator("[data-step-needs]"),
+      "the history does not say that cleanup's plan node recorded no needs"
+    ).toHaveText("Needs not recorded");
+    for (const task of ["docs", "default"]) {
+      await expect(stepTask(page, task), `the history draws no group of ${task}`).toHaveCount(1);
+    }
+    await expect(taskRuns(page, "earlier"), "the history draws no run of earlier").toHaveCount(1);
+    for (const task of ["docs", "default", "earlier"]) {
+      await expect(
+        stepTask(page, task).locator("[data-step-needs]"),
+        `${task}, which needs no task or which the plan does not hold, draws a line of needs`
+      ).toHaveCount(0);
+    }
+  });
+});
+
+// Each task of the plan lists the steps the plan gives it in its group under the History
+// heading, named as today's Steps tab names the list, above its runs' entries: each step's place,
+// its name and where it stands - its newest run's state, in the words a run's result is drawn in,
+// or not started before any run of it. `earlier`, a task the plan does not hold, lists none.
+// SLOW(>=2s): a plan and four step records written, and the issue loaded and Details opened.
+test("the history lists the steps the plan gives each task, each with its place, name and state, above its runs", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    const { step_not_started: notStarted, step_results: results } = CONTROL_LABELS;
+    for (const [task, steps] of [
+      ["docs", [`1 implementer ${results.passed}`]],
+      ["default", [`1 implementer ${results.passed}`, `2 reviewer ${results.running}`]],
+      ["release", [`1 tester ${notStarted}`]],
+      ["cleanup", [`1 reviewer ${notStarted}`]],
+    ] as const) {
+      const planned = stepTask(page, task).getByRole("list", {
+        exact: true,
+        name: `Planned steps of task ${task}`,
+      });
+      await expect(planned, `the history lists no planned steps of ${task}`).toHaveCount(1);
+      await expect(
+        planned.getByRole("listitem"),
+        `the planned steps of ${task} do not each read their place, their name and their state`
+      ).toHaveText([...steps]);
+    }
+    await expect(
+      taskRuns(page, "default").and(
+        historyPanel(page).locator(
+          '[data-step-task="default"]:has(> [data-step-planned]) ~ * [data-step-run]'
+        )
+      ),
+      "default's planned steps are not above its two runs"
+    ).toHaveCount(2);
+    await expect(taskRuns(page, "earlier"), "the history draws no run of earlier").toHaveCount(1);
+    await expect(
+      stepTask(page, "earlier").locator("[data-step-planned]"),
+      "earlier, which the plan does not hold, lists planned steps"
+    ).toHaveCount(0);
+  });
+});
+
+// A task of the plan none of whose steps has run says so in its group under the History heading,
+// in the words of today's Steps tab, directly under its planned steps, and a task with a run says
+// nothing of the kind. An issue whose plan's tasks hold no run at all draws those tasks, each with
+// that line, and no run, and not the None of an issue that holds no task.
+// SLOW(>=2s): two plans and four step records written, and two issues loaded and Details opened.
+test("the history says a task of the plan has no run yet in place of its runs, and draws a plan none of whose steps ran rather than None", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedAndUnrunSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    for (const task of ["release", "cleanup"]) {
+      await expect(
+        stepTask(page, task).locator("[data-step-no-run]"),
+        `the history does not say that none of ${task}'s steps has run`
+      ).toHaveText(`No step of task ${task} has run yet.`);
+      await expect(
+        stepTask(page, task).locator("[data-step-planned] + [data-step-no-run]"),
+        `${task}'s line is not directly under its planned steps`
+      ).toHaveCount(1);
+      await expect(taskRuns(page, task)).toHaveCount(0);
+    }
+    for (const task of ["docs", "default"]) {
+      await expect(stepTask(page, task), `the history draws no group of ${task}`).toHaveCount(1);
+    }
+    await expect(taskRuns(page, "earlier"), "the history draws no run of earlier").toHaveCount(1);
+    for (const task of ["docs", "default", "earlier"]) {
+      await expect(
+        stepTask(page, task).locator("[data-step-no-run]"),
+        `${task}, which ran, says that none of its steps has run`
+      ).toHaveCount(0);
+    }
+
+    await gotoIssue(page, `/issues/${seeded.unrun}`);
+    await openDetails(page);
+    const history = historyPanel(page);
+    await expect(
+      history.locator("[data-step-no-run]"),
+      `the history does not draw the tasks of ${seeded.unrun}'s plan, each saying none of its steps has run`
+    ).toHaveText(["No step of task default has run yet.", "No step of task docs has run yet."]);
+    // The runs are read once the lines above are drawn, so no run is drawn from that read on.
+    await expect(
+      history.locator("[data-step-run]"),
+      `the history of ${seeded.unrun} draws a run`
+    ).toHaveCount(0);
+    await expect(
+      history.getByText(CONTROL_LABELS.none, { exact: true }),
+      `the history of ${seeded.unrun}, whose plan holds two tasks, reads None`
+    ).toHaveCount(0);
   });
 });
 

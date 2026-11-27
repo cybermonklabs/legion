@@ -95,8 +95,13 @@ export default {
        *  carries now, in place of that id and the word before it (`history-model.ts`): an id is no
        *  name, so the line says what the block is rather than which one. */
       history_gone_block: "a block that is gone",
+      /** What names a run's entry of the history, before its task and its step, "Run: Task
+       *  default, Step 2" (`history-entries.tsx`'s `Entry`): the entry takes the focus Show more
+       *  hands to it where it holds no control, and is heard by that name. */
+      history_run: "Run",
       /** What a run of the issue's steps, an entry of the history (`history-entries.tsx`), calls
-       *  its task, before the task's own name; the label of each field of a run, the Steps tab's
+       *  its task, before the task's own name, and so does the heading of a task's group above
+       *  the entries (`IssueHistory.tsx`); the label of each field of a run, the Steps tab's
        *  columns, and of the step a failed or stopped run sent its task back to; and how a run
        *  ended, or that it runs, in the tab's words. */
       steps_task: "Task",
@@ -118,6 +123,11 @@ export default {
         running: "running",
         stopped: "stopped",
       },
+      /** Where a step the plan gives a task stands before any run of it, after the step's place
+       *  and name in the list of the task's planned steps in its group above the history's entries
+       *  (`history-entries.tsx`'s `PlannedSteps`); a step a run has reached stands where that run
+       *  does, in `step_results`' words. The Steps tab's words. */
+      step_not_started: "not started",
       /** Draws the next entries of the history under the last one drawn, which reads the next
        *  page of the issue's log first where every entry read is drawn; and the word after the
        *  count of the entries read and not drawn that it says in brackets, "Show more (25 left)"

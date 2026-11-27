@@ -2,6 +2,7 @@ import type {
   CommentWithTrees,
   DisplayTree,
   GraphEdge,
+  GraphReferences,
   IssueAskRow,
   MessageWithTrees,
 } from "../../../api/types";
@@ -9,8 +10,9 @@ import { isBlockItemKind } from "../../refs/block-reference";
 import { isPartyRoute } from "../../refs/party-references";
 import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
-import { wordsOf } from "../../refs/tree-fragment";
-import { NODE_REFERENCES_WORDS } from "../page-words";
+import { firstWordedBlock, wordsOf } from "../../refs/tree-fragment";
+import { drawnLine, firstLineOf } from "../issue-tree";
+import { NODE_REFERENCES_WORDS, NODE_TYPES } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
@@ -24,21 +26,29 @@ import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-referen
  * (`tree-drafts.ts`'s `servePlacements`), so those two reach the reader from the outline; a
  * mention of a node reaches them nowhere else, which is what this list is for.
  *
- * A row is named by words the page already holds for the citing node, and never by the read's
- * own text: the read's excerpt is the stored text, the markdown its author typed with every
+ * A row is named by words the page holds for the citing node, and never by the read's own
+ * text: the read's excerpt is the stored text, the markdown its author typed with every
  * `dispatch://` address of it, where the page draws a node by the words of the server's reading
  * of it. The page holds those words for the comments, messages and questions of the
- * focused node's own issue, which the outline reads (`issueItemWords`); a reference in them is
- * named as the outline's row names it, from the page's one batched read of what its references
- * point at, and by the page's word for what it points at where that read names nothing
- * (`namedWords`); every other node is named by the word of its tie or of its kind, with its
- * issue and its time.
+ * focused node's own issue, which the outline reads (`issueItemWords`), and names such an item
+ * by all of them; and the read sends the server's reading of every other citing node's excerpt
+ * (`text_tree`), by whose first line, cut as the outline cuts a row's one line, a block - a task,
+ * a statement, a check - and an item of another issue are named (`excerptLine`, decision 560).
+ * A reference in those words is named as the outline's row names it, from the page's one
+ * batched read of what its references point at, and by the page's word for what it points at
+ * where that read names nothing (`namedWords`); a node with no words is named by the word of
+ * its tie or of its kind, with its issue and its time.
  *
  * Pure, so the rows are read without a browser: the component draws them and holds the reads.
  */
 
 /** The edge kind that is no tuple of the model: one node's text names another. */
 const MENTIONS = "mentions";
+
+/** One edge of the references read as the page holds it: its excerpt carries the server's
+ *  reading of its text (`text_tree`), which every request of the page asks for
+ *  (`Dispatch-Trees`, `api/client.ts`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
 
 /** One node that references the focused one. */
 export interface ReferenceRow {
@@ -63,16 +73,21 @@ export interface ReferenceRow {
    *  component draws where the citing node is not of the focused node's own issue (the old
    *  panel's "Comment · LAY-9"); `undefined` where the read names neither. */
   readonly source: string | undefined;
-  /** What the row draws of the citing item's words, where it is a comment, a message or a
-   *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
-   *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
-   *  for every other node, which the component names by its word. Never the read's own text.
-   *  The component draws the whole string as text the page did not author. Two parts of it can
+  /** What the row draws of the citing node's words. A comment, a message or a question of the
+   *  focused node's own issue whose words the page holds (`issueItemWords`) is named by every one
+   *  of them, with no cut; a block - a task, a statement, a check - and an item of another issue
+   *  whose excerpt the read sent a reading of that holds a word, by the first line of those words,
+   *  cut as the outline cuts a row's one line (`excerptLine`); each reference in either named
+   *  (`namedWords`). `""` for an issue, a document and a component, whose excerpt is the issue's
+   *  title, the document's name or the component's title, and for a node with no words: the
+   *  component names each by its word. Never the read's own text.
+   *  The component draws the whole string as text the page did not author. Three parts of it can
    *  be the page's own words all the same: the word for the kind of a reference the read has
-   *  not named (`unnamedWords`, from `NODE_REFERENCES_WORDS.kinds`), and ` · edited` after the
+   *  not named (`unnamedWords`, from `NODE_REFERENCES_WORDS.kinds`), ` · edited` after the
    *  name of a reference whose post its author edited (`editedName`, from `POST_MARK_WORDS`,
-   *  declared as `CONTROL_LABELS.post_edited`). Both come from tables the page declares, so
-   *  neither needs a mark of its own to be a declared word. */
+   *  declared as `CONTROL_LABELS.post_edited`), and the ellipsis of a first line cut inside a
+   *  sentence (`drawnLine`), as every one line of a node draws it. Each comes from a rule the page
+   *  declares, so none needs a mark of its own to be a declared word. */
   readonly words: string;
 }
 
@@ -143,18 +158,20 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * no cut (`namedWords`), its references named from `known.names`, the page's one batched read of
  * what its references point at, by reference (`reference-names.tsx`), and marked where their post
  * was edited from `known.edited` (`KnownReferences.edited`), as the outline's row marks them;
- * every other node, and an item whose words the page does not hold yet, carries none. `issue` is
- * the focused node's own issue, which those items are of, or `undefined` where the focused node
- * belongs to none.
+ * a block and an item of another issue carry the first line of their excerpt's reading, named
+ * the same way (`excerptLine`); and an issue, a document and a component, whose excerpt is the
+ * issue's title, the document's name or the component's title, carry none, as a node with no
+ * words does. `issue` is the focused node's own issue, which those items are of, or `undefined`
+ * where the focused node belongs to none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
-  edges: readonly GraphEdge[],
+  edges: readonly ReadEdge[],
   known: Pick<KnownReferences, "edited" | "names">,
   issue: string | undefined
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
-  // The issues the page's names know, which a citing item's words tell their references by: read
+  // The issues the page's names know, which a citing node's words tell their references by: read
   // once for the whole list.
   const issues = knownIssueKeys(known.names);
   for (const edge of edges) {
@@ -172,21 +189,76 @@ export function referenceRows(
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
-      words: words === undefined ? "" : namedWords(words, known, issues, issue),
+      words:
+        words === undefined
+          ? excerptLine(edge, known, issues)
+          : namedWords(words, known, issues, issue),
     });
   }
   return [...rows.values()];
 }
 
 /**
- * The words a citing item is named by: all of them, with no cut, since a row of a node's
- * references is no place the page shortens, its runs of white space one space each, with each
- * reference they write named as the outline's row names it (`rowReferenceWords`), `issue` being
- * the issue the item is of: an issue by its key and its title, a party by the name its own read
- * gives it, anything else by its target's words, then ` · edited` where its post's author edited
- * it (`known.edited`). The server's reading of a bare `dispatch://`
- * reference is a link whose words are the address itself, so the words write it as typed; a
- * reference the read has not named is drawn by the page's word for what it names
+ * The first line of a citing node's own words (decision 560), from the server's reading of the
+ * read's excerpt of them (`text_tree`): the head of a block's text, a task's, a statement's or a
+ * check's, and of an item's, as the graph cuts each (`refs.BlockExcerpt`, `itemExcerpt`). It is
+ * the line the outline draws for a node (`lineReading`, `useNodeLine`): the first block of the
+ * reading that holds any words, and of a typed block's own content where that block is one
+ * (`lineBlock`), cut by R1's first-line rule (`firstLineOf`) with its ellipsis (`drawnLine`),
+ * each reference in it named first (`namedWords`), as the outline's line names its references
+ * before it cuts, by the citing node's own issue. `""` for a node whose excerpt is no words of
+ * its own - an issue's title, a document's name, which is its file's, and a component's title,
+ * whose reading the server sends and no page reads (`api/display_trees.go`'s
+ * `graphExcerptRead`) - for an excerpt the read sent no reading of, and for a reading none of
+ * whose blocks holds a word: such a node is named by its word. Never the excerpt's own text,
+ * which is the markdown its author typed.
+ */
+function excerptLine(
+  edge: ReadEdge,
+  known: Pick<KnownReferences, "edited" | "names">,
+  issues: readonly string[]
+): string {
+  if (edge.node.kind !== "block" && !isBlockItemKind(edge.node.kind)) return "";
+  const reading = edge.excerpt?.text_tree;
+  const block = reading === undefined ? undefined : lineBlock(reading);
+  if (block === undefined) return "";
+  return drawnLine(firstLineOf(namedWords(wordsOf(block), known, issues, edge.node.issue_key)));
+}
+
+/** The kinds of node the outline draws (`NODE_TYPES`), as a reading names a node's type: a block
+ *  of a reading of one of them is a typed block - a task, a statement, a check, a question or a
+ *  note - as the outline tells a document's typed blocks from its own text (`tree-drafts.ts`'s
+ *  `addDocumentBlocks`). */
+const NODE_KINDS: readonly string[] = NODE_TYPES;
+
+/**
+ * The block of an excerpt's reading that a citing node's line is read from: the first of its
+ * blocks that holds a word (`firstWordedBlock`), as the outline reads a node's line
+ * (`lineReading`). A typed block's excerpt is the block whole, so its reading is one node, the
+ * typed block, whose content is the block's own paragraphs and headings
+ * (`api/display_trees.go`'s `graphExcerptRead`); the outline reads a typed block from that
+ * content (`tree-drafts.ts`'s `TreeContext.treeOf`), so its line is read from the first block of
+ * that content that holds a word. Read from the typed block whole, the line ran a task's heading
+ * into the paragraph under it.
+ */
+function lineBlock(reading: DisplayTree): DisplayTree | undefined {
+  const first = firstWordedBlock(reading);
+  if (first === undefined) return undefined;
+  // `firstWordedBlock` answers the reading holding that one block and nothing else.
+  const [block] = first.content as readonly [DisplayTree];
+  return NODE_KINDS.includes(block.type) ? firstWordedBlock(block) : first;
+}
+
+/**
+ * The words a citing node is named by, before any cut: an item's all of them, since a row of a
+ * node's references draws an item of the focused node's issue whole, and another node's the
+ * first block of them, which its caller cuts to one line (`excerptLine`). Their runs of white
+ * space are one space each, and each reference they write is named as the outline's row names it
+ * (`rowReferenceWords`), `issue` being the issue the citing node is of: an issue by its key and
+ * its title, a party by the name its own read gives it, anything else by its target's words, then
+ * ` · edited` where its post's author edited it (`known.edited`). The server's reading of a bare
+ * `dispatch://` reference is a link whose words are the address itself, so the words write it as
+ * typed; a reference the read has not named is drawn by the page's word for what it names
  * (`unnamedWords`), since an address is no name, and the rest of the words stay. The batched read
  * names no party, so a party nothing names reads as its author wrote it, as the outline's row
  * reads it. `issues` is `knownIssueKeys(known.names)`.
@@ -214,7 +286,7 @@ function namedWords(
 }
 
 /**
- * What a citing item's words draw for a reference the page's batched read names nothing for:
+ * What a citing node's words draw for a reference the page's batched read names nothing for:
  * an issue by its key alone, as the outline's row draws one whose title has not come
  * (`rowReferenceWords`), and anything else by the page's word for its kind, as the list names a
  * node it holds no words of (`NODE_REFERENCES_WORDS.kinds`): a question, a comment or a message

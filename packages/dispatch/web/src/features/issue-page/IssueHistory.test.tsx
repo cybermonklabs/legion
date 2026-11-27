@@ -60,6 +60,7 @@ import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
@@ -4137,6 +4138,404 @@ describe("the history is the issue's one timeline", () => {
       restoreReads();
     }
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// What today's Steps tab draws of a task besides its runs (decision 559 of INFRA-1196), which
+// the Steps section drew and the history now draws: the group of each task under the History
+// heading, above the entries - the tasks it needs, the steps the plan gives it, and the line of a
+// task with no run. The cases are part M's of `DetailsSteps.test.tsx`, each assertion where the
+// thing it reads now stands.
+// ---------------------------------------------------------------------------------------------
+
+/** One task of a read of the steps, as the server answers it. */
+type StepTask = NonNullable<IssueSteps["tasks"]>[number];
+
+/** A task of the plan none of whose steps has run: its one step, a tester, not started. */
+function waitingTask(task: string, needs: string[] | null = []): StepTask {
+  return { needs, planned: [{ name: "tester", state: "not started", step: 1 }], steps: [], task };
+}
+
+/** `count` passed runs of the task `task`, each its own record, `<task>-1` and on. */
+function runsOf(task: string, count: number): StepRecord[] {
+  return Array.from({ length: count }, (_, index) =>
+    stepRecord({ id: `${task}-${index + 1}`, task })
+  );
+}
+
+/** The history of `KEY` over a log that holds no event, reading the runs `read` answers, as
+ *  `drawHistory` draws it; `restore` puts everything back. */
+function drawRuns(read: () => Promise<IssueSteps>): { restore: () => void } {
+  const restoreReads = stubHistoryReads([]);
+  stepsRead().mockImplementation(read);
+  const drawn = drawHistory(undefined);
+  return {
+    restore: () => {
+      drawn.unmount();
+      drawn.queryClient.clear();
+      restoreReads();
+    },
+  };
+}
+
+/** Waits until the history draws its list, as it does once the runs have answered, with `runs`
+ *  runs among its entries. */
+async function drawnWithRuns(runs: number): Promise<void> {
+  await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+  await waitFor(() => expect(drawnRuns()).toHaveLength(runs));
+}
+
+/** The group of the task `task`, under the History heading. */
+function group(task: string): HTMLElement {
+  const section = document.querySelector<HTMLElement>(
+    `[data-testid="issue-history"] [data-step-task="${task}"]`
+  );
+  if (section === null) throw new Error(`the history draws no group of the task ${task}`);
+  return section;
+}
+
+/** The text of each element the group of `task` holds that `selector` finds, in its order. */
+function textsIn(task: string, selector: string): (string | null)[] {
+  return [...group(task).querySelectorAll(selector)].map((element) => element.textContent);
+}
+
+/** The tasks whose groups the history draws, in its order. */
+function drawnTasks(): (string | null)[] {
+  return [...document.querySelectorAll('[data-testid="issue-history"] [data-step-task]')].map(
+    (drawn) => drawn.getAttribute("data-step-task")
+  );
+}
+
+/** Whether `later` is drawn after `earlier`. */
+function drawnAfter(earlier: Node, later: Node): boolean {
+  return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
+
+/** `value`, failing the case with `what` where it is null. */
+function found<T>(value: T | null, what: string): T {
+  if (value === null) throw new Error(what);
+  return value;
+}
+
+// Each task draws the tasks of the plan it needs on a line of its own in its group, above its
+// planned steps and its runs' entries, in the Steps tab's words (`taskNeedsLine`): `Needs docs,
+// default` for the task that needs two, and `Needs not recorded` for a task of the plan whose node
+// recorded no needs. A task that needs none, and one the plan does not hold, draw no such line:
+// the one the plan does not hold ran and has nothing else the plan says of a task, so it draws no
+// group, and the history draws it as its run's entry alone. The line holds the record's task
+// names inside the tab's words, so it is text the page did not author.
+test("each task names the tasks of the plan it needs above its runs, and says where its plan node recorded none", async () => {
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "docs-1", step: 1, task: "docs" })],
+        task: "docs",
+      },
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      {
+        needs: ["docs", "default"],
+        planned: [{ name: "tester", state: "running", step: 1 }],
+        steps: [
+          stepRecord({
+            ended_at: null,
+            id: "release-1",
+            result: "",
+            role: "tester",
+            step: 1,
+            task: "release",
+          }),
+        ],
+        task: "release",
+      },
+      waitingTask("cleanup", null),
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await drawnWithRuns(4);
+    expect(
+      textsIn("release", "[data-step-needs]"),
+      "the task that needs two tasks of the plan does not name them"
+    ).toEqual(["Needs docs, default"]);
+    const needs = found(
+      group("release").querySelector("[data-step-needs]"),
+      "the task that needs two draws no line of needs"
+    );
+    const releasePlanned = found(
+      group("release").querySelector("[data-step-planned]"),
+      "the task that needs two draws no planned steps"
+    );
+    expect(
+      drawnAfter(needs, releasePlanned) && drawnAfter(needs, runEntry("release-1")),
+      "the line of needs is not above the task's planned steps and its runs"
+    ).toBe(true);
+    expect(
+      needs.hasAttribute(AUTHOR_TEXT_ATTRIBUTE),
+      "the line of needs is not the tab's words"
+    ).toBe(true);
+    expect(
+      textsIn("cleanup", "[data-step-needs]"),
+      "the task whose plan node recorded no needs does not say so"
+    ).toEqual(["Needs not recorded"]);
+    for (const task of ["docs", "default"]) {
+      expect(
+        textsIn(task, "[data-step-needs]"),
+        `${task}, which needs no task or which the plan does not hold, draws a line of needs`
+      ).toEqual([]);
+    }
+    // `earlier` stands in the history as its run's entry alone, with no group to hold a line.
+    runEntry("earlier-1");
+    expect(
+      drawnTasks(),
+      "earlier, which needs no task or which the plan does not hold, draws a line of needs"
+    ).not.toContain("earlier");
+  } finally {
+    steps.restore();
+  }
+});
+
+// Each task of the plan draws the steps the plan gives it in its group, above its runs' entries,
+// as a list named as the Steps tab names it (`plannedStepsName`), which names the task: each
+// step's place, its name and where it stands - `not started` before any run of it, else its newest
+// run's state, in the words a run's result is drawn in. The place and the name are the plan's, the
+// state the page's own words. A task the plan gives no step draws no such list.
+test("each task lists the steps the plan gives it, each with its place, its name and its state, above its runs", async () => {
+  const { step_not_started: notStarted, step_results: results } = CONTROL_LABELS;
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "passed", step: 1 },
+          { name: "reviewer", state: "failed", step: 2 },
+          { name: "tester", state: "not started", step: 3 },
+        ],
+        steps: [
+          stepRecord({ id: "implement-1", step: 1 }),
+          stepRecord({
+            id: "review-1",
+            result: "failed",
+            returned_to: 1,
+            role: "reviewer",
+            step: 2,
+            type: "review",
+          }),
+        ],
+        task: "default",
+      },
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await drawnWithRuns(3);
+    const planned = found(
+      within(group("default")).queryByRole("list", { name: "Planned steps of task default" }),
+      "the task of the plan draws no list of its planned steps"
+    );
+    const items = within(planned).getAllByRole("listitem");
+    expect(
+      items.map((item) => item.textContent),
+      "the planned steps do not each read their place, their name and where they stand"
+    ).toEqual([
+      `1 implementer ${results.passed}`,
+      `2 reviewer ${results.failed}`,
+      `3 tester ${notStarted}`,
+    ]);
+    expect(planned.hasAttribute("data-step-planned")).toBe(true);
+    expect(
+      drawnAfter(planned, runEntry("implement-1")),
+      "the planned steps are not above the task's runs"
+    ).toBe(true);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${AUTHOR_TEXT_ATTRIBUTE}]`)].map((text) => text.textContent)
+      ),
+      "a planned step's place and name are not marked as the plan's"
+    ).toEqual([
+      ["1", "implementer"],
+      ["2", "reviewer"],
+      ["3", "tester"],
+    ]);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${PAGE_CHROME_ATTRIBUTE}]`)].map((word) => word.textContent)
+      ),
+      "a planned step's state is not the page's own word"
+    ).toEqual([[results.passed], [results.failed], [notStarted]]);
+    // `earlier` stands in the history as its run's entry alone, with no group to hold a list.
+    runEntry("earlier-1");
+    expect(
+      within(screen.getByTestId("issue-history")).queryByRole("list", {
+        name: "Planned steps of task earlier",
+      }),
+      "a task the plan gives no step lists planned steps"
+    ).toBeNull();
+  } finally {
+    steps.restore();
+  }
+});
+
+// A task none of whose steps has run draws the Steps tab's line saying so in its group
+// (`noRunLine`), under its planned steps, and a task with a run draws none. A read whose tasks
+// hold no run at all draws those tasks, each with that line, and no run entry: None stands only
+// for a read that holds no task.
+test("a task with no run says so in place of its runs, and a read whose tasks hold no run draws them rather than None", async () => {
+  const ran = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      waitingTask("review", ["default"]),
+    ],
+  }));
+  try {
+    await drawnWithRuns(1);
+    expect(
+      textsIn("review", "[data-step-no-run]"),
+      "the task none of whose steps has run does not say so"
+    ).toEqual(["No step of task review has run yet."]);
+    expect(
+      drawnAfter(
+        found(
+          group("review").querySelector("[data-step-planned]"),
+          "review draws no planned steps"
+        ),
+        found(group("review").querySelector("[data-step-no-run]"), "review draws no line of no run")
+      ),
+      "the line is not under the task's planned steps"
+    ).toBe(true);
+    expect(textsIn("default", "[data-step-no-run]"), "a task with a run says none ran").toEqual([]);
+  } finally {
+    ran.restore();
+  }
+
+  const none = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [waitingTask("default"), waitingTask("review", ["default"])],
+  }));
+  try {
+    await drawnWithRuns(0);
+    expect(drawnTasks(), "a read whose tasks hold no run does not draw its tasks").toEqual([
+      "default",
+      "review",
+    ]);
+    expect(
+      ["default", "review"].map((task) => textsIn(task, "[data-step-no-run]")),
+      "a task of a read that holds no run does not say none of its steps has run"
+    ).toEqual([["No step of task default has run yet."], ["No step of task review has run yet."]]);
+    expect(
+      within(screen.getByTestId("issue-history")).queryByText(CONTROL_LABELS.none, {
+        exact: true,
+      }),
+      "a read that holds tasks reads None"
+    ).toBeNull();
+  } finally {
+    none.restore();
+  }
+});
+
+// A task with no run holds no place among the entries the history draws 20 at a time: its group
+// stands with every other task's under the History heading, above the entries, in the server's
+// order, and is drawn on the first view whichever page the runs around it stand on. Show more
+// counts entries alone and still moves the focus into the first run it drew: the runs stand at
+// one instant, so by their ids (`comparePlaces`), and the first a press draws is `default-5`,
+// whose reported handoff gives its entry the control the focus is handed to.
+test("a task with no run is drawn where it stands, above every page of runs, and counts among no page of runs", async () => {
+  handoffsRead().mockResolvedValue([listedHandoff("default-handoff", 60)]);
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      { needs: [], steps: runsOf("docs", 15), task: "docs" },
+      waitingTask("first"),
+      {
+        needs: [],
+        steps: runsOf("default", 5).map((record) =>
+          record.id === "default-5" ? { ...record, report: "default-handoff" } : record
+        ),
+        task: "default",
+      },
+      waitingTask("second"),
+      { needs: [], steps: runsOf("release", 5), task: "release" },
+      waitingTask("third"),
+    ],
+  }));
+  try {
+    await drawnWithRuns(PAGE_SIZE);
+    expect(
+      drawnTasks(),
+      "the first view does not draw every task's group, each where it stands in the server's order"
+    ).toEqual(["first", "second", "third"]);
+    const more = within(screen.getByTestId("issue-history")).getByRole("button", {
+      name: SHOW_MORE,
+    });
+    expect(more.textContent, "Show more counts a task with no run").toBe(showMoreName(5));
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnTasks(), "Show more changed the tasks drawn").toEqual(["first", "second", "third"]);
+    expect(
+      runEntry("default-5").contains(document.activeElement),
+      "Show more did not move the focus to the first run it drew"
+    ).toBe(true);
+  } finally {
+    steps.restore();
+  }
+});
+
+// A run that reports no handoff holds no control, and before every entry of the history had one.
+// A keyboard press of Show more whose first new entry is such a run hands the focus to that
+// entry itself, out of the tab order and named by its task and its step, so the reader is where
+// the press drew and never sent back up the history.
+test("Show more whose first entry it draws is a run with no handoff moves the focus to that run's entry", async () => {
+  const records = Array.from({ length: PAGE_SIZE + 5 }, (_, index) =>
+    stepRecord({ id: `run-${index + 1}`, started_at: secondsAgo(index + 1) })
+  );
+  const steps = drawRuns(async () => stepsOf(records));
+  try {
+    await drawnWithRuns(PAGE_SIZE);
+    const more = within(screen.getByTestId("issue-history")).getByRole("button", {
+      name: SHOW_MORE,
+    });
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnRuns()).toHaveLength(PAGE_SIZE + 5);
+    const first = runEntry(`run-${PAGE_SIZE + 1}`);
+    expect(
+      first.querySelector("a[href], button"),
+      "the run drawn first holds a control"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      "Show more did not move the focus to the run with no handoff it drew first"
+    ).toBe(first);
+    expect(first.tabIndex, "the run's entry is in the tab order").toBe(-1);
+    expect(first.getAttribute("aria-label"), "the run's entry is not named by its run").toBe(
+      `${CONTROL_LABELS.history_run}: ${CONTROL_LABELS.steps_task} default, ${CONTROL_LABELS.step_fields.step} 2`
+    );
+  } finally {
+    steps.restore();
+  }
 });
 
 /** The handoffs the addresses of table E name, each id a UUID, as a handoff's address names it. */

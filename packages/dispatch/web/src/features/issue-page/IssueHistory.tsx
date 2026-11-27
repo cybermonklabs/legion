@@ -20,12 +20,12 @@ import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
-import { useCatchUp } from "../steps/StepsTab";
-import { stepVariant } from "../steps/steps-model";
+import { noRunLine, taskNeedsLine, useCatchUp } from "../steps/StepsTab";
+import { type StepTaskRows, stepTasks, stepVariant } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { type HandoffFold, useHandoffBodies } from "./HistoryHandoff";
-import { Entry, runKeys } from "./history-entries";
+import { Entry, PlannedSteps, runKeys } from "./history-entries";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
   addressedPlace,
@@ -92,7 +92,9 @@ export type AddressedHistory =
  * corrected and with its Reply, which sets the line at the foot of the outline to reply to it.
  * Once a person has written in an agents' post, the outline draws it and this list no longer
  * does. The list waits for its first answer of the runs and of the handoffs, and says under its
- * heading where either read failed, with a Retry, above the line of the newest run's experiment.
+ * heading where either read failed, with a Retry, above the line of the newest run's experiment;
+ * under that line and above the list stands one group for each task of the runs read that the
+ * plan says something of or that has no run (`TaskGroup`), in the server's order.
  *
  * `/activity`, `t v`, the address of a turn of such a thread, a handoff's page address and
  * `/steps` open Details here:
@@ -595,13 +597,15 @@ export function IssueHistory({
   // The control under the last entry drawn, Show more, draws the next entries and moves the
   // focus to the first entry it added, as Show more under every other list of Details does
   // (`details-leaves.tsx`'s `useListPages`), whether the control stays or goes: to that entry's
-  // first control, wherever it stands. Only a press that adds no entry - a page whose events are
-  // all events the outline draws - hands the focus on otherwise: to a control the press added
-  // that the reader can see, one under the entries drawn before the press before one above them,
-  // as the next entries are drawn where the control stood; else any the press added; else the
-  // control again, where entries or pages are left; else the last control drawn before the press,
-  // which stood just above it; and only then the heading, above the whole list. A press that
-  // reads older pages first moves it once they have landed and its entries are drawn.
+  // first control, wherever it stands, and where it holds none - a run that reports no handoff -
+  // to the entry itself, which takes a focus moved to it and names its run (`Entry`). Only a
+  // press that adds no entry - a page whose events are all events the outline draws - hands the
+  // focus on otherwise: to a control the press added that the reader can see, one under the
+  // entries drawn before the press before one above them, as the next entries are drawn where the
+  // control stood; else any the press added; else the control again, where entries or pages are
+  // left; else the last control drawn before the press, which stood just above it; and only then
+  // the heading, above the whole list. A press that reads older pages first moves it once they
+  // have landed and its entries are drawn.
   // A control of the history that goes away under the reader's focus so leaves the focus in the
   // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed
   // next page, which stands where the control stood, hands it on the same way; the Retry of a
@@ -722,9 +726,8 @@ export function IssueHistory({
     const isBelow = (element: HTMLElement) =>
       lastBefore === undefined ||
       (lastBefore.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const first = entriesOfList()
-      .find((entry) => !entries.has(entry) && isBelow(entry))
-      ?.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    const firstAdded = entriesOfList().find((entry) => !entries.has(entry) && isBelow(entry));
+    const first = firstAdded?.querySelector<HTMLElement>(ENTRY_CONTROLS) ?? firstAdded;
     if (first != null) {
       handTo(first);
       return;
@@ -812,6 +815,19 @@ export function IssueHistory({
   // The experiment and the variant the newest run's records name, once, above the list: the
   // steps model's own line (`stepVariant`), as today's Steps tab draws it.
   const variant = runs.data === undefined ? null : stepVariant(runs.data);
+  // The groups of the tasks of the runs read, under that line and above the list (`TaskGroup`):
+  // what today's Steps tab draws of a task besides its runs, which are entries of the list. Each
+  // task in the server's order (`stepTasks`), the tasks of the issue's plan first, with a line of
+  // needs (`taskNeedsLine`), with steps the plan gives it, or none of whose steps has run has a
+  // group; a task with none of the three - one the plan does not hold, which ran - has none: its
+  // runs' entries are all the history draws of it.
+  const groups = useMemo(
+    () =>
+      (runs.data === undefined ? [] : stepTasks(runs.data)).filter(
+        (task) => task.rows.length === 0 || task.planned.length > 0 || taskNeedsLine(task) !== null
+      ),
+    [runs.data]
+  );
   // A handoff's page address whose id the answered list does not hold says that no such handoff
   // exists, under the heading; while the list holds no answer, its own line says why instead.
   const handoffMissing =
@@ -874,6 +890,9 @@ export function IssueHistory({
           {variant}
         </p>
       )}
+      {groups.map((task) => (
+        <TaskGroup key={task.task} task={task} />
+      ))}
       {!listDrawn && !logFailed ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
@@ -963,6 +982,50 @@ export function IssueHistory({
             />
           )}
         </button>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * One task's group under the History heading, above the list (decision 559 of INFRA-1196): its
+ * heading; the tasks of the plan it needs and the steps the plan gives it, as today's Steps tab
+ * says them (`taskNeedsLine`, `PlannedSteps`); and, for a task none of whose steps has run, the
+ * tab's line saying so (`noRunLine`). Its runs are entries of the list, not of the group, so each
+ * line names its task as the tab's do: the list and the line of no run in their own words, and
+ * the line of needs under the group's heading. The tab's two lines hold the record's task names
+ * inside the tab's own words, as the experiment line does, so each is text the page did not
+ * author.
+ */
+function TaskGroup({ task }: { task: StepTaskRows }): ReactNode {
+  const needs = taskNeedsLine(task);
+  return (
+    <section
+      aria-label={`${CONTROL_LABELS.steps_task} ${task.task}`}
+      className="flex min-w-0 flex-col gap-1.5"
+      data-step-task={task.task}
+    >
+      <h3 className={`text-xs leading-[18px] font-semibold ${pageMutedText}`} {...pageChrome}>
+        {CONTROL_LABELS.steps_task} <span {...authorText}>{task.task}</span>
+      </h3>
+      {needs === null ? null : (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
+          data-step-needs=""
+          {...authorText}
+        >
+          {needs}
+        </p>
+      )}
+      <PlannedSteps planned={task.planned} task={task.task} />
+      {task.rows.length === 0 ? (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageQuietText}`}
+          data-step-no-run=""
+          {...authorText}
+        >
+          {noRunLine(task.task)}
+        </p>
       ) : null}
     </section>
   );
