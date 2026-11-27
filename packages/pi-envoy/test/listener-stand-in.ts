@@ -251,8 +251,10 @@ export const natsState = {
   failFlushClosesConnection: false,
 };
 
-/** Reports `{ type }` to every reader of a mocked connection's `status()`. */
+/** Reports `{ type }` to every reader of a mocked connection's `status()`; a push from a session
+ *  whose row has ended reaches nobody, including the one `reconnect` leaves on a timer. */
 export function pushNatsStatus(type: string): void {
+  if (fromEndedRow()) return;
   for (const read of natsState.statusReaders) read({ type, data: "" });
 }
 
@@ -277,8 +279,10 @@ export const natsStandInConnect = async (options: {
     }
   };
   // An ended row's late connect takes nothing the running row armed (a refusal, a parked dial, a
-  // real server) and is not counted among that row's connections.
-  const late = fromEndedRow();
+  // real server) and is not counted among that row's connections. A dial parked by `heldConnect`
+  // is asked again when it comes back: the row that started it can have ended while it waited, and
+  // what it does from here is the new row's state.
+  let late = fromEndedRow();
   if (!late) {
     if (natsState.failConnects > 0) {
       natsState.failConnects -= 1;
@@ -288,8 +292,11 @@ export const natsStandInConnect = async (options: {
     natsState.connects.push({ servers, authenticated: authenticator !== undefined });
     connectWith("stand-in-nonce");
     // Parked only where a test asks for it: every other connect answers at once.
-    if (natsState.heldConnect !== undefined) await natsState.heldConnect;
-    if (natsState.realConnect) {
+    if (natsState.heldConnect !== undefined) {
+      await natsState.heldConnect;
+      late = fromEndedRow();
+    }
+    if (!late && natsState.realConnect) {
       return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
     }
   }
@@ -354,10 +361,15 @@ export const natsStandInConnect = async (options: {
     // every pending one of them rejects when the connection drops. A rejection is transient
     // unless the connection is closed with it, which is the one case the extension gives up on.
     flush: async () => {
-      // An ended row's late flush takes nothing the running row armed: no failure, no hold.
+      // An ended row's late flush takes nothing the running row armed: no failure, no hold. A
+      // flush parked by `heldFlush` is asked again when it comes back, because the row that
+      // started it can have ended while it waited.
       if (fromEndedRow()) return;
       natsState.flushes.push([...natsState.subscriptions.keys()]);
-      if (natsState.heldFlush !== undefined) await natsState.heldFlush;
+      if (natsState.heldFlush !== undefined) {
+        await natsState.heldFlush;
+        if (fromEndedRow()) return;
+      }
       const failing = natsState.failFlushOnSubject;
       if (failing !== undefined && natsState.controls.has(failing)) {
         natsState.failFlushOnSubject = undefined;
