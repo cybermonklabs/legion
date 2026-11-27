@@ -284,9 +284,11 @@ function DecisionControls({
     // read again and every view the page holds is dropped (`readDecisionsAgain`), the Decisions
     // view's and the Spec view's among them, since each draws how the decision stands: so every
     // one draws the decision as it now stands, kept, or in its new words with Keep to press
-    // again. Each view draws its last answer until the next one lands (`useLastAnswer`), so a
-    // decision only the Decisions view read holds keeps these controls meanwhile, and a refusal
-    // is said below, on the decision, until the next press.
+    // again. Each view draws the answer the drop took until the next one lands - the Decisions
+    // view's by the one rule every reader of it takes (`useDecisionsView`), the Spec view's by
+    // its column's (`useLastAnswer`) - so a decision only the Decisions view read holds keeps
+    // these controls meanwhile, and a refusal is said below, on the decision, until the next
+    // press. Where that read is refused, the Decisions view says so over the rows it keeps.
     onSettled: () => readDecisionsAgain(queryClient, issueKey),
   });
   return (

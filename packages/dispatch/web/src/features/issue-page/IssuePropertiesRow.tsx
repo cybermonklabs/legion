@@ -35,9 +35,8 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
-import { useTreeRead, viewQuery } from "./tree-read/tree-read";
+import { useDecisionsView, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
@@ -92,13 +91,16 @@ export function IssuePropertiesRow({
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
   // The decisions, and each Change that read hangs under its decision, are the decisions view
   // read's wherever the page holds it, which holds each of them however many pages of the tree
-  // read the page holds, watched under the key the page reads it by and never sent (`treeRead`),
-  // so the count sends no view read of its own; Conversation's read stands in until then.
+  // read the page holds, watched under the key the page reads it by and never sent, so the count
+  // sends no view read of its own; Conversation's read stands in until then. That answer is the
+  // one every reader of the view takes (`useDecisionsView`): this load's alone, and on the
+  // Decisions view, while a Keep or a Change has dropped the view, the answer the drop took until
+  // the next lands, so the count and the Decisions control count the same answer meanwhile.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
-  const decisions = useQuery(treeRead(viewQuery(issue.key, "decisions"))).data;
-  const answer = decisions ?? tree;
+  const held = useDecisionsView(issue.key).answer;
+  const answer = held ?? tree;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
     [issue, coverage.data]

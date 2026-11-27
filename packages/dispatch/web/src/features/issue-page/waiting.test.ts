@@ -548,7 +548,7 @@ test("the count and the tree agree on a decision node's Change, read from the tr
 // reader's Change under it: the view carries each comment on the text of a node it returns, as
 // context. The count reads a decision's Change from the read it counts the decision from, by the
 // one rule every reader of a Change reads, so `later` waits on its agent and is not counted, and
-// `first`, on both reads with no Change, still is.
+// `first`, which the same read holds with no Change, still is.
 test("a decision past Conversation's first page with the reader's Change in the decisions view read is not counted", () => {
   const first = decisionNode("first", ["r1"]);
   const later = decisionNode("later", ["r1"]);

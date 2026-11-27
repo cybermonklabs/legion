@@ -1,4 +1,4 @@
-import { hashKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
+import { hashKey, queryOptions, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 
 import { api } from "../../api/client";
@@ -29,10 +29,10 @@ import { treeRead } from "./spec-filter/tree-read";
 import { askState } from "./tree-drafts";
 import { holdsPlanTask } from "./tree-read/tree-nodes";
 import {
-  TREE_VIEWS,
+  loadEnded,
   type TreeAnswer,
   type TreeRead,
-  type TreeView,
+  useDecisionsView,
   useLastAnswer,
   useTreeRead,
   viewQuery,
@@ -278,8 +278,9 @@ export function viewTree(reads: IssueTreeReads, view: TreeAnswer): TreeNode {
  * filter is on, and whatever it holds is set on the issue's node (`TreeNode.views`), which
  * `presetView` and `filterSignals` draw a filter from, its rows and its count, and the Decisions
  * filter its decisions and the tree it is drawn over, which its view read builds as each
- * filter's does (`viewTree`, `decisions-entries.ts`' `useDecisionsTree`). The root keeps its
- * identity while neither the tree nor a held view changes.
+ * filter's does (`viewTree`, `decisions-entries.ts`' `useDecisionsTree`). The decisions view is
+ * the answer the page holds of it (`useDecisionsView`), as every reader of it reads it. The root
+ * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address its chips name and its
  * words cite is read in one batched request (`referenceTargetsQuery`; a tree holding more
@@ -332,18 +333,24 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that sends nothing (`treeRead`) and holds
-  // whatever `ViewReadProvider` read for the load. Each answer is read by its view, at that view's
-  // place in the list the reads were made from, so the order of `TREE_VIEWS` hands no view
-  // another's answer.
+  // whatever `ViewReadProvider` read for the load. Each answer is read by its filter, at that
+  // filter's place in the list the reads were made from, so the order of `TREE_FILTERS` hands no
+  // filter another's answer, and none while the issue's last load has ended (`loadEnded`): what
+  // the cache keeps then is an earlier visit's, which the next load's reset drops after its first
+  // render, so neither a view's answer nor the tree it builds (`trees`) is drawn from it. The
+  // decisions view is the answer the page holds of it, read by the one rule every reader of it
+  // reads (`useDecisionsView`): this load's alone, and on the Decisions view, while a Keep or a
+  // Change has dropped it, the answer the drop took until the next one lands.
   const viewReads = useQueries({
-    queries: TREE_VIEWS.map((view) => treeRead(viewQuery(key, view))),
+    queries: TREE_FILTERS.map((filter) => treeRead(viewQuery(key, filter))),
   });
-  const viewOf = (view: TreeView): TreeAnswer | undefined =>
-    viewReads[TREE_VIEWS.indexOf(view)].data;
+  const ended = loadEnded(useQueryClient(), key);
+  const viewOf = (filter: TreeFilter): TreeAnswer | undefined =>
+    ended ? undefined : viewReads[TREE_FILTERS.indexOf(filter)].data;
   const spec = viewOf("spec");
   const verification = viewOf("verification");
   const plan = viewOf("plan");
-  const decisions = viewOf("decisions");
+  const decisions = useDecisionsView(key).answer;
   const views = useMemo((): TreeViews | undefined => {
     const held: { -readonly [K in keyof TreeViews]: TreeViews[K] } = {
       ...(decisions === undefined ? {} : { decisions }),

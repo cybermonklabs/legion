@@ -252,13 +252,22 @@ export function treeOf(
 /** The tree read's stub for the stage's cases: the whole tree answers `answer`, and so does the
  *  decisions view read, as the server answers it whenever Decisions is on, so the Decisions view
  *  says what it draws of the node an address names once that read has answered
- *  (`decisions-entries.ts`' `viewSettled`); every other view never answers (`wholeTreeOnly`). */
+ *  (`decisions-entries.ts`' `viewSettled`); every other view never answers (`wholeTreeOnly`).
+ *  The decisions view answers each decision and each ask as a node its query took
+ *  (`role: "query"`), as the server's view does, and every other node as the tree read does. */
 function treeAndDecisions(
   answer: TreeAnswer
 ): (key: string, query?: { readonly view?: string }) => Promise<TreeAnswer> {
   const whole = wholeTreeOnly(answer);
+  const decisions: TreeAnswer = {
+    ...answer,
+    nodes: (answer.nodes ?? []).map(
+      (node): TreeAnswerNode =>
+        node.supertag === "decision" || node.supertag === "ask" ? { ...node, role: "query" } : node
+    ),
+  };
   return (key, query = {}) =>
-    query.view === "decisions" ? Promise.resolve(answer) : whole(key, query);
+    query.view === "decisions" ? Promise.resolve(decisions) : whole(key, query);
 }
 
 /** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree and the decisions

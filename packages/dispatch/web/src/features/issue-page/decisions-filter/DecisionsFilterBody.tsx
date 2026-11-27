@@ -997,10 +997,12 @@ export function DecisionsFilterBody({
           lines stand over the tree and never in it: a tree holds rows and groups of rows alone.
           A refused read's line stands in place of the entries the read would give: the tree is
           built from the same reads (`useIssueTree.ts`), so a read that holds nothing gives the
-          list no entry of its own, and no part is drawn for it. The names place no entry, so
-          their line takes none away. Each line's alert is keyed by its read's count of failures,
-          so a run that ends with no new refusal, cancelled or paused offline, says nothing
-          again. */}
+          list no entry of its own, and no part is drawn for it - but for the decisions view's
+          answer a Keep or a Change dropped, which the page keeps drawing until the view's next
+          answer (`useDecisionsView`), so its rows stand under the line. The names place no
+          entry, so their line takes none away. Each line's alert is keyed by its read's count of
+          failures, so a run that ends with no new refusal, cancelled or paused offline, says
+          nothing again. */}
       {failedLines.map((line) => (
         <FailedReadLine
           failure={line.failure}
