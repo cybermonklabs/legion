@@ -509,6 +509,33 @@ func TestTheNoRoleBarHoldsAParentsWaitOnItsChildren(t *testing.T) {
 	}
 }
 
+// TestTheNoRoleBarHoldsAMergedIssuesWaitForItsChecks: `verifying`, the phase a merged issue
+// waits in while its close waits for the checks of its Verification document
+// (cybermonklabs/legion#5558), is a phase no role works (RoleFor in
+// packages/daemon/internal/phase), as `awaiting_person`, `awaiting_children` and `held` are, so
+// its hours are on the "no role" bar. Unlike `done`, it is inside the workflow and inside the
+// work time, so a phase left off every bar would leave the seven bars short of the work time and
+// metric 1's card and metric 2's would disagree about the same issue. The issue below implements
+// for two hours, merges for one, and waits three hours for its checks before its close.
+func TestTheNoRoleBarHoldsAMergedIssuesWaitForItsChecks(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(2), "merging").
+		observeString(legion.FieldPhase, hour(3), "verifying").
+		observeString(legion.FieldPhase, hour(6), "done")
+	partitionsItsWorkTime(t, issue)
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if hours := barOf(t, w, barNoRole).Hours; hours != 3 {
+		t.Fatalf("the no-role bar = %g hours, want the three the merged issue waited for its checks", hours)
+	}
+	if hours := barOf(t, w, "merger").Hours; hours != 1 {
+		t.Fatalf("the merger bar = %g hours, want the one hour of merging: the wait after the merge is no role's", hours)
+	}
+	if hours := barOf(t, w, "implementer").Hours; hours != 2 {
+		t.Fatalf("the implementer bar = %g hours, want the two hours of implementing", hours)
+	}
+}
+
 // TestARolesMedianCountsAnIssueItNeverWorkedAsZero: "Each role's median runs over every finished
 // issue of the window, and an issue no worker of that role touched counts as zero hours, so a role
 // that works few issues reads a low median" (the spec's metric 2). The tester worked one of the
