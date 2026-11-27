@@ -2373,7 +2373,10 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // freshSession).
 //
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,
-// which is the architect's own words where its retry named any.
+// which is the architect's own words where its retry named any. An issue that was held logs the
+// release of its hold; one that stood in its phase, as an operator's stop leaves it, was held by
+// nothing, so it logs a restart of that phase instead and never a release
+// (dispatch://INFRA-5649 R2).
 //
 // A release is a phase start like any other (dispatch://INFRA-3320 R9): a release into planning
 // through accepting of a parent whose Dispatch child is open moves it to awaiting_children instead,
@@ -2397,13 +2400,18 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // start, and otherwise the phase the move took the issue to, read back from the record because the
 // move's own row chose that target (transition).
 func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
+	held := issue.Phase == phase.Held
 	// The retry keeps the task's place (moveTask): it puts back Hold.From, the phase that place
 	// derives, so the task never moved.
 	issue.Phase, issue.Hold = from, nil
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
-	// carries.
-	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
+	// carries. An issue no hold held writes the restart of its phase.
+	if held {
+		e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
+	} else {
+		e.logOnCommit(ctx, "workflow: a phase its issue stands in is restarted", "issue", issue.Key, "phase", from, "reason", reason)
+	}
 	open, pr, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue)
 	if err != nil {
 		return "", err

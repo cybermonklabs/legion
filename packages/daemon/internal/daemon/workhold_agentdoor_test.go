@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -332,7 +334,8 @@ func openedSendingNothing(r *workHoldRig) {
 // Item 4, decision 16: once the gate opens, a claim the opening does not start is the controller's
 // to start. The opening sends nothing to (b) the claim the controller suspended before the close
 // or (c) the one it took over from the hold; the controller's resume_agent of either is then taken
-// (200) and resumes it in the session it kept, with its phase's task. The opening skips the worker
+// (202 with the claim launching, answered once its start is under way, dispatch://INFRA-5649 R4)
+// and resumes it in the session it kept, with its phase's task. The opening skips the worker
 // the controller's stop retired (item 3) too; the controller's retry of it is then taken (202),
 // writes the start of its phase, and that start launches it with a task of that phase.
 func TestWorkHoldAgentDoorTakesTheControllersStartsOnceTheGateOpens(t *testing.T) {
@@ -347,9 +350,14 @@ func TestWorkHoldAgentDoorTakesTheControllersStartsOnceTheGateOpens(t *testing.T
 			wantSessionAndTaskKept(r, "after the opening")
 
 			launched, resumed := r.launches(claim.RoleImplementer), len(resumesOf(r.rt, r.token(claim.RoleImplementer)))
-			if recorder := askTheControllerDoor(r, agentResume, claim.RoleImplementer); recorder.Code != http.StatusOK {
-				t.Fatalf("the controller's resume_agent once the gate opened = %d, want 200; body %s", recorder.Code, recorder.Body)
+			recorder := askTheControllerDoor(r, agentResume, claim.RoleImplementer)
+			var answer api.AgentActionResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusAccepted || answer.State != string(supervise.StateLaunching) {
+				t.Fatalf("the controller's resume_agent once the gate opened = %d, want 202 with the claim launching; body %s", recorder.Code, recorder.Body)
 			}
+			// The answer came once the start was under way: the machine's claim is read through
+			// the decision that runs it, so the start has ended before anything is counted.
+			r.machine(claim.RoleImplementer).Claim()
 			r.drain()
 			if got := r.launches(claim.RoleImplementer); got != launched+1 {
 				t.Fatalf("the controller's resume_agent once the gate opened launched the implementer %d times, want once", got-launched)

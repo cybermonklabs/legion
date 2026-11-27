@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -32,6 +33,14 @@ const (
 // askTheControllerDoor posts route for role's agent of the rig's issue with a controller grant.
 func askTheControllerDoor(r *workHoldRig, route string, role claim.Role) *httptest.ResponseRecorder {
 	r.t.Helper()
+	return askTheControllerDoorStating(r, route, role, 0)
+}
+
+// askTheControllerDoorStating is askTheControllerDoor from a caller that states contract in the
+// header a plugin states its contract in (`Legion-Plugin-Contract`), and states none where it is
+// zero, so the daemon serves it its own contract's answers.
+func askTheControllerDoorStating(r *workHoldRig, route string, role claim.Role, contract int) *httptest.ResponseRecorder {
+	r.t.Helper()
 	grants := credential.New(nil)
 	grant, err := grants.MintController("ses_controller", 1)
 	if err != nil {
@@ -47,7 +56,11 @@ func askTheControllerDoor(r *workHoldRig, route string, role claim.Role) *httpte
 		r.t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(r.ctx, http.MethodPost, route, bytes.NewReader(body)))
+	request := httptest.NewRequestWithContext(r.ctx, http.MethodPost, route, bytes.NewReader(body))
+	if contract != 0 {
+		request.Header.Set("Legion-Plugin-Contract", strconv.Itoa(contract))
+	}
+	handler.ServeHTTP(recorder, request)
 	return recorder
 }
 

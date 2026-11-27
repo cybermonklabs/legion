@@ -54,7 +54,15 @@ body: |-
   runs after the opening's start ended the hold, and before that start's task went, can take its
   place, so the worker is not told the restart's sentence.
   An operator's own resume or retry of such a claim starts it
-  too. The hold survives a daemon restart. Any other value of `gates.hold` is refused at load,
+  too. The hold survives a daemon restart.
+  While the hold stands, the controller starts no phase worker of the tree: its `resume_agent`,
+  `retry` and `fresh_session` of such a worker are refused `409 HELD_BY_WORK_HOLD`, whatever
+  suspended the worker, and the agent is left as it was. One case is answered as every refusal
+  after a fresh session's forget is: where the gate closes after `fresh_session` has dropped the
+  worker's recorded session, the answer is `200`, with the hold's words, its two ways out and the
+  session left behind in `phaseNotRestarted`, and no start; a caller below contract entry
+  `20261127094305` still reads the `409`.
+  Any other value of `gates.hold` is refused at load,
   `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it
   at `settings.gates.hold`. A daemon before this release refuses the key, so take it out of
   `legion.yaml` before a rollback. Then run the ways back in the headers of

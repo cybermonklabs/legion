@@ -16,8 +16,8 @@ const TYPED = ["typed"];
 /** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. Which end of the card the answer field and the reply composer sit at (`answerFirst`, `composerFirst`) is the reader's thread order (`useThreadOrder`), which the card reads when it is drawn and again only when who is signed in changes (`useUserPreference`), and never sets, so it never moves a field that is on screen; the shell draws no card before it knows who is signed in, and another person's sign-in forgets every ask draft (`DraftStore.signedIn`).",
-  2: '2. Each host draws its cards in one variant and with one thread, literals of its own (`variant="compact"` and `thread="collapsed"` in the Conversation and a decision block, `variant="compact"` in the margin, `variant="full"`, `thread="inline"` or the defaults elsewhere), so no card switches between its full and its compact form, or moves its reply composer between its inline thread and its collapsed one; both composers hold the ask\'s one draft (`useReplyDraft(ask.id)`).',
-  3: "3. A compact card holds its answer field behind the note disclosure (`ownWordsOpen`). Folding the note takes the field off the screen while the card stays drawn, and with it the form hook that holds the ask's draft (`useAskAnswerForm`), so the field the disclosure opens again shows the draft, as the field of a card ended and drawn again does.",
+  2: '2. Each host draws its cards with one thread, a literal of its own (`thread="collapsed"` in the Conversation and a decision block, `thread="inline"` or the default elsewhere), so no card moves its reply composer between its inline thread and its collapsed one; both composers hold the ask\'s one draft (`useReplyDraft(ask.id)`).',
+  3: '3. Each host draws its card in one frame, a literal of its own (`frame="block"` in a decision block, the default `card` everywhere else), so no card moves its answer field between the decision block, which draws the question, and the row its bullet starts (`inBlock`); the field holds the ask\'s one draft (`useAnswerDraft(ask.id)`) in either.',
   4: "4. The card draws the ask's record in place of its form once the ask is settled (`completed`). An answer the server records for the reader ends the draft with the form, since it is no longer unsent (`answer-drafts.ts`); a question settled otherwise draws the reader's text under the record, read-only (`unsentAnswer`; `AskCard.test.tsx`, \"a question closed under the reader keeps their unsent answer, out of the form\"), and the draft stays the ask's, so a form drawn for the ask again holds it. A change of the reader's recorded answer (`changing`) draws the form over that answer's own text, which is the form's and no draft (`changeAnswer` in `useAskAnswerForm.ts`).",
   5: '5. An open ask takes no reply composer (`takesReply`): its card\'s one composer answers it. A reply the reader had not sent under a settled ask that opens again is drawn read-only in the composer\'s place, in either thread (`useUnsentReply`; `AskCard.test.tsx`, "a reply typed under a retracted ask that opens again stays on screen in the inline thread" and "… in the collapsed thread"), and the draft stays the ask\'s, so the composer drawn once the ask is settled again holds it. The collapsed thread draws nothing only for an open ask with no replies and no such reply (`replyCount === 0 && !takesReply(ask) && unsentReply === ""`), where there is no composer and no draft to show.',
   6: "6. The thread is the card's own read of its ask's thread (`threadQuery`), of the same ask as the card. It decides which replies the thread shows and folds (`threadLayout`), and, in the collapsed thread, whether the disclosure draws a retry control in place of the replies and the composer while the read fails (`thread.isError`): that takes the composer off the screen as closing Write a reply does, and the composer drawn when the read lands again holds the ask's draft, as the composer Write a reply opens again does.",
@@ -26,28 +26,21 @@ const REASONS = {
   9: "9. `AskThread` draws no composer where it is passed `showComposer={false}`, which only the collapsed thread passes, drawing `AskThread` for its replies alone: the collapsed thread's composer is the disclosure's own, the `Ask reply, collapsed` rows', and every other `AskThread` takes the default, `true`. So nothing that draws, ends or moves the collapsed thread's `AskThread` (its replies being there, its read, its order, its ask) draws, ends or moves a composer.",
 } as const;
 
-/** The answer field's mount, and the reply composer's in each thread. */
-const ANSWER_FIELD = "AskCard | AskCard <MentionField askAnswer={true}>";
+/** The answer field's mount, which the ask body draws, with the ask body's own items about it;
+ *  and the reply composer's in each thread. */
+const ANSWER_MOUNT = "AskBody <MentionField askAnswer={true}>";
+const ANSWER_FIELD = `AskBody | ${ANSWER_MOUNT}`;
 const INLINE_COMPOSER = "AskThread | AskThread <AskReplyComposer>";
 const COLLAPSED_COMPOSER = "AskThreadDisclosure | AskThreadDisclosure <AskReplyComposer>";
 
 export const coverage: readonly CoverageEntry[] = [
-  // The answer field, in its card.
+  // The answer field, in its body, whose form the card holds.
   ...answers(
-    `${ANSWER_FIELD} | address prop | useAskAnswerForm({ ask })`,
+    `AskCard | ${ANSWER_MOUNT} | address prop | useAskAnswerForm({ ask })`,
     cells(`${ANSWER} · the card drawn for another ask, then back`, TYPED)
   ),
-  ...answers(
-    `${ANSWER_FIELD} | conditional | (ownWordsOpen) ? …`,
-    { reason: REASONS[3] },
-    cells(`${ANSWER} · the card ended, then drawn again`, TYPED)
-  ),
-  ...answers(
-    `${ANSWER_FIELD} | conditional | (isCompact) ? …`,
-    { reason: REASONS[2] },
-    { reason: REASONS[3] }
-  ),
-  ...answers(`${ANSWER_FIELD} | conditional | !(isCompact) ? …`, { reason: REASONS[2] }),
+  ...answers(`${ANSWER_FIELD} | conditional | (inBlock) ? …`, { reason: REASONS[3] }),
+  ...answers(`${ANSWER_FIELD} | conditional | !(inBlock) ? …`, { reason: REASONS[3] }),
   ...answers(`${ANSWER_FIELD} | early return | if (completed !== null) return …`, {
     reason: REASONS[4],
   }),
@@ -102,7 +95,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${COLLAPSED} · the page reloaded, then back`, TYPED)
   ),
 
-  // Where the card draws its inline thread.
+  // Where the card draws its inline thread: under its record, and above or below its body.
   ...answers('AskCard | AskThread | conditional | !(thread === "collapsed") ? …', {
     reason: REASONS[2],
   }),
@@ -130,7 +123,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[8],
   }),
 
-  // Where the card draws its collapsed thread.
+  // Where the card draws its collapsed thread: under its record, and above or below its body.
   ...answers('AskCard | AskThreadDisclosure | conditional | (thread === "collapsed") ? …', {
     reason: REASONS[2],
   }),

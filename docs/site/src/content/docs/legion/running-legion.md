@@ -440,8 +440,9 @@ Dispatch read them, delete the files, then install every App from
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
   at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
   pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
-  longer makes, and is kept until its other checks are audited and measured. A pool with no room
-  even for that does not stop the daemon: its probe pod
+  longer makes. The value is kept: no boot probe without the `pi.agents` probe, the session-storage
+  probe and the Claude lane, which the boot probe no longer makes either, has been measured yet. A
+  pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
@@ -1322,9 +1323,9 @@ legion start --config legion.yaml
 ```
 
 The daemon runs in the foreground and logs JSON lines to standard error. At every boot it checks
-that Agent Sandbox is installed and runs the worker image's launch probes in a probe Sandbox
-(`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must speak this daemon's contract
-and load with its Envoy plugin,
+that Agent Sandbox is installed and runs the worker image's plugin load probe and capability check
+in a probe Sandbox (`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must
+speak this daemon's contract and load with its Envoy plugin,
 every agent's model must resolve, and every model key must work. Nothing restarts the daemon on its
 own, so run it under a process supervisor you trust. `legion stop --config legion.yaml` stops it,
 and `legion legions` lists the daemons registered on the machine.

@@ -20,13 +20,16 @@ import (
 // surface that names a suspender. The state does not, and must not: a session parses the state
 // with the schema of its own plugin's contract, and a key added there refuses the whole state in
 // every pod whose plugin predates the stranded-claim reading (StrandedClaim). Only a plugin at the
-// contract that added these routes calls them, so no reader of this body predates its keys.
+// contract that added these routes calls them, so no reader of this body predates the keys that
+// contract gave it; `phaseNotRestarted` came later, with the claim start entry, and a plugin below
+// that entry is served the body without it (shapeAnswer).
 type AgentActionResponse struct {
 	// State is the claim's state after the request: retired after a stop; suspended after a
 	// suspension that landed, and still working or launching after one held for the agent's
-	// turn or its ready (the 202 answer); launching after a resume, or a retry the claim's own
-	// machine ran; and still failed or retired after a retry of a phase worker, whose start the
-	// issue's phase queued and runs once that start comes (the 202 answer, retryStart).
+	// turn or its ready (the 202 answer); launching after a resume, answered 202 once its start
+	// is under way (dispatch://INFRA-5649 R4), or after a retry the claim's own machine ran; and
+	// still failed or retired after a retry of a phase worker, whose start the issue's phase
+	// queued and runs once that start comes (the 202 answer, retryStart).
 	State string `json:"state"`
 	// SuspendedBy is who suspended the agent while its claim is suspended — operator, controller,
 	// daemon, exit, released or unknown (supervise.SuspendSource) — and absent otherwise.
@@ -35,6 +38,12 @@ type AgentActionResponse struct {
 	// asked for it; both are absent when none is held.
 	SuspensionHeld   bool   `json:"suspensionHeld,omitempty"`
 	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
+	// PhaseNotRestarted is what the controller's retry did that the state cannot say, and absent
+	// everywhere else: the retry of a failed or retired phase worker whose phase's start the
+	// workflow queued behind its issue's admission slot, which the issue does not hold, so the
+	// claim stays failed or retired until the slot comes (slotWait.stays, retryStart). A caller
+	// below claimStartContract is served the answer without it (shapeAnswer).
+	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 }
 
 // suspendedByOperator is the refusal of a request the agent door's caller may not make past the
@@ -69,7 +78,10 @@ const heldByWorkHold = "HELD_BY_WORK_HOLD"
 // is suspended, by the holder, with no session to resume (freshSession), and for the fresh session
 // of a failed or retired phase worker whose start the work hold of its tree refused after the
 // forget had dropped that session, the gate having closed after the agent door's read, after which
-// the claim stands as it stood with no session (retryStart). Each reads after
+// the claim stands as it stood with no session (retryStart). Those last two refusals are served
+// to a caller below claimStartContract alone: a caller at or above it is answered 200 with the
+// hold in phaseNotRestarted (refusedAfterTheForget, refusedByAHold, dispatch://INFRA-5649 R2).
+// Each reads after
 // "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"
@@ -113,8 +125,8 @@ var (
 		request:        "resume",
 		did:            "resumed",
 		refusesATurn:   true,
-		reaches:        "A resume reaches a suspended agent: the controller's every one but one the operator's own suspension holds",
 		startsTheAgent: true,
+		reaches:        "A resume reaches a suspended agent: the controller's every one but one the operator's own suspension holds",
 	}
 )
 
@@ -199,11 +211,11 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 		s.refuseClaimInATurn(w, r, target.token, retryOp)
 		return
 	}
-	status, ok := s.retryStart(w, r, target.machine, target.token, false, target.by, retryOp, nothingChanged)
+	status, notRestarted, _, ok := s.retryStart(w, r, target.machine, target.token, false, "", target.by, retryOp, nothingChanged)
 	if !ok {
 		return
 	}
-	s.answerAgentAction(w, r, target, retryOp.did, status)
+	s.answerAgentAction(w, r, target, retryOp.did, status, notRestarted)
 }
 
 // agentEventAction is the agent door's one operator request a single event to the claim's
@@ -213,7 +225,11 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 // event builder has the operator's door's shape: it answers the request itself and reports false
 // where it refuses it, as the resume's does while the project is paused (resumeAgent,
 // refusedWhilePaused), and nothing is posted then. A suspension the machine holds for the agent's
-// turn is no refusal and answers 202, as the operator's does.
+// turn is no refusal and answers 202, as the operator's does. An event that starts the agent
+// (agentAction.startsTheAgent, the resume) is answered once its start is under way, 202 with the
+// claim launching, and 200 where it wrote no launch, as the operator's resume is (startedStatus,
+// dispatch://INFRA-5649 R4): run through Machine.Handle, it would hold the caller until the start
+// ended.
 func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op agentAction,
 	event func(http.ResponseWriter, *http.Request, claimTarget) (supervise.Event, bool)) {
 	target, ok := s.agentDoor(w, r, op)
@@ -222,6 +238,20 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 	}
 	ev, ok := event(w, r, target)
 	if !ok {
+		return
+	}
+	if op.startsTheAgent {
+		underWay, stopping, err := s.startUnderWay(r, target.machine, target.token, op.request, ev)
+		switch {
+		case stopping != "":
+			s.refuse(w, r, http.StatusServiceUnavailable, stopping)
+		case underWay, errors.Is(err, supervise.ErrSuspendHeld):
+			s.answerAgentAction(w, r, target, op.did, http.StatusAccepted, "")
+		case err != nil:
+			s.refuseAgentAction(w, r, target, err, op)
+		default:
+			s.answerAgentAction(w, r, target, op.did, http.StatusOK, "")
+		}
 		return
 	}
 	posted, err := s.postClaimEvent(w, r, target.machine, target.token, op.request, ev)
@@ -235,7 +265,7 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 		s.refuseAgentAction(w, r, target, err, op)
 		return
 	}
-	s.answerAgentAction(w, r, target, op.did, status)
+	s.answerAgentAction(w, r, target, op.did, status, "")
 }
 
 // refuseAgentAction answers an event of the caller's that the claim's machine refused: a
@@ -321,19 +351,22 @@ func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, toke
 }
 
 // answerAgentAction writes the claim's state after the caller's action (AgentActionResponse) under
-// status, as the answer the agent actions' row of the table names (AnswerAgentAction), and logs
-// what the caller did to which agent, as the caller named it.
-func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
+// status, with the retry's sentence where it has one (notRestarted), as the answer the agent
+// actions' row of the table names (AnswerAgentAction), and logs what the caller did to which agent,
+// as the caller named it.
+func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int, notRestarted string) {
 	view := target.machine.View().Claim
 	answer := AgentActionResponse{
-		State:            string(view.State),
-		SuspensionHeld:   view.SuspensionHeld,
-		SuspensionHeldBy: string(view.SuspensionHeldBy),
+		State:             string(view.State),
+		SuspensionHeld:    view.SuspensionHeld,
+		SuspensionHeldBy:  string(view.SuspensionHeldBy),
+		PhaseNotRestarted: notRestarted,
 	}
 	if view.State == supervise.StateSuspended {
 		answer.SuspendedBy = string(view.SuspendedBy)
 	}
 	s.log.Info("api: "+callerName(target.by)+" "+did+" an agent", "claim", target.token, "issue", target.issue, "role", target.role,
-		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status)
+		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status,
+		"phaseNotRestarted", notRestarted)
 	s.writeAnswer(w, r, AnswerAgentAction, status, answer)
 }

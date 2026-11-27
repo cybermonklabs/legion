@@ -54,7 +54,9 @@ type ClaimRequest struct {
 // HELD_BY_WORK_HOLD), before the action asks anything, so a refused fresh session keeps the
 // session and the task its claim records and a refused retry writes no start row. The machine
 // reads the same rule where the request lands, so a close between this read and that one refuses
-// it there too.
+// it there too. Of the three, the resume alone is a single event to the claim's machine, and that
+// event is answered once its start is under way, never once it ended (agentEventAction,
+// startUnderWay, dispatch://INFRA-5649 R4), as the operator's resume is answered.
 //
 // cutsTheTurn is what the refusal of an agent whose claim is stored working says the action would
 // do to that agent's running turn (refuseInATurn), and reaches is the states the action does
