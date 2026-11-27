@@ -2781,7 +2781,10 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
       "listener_up() { envoy_port=1; }",
       'start_dispatch() { echo "start_dispatch $1 | $2" >>"$calls"; dispatch_port=1; }',
-      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t",
+      // own_dispatch runs seed.ts with `$bun_bin`, the Bun the rig resolves once at its top from the
+      // first `bun` on PATH; these functions run without that top, so the row resolves it the same
+      // way, to its own stand-in.
+      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t bun_bin=$(command -v bun)",
       'mkdir -p "$S"',
       "services_env=$S/env services_postgres=$S/postgres-url",
       // The services file names the batch's NATS URL, which can hold a credential: an earlier
