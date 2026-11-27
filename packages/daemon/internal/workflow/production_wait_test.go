@@ -290,18 +290,18 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 		{"the production check", claim.RoleTester, func(t *testing.T, rig *waitRig) {
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		}, "Its production check of generation 3 at merge commit " + waitRootMerge},
-		// The merger's completion of the merged generation has not landed, so the reason waits
-		// rather than starting the next change (changeDue), and the daily notice names it.
+		// A reason of a live tree waits only until the next change starts, which is the hour after
+		// the merge at the latest (changeDue), so the term that stands day after day is a reason in
+		// a tree that does not run: the daily notice names the reason itself here, and the sentence
+		// about the tree in the case below.
 		{"a reason", "", func(t *testing.T, rig *waitRig) {
 			rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
+			lingerTree(t, rig)
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		}, "waits since " + waitMergedAt.Add(time.Minute).Format("2006-01-02")},
 		{"a reason in a parked tree", "", func(t *testing.T, rig *waitRig) {
 			rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
-			until := rig.now.Add(30 * 24 * time.Hour)
-			root := rig.issue(waitRoot)
-			root.LingerUntil = &until
-			seedIssue(t, rig.pool, root)
+			lingerTree(t, rig)
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		}, "does not run while its root lingers"},
 	} {
@@ -310,9 +310,6 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 			rig.seedRoot(phase.Merging, "retro")
 			if tc.name == "beneath" {
 				rig.seedChild(waitChild, phase.Implementing, "in_progress")
-			}
-			if strings.HasPrefix(tc.name, "a reason") {
-				owedMerger(t, rig)
 			}
 			rig.mergeRoot()
 			tc.setUp(t, rig)
@@ -329,7 +326,6 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 			}
 		})
 	}
-
 	t.Run("a term that stands no more is not named", func(t *testing.T) {
 		rig := newWaitRig(t, "")
 		mergedRoot(t, rig)
@@ -343,6 +339,16 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 			t.Fatalf("the second day's notice = %+v, want it to name LEGION-300 and not c-after, which passes now", told)
 		}
 	})
+}
+
+// lingerTree stands the rig's root in a tree that does not run: its linger runs a month out, so
+// the daemon starts nothing of it and a reason of it waits until the tree runs again (D10).
+func lingerTree(t *testing.T, rig *waitRig) {
+	t.Helper()
+	until := rig.now.Add(30 * 24 * time.Hour)
+	root := rig.issue(waitRoot)
+	root.LingerUntil = &until
+	seedIssue(t, rig.pool, root)
 }
 
 // A check of the issue that waits in verifying is deferred while its next change runs: RunsAgain
