@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,22 +15,34 @@ import (
 // each configured rename's new name (`repository_renames`' `to`) over its old one (`from`) on every
 // stored column that holds a repository name, once GitHub shows the repository's transfer, at its
 // boot and at the end of an issue's pod (internal/daemon's renamePass), and
-// dispatch://INFRA-3532's own change removes it with these functions. PutIssue refuses a recorded
-// issue another repository, so the pass writes through RenameIssueRepository and nothing else does.
+// dispatch://INFRA-3532's own change removes it with these functions. PutIssue never moves a
+// recorded issue's repository, and the one writer that moves an issue onto another repository,
+// CorrectIssueRepository, records a correction: the repository the issue left and its moment,
+// which its next task names. A rename is no such move, since a pair's two names are one
+// repository (ghrepo.Renames.Same), so the pass writes beside that writer, through
+// RenameIssueRepository: it matches the old name it replaces rather than writing a copy read
+// earlier, so it writes no stale repository back, and a correction that reads Dispatch's old name
+// after it reads the pair as one repository and writes nothing (workflow's sameRepository).
 //
-// The columns are every one the migrations give a repository name: issues.repo and
-// issues.github_repo (0047, 0048), pull_requests.repo (0004), cleared_pull_requests.repo
-// (20261120144241), production_checks.repo (0049), repo_notes.resolved_repo (0047) and the merge
-// snapshot's issues.merge_repo (20261126223725). No other
-// column holds one: the claims' and claim capabilities' locators name a tmux pane or a Sandbox,
-// the outbox's payloads carry no repository, and processed_events.event_id
-// only embeds one in a dedupe key. Every comparison is made without case
-// (`lower(col) = lower(from)`), as every read of a repository name in the record is, so a row in
-// any spelling of the old name is written; the new name is written as the caller hands it, on
-// every column alike, which the pass hands in GitHub's spelling of the pair's `to`
-// (Issue.GitHubRepo is the spelling GitHub intake's subjects are built from). A pair never renames
-// a repository to itself in another case (ghrepo.NewRenames), so a row on the new name never
-// matches the old one, and a second run writes nothing.
+// The columns are every one the migrations give the repository an issue or its work is on now:
+// issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
+// cleared_pull_requests.repo (20261120144241), production_checks.repo (0049),
+// repo_notes.resolved_repo (0047) and the merge snapshot's issues.merge_repo (20261126223725). No
+// other column holds one the pass writes. The claims' and
+// claim capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads carry no
+// repository, and processed_events.event_id only embeds one in a dedupe key. Four more columns hold
+// a name the pass leaves as it is: issues.repo_before, the repository a correction moved the issue
+// off, which is that correction's history and decides nothing that compares it with a pair;
+// issues.repo_change_pending, Dispatch's own name for a change still to be made, which the issue's
+// next event writes again from Dispatch; and claims.update_repository and
+// claims.working_repository, the repository an update round's pod and a claim's running process
+// were built from, each read only for the round or incarnation it was recorded with. Every
+// comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
+// name in the record is, so a row in any spelling of the old name is written; the new name is
+// written as the caller hands it, on every column alike, which the pass hands in GitHub's spelling
+// of the pair's `to` (Issue.GitHubRepo is the spelling GitHub intake's subjects are built from). A
+// pair never renames a repository to itself in another case (ghrepo.NewRenames), so a row on the
+// new name never matches the old one, and a second run writes nothing.
 
 // RenameTable is a table whose columns hold a repository name, as a count by table names it
 // (RenameCandidate.Rows, RenameWrite.Rows).
@@ -203,12 +214,11 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	case err != nil:
 		return RenameWrite{}, fmt.Errorf("read whether the pull request of %s would hold %s twice: %w", issue, to, err)
 	default:
-		var now time.Time
-		if err := tx.QueryRow(ctx, "select now()").Scan(&now); err != nil {
-			return RenameWrite{}, fmt.Errorf("read the time of the clear of the pull request of %s: %w", issue, err)
-		}
-		if err := NewStore().clearPullRequests(ctx, tx, now, "issue = $1 and lower(repo) = lower($2)", issue, from); err != nil {
-			return RenameWrite{}, fmt.Errorf("delete the pull request of %s, which %s holds on %s: %w", issue, collision.Holder, to, err)
+		// The clear keeps the deleted row's merge as its issue's snapshot and its clock, at the
+		// moment of this transaction, as every clear does (clearPullRequests).
+		describe := fmt.Sprintf("delete the pull request of %s, which %s holds on %s", issue, collision.Holder, to)
+		if err := NewStore().clearPullRequests(ctx, tx, "issue = $1 and lower(repo) = lower($2)", describe, issue, from); err != nil {
+			return RenameWrite{}, err
 		}
 		collision.Issue = issue
 		written.Deleted = &collision

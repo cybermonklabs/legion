@@ -64,17 +64,17 @@
 -- then moves each issue of the project that stands in verifying to merging, with status retro. The
 -- release before's boot sweep closes each of them at its merged pull request, which is the early
 -- close this release ends, so after the roll forward a person reads the list and sets each listed
--- issue whose checks still do not pass to todo, which runs it again. It deletes the rows of the
--- project that the release before cannot decode, since it decodes a row strictly and fails such a row
--- at every attempt: the close_read and close_wait_publish rows, the notices and controller notices
--- of the kinds this release adds, the issue_branch rows whose payload holds from, and the supervise
--- rows whose payload holds startAt. An issue's close-wait.md stays in Dispatch as its last version
--- left it. It gives each issue_bundle, issue_release and issue_suspend row the outbox still holds
--- the tree generation the release before reads, its root's generation: after a way back a member of
--- a tree whose root ran a next change can be told one item of design news again, since its credits
--- name the old tree generation. Each statement that names a table or a column this migration adds
--- runs only where it still exists, so block A run again, or after block B, prints nothing it cannot
--- read and deletes that project's rows.
+-- issue whose checks still do not pass to todo, which starts one next change of it. It deletes the
+-- rows of the project that the release before cannot decode, since it decodes a row strictly and
+-- fails such a row at every attempt: the close_read and close_wait_publish rows, the notices and
+-- controller notices of the kinds this release adds, the issue_branch rows whose payload holds
+-- from, and the supervise rows whose payload holds startAt. An issue's close-wait.md stays in
+-- Dispatch as its last version left it. It gives each issue_bundle, issue_release and
+-- issue_suspend row the outbox still holds the tree generation the release before reads, its
+-- root's generation: after a way back a member of a tree whose root ran a next change can be told
+-- one item of design news again, since its credits name the old tree generation. Each statement
+-- that names a table or a column this migration adds runs only where it still exists, so block A
+-- run again, or after block B, prints nothing it cannot read and deletes that project's rows.
 --
 -- Block B refuses, and changes nothing, while any issue stands in verifying. Then it puts back the
 -- SQL functions as the release before reads them, before it drops a column: design_news_current

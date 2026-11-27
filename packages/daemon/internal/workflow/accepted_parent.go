@@ -1,23 +1,11 @@
 package workflow
 
 import (
-	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-// openBeneath is OpenBeneath over the tree issue belongs to, read here.
-func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	members, err := e.treeMembers(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return record.OpenBeneath(issue, members), nil
-}
 
 // ChildUnderAcceptedParentNotice is what the architect above the child is told when a person
 // moves an issue to todo beneath an ancestor whose head the daemon has already accepted
