@@ -1,0 +1,36 @@
+kind: Added
+body: |-
+  `agent-secrets` takes its machine identity from an `external_account` credential file of every
+  `credential_source` that Google's Go library `cloud.google.com/go/auth` reads, an X.509
+  certificate's among them (workload identity federation with a client certificate). The
+  credential may name its certificate configuration (`certificate_config_location`) or take the
+  default one (`use_default_certificate_config`: `GOOGLE_API_CERTIFICATE_CONFIG`, else gcloud's),
+  as `gcloud iam workload-identity-pools create-cred-config --credential-cert-path` writes it with or
+  without `--credential-cert-configuration-output-file`; the exchange presents the certificate over
+  TLS. Before, the client read the file with `golang.org/x/oauth2`, which has no X.509 source, so a
+  machine whose one Google identity was such a certificate failed with `mint an access token as
+  <account> with the external_account credential GOOGLE_APPLICATION_CREDENTIALS names: the request
+  failed`.
+
+  An X.509 certificate's federated access token mints the identity token itself, as Google's own
+  `cloud.google.com/go/auth/credentials/idtoken` does for an `external_account` credential, and its
+  impersonation URL only names the account: the federation's principal needs
+  `iam.serviceAccounts.getOpenIdToken` on the account, which `roles/iam.workloadIdentityUser`
+  carries, and the account needs no role on itself. A credential of any other `credential_source`
+  mints as before: its impersonation URL mints the account's access token, which mints the identity
+  token.
+
+  A trust chain, certificate configuration, certificate or private key that cannot be read is named
+  in the error with the file call's reason, never its path, and so is a subject token file that is
+  a directory. A certificate, private key or trust chain that Google's library would not parse is
+  named as such before anything is sent. A certificate configuration that repeats a key, or names
+  no workload certificate and private key, an enterprise certificate proxy's among them, is refused
+  before the library would start the signer program it names, and so is a certificate source that
+  names a configuration and asks for the default one too. An exchange whose
+  answer holds no access token is refused before `generateIdToken`. A refused X.509 exchange names
+  the security token service (Google's where the credential names no `token_url`), its status and
+  its registered code. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
+  library's log of it would hold the subject token and the tokens it mints.
+time: 2026-11-25T05:52:47Z
+custom:
+    Issue: external-account-x509

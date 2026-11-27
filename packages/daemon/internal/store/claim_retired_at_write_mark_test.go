@@ -52,6 +52,7 @@ func enqueueOutboxRow(t *testing.T, store *Store, issue string) int64 {
 // whose first write is already retired is marked by that insert, the other half of the one upsert
 // that records a state.
 func TestTheRetirementMarkIsTakenWhenTheRetirementIsWritten(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

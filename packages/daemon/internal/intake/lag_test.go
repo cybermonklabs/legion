@@ -39,6 +39,7 @@ func observeStored(watch *lagWatch, m storedMessage) {
 // for a message stored more than five minutes before it is handled, at most once a minute however
 // many such messages a backlog delivers; a consumer keeping up says nothing.
 func TestLagWatchSaysOnceAMinuteThatAConsumerIsBehind(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 26, 20, 54, 24, 0, time.UTC)
 	var logs bytes.Buffer
 	watch := &lagWatch{consumer: "legion-capture-github", logger: slog.New(slog.NewTextHandler(&logs, nil)), now: func() time.Time { return now }}

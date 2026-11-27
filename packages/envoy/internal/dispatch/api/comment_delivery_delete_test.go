@@ -5,10 +5,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // endedByThePostsDelete is the words a delete settles a pending send of its post with
@@ -123,11 +123,7 @@ func TestAMentionSendWhoseClaimADeleteSettledDuringItsCopyRuleSendsNothing(t *te
 		<-release
 	}
 	retried := mention.retry(t)
-	select {
-	case <-inCopyRule:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the Retry's send never reached the end of its copy rule")
-	}
+	testwait.Receive(t, "the Retry's send reaching the end of its copy rule", inCopyRule)
 	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
 	letSend()
 
@@ -148,11 +144,7 @@ func TestAMentionWhoseFrameLeftBeforeTheDeleteReadsEndedByThePostsDelete(t *test
 	landed, answer := mention.listener.holdAnswer("s1")
 	t.Cleanup(answer)
 	retried := mention.retry(t)
-	select {
-	case <-landed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the Retry's frame never reached the listener")
-	}
+	testwait.Receive(t, "the Retry's frame at the listener", landed)
 	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
 	answer()
 

@@ -23,7 +23,12 @@ function taskRef(blockId: string): string {
 }
 
 function chip(ref: string, name = ""): NodeChip {
-  return { answered: name !== "", gone: false, name, ref };
+  return {
+    answered: name !== "",
+    gone: false,
+    ...(name === "" ? {} : { reading: { words: name } }),
+    ref,
+  };
 }
 
 /** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s

@@ -107,6 +107,7 @@ const googleRejectedMessage = "listener: Google identity token rejected"
 // about which caller it is. With the list unset the branch admits every subject the verifier
 // verifies, as it did before the list existed.
 func TestOIDCAccountsLimitTheProjectedTokenBranch(t *testing.T) {
+	t.Parallel()
 	cluster := newClusterIssuer(t)
 	listedToken := cluster.token(t, listenerListedSubject)
 	unlistedToken := cluster.token(t, listenerUnlistedSubject)
@@ -149,6 +150,7 @@ func TestOIDCAccountsLimitTheProjectedTokenBranch(t *testing.T) {
 // The token's issuer picks the branch, so a projected token goes on reaching its own beside it,
 // and a listener that takes Google identities requires a bearer: it is not open.
 func TestAListedGoogleIdentityIsAdmitted(t *testing.T) {
+	t.Parallel()
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 	cluster := newClusterIssuer(t)
 	googleToken := google.token(t, listenerGoogleAccount, true, listenerGoogleAudience)
@@ -188,6 +190,7 @@ func TestAListedGoogleIdentityIsAdmitted(t *testing.T) {
 // projected tokens must send both spellings through the account list, as a Google-only listener
 // does, without falling back to the projected-token verifier after a refusal.
 func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
@@ -235,6 +238,7 @@ func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
 // verified, in a token Google signed for this listener's audience, and each refusal is the one
 // unauthorized body with its class in the log alone.
 func TestAnUnlistedGoogleIdentityIsRefused(t *testing.T) {
+	t.Parallel()
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 	cluster := newClusterIssuer(t)
 
@@ -308,6 +312,7 @@ func requestSeries(t *testing.T, met *metrics.Registry) map[[2]string]int64 {
 // route's pattern, so a session id in a path never becomes a series of its own, and a refused
 // request counts nowhere.
 func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
+	t.Parallel()
 	const shared = "expected-token"
 	cluster := newClusterIssuer(t)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
@@ -417,6 +422,7 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 // address, so an operator can find the callers the series counts; a line says how many admissions
 // it held back since the last. The others log nothing when admitted.
 func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
+	t.Parallel()
 	const shared = "expected-token"
 	cluster := newClusterIssuer(t)
 	clock := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
@@ -505,6 +511,7 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 }
 
 func TestResolveListenerOIDCAccounts(t *testing.T) {
+	t.Parallel()
 	const issuer = "https://oidc.eks.example/id/CLUSTER"
 	cases := []struct {
 		name   string
@@ -560,6 +567,7 @@ func TestResolveListenerOIDCAccounts(t *testing.T) {
 }
 
 func TestResolveListenerGoogleConfig(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		env          map[string]string
@@ -605,6 +613,7 @@ func TestResolveListenerGoogleConfig(t *testing.T) {
 // A listener that takes Google identities requires a bearer, so the boot log's hosts line says
 // /v1 is served to any Host, as it says for the other two bearers.
 func TestDescribeListenerAPIHostsCountsEveryBearer(t *testing.T) {
+	t.Parallel()
 	google := &googleIdentities{audience: listenerGoogleAudience, accounts: []string{listenerGoogleAccount}}
 	for _, tc := range []struct {
 		name string
@@ -630,6 +639,7 @@ func TestDescribeListenerAPIHostsCountsEveryBearer(t *testing.T) {
 // before the gate opens is refused before admission and counted nowhere, one after is counted
 // under the route that serves it, and a path no route matches under the gate's pattern.
 func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
+	t.Parallel()
 	met := metrics.New()
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	gate := newStartingGate("v1", logger)
@@ -662,6 +672,7 @@ func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
 // A Google issuer claim must not select a branch the listener has not configured. In particular,
 // the projected-only listener retains its verifier's admission rule when the new lists are unset.
 func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
+	t.Parallel()
 	cluster := newClusterIssuer(t)
 	keys, err := oidc.NewKeys(context.Background(), cluster.issuer.URL())
 	if err != nil {
@@ -696,6 +707,7 @@ func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 // Concurrent admissions share one warning window and retain every suppressed admission in the
 // next warning's held count. Both credentials have independent windows.
 func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
+	t.Parallel()
 	clock := time.Unix(0, 0)
 	warnings := newAdmissionWarnings(func() time.Time { return clock })
 	var logged bytes.Buffer
@@ -743,6 +755,7 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 // An empty Host keeps the open listener's Host refusal. The handler is /v1 as main mounts it
 // (v1API), so a request the closed gate refuses is refused before admission and counts nothing.
 func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, method, path, host, token string
 		closed                          bool
@@ -806,6 +819,7 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 // that would reach the missing part: one with no logger, which every refusal and every warned
 // admission writes to, and one whose Google identities carry no verifier to judge a token with.
 func TestAPIAuthRefusesAnAuthItCannotServe(t *testing.T) {
+	t.Parallel()
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	for _, tc := range []struct {
 		name string

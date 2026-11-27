@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Deprecated user-level config: fix.tools.x.line-range-arg is updated to fix.tools.x.line-range-args = ["$first"]
+--- exit 0

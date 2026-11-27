@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -170,7 +171,49 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
-	return report, nil
+	// The project of every node, which a read limited to a project depends on: the node of each
+	// issue, document, ask and message written before its kind's writer wrote one, and the
+	// project of each comment and block node written before a node named its project. Both run
+	// after the passes above, so a comment or a block those passes wrote a node for takes its
+	// project from them, and the fill finds nothing of it to do. A row the object pass leaves
+	// because the store holds its node in another project (graphstore.ErrProjectMoved), which no
+	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
+	// after both.
+	var moved error
+	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
+		backfillObjectNodes, backfillScopes,
+	} {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done...)
+		for _, kind := range done {
+			writeKindBackfill(out, kind)
+		}
+		switch {
+		case onlyProjectMoved(err):
+			moved = err
+		case err != nil:
+			return report, errors.Join(moved, err)
+		}
+	}
+	return report, moved
+}
+
+// onlyProjectMoved is whether err holds failures and every one is graphstore.ErrProjectMoved:
+// the rows backfillObjectNodes leaves while writing every other one.
+func onlyProjectMoved(err error) bool {
+	if err == nil {
+		return false
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return errors.Is(err, graphstore.ErrProjectMoved)
+	}
+	for _, one := range joined.Unwrap() {
+		if !errors.Is(one, graphstore.ErrProjectMoved) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {

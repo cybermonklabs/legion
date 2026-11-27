@@ -18,6 +18,7 @@ import (
 // a stand-in that reported that failed a subtest whose checks had all passed. Here the frame's
 // answer is held until the stand-in's connection has closed, so the reply always meets it closed.
 func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	const sessionID = "ses_standin_closed_while_answering"
 	answering, release := make(chan struct{}), make(chan struct{})
@@ -33,7 +34,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 			}
 			select {
 			case <-standIn.frames:
-			case <-time.After(10 * time.Second):
+			case <-time.After(listenerWaitBound(t)):
 				t.Error("the stand-in never finished answering the frame")
 			}
 		})
@@ -53,7 +54,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 		}
 		select {
 		case <-answering:
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the stand-in never started answering the frame")
 		}
 	})

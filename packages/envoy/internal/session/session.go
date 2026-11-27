@@ -11,63 +11,69 @@ import (
 // through: no session entry was resolved at all, or the entry resolved records no way the session
 // receives a message - no consumer of its own, and no subscription it holds itself, which is what
 // a session registered through a plugin older than both leaves behind. Neither cause says the
-// session is gone. A caller that resolved the entry from a cache alone cannot conclude that - the
-// cache trails the bucket it follows - and an entry that records neither way is rewritten by the
-// session's next registration, so a caller may wait rather than give the message up, and the
-// listener's delivery does, deferring such a message for its whole retry window
-// (cmd/listener/unplaceable_delivery.go).
+// session is gone. The topic fan-out (cmd/listener's fanoutDelivery) is the one caller: it counts
+// such a delivery failed. A message on a session's agent subject never comes here, since the
+// session's own consumer delivers it (HandleAgentMessage).
 var ErrNoSessionRecord = errors.New("no session record")
 
 // ConsumerRelaysStored reports whether the session's own consumer holds the stored message of
-// stream sequence storedSeq, on a topic the deployed stream captures (captured), so the relay of
-// that consumer (cmd/listener's sessionRelays) is what delivers it and no other path may record
-// anything about it: a dedupe key written for a message this listener handed to nobody would have
-// the next copy of the same event skipped as one the session already has, and an attempt record
-// would have a redelivery of it skipped as one already on its way. A topic the stream does not
-// capture is in no consumer whatever the session's delivery is, and no path of the session's own
-// carries such a message either, so Resolve answers it with ErrNoSessionRecord.
+// stream sequence storedSeq, on a topic the deployed stream captures as the caller's client last
+// read its subjects (captured), so the relay of that consumer (cmd/listener's sessionRelays) is
+// what delivers it and no other path may record anything about it: a dedupe key written for a
+// message this listener handed to nobody would have the next copy of the same event skipped as one
+// the session already has, and an attempt record would have a redelivery of it skipped as one
+// already on its way. The consumer's filter holds every topic of the session's row whatever the
+// deployed stream captures (cmd/listener's sessionConsumerFilter), but the stream stores nothing
+// on a topic it does not capture, so a message read as uncaptured is answered ErrNoSessionRecord
+// by Resolve. A read of a narrowing that falls between a message's publish and its judgement reads
+// a copy the stream did store, and the consumer holds, as uncaptured: the caller then reports a
+// failed delivery and has the copy delivered again, while the session's consumer still hands the
+// session the message once.
 func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool {
 	return captured && e.ConsumerHoldsStored(storedSeq)
 }
 
-// Resolve decides what a delivery of item to sessionID's session at entry comes to, and there are
-// two answers left, which its error alone carries: a nil error is the session's own consumer
-// relaying the message, so this delivery has nothing left to do - the relay of that consumer is
-// what delivers it - and ErrNoSessionRecord is an entry that records no way of receiving at all.
-// No session takes a message off a NATS subscription of its own any more (dispatch://INFRA-771),
-// so there is no third outcome for a result to describe. A nil entry produces ErrNoSessionRecord,
-// the same answer a failed lookup produces, so a caller can avoid a second registry read.
+// Resolve decides what a fan-out delivery of item to sessionID's session at entry comes to, and
+// there are two answers, which its error alone carries: a nil error is the session's own
+// consumer relaying the message, so this delivery has nothing left to do - the relay of that
+// consumer is what delivers it - and ErrNoSessionRecord is an entry that records no way of
+// receiving at all. No session takes a message off a NATS subscription of its own
+// (dispatch://INFRA-771), so there is no third outcome for a result to describe. A nil entry
+// produces ErrNoSessionRecord, the same answer a failed lookup produces, so a caller can avoid a
+// second registry read.
 //
 // It is a package function because the decision holds no state at all: every caller resolves the
 // entry it decides on and hands it over, so the record the decision acts on is the one that
 // caller read, and nothing of the listener it runs in enters the decision.
 //
-// storedSeq is the stream sequence of the durable path's copy of a stored message, 0 for any
+// storedSeq is the stream sequence of the listener durable's copy of a stored message, 0 for any
 // other delivery, and captured is whether the deployed stream captures item's topic
-// (bus.Client.DeployedStreamCaptures), which the caller reads from its own bus client, since the
-// consumer's filter is judged on those same subjects (cmd/listener's sessionConsumerFilter). A
-// message is stored on the subject its envelope names as its topic, so the capture and the
-// sequence together decide whether a session on consumer delivery is already held this message by
-// its own consumer (SessionEntry.ConsumerRelaysStored). A delivery that is not the durable's copy
-// of a stored message - the listener's core lane carries one - passes a sequence of 0, which
-// leaves a session on consumer delivery its consumer's copy whatever that copy's sequence is.
+// (bus.Client.DeployedStreamCaptures), which the caller reads from its own bus client's last read
+// of the deployed subjects. The consumer's filter does not follow that read: it holds every topic
+// of the session's row whatever the deployed stream captures (cmd/listener's
+// sessionConsumerFilter). A message is stored on the subject its envelope names as its topic, so
+// the capture and the sequence together decide whether a session on consumer delivery is already
+// held this message by its own consumer (SessionEntry.ConsumerRelaysStored). A delivery that is
+// not the durable's copy of a stored message passes a sequence of 0, which leaves a session on
+// consumer delivery its consumer's copy whatever that copy's sequence is.
 func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, storedSeq uint64, captured bool) error {
 	if entry == nil {
 		return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 	}
 	if entry.ConsumerRelaysStored(captured, storedSeq) {
 		// The session's consumer holds this stored message, and the listener that owns the session
-		// relays it from there: no other path delivers it, and none records anything about it. A
-		// topic the stream does not store is in no consumer, and so is a durable message stored
-		// below the consumer's start; no path of the session's own carries such a message either,
-		// so the branch below answers it.
+		// relays it from there: no other path delivers it, and none records anything about it. The
+		// stream stores nothing on a topic it does not capture, so no consumer holds a message
+		// read as uncaptured, and none holds a durable message stored below the consumer's start;
+		// no path of the session's own carries such a message either, so the branch below answers
+		// it.
 		return nil
 	}
 	// The entry records no way of receiving this message: a session receives what its own
 	// consumer delivers and nothing else, so an entry the previous build left on the core receive
 	// path, and one whose consumer cannot carry this message, are both out of reach until the
-	// session registers again. The error is the honest answer, raising one delivery exception per
-	// stored message: a silent skip would hide a session that receives nothing
+	// session registers again. The error is the honest answer, which the fan-out counts as a
+	// failed delivery: a silent skip would hide a session that receives nothing
 	// (dispatch://INFRA-771).
 	return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 }

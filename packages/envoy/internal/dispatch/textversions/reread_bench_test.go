@@ -111,9 +111,9 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 			         where e.type in ('comment.deleted', 'message.edited', 'message.deleted'))`).Scan(&stored, &again); err != nil {
 			b.Fatalf("read what the pass wrote: %v", err)
 		}
-		if stored != rulesVersion || again != wantAgain {
+		if stored != RulesVersion || again != wantAgain {
 			b.Fatalf("after the pass the cursor row holds rules %d and the table %d rows of the types version 2 added; want %d and %d",
-				stored, again, rulesVersion, wantAgain)
+				stored, again, RulesVersion, wantAgain)
 		}
 		b.StartTimer()
 	}
@@ -149,7 +149,7 @@ var rereadPlanLogged sync.Once
 // (rereadEventsQuery, with the arguments a re-read batch gives it), with ANALYZE and BUFFERS.
 func logRereadPlan(b *testing.B, database *store.Store) {
 	b.Helper()
-	changes := currentRules.changeTypes(rereadTypes(1, rulesVersion))
+	changes := currentRules.changeTypes(rereadTypes(1, RulesVersion))
 	rows, err := database.Pool.Query(context.Background(), `explain (analyze, buffers) `+rereadEventsQuery,
 		int64(0), int64(math.MaxInt64), batchEvents, int64(batchBytes), changes, []string(nil))
 	if err != nil {

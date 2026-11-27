@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // Unreachable is the predicate daemon.go's boot gate judges every reconcile failure with: a boot
@@ -78,7 +80,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				// The default client trusts no certificate the test server minted for itself.
-				return New(server.URL, "test-token")
+				return New(server.URL, BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -95,10 +97,8 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert, MaxVersion: tls.VersionTLS12}
 				server.StartTLS()
 				t.Cleanup(server.Close)
-				client := New(server.URL, "test-token")
 				// The client trusts the server's certificate, so the alert is all that fails.
-				client.httpClient = server.Client()
-				return client
+				return New(server.URL, BearerTransport("test-token", server.Client().Transport))
 			},
 			wantTransient: false,
 		},
@@ -109,7 +109,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				}))
 				t.Cleanup(server.Close)
-				return New("https://"+strings.TrimPrefix(server.URL, "http://"), "test-token")
+				return New("https://"+strings.TrimPrefix(server.URL, "http://"), BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -141,20 +141,15 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 						}()
 					}
 				}()
-				return New("https://"+listener.Addr().String(), "test-token")
+				return New("https://"+listener.Addr().String(), BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
 		{
 			name: "a dial the network refuses",
 			client: func(t *testing.T) *HTTPClient {
-				reserved, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatalf("reserve a port: %v", err)
-				}
-				addr := reserved.Addr().String()
-				reserved.Close() // nothing answers here now.
-				return New("http://"+addr, "test-token")
+				// A port the test holds and nothing listens on: nothing answers here.
+				return New("http://"+testport.Refused(t), BearerTransport("test-token", nil))
 			},
 			wantTransient: true,
 		},

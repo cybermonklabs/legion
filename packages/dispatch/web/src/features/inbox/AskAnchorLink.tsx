@@ -78,6 +78,7 @@ export function AskAnchorHeader({
       <blockquote
         className={`${quoteSpacing === "roomy" ? "mb-3" : "mb-2"} border-l-2 pl-3 ${quoteClassName}`}
       >
+        {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
         {anchor.quote}
       </blockquote>
     </>

@@ -3,7 +3,6 @@ package main
 //ci:reads packages/contracts/fixtures/daemon-api/state.json TestStateReadsADaemonSlowerThanTheOldBudget reads the daemon's state golden as the slow daemon's answer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +28,7 @@ const slowStateAnswer = 6 * time.Second
 // serves, and the handler waits slowStateAnswer before it answers, which is less than a live
 // INFRA read takes and more than the command allowed when this test was written.
 func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
+	t.Parallel()
 	body, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json"))
 	if err != nil {
 		t.Fatalf("read the state fixture: %v", err)
@@ -45,13 +45,13 @@ func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
 		}
 	}))
 	defer daemon.Close()
-	t.Setenv("LEGION_DAEMON_URL", daemon.URL)
 
-	var stdout, stderr bytes.Buffer
-	if code := run(t.Context(), []string{"legion", "state"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("legion state = %d, want 0; stderr %s", code, strings.TrimSpace(stderr.String()))
+	// A process of its own, which the daemon's address reaches through its own environment, so
+	// the six-second wait runs beside the package's other tests.
+	code, printed, stderr := legionIn(t, t.TempDir(), map[string]string{"LEGION_DAEMON_URL": daemon.URL}, "", "state")
+	if code != 0 {
+		t.Fatalf("legion state = %d, want 0; stderr %s", code, strings.TrimSpace(stderr))
 	}
-	printed := stdout.String()
 	for _, want := range []string{"admission: ", "waiting line: "} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("legion state printed %q, want a line holding %q", printed, want)

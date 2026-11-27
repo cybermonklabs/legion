@@ -14,8 +14,8 @@
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER]] runs four checks, each printing
-# `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
+# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [STAMP]]] runs four checks, each
+# printing `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
 # `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's the run
 # refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
@@ -34,7 +34,9 @@
 # built that way before the run: the check then notes DRIVER and builds nothing. proof runs the
 # one test TEST against them and holds that it passed, under the test binary's own deadline
 # TIMEOUT (a Go duration; 20m when the caller gives none, or gives it empty):
-# approved-version-news.sh's part two runs real model sessions for longer than that.
+# approved-version-news.sh's part two runs real model sessions for longer than that. The driver
+# check builds with STAMP when the caller gives one (build_daemon_driver's second argument), and
+# owner-steps-client.sh alone gives one; a handed DRIVER was stamped, or not, by its caller.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test, where the
@@ -58,7 +60,7 @@
 # shellcheck source-path=SCRIPTDIR source=run-verdict.sh
 . "$root/scripts/e2e/lib/run-verdict.sh"
 # lib/loopback-dsn.sh holds require_loopback_dsn, the guard prerequisites reads LEGION_TEST_PG_DSN
-# with. It needs nothing of this file's.
+# with, through require_loopback_env. It needs nothing of this file's.
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
@@ -107,11 +109,17 @@ pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 refuse() { echo "FAIL $check: $*" >&2; exit 2; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
-# build_daemon_driver OUT builds every proof's driver, the daemon package's `-tags e2e` test
-# binary, from root's packages/daemon into OUT. The driver check builds with it, and so does a
-# caller that builds the driver before the run and hands it over as DRIVER.
+# build_daemon_driver OUT [STAMP] builds every proof's driver, the daemon package's `-tags e2e`
+# test binary, from root's packages/daemon into OUT. The driver check builds with it, and so does
+# a caller that builds the driver before the run and hands it over as DRIVER. STAMP, when given
+# and not empty, is the merge order `scripts/daemon-contract-order.sh --stamp` printed, which the
+# build writes into the binary (`-X` of api.contractOrder). With none, the binary numbers its
+# entries by id, as every driver but owner-steps-client.sh's does: that one alone pairs this
+# daemon with the plugin of another commit, whose number names the entries of main's order.
 build_daemon_driver() {
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$1" ./internal/daemon
+  local ldflags=()
+  [ -z "${2:-}" ] || ldflags=(-ldflags "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$2")
+  go -C "$root/packages/daemon" test -c -tags e2e "${ldflags[@]}" -o "$1" ./internal/daemon
 }
 
 cleanup() {
@@ -127,7 +135,7 @@ cleanup() {
 }
 
 live_daemon_proof() {
-  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} tool nats_bin db_host
+  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} stamp=${7:-} tool nats_bin db_host
   proof_label=$1
   evidence=${4:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug-evidence.XXXXXXXX")}
   mkdir -p "$evidence"
@@ -140,15 +148,16 @@ live_daemon_proof() {
   trap cleanup EXIT
 
   begin prerequisites
-  [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+  [ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
     refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
   for tool in go awk python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
   # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
-  # these three, and why the call comes after the tool check above.
+  # these three, and why the call comes after the tool check above. The call names the variable
+  # and not its value (require_loopback_env), so a run under `bash -x` traces no DSN.
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
-  require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
+  require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops a database there" ||
     refuse "$db_host"
   note "go $(go version | awk '{print $3}'), store LEGION_TEST_PG_DSN (set; not printed)"
   nats_bin=${LEGION_E2E_NATS_BIN:-}
@@ -195,8 +204,12 @@ live_daemon_proof() {
   # leaves the EXIT trap that test's status 0, as in any other check, so the last line says the
   # run stopped before its end (lib/run-verdict.sh).
   if [ -z "$handed" ]; then
-    build_daemon_driver "$driver" || fail "the driver did not build"
-    note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+    build_daemon_driver "$driver" "$stamp" || fail "the driver did not build"
+    if [ -n "$stamp" ]; then
+      note "built $(basename "$driver") from $root/packages/daemon with -tags e2e and the merge order $stamp"
+    else
+      note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+    fi
   else
     note "the caller built $driver with -tags e2e and handed it over; this check builds nothing"
   fi

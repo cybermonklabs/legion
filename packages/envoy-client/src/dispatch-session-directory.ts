@@ -4,9 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Where the `dispatch` CLI's per-session state lives (`<root>/sessions/<session id>`) and how a
- * file in it is replaced. A leaf: `dispatch-session-state.ts` (which imports `dispatch-execute`)
- * and `session-answers.ts` (which `dispatch-execute` imports) both use it without a cycle.
+ * Where the `dispatch` CLI's per-session state lives (`<root>/sessions/<session id>`), the
+ * variables a session's id is read from, and how a file in it is replaced. A leaf:
+ * `dispatch-session-state.ts` (which imports `dispatch-execute`) and `session-answers.ts` (which
+ * `dispatch-execute` imports) both use it without a cycle.
  */
 
 /** The whole value of a session id where it is used as one path segment: 1 to 128 letters,
@@ -19,6 +20,21 @@ import { join } from "node:path";
  *  id outside this rule could reach a directory of its own choosing or a file jj cannot parse. */
 export const SESSION_ID_PATH_SEGMENT = /^[A-Za-z0-9._-]{1,128}$/;
 const PRIVATE_FILE = 0o600;
+
+/**
+ * The variables a `dispatch` command reads a session's id from, in the order the refusal ledger
+ * takes the first one set under any host but Codex (`runDispatchCli`): claude-envoy's QA override
+ * and then Claude Code's own id (`claudeSessionId` in claude-envoy), the id an Oh My Pi plugin
+ * sets or a person names, and Codex's thread id, which alone is read under Codex. `dispatch api`
+ * reads the AskGate record of each one set before a write, so every session the ledger can be
+ * written for is one whose gate it reads.
+ */
+export const SESSION_VARIABLES = [
+  "ENVOY_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "DISPATCH_SESSION_ID",
+  "CODEX_THREAD_ID",
+] as const;
 
 /** `DISPATCH_STATE_DIR`, else `<XDG_STATE_HOME or ~/.local/state>/dispatch`. Empty counts as unset. */
 export function sessionStateRoot(env: Readonly<Record<string, string | undefined>>): string {

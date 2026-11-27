@@ -24,15 +24,15 @@ import (
 // own name on two accounts and every repository, and as PROOFS_READ on one repository of acme and
 // two of ada. HUMAN_APP_KEY, human tier, whose github-owners tag names three accounts, is served by
 // its own name, as GITHUB_READ, a bare token of all three, and as ADA_TOKEN, a bare token of
-// one. DEEL_API_KEY, a stored value, is served behind the proxy as DEEL_PROXIED, with no github
-// block.
-var targetProfiles = policytest.ProfilesFile(
+// one. DEEL_API_KEY, a stored value, is served behind the example kind as DEEL_PROXIED, by the
+// profile's own proxy string, with no github block.
+var targetProfiles = policytest.KindsFile(
 	policytest.AppProfile("APP_KEY"),
 	`{"name": "PROOFS_READ", "source": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	`{"name": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"metadata": "read"}}}`,
 	`{"name": "GITHUB_READ", "source": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
 	`{"name": "ADA_TOKEN", "source": "HUMAN_APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
-	`{"name": "DEEL_PROXIED", "source": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.example"]}}`,
+	`{"name": "DEEL_PROXIED", "source": "DEEL_API_KEY", "proxy": "example"}`,
 )
 
 // newTargetServer is a profileServer serving targetProfiles, whose minter mints every check.

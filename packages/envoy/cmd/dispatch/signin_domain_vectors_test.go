@@ -16,6 +16,7 @@ import (
 // DISPATCH_SIGNIN_WORKSPACE_DOMAINS, which only the component's test reads until Dispatch reads that
 // setting; Dispatch's test of that setting's entry rule then reads them here too.
 func TestCheckDomainShapeTakesTheSharedSignInDomainVectors(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "signin-domain-vectors.json"))
 	if err != nil {
 		t.Fatal(err)

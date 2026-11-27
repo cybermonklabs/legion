@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type testSuggestionOwner struct {
@@ -239,22 +242,21 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 	}
 }
 
-// lockedSuggestionAllowance bounds only the time from the call's start to its query queuing
-// behind the test's lock: the project lookup's first statement, or the term picker's statement.
-// The worst whole filing on record under load was 737 ms.
-const lockedSuggestionAllowance = 5 * time.Second
+// lockedCheckStart is where the fake clock of a check suggestionsBehindLock runs stands when the
+// check starts: the check arms its allowance from here.
+var lockedCheckStart = time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
 
 // suggestionsBehindLock locks table in ACCESS EXCLUSIVE mode, runs the related-item check on a
-// server whose allowance is lockedSuggestionAllowance, and answers what it returned. The call
-// runs on a one-connection store of its own, so the backend the wait watches
+// server whose clock the test moves past the check's allowance (relatedCheckAllowance, the
+// deployment's own) once the call has queued behind the lock, and answers what it returned. The
+// call runs on a one-connection store of its own, so the backend the wait watches
 // (storetest.WaitForQueuedBehind) is the call's and no other. Counting every backend queued
 // behind the lock is not enough: the issue create the tests seed schedules the spec's settlement,
 // which queues behind the same locks on the shared pool, so that count passed a call that never
 // waited (sjawhar/legion#2217 review). It fails at once when the call answers before its own
 // backend has queued behind that lock, so a passing caller's answer is one the allowance ended
-// while the query waited there. Nothing here times the call once it has queued: a step run outside
-// the allowance waits behind the lock until go test's -timeout ends the run, naming the test. The
-// check records nothing: its records are not what these tests are about.
+// while the query waited there, however long a loaded machine took to queue it. The check records
+// nothing: its records are not what these tests are about.
 func suggestionsBehindLock(
 	t *testing.T, deps Deps, table, project, text string, source suggestionSource,
 ) *model.Suggestions {
@@ -279,15 +281,16 @@ func suggestionsBehindLock(
 
 	callDeps := deps
 	callDeps.Store = callStore
+	clock := clocktest.New(lockedCheckStart)
+	callDeps.Clock = clock
 	srv := directServer(callDeps)
-	srv.suggestionTimeout = lockedSuggestionAllowance
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin lock tx: %v", err)
 	}
-	// The call below ends on its own once its allowance does, so the receive that answers it
-	// returns before this rollback releases the lock.
+	// The call below ends once its allowance does, which the move past it reaches, so the receive
+	// that answers it returns before this rollback releases the lock.
 	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
 	// table is a literal from this file's callers, never input.
 	if _, err := lockTx.Exec(context.Background(), "lock table "+table+" in access exclusive mode"); err != nil {
@@ -298,13 +301,20 @@ func suggestionsBehindLock(
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
 	}()
-	// The call queues within milliseconds, and it ends on its own once its allowance does: the wait
-	// returns at once when it answers. So the bound, three allowances, is reached only by a call
-	// that neither queued nor answered in all that time, one stuck somewhere other than this lock.
-	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered, 3*lockedSuggestionAllowance); early {
-		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want the %s allowance to end while it waits", s, table, lockedSuggestionAllowance)
+	// The wait ends on one of two facts: the call's backend queued behind the lock, which takes
+	// milliseconds, or the call's answer arriving first, which fails the row; the call's allowance
+	// ends only by the move below. It has no bound of its own: a call that does neither, one stuck
+	// somewhere other than this lock, holds it until the test binary's deadline less testwait's
+	// margin, where it fails by name.
+	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
+		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want its allowance to end while it waits", s, table)
 	}
-	return <-answered
+	// The allowance the check armed on the fake, and the move that reaches it: what ends the call
+	// is the deadline the code set, read from the clock it set it on, and never real time.
+	allowanceEnds := lockedCheckStart.Add(relatedCheckAllowance)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	return testwait.Receive(t, "the related-item check's answer once its allowance ended", answered)
 }
 
 // TestRelatedCheckRespectsDeadlineUnderLock: a reviewer once measured the decision lookup alone
@@ -347,6 +357,14 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 		t.Fatalf("suggestions = %+v, want not made for time: the allowance ended while the project lookup waited behind the lock on issues", suggestions)
 	}
 }
+
+// spentRelatedAllowance is the allowance a case gives the related-item check when its outcome is
+// that no check was made: one already spent, which relatedBounds ends before it returns
+// (WithTimeoutCause, on either clock), so the check reads nothing on any machine. A positive
+// allowance, however small, arms a timer instead, which races
+// the check's first read on a machine whose clock moves in coarse steps, and whichever won would be
+// the machine's choice.
+const spentRelatedAllowance = -time.Nanosecond
 
 // TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails: an issue-owned ask whose write-advice
 // query itself fails must not drop the check's result that was separately computed and persisted
@@ -423,12 +441,12 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 		// The empty related list here is meaningful only because the generous case below fills it
 		// in an identically seeded corpus: trim this case's seeding and this assertion goes green
 		// because there was nothing to find, not because the allowance ran out.
-		filed := fileAsk(t, time.Nanosecond)
+		filed := fileAsk(t, spentRelatedAllowance)
 		if filed.advice.Suggestions == nil {
 			t.Fatalf("advice.suggestions = null, want an envelope reporting what is missing: advice = %+v", filed.advice)
 		}
 		// Only that missing is set is asserted, never its text: it interpolates the allowance and
-		// here reads "did not answer within 1ns".
+		// here reads "did not answer within -1ns".
 		if filed.advice.Suggestions.Outcome != "not_made" || filed.advice.Suggestions.Missing == "" {
 			t.Fatalf("advice.suggestions = %+v, want not_made with a reason the check was not made", filed.advice.Suggestions)
 		}
@@ -438,7 +456,9 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 	})
 
 	t.Run("a generous allowance finds the related items and records them", func(t *testing.T) {
-		filed := fileAsk(t, 30*time.Second)
+		// A day, longer than any run of the package: the allowance ends for no run, so what this
+		// case finds is what the corpus holds and never what the machine had time for.
+		filed := fileAsk(t, 24*time.Hour)
 		if filed.advice.Suggestions == nil {
 			t.Fatalf("advice.suggestions = null, want the seeded issue %s despite the failed write-advice query: advice = %+v", filed.seededIssue, filed.advice)
 		}
@@ -616,6 +636,16 @@ func seedWriteSuggestion(
 	`, sourceKind, sourceIssueKey, askID, actorID, suggestedKind, suggestedID, issueKey); err != nil {
 		t.Fatalf("seed write_suggestions: %v", err)
 	}
+	// A write the test makes next must postdate the row on the database's clock, which the outcome
+	// sweep compares (created_at > ws.created_at): the wait ends once that clock reads past it.
+	waitUntil(t, "the database's clock to read past the seeded suggestion's created_at", func() bool {
+		var past bool
+		if err := srv.deps.Store.Pool.QueryRow(context.Background(),
+			`select clock_timestamp() > (select max(created_at) from write_suggestions)`).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock against the seeded suggestion: %v", err)
+		}
+		return past
+	})
 }
 
 type suggestionOutcomeRow struct {
@@ -652,7 +682,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the suggestion row
 
 	closing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "Duplicate of dispatch://" + target.Key,
@@ -685,7 +714,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+target.Key+"/messages", map[string]any{
 		"body": "Adding the new detail here instead.",
@@ -718,7 +746,6 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	continued := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "This is in fact a separate problem; continuing here.",

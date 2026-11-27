@@ -24,6 +24,7 @@ import (
 //
 // A start of the phase that carries its task is counted, for each.
 func TestAStartQueuedForNewsAloneIsNoStartOfItsPhase(t *testing.T) {
+	t.Parallel()
 	silent := aSilentImplementer()
 	newsOnly := record.QueuedSupervise{ID: 9, Request: record.SuperviseRequest{Op: "start", Tree: silent.root.Key,
 		Role: claim.RoleImplementer, Generation: silent.issue.Generation, Phase: silent.issue.Phase, News: true}}

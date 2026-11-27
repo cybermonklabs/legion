@@ -22,6 +22,7 @@ import (
 // entry instead, the row would know no version, the first phase would leave it as it stands, and
 // that phase's worker would be owed as news the version its own work started from.
 func TestARootArchitectsEntryTakesNoBaselineForTheRootsHolder(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)

@@ -26,6 +26,7 @@ const backwardMovesVersion = 20261110225246
 // recorded before the migration, which is the deploy's own reading: no count is filled in from
 // the past, and no row has told a cap.
 func TestTheOutboxTakesTheHookPromptKindAndThePhaseTakesItsCountsWith20261110225246(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, backwardMovesVersion-1)

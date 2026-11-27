@@ -277,7 +277,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 			if got := r.Header.Get("Authorization"); got != "token installation-1" {
 				t.Fatalf("bot identity authorization = %q, want installation token", got)
 			}
-			fmt.Fprint(w, `{"id":271566630}`)
+			fmt.Fprint(w, `{"id":100000001}`)
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -293,7 +293,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first token: %v", err)
 	}
-	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
+	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "100000001+legion-implementer[bot]@users.noreply.github.com" {
 		t.Fatalf("first lease = %+v", first)
 	}
 	if _, err := tokens.Token(context.Background(), Implement, "SJAWHAR"); err != nil {
@@ -313,6 +313,62 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	defer mu.Unlock()
 	if exchanges != 2 || discoveries != 1 || identities != 1 {
 		t.Fatalf("exchanges=%d discoveries=%d identities=%d, want 2, 1, 1", exchanges, discoveries, identities)
+	}
+}
+
+// KnownIdentity is the bot identity a lease of the App already fetched, read from the Manager's
+// cache alone: none is known for either App before a mint, the identity once a lease of that App
+// fetched it, still none for the other App, and no read of it, before or after, reaches GitHub.
+func TestKnownIdentityIsWhatALeaseFetchedAndAsksGitHubNothing(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var requests atomic.Int64
+	server := githubtest.Serve(t, githubtest.Spec{Record: func(*http.Request) { requests.Add(1) }, Handle: func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations":
+			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+		case "/app/installations/77":
+			fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+		case "/app/installations/77/access_tokens":
+			_, asked := askedInExchange(t, r)
+			fmt.Fprint(w, mintedFor("installation-1", now.Add(time.Hour), asked.Permissions, "legion"))
+		case "/app":
+			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
+		case "/users/legion-implementer[bot]":
+			fmt.Fprint(w, `{"id":271566630}`)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	}})
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	t.Cleanup(tokens.Close)
+
+	for _, role := range append(slices.Clone(Roles), "unconfigured") {
+		if identity, known := tokens.KnownIdentity(role); known {
+			t.Errorf("KnownIdentity(%s) before any mint = %+v, want none known", role, identity)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("%d requests reached GitHub before any mint, want none: KnownIdentity asks GitHub nothing", got)
+	}
+
+	lease, err := tokens.Token(context.Background(), Implement, "acme")
+	if err != nil {
+		t.Fatalf("the implement App's lease on acme: %v", err)
+	}
+	minted := requests.Load()
+	want := GitIdentity{Name: "legion-implementer[bot]", Email: "271566630+legion-implementer[bot]@users.noreply.github.com"}
+	if identity, known := tokens.KnownIdentity(Implement); !known || identity != want || identity != lease.Identity {
+		t.Errorf("KnownIdentity(implement) after its lease = %+v, %t; want %+v, the identity the lease fetched", identity, known, want)
+	}
+	if identity, known := tokens.KnownIdentity(Review); known {
+		t.Errorf("KnownIdentity(review) after the implement App's lease alone = %+v, want none known: no lease of the review App fetched one", identity)
+	}
+	if got := requests.Load(); got != minted {
+		t.Errorf("%d requests reached GitHub after the mint's %d, want none: KnownIdentity reads the cache alone", got-minted, minted)
 	}
 }
 
@@ -359,7 +415,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-reviewer"}`)
 		case "/users/legion-reviewer[bot]":
-			fmt.Fprint(w, `{"id":271566631}`)
+			fmt.Fprint(w, `{"id":100000002}`)
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -420,7 +476,7 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-reviewer"}`)
 		case "/users/legion-reviewer[bot]":
-			fmt.Fprint(w, `{"id":271566631}`)
+			fmt.Fprint(w, `{"id":100000002}`)
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -490,7 +546,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
 		case "/users/legion-implementer[bot]":
-			fmt.Fprint(w, `{"id":271566630}`)
+			fmt.Fprint(w, `{"id":100000001}`)
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -953,7 +1009,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 			verifyAppJWT(t, jwt[len("Bearer "):], &key.PublicKey, now, "12345")
 			fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
 		case "/users/legion-implementer[bot]":
-			fmt.Fprint(w, `{"id":271566630}`)
+			fmt.Fprint(w, `{"id":100000001}`)
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -996,10 +1052,10 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 }
 
 // GitHub's trouble is transient and its answers are not: a request GitHub never answered or whose
-// body stopped mid-read, a 5xx, or a rate limit (a 429, or a 403 that says it is one) may pass when
-// it is made again, and a boot waits it out; any other status, a body that is not the JSON asked
-// for, or an owner the App is not installed on is refused at once. The boot's retry reads nothing
-// else.
+// body stopped mid-read, an outage (a 5xx, a 408 or a 429), or a rate limit (a 403 that says it is
+// one) may pass when it is made again, and a boot waits it out; any other status, a body that is
+// not the JSON asked for, or an owner the App is not installed on is refused at once. The boot's
+// retry reads nothing else.
 func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	_, privatePEM := testAppKey(t)
 	status := func(code int, header ...string) http.HandlerFunc {
@@ -1024,6 +1080,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	}{
 		{name: "discovery 502", discovery: status(http.StatusBadGateway), transient: true},
 		{name: "discovery 429", discovery: status(http.StatusTooManyRequests), transient: true},
+		{name: "discovery 408", discovery: status(http.StatusRequestTimeout), transient: true},
 		{name: "discovery 403 out of rate limit", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "0"), transient: true},
 		{name: "discovery 403 with retry-after", discovery: status(http.StatusForbidden, "Retry-After", "60"), transient: true},
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
@@ -1046,6 +1103,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			fmt.Fprint(w, `[{"id":77,"account":{"login":"someone-else"}}]`)
 		}},
 		{name: "exchange 500", discovery: installed, exchange: status(http.StatusInternalServerError), transient: true},
+		{name: "exchange 408", discovery: installed, exchange: status(http.StatusRequestTimeout), transient: true},
 		{name: "exchange 422", discovery: installed, exchange: status(http.StatusUnprocessableEntity)},
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
 	} {
@@ -1204,7 +1262,7 @@ func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
 				case r.URL.Path == "/app":
 					fmt.Fprint(w, `{"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":
-					fmt.Fprint(w, `{"id":271566630}`)
+					fmt.Fprint(w, `{"id":100000001}`)
 				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 					fmt.Fprint(w, `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`)
 				case r.URL.Path == "/apps/legion-implementer":
@@ -1372,7 +1430,7 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 		case r.URL.Path == "/app":
 			fmt.Fprintf(w, `{"slug":%q}`, g.slug)
 		case r.URL.Path == "/users/"+g.slug+"[bot]":
-			fmt.Fprint(w, `{"id":271566630}`)
+			fmt.Fprint(w, `{"id":100000001}`)
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
@@ -2100,5 +2158,109 @@ func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing
 	}
 	if got := reads.Load(); got != 1 {
 		t.Errorf("GitHub was asked %d times, want once: the second caller shares the first's read", got)
+	}
+}
+
+// A fresh installation list supersedes leases of an older installation on the same account,
+// for both roles of a shared App and both permission scopes. An unchanged account keeps its lease.
+func TestListInstallationsDropsLeasesOfAReplacedInstallation(t *testing.T) {
+	now := time.Now()
+	_, key := testAppKey(t)
+	github := &keyModeGitHub{owners: []string{"acme", "globex"}, slug: "example-app"}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "widgets")
+	}
+	server := github.serve(t)
+	app := config.GitHubApp{AppID: "12345", PrivateKey: key}
+	tokens := New(config.GitHubApps{Implement: app, Review: app}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	defer tokens.Close()
+	ctx := context.Background()
+	read := func(role AppRole, owner string, narrow bool) Lease {
+		t.Helper()
+		mint := tokens.Token
+		if narrow {
+			mint = tokens.ReadToken
+		}
+		lease, err := mint(ctx, role, owner)
+		if err != nil {
+			t.Fatalf("mint %s's token on %s: %v", role, owner, err)
+		}
+		return lease
+	}
+	for _, role := range Roles {
+		for _, narrow := range []bool{false, true} {
+			if lease := read(role, "acme", narrow); lease.Installation != "101" {
+				t.Fatalf("the original lease names installation %q, want 101", lease.Installation)
+			}
+		}
+	}
+	unchanged := read(Implement, "globex", true)
+	github.mu.Lock()
+	github.owners = []string{"newlabs", "globex", "acme"}
+	github.mu.Unlock()
+	listed, err := tokens.ListInstallations(ctx, Implement)
+	if err != nil || len(listed.Installations) != 3 {
+		t.Fatalf("the fresh installation list = %+v, %v, want three installations", listed, err)
+	}
+	for _, role := range Roles {
+		for _, narrow := range []bool{false, true} {
+			if lease := read(role, "acme", narrow); lease.Installation != "103" {
+				t.Errorf("the %s lease after reinstall names installation %q, want 103", role, lease.Installation)
+			}
+		}
+	}
+	if lease := read(Implement, "globex", true); lease.Token != unchanged.Token {
+		t.Error("the list discarded the unchanged account's lease")
+	}
+}
+
+// An exchange started before a fresh list must not publish its old installation's lease after
+// the list has replaced that installation. The same mint call instead reaches the new one.
+func TestAnInflightMintCannotRestoreAReplacedInstallation(t *testing.T) {
+	now := time.Now()
+	started, release := make(chan struct{}), make(chan struct{})
+	var released sync.Once
+	finish := func() { released.Do(func() { close(release) }) }
+	github := &keyModeGitHub{owners: []string{"acme"}, slug: "example-app"}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if exchange == 1 {
+			close(started)
+			<-release
+		}
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "widgets")
+	}
+	var stderr bytes.Buffer
+	tokens := keyModeManager(t, github, &now, &stderr)
+	t.Cleanup(finish)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	type answer struct {
+		lease Lease
+		err   error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		lease, err := tokens.ReadToken(ctx, Implement, "acme")
+		done <- answer{lease, err}
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("the original installation's exchange did not start")
+	}
+	github.mu.Lock()
+	github.owners = []string{"newlabs", "acme"}
+	github.mu.Unlock()
+	if _, err := tokens.ListInstallations(ctx, Implement); err != nil {
+		t.Fatalf("list the new installation while the old mint is held: %v", err)
+	}
+	finish()
+	select {
+	case got := <-done:
+		if got.err != nil || got.lease.Installation != "102" {
+			t.Fatalf("the mint returned installation %q, %v, want the new installation 102", got.lease.Installation, got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the mint did not finish after the original exchange was released")
 	}
 }

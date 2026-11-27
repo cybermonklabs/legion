@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A forward counts once the stream stores it: no session subscribes to its agent subject any more
@@ -131,13 +132,9 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "a request with no Nats-Msg-Id",
 	}
-	select {
-	case err := <-client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second}):
-		if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
-			t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("an unnamed request was never answered")
+	answered := client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second})
+	if err := testwait.Receive(t, "the unnamed request to be answered", answered); !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
+		t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {

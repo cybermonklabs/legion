@@ -244,6 +244,7 @@ func requireStored(t *testing.T, pool *Pool, entry storableEntry, shape storable
 // pool itself, a transaction on a context with a hold mark or with none, Transact, a
 // savepoint, a batch. Without the rule the server refuses each of these writes.
 func TestEveryWayIntoThePoolStoresANULAnInvalidByteAndARefusedJSONEscapeAsAReplacementCharacter(t *testing.T) {
+	t.Parallel()
 	pool := storableTable(t).Pool()
 	for _, entry := range storableEntries {
 		t.Run(entry.name, func(t *testing.T) {
@@ -258,6 +259,7 @@ func TestEveryWayIntoThePoolStoresANULAnInvalidByteAndARefusedJSONEscapeAsARepla
 // a clean string, the six characters \u0000 in a text column (text, not a JSON escape there) and
 // a bytea value holding 0x00 are stored as they were written, through every way into the pool.
 func TestTheRuleThatReplacesANULKeepsEveryValueTheServerTakesAsItIs(t *testing.T) {
+	t.Parallel()
 	pool := storableTable(t).Pool()
 	for _, entry := range storableEntries {
 		t.Run(entry.name, func(t *testing.T) {
@@ -272,6 +274,7 @@ func TestTheRuleThatReplacesANULKeepsEveryValueTheServerTakesAsItIs(t *testing.T
 // rule, a leading pgx option included, and otherwise a copy in which each string that needs it
 // is a *string to the same text: the caller's list is not written.
 func TestTheArgumentRuleGivesAStringWithANULAsAPointerAndLeavesEveryOtherArgument(t *testing.T) {
+	t.Parallel()
 	clean := []any{pgx.QueryExecModeSimpleProtocol, "kept", 7, []byte{0x00}, nil, (*string)(nil)}
 	if got := storableArgs(clean); &got[0] != &clean[0] || len(got) != len(clean) {
 		t.Fatalf("storableArgs(%#v) = %#v, want the same list back", clean, got)
@@ -315,6 +318,7 @@ func withExecMode(t *testing.T, mode string) string {
 // refused by PoolConfig and by Open, with an error that names the key, before any connection is
 // opened; one that names cache_describe opens, and a NUL written through it is stored as U+FFFD.
 func TestAnExecModeWithoutParameterTypesIsRefusedAndCacheDescribeStoresANUL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, mode := range []string{"exec", "simple_protocol"} {
 		dsn := withExecMode(t, mode)

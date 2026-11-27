@@ -427,10 +427,11 @@ func (s *supervisor) supervised() []*supervise.Machine {
 // (supervised), for a reader inside a fact's transaction: Create holds mu across the store's
 // AdmitClaim, which waits on the fact lock (intake.SerializeFacts), so a reader holding that lock
 // and waiting on mu would wait on a Create that waits on it, which nothing in PostgreSQL can see
-// or break. A machine's published view names its claim without its lock either (View).
+// or break. A machine's published claim names it without its lock either (Machine.Published),
+// and is shared rather than copied, since this reads its token alone.
 func (s *supervisor) supervisedMachine(token claim.Token) (*supervise.Machine, bool) {
 	for _, machine := range s.supervised() {
-		if machine.View().Token == token {
+		if machine.Published().Token == token {
 			return machine, true
 		}
 	}
@@ -538,10 +539,10 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
 			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
-			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
+			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model, Code: ev.Code, Outcome: ev.Outcome}, nil
 	case stream.LateRefusal:
-		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
-			ConnSequence: ev.ConnSequence}, nil
+		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Outcome: ev.Outcome,
+			Replayed: ev.Replayed, ConnSequence: ev.ConnSequence}, nil
 	case stream.Answered:
 		model := ev.Model
 		if ev.Provider != "" {

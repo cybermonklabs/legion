@@ -136,7 +136,7 @@ type gatedPublisher struct {
 	gate *gate
 }
 
-func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
 }
@@ -209,6 +209,9 @@ func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.Step
 	return nil
 }
 func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *postingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
@@ -287,6 +290,9 @@ func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite)
 func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *laneBoard) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -339,7 +345,7 @@ func microClock() *heldClock {
 // outboxIDs is every row's id, in id order.
 func outboxIDs(t *testing.T, pool *store.Pool) []int64 {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "select id from outbox order by id")
+	rows, err := pool.Query(context.Background(), "select id from outbox where "+notStateRows+" order by id")
 	if err != nil {
 		t.Fatalf("list outbox rows: %v", err)
 	}

@@ -1,13 +1,19 @@
 import { join } from "node:path";
 
 // What approved-version-news-verdicts.test.ts and approved-version-news-runs.test.ts both read
-// and write of approved-version-news.sh: the script, part one's driver test, part two's steps, the
-// plan part two's driver prints of them, its run lines, and the measurements that retired a base
-// arm.
+// and write of approved-version-news.sh: the script, part one's driver test, the failure its
+// negative control bites on, part two's steps, the plan part two's driver prints of them, its run
+// lines, and the measurements that retired a base arm.
 
 export const script = join(import.meta.dir, "..", "approved-version-news.sh");
 
 export const driverTest = "TestAnApprovedVersionReachesItsHolderLive";
+
+/** The line part one's driver prints when STEP's one-approval check fails on a daemon from before
+ * the change, as awaitQueued writes it: the failure the negative control bites on
+ * (control_failure). */
+export const controlFailure = (step: string) =>
+  `FAIL ${step}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`;
 
 export const a4 = "a4-the-architect-tells-the-child-reviewer";
 export const off = "off-the-architect-tells-the-holders";

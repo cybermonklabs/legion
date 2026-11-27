@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
@@ -12,8 +12,16 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
+import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { api } from "../../api/client";
 import type { Ask, IssueAskRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -350,6 +358,60 @@ test("the open-decision link names its block as encodeBlockId writes it, in its 
     window.history.replaceState(null, "", originalHash || "/");
     listIssueAsks.mockRestore();
     view.unmount();
+  }
+});
+
+// A link's words and its `title` hold no markup, so the open-decision link reads its question's
+// plain-text projection: the bold goes and the address reads as its target's name - the reading
+// list's `document-open-decision`. CORE-2's summary is in the cache before the document draws,
+// so the name is there at once. Drawn as the characters it is, the link would read
+// `**Ship** dispatch://CORE-2 now?`.
+test("the open-decision link reads its question's plain-text projection", async () => {
+  const question = "**Ship** dispatch://CORE-2 now?";
+  const decision: Ask = { ...blockAsk, question };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [decision]);
+  queryClient.setQueryData(["issue-summary", "CORE-2"], {
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  });
+  issueAskRows = [{ ...decision, last_reply: null }];
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    const link = await within(nav).findByRole("link", { name: "Ship CORE-2 Cut the release now?" });
+    expect(link).toHaveAttribute("title", "Ship CORE-2 Cut the release now?");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The open decision is an ask block of this document, so a `#id` in its question names a
+// question of this document, and the link's words read it as that question. Handed no record,
+// the link keeps `#q2`.
+test("a #id in the open decision's question names the question of its document", async () => {
+  const answers = answerQuestionOf("artifact", "artifact-1");
+  const decision: Ask = { ...blockAsk, question: "Decide #q2 now?" };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [decision]);
+  issueAskRows = [{ ...decision, last_reply: null }];
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    const link = await within(nav).findByRole("link", { name: `Decide ${NAMED_QUESTION} now?` });
+    expect(link).toHaveAttribute("title", `Decide ${NAMED_QUESTION} now?`);
+  } finally {
+    view.unmount();
+    answers.restore();
   }
 });
 

@@ -71,15 +71,17 @@ func unsetRestored(t *testing.T, names ...string) {
 // TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet clears the four of startupRestored
 // through fixtureenv.Unset, which leaves putting them back to Go's own cleanup; this test reads
 // them again and compares each with what the process held when the binary started, whether it
-// held it included. The file is named so that it sorts after controller_test.go: go test runs a
-// package's tests in the order their files declare them, files taken in name order, and a reader
-// that ran before the unsetter would prove nothing.
+// held it included. The unsetter changes the whole process's environment, so it runs one at a
+// time with the package's other serial tests, and this test calls t.Parallel: go test starts a
+// parallel test only once every serial test of the package has ended, whatever order -shuffle
+// gives them, and a reader that ran before the unsetter would prove nothing.
 //
 // Three of the four are provable this way, not all four. TestMain clears NATS_NKEY_SEED_FILE
 // before it takes the snapshot (main_test.go): the snapshot records that name as absent, and it
 // stays absent whatever any test here does. The call at the site covers all four; what this test
 // proves is DISPATCH_URL, DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE.
 func TestTheVariablesAControllerTestClearsAreBackOnceItEnds(t *testing.T) {
+	t.Parallel()
 	if startupEnvironment == nil {
 		t.Fatal("TestMain took no snapshot of the environment this binary started with")
 	}

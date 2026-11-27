@@ -29,6 +29,7 @@ const releaseKindVersion = 20261111001612
 // with nothing to read, its pod never torn down and the roles it had suspended `released` with
 // nothing to resume them.
 func TestAReleaseMarkNamesItsRuleWith20261111001612(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, releaseKindVersion-1)

@@ -42,9 +42,12 @@ import (
 // The admission: an edge listener admits a broker token alone, and only one whose projects are
 // all among the ones it serves, of project scope named or person; every other caller is refused
 // before any handler runs, and a refusal names what the token carries and never a project the
-// edge serves that the token does not list, which may be another customer's private project. The
-// exported admission (EdgeAdmits) is the very rule apiAuth asks.
+// edge serves that the token does not list, which may be another customer's private project. A
+// job's named token is admitted for its one project as a person's is, and a job's public token is
+// refused naming its scope, whatever it lists: no edge's list bounds the public projects it
+// reaches. The exported admission (EdgeAdmits) is the very rule apiAuth asks.
 func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
+	t.Parallel()
 	projects := edgeTestProjects(t)
 	broker := ciphertokentest.NewStubBroker(t)
 	caller := ciphertokentest.NewCaller(t)
@@ -67,6 +70,8 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		header string
 		admit  bool
 		status int
+		// names is what the refusal's text says of the token, where the row holds it.
+		names string
 	}{
 		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
 		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
@@ -74,6 +79,9 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
 		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},
 		{name: "a service's token, which lists none", answer: &service, status: http.StatusForbidden},
+		{name: "a job's named token of the project it serves", answer: new(jobAnswer("ses_job_named", ciphertoken.ProjectScopeNamed, caller.JKT(), "PRIV")), admit: true},
+		{name: "a job's named token of another project", answer: new(jobAnswer("ses_job_other", ciphertoken.ProjectScopeNamed, caller.JKT(), "ACME")), status: http.StatusForbidden},
+		{name: "a job's public token listing only the project it serves", answer: new(jobAnswer("ses_job_public", ciphertoken.ProjectScopePublic, caller.JKT(), "PRIV")), status: http.StatusForbidden, names: `project scope is "public"`},
 		{name: "a read-only token", answer: new(readOnlyAnswer("ses_reader", "example-reader", caller.JKT())), status: http.StatusUnauthorized},
 		{name: "no credential at all", status: http.StatusUnauthorized},
 		{name: "a shared bearer", header: "Bearer some-shared-token", status: http.StatusUnauthorized},
@@ -103,6 +111,12 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 			}
 			if recorder.Code != tc.status || reached != 0 {
 				t.Fatalf("GET /v1/sessions under %s: status %d, reached the handler %d times (%s), want %d before any handler", tc.name, recorder.Code, reached, recorder.Body.String(), tc.status)
+			}
+			if tc.names != "" {
+				var refusal listenerwire.EdgeRefusal
+				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil || !strings.Contains(refusal.Error, tc.names) {
+					t.Fatalf("the refusal of %s reads %s (%v), want it to name %s", tc.name, recorder.Body.String(), err, tc.names)
+				}
 			}
 			if tc.answer != nil {
 				requireNoServedProjectNamed(t, recorder.Body.String(), projects, tc.answer.Projects, "the refusal of "+tc.name)
@@ -148,6 +162,7 @@ func requireNoServedProjectNamed(t *testing.T, text string, served, listed []str
 // Every subject of no project but GitHub's is refused 403 topic_not_in_project: the
 // intakes, the shared wake, the listener's own lanes.
 func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_no_project"
 	token := rig.personToken(sessionID, "PRIV")
@@ -172,6 +187,7 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 // either form and a free-form role under PRIV among them, are taken. Control: with edge mode off
 // each refused topic is taken.
 func TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_reach"
 	token := rig.personToken(sessionID, "PRIV")
@@ -198,6 +214,7 @@ func TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects(t *test
 // and is refused another project's topic and role. Control: with edge mode off (the listener then
 // serves no project) the INFRA topic and the INFRA role are taken.
 func TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth(t *testing.T) {
+	t.Parallel()
 	projects := edgeTestProjects(t)
 	if len(projects) > 0 {
 		projects = []string{"PRIV", "SECOND"}
@@ -226,6 +243,7 @@ func TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth(t *testing.T) {
 // is the 404 unclaimed, since the edge's grant keeps no role message for a next holder
 // (keepForNextHolder).
 func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, holder = "ses_edge_publisher", "ses_edge_publisher_holder"
 	token := rig.personToken(sessionID, "PRIV")
@@ -264,6 +282,7 @@ func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 // projects; a send to any other is answered as to a missing session, and a publish to a role
 // subject names one of its projects.
 func TestEdgeSendsOnlyToSessionsOfTheTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sender, peer = "ses_edge_sender", "ses_edge_peer"
 	token := rig.personToken(sender, "PRIV")
@@ -291,6 +310,7 @@ func TestEdgeSendsOnlyToSessionsOfTheTokensProjects(t *testing.T) {
 // The read rule: the edge's reads answer only the sessions and roles of the token's projects, and
 // the interest list, another session's interests and every delete naming another session are 403.
 func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const reader, peer = "ses_edge_reader", "ses_edge_peer_read"
 	token := rig.personToken(reader, "PRIV")
@@ -387,6 +407,7 @@ func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
 // rules can read the target's projects. It holds with edge mode off too: the field is every
 // listener's, and the API's answers do not carry it.
 func TestEdgeSessionEntryRecordsTheRegisteringTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_k6"
 	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
@@ -421,6 +442,7 @@ func TestEdgeSessionEntryRecordsTheRegisteringTokensProjects(t *testing.T) {
 // something other than a broker token, beside webhooks, and without the whole broker-token group;
 // each refusal names the variable. The last row starts the built binary that way.
 func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
+	t.Parallel()
 	projects := edgeTestProjects(t)
 	broker := []string{
 		"ENVOY_AGENT_SECRETS_URL=http://broker.example",
@@ -468,6 +490,7 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 // session of the edge sends as Dispatch, so the edge names no principal whose send may carry a
 // role mark. A value of white space alone names no principal, and the edge starts.
 func TestAnEdgeRefusesToStartBesideDispatchsPrincipal(t *testing.T) {
+	t.Parallel()
 	projects := edgeTestProjects(t)
 	broker := []string{
 		"ENVOY_AGENT_SECRETS_URL=http://broker.example",
@@ -490,6 +513,7 @@ func TestAnEdgeRefusesToStartBesideDispatchsPrincipal(t *testing.T) {
 // registration carried them, so the client drops those and registers the rest again; the allowed
 // topic beside them is named nowhere, and nothing of the registration is stored.
 func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_mixed"
 	token := rig.personToken(sessionID, "PRIV")
@@ -510,6 +534,7 @@ func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
 // internal/dispatch/access. A listing that names no package, the listener among them, has read
 // nothing and fails as UNKNOWN.
 func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
+	t.Parallel()
 	const self = "github.com/sjawhar/envoy/cmd/listener"
 	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").Output()
 	if err != nil {
@@ -540,6 +565,7 @@ func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
 // the session, and another PRIV session's GET /v1/sessions and GET /v1/registry/<id> show none of
 // them.
 func TestAnEdgeDropsTheStoredTopicsOfOtherProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const moved, reader = "ses_edge_moved", "ses_edge_moved_reader"
 	const (
@@ -595,6 +621,7 @@ func TestAnEdgeDropsTheStoredTopicsOfOtherProjects(t *testing.T) {
 // in. The edge drops both from that plan, so the row stored holds neither, and the answer names
 // each.
 func TestAnEdgeHoldsThePlanItMakesAgainAfterAConflict(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_replanned"
 	const slack, infra, privIssues = "notifications.slack.>", "notifications.dispatch.issue.INFRA.INFRA-7.>", "notifications.dispatch.issue.PRIV.>"
@@ -636,6 +663,7 @@ func TestAnEdgeHoldsThePlanItMakesAgainAfterAConflict(t *testing.T) {
 // GET /v1/sessions and by GET /v1/registry/<id>, and the session's own GET /v1/interests/<id> at
 // the edge shows its own record the same way.
 func TestAnEdgeReadShowsOnlyTheTopicsOfTheTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const elsewhere, reader = "ses_edge_shown", "ses_edge_shown_reader"
 	const (
@@ -676,6 +704,7 @@ func TestAnEdgeReadShowsOnlyTheTopicsOfTheTokensProjects(t *testing.T) {
 // them; a send as agent naming the token's session reaches the peer with that session as its
 // sender. Control: with edge mode off, the first refused send is taken.
 func TestAnEdgeSendNamesItsOwnSession(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sender, peer = "ses_edge_send_sender", "ses_edge_send_peer"
 	senderToken := rig.personToken(sender, "PRIV")
@@ -704,6 +733,7 @@ func TestAnEdgeSendNamesItsOwnSession(t *testing.T) {
 // role's holder receives none of them; one as agent naming the token's session reaches the holder
 // with that session as its sender. Control: with edge mode off, the first refused publish is taken.
 func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sender, holder, role = "ses_edge_publish_sender", "ses_edge_publish_holder", "legion-priv-priv-1-tester"
 	token := rig.personToken(sender, "PRIV")
@@ -734,6 +764,7 @@ func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
 // record, as a session no listener has heard of (unknownSession), naming no state of its own and
 // no last registration. Control: with edge mode off, the other project's session is answered 200.
 func TestAnEdgeRegistrationViewShowsOnlySessionsOfItsProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const reader, other = "ses_edge_view_reader", "ses_edge_view_other"
 	token := rig.personToken(reader, "PRIV")
@@ -752,6 +783,7 @@ func TestAnEdgeRegistrationViewShowsOnlySessionsOfItsProjects(t *testing.T) {
 // both as a session no listener has heard of. Control: with edge mode off, the gone session's 404
 // carries its last registration and the stopped one is answered 200.
 func TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const reader, gone, stopped = "ses_edge_read_reader", "ses_edge_read_gone", "ses_edge_read_stopped"
 	token := rig.personToken(reader, "PRIV")
@@ -790,6 +822,7 @@ func TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject(t
 // refused at the edge 403 legion_registry_not_written before its body is read, as the batch write
 // is. Control: with edge mode off, the body is read and refused 400 for what it lacks.
 func TestAnEdgeWritesNoLegionAgentEntry(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_legion_writer"
 	token := rig.personToken(sessionID, "PRIV")
@@ -804,6 +837,7 @@ func TestAnEdgeWritesNoLegionAgentEntry(t *testing.T) {
 // as it refuses another session's agent subject. Control: with edge mode off, each refused topic is
 // taken.
 func TestAnEdgeFollowsOnlyTheSessionsOwnAgentSubject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, other = "ses_edge_agent_subject", "ses_edge_agent_other"
 	token := rig.personToken(sessionID, "PRIV")

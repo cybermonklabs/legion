@@ -2,7 +2,7 @@
 
 package main
 
-// relay_socket_live_test.go holds rows 1-8 of the relay socket (relay_socket.go), and row 5b, an
+// relay_socket_live_test.go holds rows 1-10 of the relay socket (relay_socket.go), and row 5b, an
 // owner's Reset, against what a deployment runs:
 //
 //   - nats-server at testnats.HubImage whose only users are the two edge replicas', each holding
@@ -14,8 +14,8 @@ package main
 //     session's registration, so its consumer and its relay, and replica B serves its relay socket;
 //   - broker tokens from the real broker (internal/cipher/ciphertest, BROKER_TEST_DATABASE_URL)
 //     whose access tokens live 30 s, traded from a device login a person approved, with the
-//     broker's project check answered by projectaccesstest. Row 7 alone needs an answer the test
-//     changes, and takes it from ciphertokentest's stand-in.
+//     broker's project check answered by projectaccesstest. Rows 7, 9 and 10 alone need an answer
+//     the test changes, and take it from ciphertokentest's stand-in.
 //
 // The binary is built with its sockets' check every second (relaySocketCheckBuild), so a row waits
 // for one tick and the broker's live answer, which is reused for at most
@@ -186,6 +186,20 @@ func newRelayLiveSession(t *testing.T, id string) *relayLiveSession {
 	return &relayLiveSession{id: id, key: key, signer: &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport), Timeout: 30 * time.Second}}
 }
 
+// stubAnswer is ciphertokentest's stand-in's live answer for a token of s acting for person: it
+// lists projects, is bound to s's key, names no hold and lives an hour.
+func stubAnswer(t *testing.T, s *relayLiveSession, person string, projects ...string) ciphertoken.Introspection {
+	t.Helper()
+	jkt, err := proof.Thumbprint(&s.key.PublicKey)
+	if err != nil {
+		t.Fatalf("thumbprint the key of %s: %v", s.id, err)
+	}
+	return ciphertoken.Introspection{
+		Active: true, Session: s.id, Person: person, ProjectScope: ciphertoken.ProjectScopePerson, Projects: projects,
+		ClientID: ciphertoken.ExchangeClientID, Thumbprint: jkt, ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}
+}
+
 // login is session id of person's machine, whose device login person approved.
 func (r *relayLiveRig) login(t *testing.T, id, person string) *relayLiveSession {
 	t.Helper()
@@ -319,10 +333,22 @@ func (r *relayLiveRig) call(t *testing.T, s *relayLiveSession, edge *listenerPro
 	return response.StatusCode, string(answer)
 }
 
-// register registers s on replica A with token at epoch, so A holds its consumer and relays it.
+// register registers s on replica A with token at epoch, so A holds its consumer and relays it. It
+// advertises the delivery modes of a session whose conversation takes messages (deliveryModes), as
+// a plugin does once something writes into its conversation: a probed session that advertises none
+// answers a plain send no_receiver (sendHandler), and these rows want connected.
 func (r *relayLiveRig) register(t *testing.T, s *relayLiveSession, token, epoch string) {
 	t.Helper()
-	if status, answer := r.call(t, s, r.a, token, http.MethodPost, "/v1/interests/subscribe", consumerRegistration(s.id, epoch)); status != http.StatusOK {
+	body, err := json.Marshal(deliveryModes(map[string]any{
+		"session_id":      s.id,
+		"self_subscribed": true,
+		"topics":          []string{},
+		"delivery":        map[string]any{"consumer": true, "epoch": epoch},
+	}))
+	if err != nil {
+		t.Fatalf("encode the registration of %s: %v", s.id, err)
+	}
+	if status, answer := r.call(t, s, r.a, token, http.MethodPost, "/v1/interests/subscribe", string(body)); status != http.StatusOK {
 		t.Fatalf("the registration of %s on A was answered %d %s", s.id, status, answer)
 	}
 }
@@ -372,8 +398,8 @@ func (r *relayLiveRig) open(t *testing.T, s *relayLiveSession, token string) *re
 	case <-client.pongs:
 	case err := <-client.closed:
 		t.Fatalf("the socket of %s closed before its first pong: %v", s.id, err)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the socket of %s answered no ping within 10 s", s.id)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the socket of %s answered no ping in time", s.id)
 	}
 	return client
 }
@@ -498,8 +524,8 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 			if frame.Op != "err" || frame.Code != relayErrSubjectNotGranted || frame.sid(t) != int64(sid) {
 				t.Fatalf("a sub to %s was answered %s, want err %s for sid %d", subject, frame.raw, relayErrSubjectNotGranted, sid)
 			}
-		case <-time.After(3 * time.Second):
-			t.Errorf("a sub to %s was answered nothing within 3 s, want err %s", subject, relayErrSubjectNotGranted)
+		case <-time.After(listenerWaitBound(t)):
+			t.Errorf("a sub to %s was answered nothing in time, want err %s", subject, relayErrSubjectNotGranted)
 		}
 	}
 	// The frame names an event of the token's project, which the edge's rule passes to this
@@ -573,11 +599,11 @@ func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 	}
 	<-client.closed
 	var state string
-	if !testwait.Holds(10*time.Second, 200*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 200*time.Millisecond, func() bool {
 		state = send()
 		return state == sessionStateStopped
 	}) {
-		t.Fatalf("a send to %s, whose socket closed, read %q for 10s, want %q", s.id, state, sessionStateStopped)
+		t.Fatalf("a send to %s, whose socket closed, read %q for the time it was given, want %q", s.id, state, sessionStateStopped)
 	}
 	rig.requireNoViolation(t)
 }
@@ -610,7 +636,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 	reopened := rig.open(t, s, fresh.token)
 	rig.register(t, s, fresh.token, "epoch-2")
 	seen := map[string]bool{}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !seen[held.EventID] || !seen[after.EventID] {
 		if time.Now().After(deadline) {
 			t.Fatalf("after the reopen the socket was sent %v, want both %s (unanswered at the close) and %s (stored after it)", seen, held.EventID, after.EventID)
@@ -727,15 +753,8 @@ func TestAnOpenSocketClosesWhenTheAnswersProjectsChange(t *testing.T) {
 	t.Parallel()
 	rig := newRelayLiveRig(t, relayLiveOptions{stub: true, edgeProjects: "INFRA,PRIV"})
 	s := newRelayLiveSession(t, "ses_live_changed")
-	jkt, err := proof.Thumbprint(&s.key.PublicKey)
-	if err != nil {
-		t.Fatalf("thumbprint the session's key: %v", err)
-	}
 	says := func(token string, projects ...string) {
-		rig.stub.Says(token, ciphertoken.Introspection{
-			Active: true, Session: s.id, Person: relayLivePerson, ProjectScope: ciphertoken.ProjectScopePerson, Projects: projects,
-			ClientID: ciphertoken.ExchangeClientID, Thumbprint: jkt, ExpiresAt: time.Now().Add(time.Hour).Unix(),
-		})
+		rig.stub.Says(token, stubAnswer(t, s, relayLivePerson, projects...))
 	}
 	const first, second = "access-token-first-answered-priv", "access-token-second-answered-priv"
 	says(first, relayLiveProject)
@@ -767,6 +786,76 @@ func TestAnOpenSocketClosesWhileTheBrokerCannotBeAsked(t *testing.T) {
 	requireClosed(t, client, relayLiveCloseBound, websocket.CloseTryAgainLater, relaySocketReasonBrokerUnavailable, "the broker stopped")
 	if _, response, err := rig.dial(t, s, rig.b, token.token); err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("an upgrade while the broker cannot be asked = %v (%s), want 503", err, describeUpgrade(response))
+	}
+	rig.requireNoViolation(t)
+}
+
+// Row 9, on ciphertokentest's stand-in: the broker answers S's token live, then answers its person
+// held (ciphertoken.Caller.Held), as it does once Dispatch holds that person. The open socket,
+// which carried S's frames until then, closes 4403 membership_held within relayLiveCloseBound,
+// long before the token's hour, and an upgrade with the same token is refused 401, as apiAuth
+// refuses a held person's token. Controls: in the same row, another person's socket, whose answer
+// names no hold, stays open through as long; and the held check removed from verdict, the socket
+// stays open and the row fails naming how long it waited.
+func TestAnOpenSocketClosesWhenItsPersonIsHeld(t *testing.T) {
+	t.Parallel()
+	rig := newRelayLiveRig(t, relayLiveOptions{stub: true})
+	held, kept := newRelayLiveSession(t, "ses_live_held"), newRelayLiveSession(t, "ses_live_held_kept")
+	const heldToken, keptToken = "access-token-of-a-held-person", "access-token-of-a-person-not-held"
+	rig.stub.Says(heldToken, stubAnswer(t, held, relayLivePerson, relayLiveProject))
+	rig.stub.Says(keptToken, stubAnswer(t, kept, relayLiveOtherPerson, relayLiveProject))
+	heldClient, keptClient := rig.open(t, held, heldToken), rig.open(t, kept, keptToken)
+	rig.register(t, held, heldToken, "epoch-1")
+	sent := rig.publish(t, held.id)
+	if got := envelopeOf(t, heldClient.next(15*time.Second)); got.EventID != sent.EventID {
+		t.Fatalf("the socket sent %s, want %s", got.EventID, sent.EventID)
+	}
+
+	answer := stubAnswer(t, held, relayLivePerson, relayLiveProject)
+	answer.Held = true
+	rig.stub.Says(heldToken, answer)
+	requireClosed(t, heldClient, relayLiveCloseBound, relaySocketCloseRefused, relaySocketReasonMembershipHeld, "the answer that "+relayLivePerson+" is held")
+	keptClient.stillOpen(relayLiveCloseBound, relayLiveOtherPerson+"'s socket, whose answer names no hold")
+	if _, response, err := rig.dial(t, held, rig.b, heldToken); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an upgrade with the held person's token = %v (%s), want 401", err, describeUpgrade(response))
+	}
+	rig.requireNoViolation(t)
+}
+
+// Row 10, on ciphertokentest's stand-in: the broker answers S's token live with its person not
+// held until an hour ahead, then not held only until a deadline that has passed
+// (oauthwire.NotHeldUntilPassed, what its hold gate writes once an IAP deployment's Dispatch has
+// had no active Workspace Directory answer for the person in 24 hours: ciphertoken.Verifier.Lapsed).
+// The open socket, which carried S's frames until then, closes 1013 deadline_passed within
+// relayLiveCloseBound, and an upgrade with the same token is refused 503, so the client comes back
+// rather than discards its token. Controls: in the same row, another person's socket, whose
+// deadline stays an hour ahead, stays open through as long; and the deadline check removed from
+// verdict, the socket stays open and the row fails naming how long it waited.
+func TestAnOpenSocketClosesWhenItsPersonsDeadlinePasses(t *testing.T) {
+	t.Parallel()
+	rig := newRelayLiveRig(t, relayLiveOptions{stub: true})
+	lapsed, kept := newRelayLiveSession(t, "ses_live_lapsed"), newRelayLiveSession(t, "ses_live_lapsed_kept")
+	const lapsedToken, keptToken = "access-token-of-a-person-past-the-deadline", "access-token-of-a-person-before-it"
+	until := func(token string, s *relayLiveSession, person string, deadline int64) {
+		answer := stubAnswer(t, s, person, relayLiveProject)
+		answer.NotHeldUntil = deadline
+		rig.stub.Says(token, answer)
+	}
+	ahead := time.Now().Add(time.Hour).Unix()
+	until(lapsedToken, lapsed, relayLivePerson, ahead)
+	until(keptToken, kept, relayLiveOtherPerson, ahead)
+	lapsedClient, keptClient := rig.open(t, lapsed, lapsedToken), rig.open(t, kept, keptToken)
+	rig.register(t, lapsed, lapsedToken, "epoch-1")
+	sent := rig.publish(t, lapsed.id)
+	if got := envelopeOf(t, lapsedClient.next(15*time.Second)); got.EventID != sent.EventID {
+		t.Fatalf("the socket sent %s, want %s", got.EventID, sent.EventID)
+	}
+
+	until(lapsedToken, lapsed, relayLivePerson, oauthwire.NotHeldUntilPassed)
+	requireClosed(t, lapsedClient, relayLiveCloseBound, websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed, "the answer that "+relayLivePerson+"'s deadline passed")
+	keptClient.stillOpen(relayLiveCloseBound, relayLiveOtherPerson+"'s socket, whose deadline is an hour ahead")
+	if _, response, err := rig.dial(t, lapsed, rig.b, lapsedToken); err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("an upgrade with the token past its person's deadline = %v (%s), want 503", err, describeUpgrade(response))
 	}
 	rig.requireNoViolation(t)
 }

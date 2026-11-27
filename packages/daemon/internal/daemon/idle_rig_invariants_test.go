@@ -32,8 +32,9 @@ func (w *idleRigCheckWatch) WorkspaceWork(ctx context.Context, issue string, rol
 	return w.reader.WorkspaceWork(ctx, issue, role)
 }
 
-func (w *idleRigCheckWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize)
+func (w *idleRigCheckWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize, writing)
 }
 
 func (w *idleRigCheckWatch) IssuePodRunsConfiguredImage(issue string) bool {

@@ -44,7 +44,7 @@ const advancesPerIssue = 2
 // report's own reading of the two faults (reportDistributions) asks what the route asks.
 var (
 	priorityInFlightStatuses = sqlStatusList(model.IssueStatusesInFlight)
-	priorityParkedStatuses   = sqlStatusList(model.IssueStatusesParked)
+	priorityBacklogStatuses  = sqlStatusList(model.IssueStatusesParked)
 )
 
 // sqlStatusList writes statuses as the literal list an `in` clause takes. Its callers pass the

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"testing"
 
@@ -58,6 +57,7 @@ func todaysTable() []Row {
 // effects, and a guard that answers every snapshot as today's does (the one guard that reads
 // anything reads the pull request).
 func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
+	t.Parallel()
 	want, got := todaysTable(), todaysWalk().table()
 	if len(got) != len(want) {
 		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
@@ -80,6 +80,7 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 }
 
 func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		if err := validateTable(line, TableOf(line)); err != nil {
 			t.Errorf("line %v: %v", line, err)
@@ -88,6 +89,7 @@ func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
 }
 
 func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		table := TableOf(line)
 		if len(table) == 0 {
@@ -112,6 +114,7 @@ func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 // fail, a review's request for changes) is one of those pairs, and the backward trigger carries
 // them all: a worker may ask for any move back the line allows.
 func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		var want []string
 		for at, from := range line {
@@ -134,24 +137,18 @@ func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
 			}
 		}
 		var fromTrigger []string
-		fromTable := map[string]bool{}
 		for _, row := range TableOf(line) {
+			pair := phase.Pair(row.From, row.To)
 			if row.Trigger == TriggerBackward {
-				fromTrigger = append(fromTrigger, phase.Pair(row.From, row.To))
+				fromTrigger = append(fromTrigger, pair)
 			}
-			if at, to := slices.Index(line, row.From), slices.Index(line, row.To); at >= 0 && to >= 0 && to < at {
-				fromTable[phase.Pair(row.From, row.To)] = true
+			if returnsWork(row.Trigger) && !slices.Contains(want, pair) {
+				t.Fatalf("line %v: the %s row %s moves the work to no phase before it on the line, want one of %v", line, row.Trigger, pair, want)
 			}
 		}
 		if !slices.Equal(fromTrigger, want) {
 			t.Fatalf("line %v: %s rows = %v, want %v", line, TriggerBackward, fromTrigger, want)
 		}
-		if !maps.Equal(fromTable, setOf(want)) {
-			t.Fatalf("line %v: table moves back = %v, its own pairs = %v", line, sortedPairs(fromTable), want)
-		}
-	}
-	if len(phase.BackwardPairs()) != len(phase.Order)*(len(phase.Order)-1)/2 {
-		t.Fatalf("phase.BackwardPairs has %d pairs, want every pair of phase.Order", len(phase.BackwardPairs()))
 	}
 }
 
@@ -168,21 +165,14 @@ func keepsTodaysOrder(line []phase.Phase) bool {
 	return true
 }
 
-func setOf(pairs []string) map[string]bool {
-	set := make(map[string]bool, len(pairs))
-	for _, pair := range pairs {
-		set[pair] = true
-	}
-	return set
-}
-
 // A line in another order than today's goes back by the line, not by phase.Order: the table of
 // `implementer reviewer tester` moves back from testing to reviewing, the review before it, and
 // holds no move back from reviewing to testing, which is its move on (review_approved). A planner
 // after the implementer moves on into retro, and goes back to implementing on a backward move.
-// The control is the table of today's backward rows (phase.BackwardPairs), which holds
-// reviewing-testing and lacks testing-reviewing.
+// The control is the table of today's line, phase.Order, whose backward rows hold
+// reviewing-testing and lack testing-reviewing.
 func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
+	t.Parallel()
 	rowsOf := func(line []phase.Phase, trigger TriggerKind) []string {
 		var pairs []string
 		for _, row := range TableOf(line) {
@@ -199,8 +189,8 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	if !slices.Equal(backward, want) {
 		t.Fatalf("the backward rows of %v = %v, want %v", reviewFirst, backward, want)
 	}
-	if slices.Contains(backward, "reviewing-testing") {
-		t.Fatalf("the table of %v moves back from reviewing to testing, its move on", reviewFirst)
+	if today := rowsOf(phase.Order, TriggerBackward); !slices.Contains(today, "reviewing-testing") || slices.Contains(today, "testing-reviewing") {
+		t.Fatalf("control: the backward rows of today's line %v = %v, want reviewing-testing and no testing-reviewing", phase.Order, today)
 	}
 	if approved := rowsOf(reviewFirst, TriggerReviewApproved); !slices.Equal(approved, []string{"reviewing-testing"}) {
 		t.Fatalf("review_approved of %v = %v, want reviewing-testing", reviewFirst, approved)
@@ -212,10 +202,6 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	if !slices.Contains(rowsOf(plannerAfter, TriggerBackward), "planning-implementing") {
 		t.Fatalf("the table of %v has no backward row planning-implementing: %v", plannerAfter, rowsOf(plannerAfter, TriggerBackward))
 	}
-}
-
-func sortedPairs(pairs map[string]bool) []string {
-	return slices.Sorted(maps.Keys(pairs))
 }
 
 // validateTable says why rows is not the whole table of line, nil when it is: every phase and
@@ -347,5 +333,39 @@ func containsPhase(phases []phase.Phase, wanted phase.Phase) bool {
 }
 
 func namedIgnore(current phase.Phase, trigger TriggerKind) string {
+	if current == phase.AwaitingChildren {
+		return awaitingChildrenIgnores[trigger]
+	}
 	return fmt.Sprintf("%s does not advance %s", trigger, current)
+}
+
+// awaitingChildrenIgnores is why each trigger leaves a parent in awaiting_children where it stands
+// (dispatch://INFRA-3320 R9 to R12): the parent goes back to the start it held only at the
+// admission pass that finds no open child under it, so the table has no row out of the phase, and
+// a fact that would move a phase is recorded where it lands and starts nothing.
+var awaitingChildrenIgnores = map[TriggerKind]string{
+	TriggerGateOpened:          "a parent in awaiting_children has started its phases, so no gate's opening starts its first",
+	TriggerPlannerCompleted:    "the planner's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerImplementationReady: "the implementer's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE; a push of its moves the head and nothing else",
+	TriggerTesterPassed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerTesterFailed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerReviewApproved:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerReviewRejected:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerRetroCompleted:      "no retro runs before the parent is accepted, after its children",
+	TriggerPullRequestMerged:   "a merge during the wait is recorded on the pull request and read at the return",
+	TriggerSignOff:             "sign_off on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
+	TriggerBackward:            "request_backward_move on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
+}
+
+// Every trigger reaching a parent in awaiting_children is a named ignore: no row of the table
+// leaves the phase, and validateTable (TestEveryLineHasARowForEachPhaseAndTrigger) holds each
+// trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
+// pass and failure or a review's approval and rejection, share one reason.
+func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {
+	t.Parallel()
+	for _, row := range Table {
+		if row.From == phase.AwaitingChildren {
+			t.Errorf("the table holds a row out of awaiting_children (%s -> %s), want none: only the admission pass's return leaves it", row.Trigger, row.To)
+		}
+	}
 }

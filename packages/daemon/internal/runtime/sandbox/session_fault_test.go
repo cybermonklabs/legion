@@ -15,6 +15,7 @@ import (
 )
 
 func TestALauncherStartRefusalCarriesItsSessionVerdict(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		result shimwire.LauncherStartResult
 		want   error
@@ -59,6 +60,7 @@ func TestALauncherStartRefusalCarriesItsSessionVerdict(t *testing.T) {
 // The two kinds travel on the wire: a frame the launcher encodes and the daemon decodes carries
 // the kind, so the daemon never has to read an error's prose to tell them apart.
 func TestTheStartResultCarriesItsSessionVerdictOverTheWire(t *testing.T) {
+	t.Parallel()
 	for _, sent := range []shimwire.LauncherStartResult{
 		{ID: "start-4", Error: "no such session", Session: shimwire.SessionGone},
 		{ID: "start-4", Error: "the store did not answer", Session: shimwire.SessionStoreUnreachable},

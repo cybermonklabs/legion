@@ -39,11 +39,12 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *   drafts are the asks' replies (`reply-drafts.ts`): each element drawing one is a mount of the
  *   component it is drawn in, and its address props are the props of its own that its `homes`
  *   calls read. A `MentionComposer` mount is named by its send name.
- * - The answer field `AskCard` draws, a plain `<textarea>` under the handle the Inbox finds the
- *   box by (`data-ask-answer`), whose drafts are the asks' answers (`answer-drafts.ts`), held by
- *   the form hook its host calls (`useAskAnswerForm`): each element under the handle is a mount of
- *   the component it is drawn in, named by the handle, and its address props are what the host
- *   hands the hook where the hook's `homes` calls read it.
+ * - The answer field `AskCard` draws, the shared field (`MentionField`) under the prop that makes
+ *   it the answer box (`askAnswer`), which writes the handle the Inbox finds the box by
+ *   (`data-ask-answer`), whose drafts are the asks' answers (`answer-drafts.ts`), held by the form
+ *   hook its host calls (`useAskAnswerForm`): each element under the prop is a mount of the
+ *   component it is drawn in, named by the prop, and its address props are what the host hands
+ *   the hook where the hook's `homes` calls read it.
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
  * ask card (`ASK_CARD`) and not past it: every host draws an ask in one card, which holds both
@@ -82,7 +83,7 @@ const DRAFT_FIELDS: readonly DraftField[] = [
     upTo: ASK_CARD,
   },
   {
-    handle: "data-ask-answer",
+    handle: "askAnswer",
     homes: new Set(["useAnswerDraft"]),
     hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
     upTo: ASK_CARD,
@@ -95,7 +96,7 @@ export interface Mount {
   readonly element: ts.Node;
   readonly host: Comp;
   /** The mount as its host draws it, by its send name or its handle where it has one:
-   *  `<MentionComposer mutationKey={…}>`, `<AskReplyComposer>`, `<textarea data-ask-answer="">`. */
+   *  `<MentionComposer mutationKey={…}>`, `<AskReplyComposer>`, `<MentionField askAnswer={true}>`. */
   readonly shown: string;
   /** The host and `shown`, which name the mount among all of them. */
   readonly name: string;

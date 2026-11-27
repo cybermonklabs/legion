@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The controller keeper's start message no longer undoes an operator's suspension of the
+    controller. The message is the daemon's own task, and a suspended controller now refuses it,
+    queues nothing and launches nothing; the next launch's ready sends it again. Before, the
+    message read as an operator's delivery, so it resumed the controller whoever suspended it:
+    a suspension made between the controller's ready and the message, and one made while the
+    controller was launching, which the ready ends in a suspension, were both undone.
+time: 2026-11-26T07:50:50Z
+custom:
+    Issue: INFRA-2045

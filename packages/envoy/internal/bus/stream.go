@@ -104,6 +104,15 @@ const NotificationTopicPrefix = "notifications."
 // on ExceptionTopicPrefix followed by its original topic.
 const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 
+// DispatchTopicPrefix begins Dispatch's lane: every topic Dispatch publishes an issue's, a
+// document's or a project's events on, and its own announcements. Only Dispatch's NATS user may
+// publish directly under it, since the Legion daemon trusts an event there as Dispatch's
+// (packages/envoy/natsgrant, listenerGrant's publish deny, which a hub's users and the auth
+// service's answers both carry). A session on a host user it shares with the host's listener can
+// still have a message stored under it, by a stream update that adds a subject transform, until
+// the host's sessions connect through the auth service (dispatch://INFRA-840).
+const DispatchTopicPrefix = NotificationTopicPrefix + "dispatch."
+
 // LegionWakeTopic is the one topic the listener reports a wake of a released Legion issue pod
 // on: a message published to a role topic with no live holder, a message sent to the agent
 // subject of a session that is gone, and the listener's own `listener_ready`. It is a new leaf
@@ -121,17 +130,92 @@ const DispatchDeliveryDurable = "delivery-events"
 // run's job events (internal/dispatch/delivery).
 const DispatchJobDurable = "delivery-jobs"
 
+// DispatchLegionStateDurable is the stream's durable consumer Dispatch's Legion state intake binds,
+// over every Legion daemon's state lane, notifications.legion.*.state
+// (internal/dispatch/legion, intake.go).
+const DispatchLegionStateDurable = "legion-state-events"
+
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: listener-<machineID> in the listener's spelling (listenerName).
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("listener-", machineID)
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
-// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
-// A space in the machine id is a hyphen in the name.
+// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two:
+// envoy-listener-<machineID> in the listener's spelling (listenerName).
 func ListenerQueue(machineID string) string {
-	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("envoy-listener-", machineID)
+}
+
+// ListenerSpelling is machineID in the listener's spelling (listenerName) with no prefix: the token
+// ListenerDurable and ListenerQueue carry after theirs. An edge listener's inbox prefix and its
+// receipt family carry it too (natsgrant.EdgeInboxPrefix, natsgrant.EdgeRelayReplyPrefix), so a
+// dotted id, such as a fully qualified host name, is one subject token there as well. An id that
+// holds none of the characters listenerName escapes stays as it is.
+func ListenerSpelling(machineID string) string {
+	return listenerName("", machineID)
+}
+
+// listenerNameRefused are the characters NATS refuses in a consumer name: nats-server refuses a
+// space, a tab, a carriage return, a line feed, a form feed, '.', '*', '>', '\' and '/'
+// (server/jetstream.go isValidAssetName), and nats.go refuses '.' and a space (jsm.go
+// checkConsumerName). A dot is also the separator of the subject tokens that carry the durable's
+// name ($JS.API.CONSUMER.CREATE.<stream>.<durable>, $JS.ACK.<stream>.<durable>.>).
+const listenerNameRefused = " \t\r\n\f.*>\\/"
+
+// machineIDEscape starts each escape in a listener name (listenerName).
+const machineIDEscape = '%'
+
+// maxConsumerNameBytes is the longest consumer name nats-server takes (server/jetstream_api.go
+// JSMaxNameLen).
+const maxConsumerNameBytes = 255
+
+// listenerName is prefix then machineID, with each ordinary space as a hyphen, as the listener has
+// always named its durable and queue group, and each other character NATS refuses in a consumer
+// name (listenerNameRefused) as machineIDEscape and that byte in two upper-case hex digits: a dot is
+// "%2E". Every other byte stays as it is, so the names of a machine id NATS takes do not change.
+// The escape makes a name NATS takes of an id with a dot, such as a fully qualified host name. An
+// id that holds machineIDEscape is refused (CheckListenerMachineID), so no two ids a listener
+// starts with give one name, except a space and a hyphen, which the listener has always spelled
+// alike.
+func listenerName(prefix, machineID string) string {
+	if !strings.ContainsAny(machineID, listenerNameRefused) {
+		return prefix + machineID
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(prefix) + 3*len(machineID))
+	b.WriteString(prefix)
+	for i := range len(machineID) {
+		switch c := machineID[i]; {
+		case c == ' ':
+			b.WriteByte('-')
+		case strings.IndexByte(listenerNameRefused, c) >= 0:
+			b.WriteByte(machineIDEscape)
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// CheckListenerMachineID refuses a machine id whose listener names (ListenerDurable,
+// ListenerQueue) can be the names of another id, or that NATS refuses. An id that holds
+// machineIDEscape can spell the escape of a dot in another id, and then the two ids share one
+// durable and one queue group. An id whose durable is over NATS's 255-byte limit for a consumer
+// name names no durable. The error does not name the setting: the caller adds the name of the
+// setting it read the id from.
+func CheckListenerMachineID(machineID string) error {
+	if strings.ContainsRune(machineID, machineIDEscape) {
+		return fmt.Errorf("holds %q, which starts an escape in the listener's NATS names, so another machine id can give the same names", machineIDEscape)
+	}
+	if n := len(ListenerDurable(machineID)); n > maxConsumerNameBytes {
+		return fmt.Errorf("makes the durable name listener-<id> %d bytes long, over NATS's %d-byte limit for a consumer name", n, maxConsumerNameBytes)
+	}
+	return nil
 }
 
 // RoleLaneQueue is the queue group every listener subscribes the role lanes in, whatever its
@@ -155,7 +239,8 @@ func DeliverSubject(sessionID string) string {
 }
 
 // RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
-// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// receipts are this prefix and its machine id in the listener's spelling (ListenerSpelling), then a
+// nuid, the session id and a token
 // (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
@@ -167,8 +252,9 @@ func DeliverSubject(sessionID string) string {
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,
-// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
-// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), or an
+// edge listener's receipt family and a nuid (RelayReplyPrefix), then the session's id, then a
+// token of 128 random bits (crypto/rand.Text, 26 base32 characters).
 // Every request a session answers carries one - the relay's frames (cmd/listener's
 // sessionRelays), the listener's connection probe and Dispatch's agent stream replay
 // (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
@@ -270,7 +356,7 @@ const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 // own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
-	"notifications.dispatch.>",
+	DispatchTopicPrefix + ">",
 	"notifications.github.>",
 	"notifications.slack.>",
 	// The Go Legion daemon's notices for the project's controller
@@ -721,6 +807,16 @@ var roleLaneSubjects = []string{
 	ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">",
 }
 
+// RoleLane reports whether topic is a role lane or the exception lane of one (roleLaneSubjects),
+// read literally as a published topic is, as subjectsCapture reads it: notifications.role.> is a
+// role lane and so is every topic under it. The publish path sends such a topic over core NATS
+// (publishPathOf), and a session's consumer filter leaves it out (cmd/listener's
+// sessionConsumerFilter), since the stream never stores it and a role message reaches its holder
+// as a forward on the holder's agent subject.
+func RoleLane(topic string) bool {
+	return subjectsCapture(roleLaneSubjects, topic)
+}
+
 // subjectCapturesRoleLanes reports whether some role-lane subject would land in a stream carrying
 // subject.
 func subjectCapturesRoleLanes(subject string) bool {
@@ -784,6 +880,16 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
 	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// SubjectsOverlap reports whether some subject matches both patterns a and b (subjectsOverlap), for
+// a caller outside this package. No production code calls it: the listener weighs a session's
+// filters through SessionConsumerReduction, which records which topics fed each merge. The
+// listener's reduction test reads it to check that each of its rows overlaps as the case says
+// (cmd/listener's TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut), and it stays
+// exported because a test in another package cannot reach the unexported one.
+func SubjectsOverlap(a, b string) bool {
+	return subjectsOverlap(a, b)
 }
 
 // tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller
@@ -861,25 +967,27 @@ func reconcileSubjects(deployed, own []string) streamReconciliation {
 	return result
 }
 
-// log reports the reconciliation once the stream carries it.
-func (r streamReconciliation) log() {
+// log reports the reconciliation to logger once the stream carries it.
+func (r streamReconciliation) log(logger *slog.Logger) {
 	for _, replacement := range r.replaced {
-		slog.Warn("envoy nats stream subject replaced by an overlapping one", slog.String("dropped", replacement.dropped), slog.Any("kept", replacement.kept))
+		logger.Warn("envoy nats stream subject replaced by an overlapping one", slog.String("dropped", replacement.dropped), slog.Any("kept", replacement.kept))
 	}
 	if len(r.foreign) > 0 {
-		slog.Info("envoy nats stream keeps subjects this binary does not compile", slog.Any("subjects", r.foreign))
+		logger.Info("envoy nats stream keeps subjects this binary does not compile", slog.Any("subjects", r.foreign))
 	}
 }
 
 // streamEnsure is who ensures the stream (ensureStreamWithConfig), which decides whether the
-// ensure waits for the leader of a stream it finds with none: one that another program created or
-// raised a moment ago, or that lost its leader.
+// ensure waits for the leader of a stream it finds with no leader that takes writes
+// (leaderNotServing): one that another program created or raised a moment ago, or that lost its
+// leader.
 type streamEnsure int
 
 const (
 	// atStart is a program's start in the foreground (install): a write it sends to a stream in its
-	// first election draws no answer, so it waits for the leader, as the start that created or
-	// raised the stream does.
+	// first election, or to a leader that has not applied its first entry as leader, draws no
+	// answer, so it waits for a leader that takes writes, as the start that created or raised the
+	// stream does.
 	atStart streamEnsure = iota + 1
 	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
 	// included: the hooks after it rewatch the program's state, and a stream a connection event
@@ -967,18 +1075,21 @@ const (
 // ended: ...`. A create sent again while that election runs is answered before it ends, with the
 // stream still leaderless, and so is a raise of the stream's copies, at once (as a bucket's
 // raise is, awaitReplicasCurrent): so a create of more than one copy, and an update that raises
-// the copies, are followed by a wait for the stream's leader (awaitStreamLeader). Measured with
-// nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
+// the copies, are followed by a wait for a leader that takes writes (awaitStreamLeader). Measured
+// with nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
 // after its second send at 10 s, and its first publish then failed "no response from stream"; a
 // start that raised the stream from one copy to three answered at once, and its first publish,
-// with no election held, drew no answer within its 5 s.
-func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
+// with no election held, drew no answer within its 5 s. A start that ended its wait on the new
+// leader's name lost its first publish too, while that leader had not yet applied its first entry
+// as leader (leaderNotServing). Its lines, the reconciliation's and those of its waits, go to
+// logger.
+func ensureStreamWithConfig(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := readAgain(ctx, read, readLimitOf(ctx), readStream)
+	info, err := readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -989,10 +1100,10 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
-		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		_, err = sentAgain(ctx, logger, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
 			if created.Replicas > 1 {
-				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
+				err = awaitStreamLeader(ctx, logger, js, afterCreate, Stream)
 			}
 			if err != nil {
 				return nil, err
@@ -1005,7 +1116,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = readAgain(ctx, read, readLimitOf(ctx), readStream)
+		info, err = readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1014,19 +1125,19 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		return nil, err
 	}
 	if leaderless(info) && at == atStart {
-		// The stream another start created or raised a moment ago is still in its first election:
-		// that start's own wait does not reach this one, and a write sent now draws no answer.
-		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+		// The stream another start created or raised a moment ago has no leader that takes writes
+		// yet: that start's own wait does not reach this one, and a write sent now draws no answer.
+		if err := awaitStreamLeader(ctx, logger, js, afterOpen, Stream); err != nil {
 			return nil, err
 		}
 	}
 	if newerBuild(info) {
-		logLeftToNewerBuild(info)
+		logLeftToNewerBuild(logger, info)
 		return info.Config.Subjects, nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(desired, info.Config) {
-		reconciliation.log()
+		reconciliation.log(logger)
 		return info.Config.Subjects, nil
 	}
 	// The migrate and the purge below are requests a server can leave unanswered, and each is
@@ -1034,7 +1145,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	// every other wait of it, naming the write that was in flight. The update bounds itself
 	// (updateStream).
 	written := func(step string, write func() error) error {
-		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
+		_, answered, err := Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, write() })
 		if !answered {
 			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
 		}
@@ -1053,7 +1164,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
 		return reconciled, true
 	}
-	update, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+	update, err := updateStream(ctx, logger, js, info, reconcile, func(again *nats.StreamInfo) bool {
 		reconciled, write := reconcile(again)
 		return write && reflect.DeepEqual(reconciled, again.Config)
 	})
@@ -1067,17 +1178,17 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		// A newer build's start wrote the stream while this one's update was unanswered: its
 		// settings stand, as on a first read that finds them, and so does its new election.
 		if leaderless(update.from) && at == atStart {
-			if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			if err := awaitStreamLeader(ctx, logger, js, afterOpen, Stream); err != nil {
 				return nil, err
 			}
 		}
-		logLeftToNewerBuild(update.from)
+		logLeftToNewerBuild(logger, update.from)
 		return update.from.Config.Subjects, nil
 	}
 	_, reconciliation = reconciledStream(update.from, cfg, defaultsAnUnsetCap)
-	reconciliation.log()
+	reconciliation.log(logger)
 	if update.sent.Replicas > info.Config.Replicas {
-		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
+		if err := awaitStreamLeader(ctx, logger, js, afterRaise, Stream); err != nil {
 			return nil, err
 		}
 	}
@@ -1097,10 +1208,10 @@ func newerBuild(info *nats.StreamInfo) bool {
 	return MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration
 }
 
-// logLeftToNewerBuild logs that a start found info's stream carrying a newer build's settings and
-// leaves them as they are (newerBuild).
-func logLeftToNewerBuild(info *nats.StreamInfo) {
-	slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
+// logLeftToNewerBuild logs to logger that a start found info's stream carrying a newer build's
+// settings and leaves them as they are (newerBuild).
+func logLeftToNewerBuild(logger *slog.Logger, info *nats.StreamInfo) {
+	logger.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
 		slog.Int("deployed_generation", MetadataGeneration(info.Config.Metadata, streamGenerationKey)), slog.Int("own_generation", streamConfigGeneration))
 }
 
@@ -1268,8 +1379,9 @@ type streamUpdate struct {
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
-// lost too, so a read sent once could leave a raise that landed reported as one that failed.
-func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
+// lost too, so a read sent once could leave a raise that landed reported as one that failed. The
+// lines of those reads sent again go to logger.
+func updateStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
 	name := info.Config.Name
 	result := streamUpdate{from: info}
 	for overlaps := 0; ; {
@@ -1279,7 +1391,7 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 			return result, nil
 		}
 		result.sent = update
-		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		_, answered, err := Bounded(ctx, nil, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
 		switch {
 		case !answered:
 			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
@@ -1288,7 +1400,7 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 		case !unanswered(err):
 			return result, err
 		}
-		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		again, readErr := readAgain(ctx, logger, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
 		switch {
 		case readErr == nil && holds(again):
 			return result, nil

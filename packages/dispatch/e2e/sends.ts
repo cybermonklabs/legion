@@ -1,4 +1,7 @@
+import { retriesUnderKey } from "@legion/contracts";
 import type { Locator, Page, Request } from "@playwright/test";
+
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /** In-app navigation, as a link does: a reload would drop a send with the page. */
 export async function navigateInApp(page: Page, path: string): Promise<void> {
@@ -69,9 +72,9 @@ export interface Refusal {
   readonly status: number;
 }
 
-/** Dispatch's verdict refusing a write. Every write the page makes tries a 5xx, a 429 or a lost
- *  answer again under its key until Dispatch answers, so only a verdict - a 4xx of Dispatch's
- *  own - ends one refused. */
+/** Dispatch's verdict refusing a write. Every write the page makes tries an outage (a 5xx, a 408 or
+ *  a 429), a `409 KEY_IN_FLIGHT` or a lost answer again under its key until Dispatch answers
+ *  (`retriesUnderKey`), so only a verdict - a 4xx of Dispatch's own - ends one refused. */
 export const WRITE_REFUSED: Refusal = {
   code: "INPUT_REFUSED",
   error: "Dispatch refused the write",
@@ -89,17 +92,18 @@ export const MESSAGE_REFUSED: Refusal = {
 };
 
 /** Holds every `POST` to `pattern` until the returned call, then refuses it with `refusal`,
- *  `WRITE_REFUSED` by default. A 5xx or a 429 is no refusal: the page tries it again under the
- *  write's key, so a row that would refuse with one is refused here, naming `WRITE_REFUSED`,
- *  rather than left waiting on a write that never gives up. */
+ *  `WRITE_REFUSED` by default. An answer the page tries again under the write's key
+ *  (`retriesUnderKey`: a 5xx, a 408, a 429 or a `409 KEY_IN_FLIGHT`) is no refusal, so a row that
+ *  would refuse with one is refused here, naming `WRITE_REFUSED`, rather than left waiting on a
+ *  write that never gives up. */
 export async function refusePosts(
   page: Page,
   pattern: string,
   refusal: Refusal = WRITE_REFUSED
 ): Promise<() => void> {
-  if (refusal.status >= 500 || refusal.status === 429) {
+  if (retriesUnderKey(refusal.status, refusal.code)) {
     throw new Error(
-      `refusePosts: a ${refusal.status} to ${pattern} is no refusal - the page tries it again under the write's key; refuse it with WRITE_REFUSED`
+      `refusePosts: a ${refusal.status} ${refusal.code} to ${pattern} is no refusal - the page tries it again under the write's key; refuse it with WRITE_REFUSED`
     );
   }
   const { promise: held, resolve: refuse } = Promise.withResolvers<void>();
@@ -130,10 +134,6 @@ export async function pasteFile(field: Locator, name: string, text: string): Pro
     { name, text }
   );
 }
-
-/** A 1x1 PNG, the smallest picture a browser draws. */
-export const ONE_PIXEL_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 /** Pastes a PNG named `name` into `field`, as the clipboard hands a screenshot to it (the same
  *  explicit `DataTransfer` as `pasteFile`). */

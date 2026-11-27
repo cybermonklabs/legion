@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Holds a failing verdict of ci.yaml's `ci-ok` job on a merge-group run until the group is the
+# Holds a failing verdict of `.github/workflows/ci.yaml#ci-ok` job on a merge-group run until the group is the
 # front of the queue: until the queue's branch is at the group's base, the merge group's parent
 # commit. It is the step right after the verdict step and runs only when that step failed, on a
 # merge group's first attempt; the reconcile step is skipped then, so this is the job's last step,

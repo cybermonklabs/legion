@@ -77,9 +77,11 @@ func hookCount(hook Hook, counts map[string]int) int {
 // naming what fired and whom it reached.
 //
 // Whether a role has a session is not read here. A role that has run no phase holds no topic, and
-// the outbox ends that one row undelivered with a log line, as it does for any role message; a
-// firing that read the phase rows first would write a different set of rows on an issue whose
-// reviewer has not started, which is not what the hook names.
+// the outbox's row for it waits an hour for a session to hold the role (internal/daemon's
+// publishKeptToRole), holding no pod while the role has no claim (internal/store's
+// idleWaitingRow), then ends undelivered with a message on the issue that names the hook's
+// prompt (keptRoleMessageEnded); a firing that read the phase rows first would write a different
+// set of rows on an issue whose reviewer has not started, which is not what the hook names.
 //
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
