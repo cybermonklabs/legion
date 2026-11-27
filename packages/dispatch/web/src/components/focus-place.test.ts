@@ -2059,7 +2059,7 @@ test("a pointer press on empty space inside a held selection bar keeps the press
       )
     )
   );
-  let release = () => undefined;
+  let release: () => void = () => undefined;
   try {
     const bar = view.getByTestId("bar");
     const line = view.getByTestId("bar-line");

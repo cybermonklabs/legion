@@ -13404,6 +13404,7 @@ test("with Take out of epic's writes held and both marks then unticked, the proj
 // and WebKit (e2e/playwright.config.ts).
 // SLOW(>=2s): two issues seeded, and the project List and the project Board opened at 1440.
 test("a pointer press on empty space in the List's selection bar line or the Board's scroller focuses the box with no focus ring, and Tab draws the next control's ring @firefox @webkit", async ({
+  browserName,
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
@@ -13523,6 +13524,10 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
       outlineStyle: "none",
       tag: "DIV",
     });
+  // Tab from the focused scroller goes into the board's cards in Chromium and WebKit. Firefox
+  // sends it to the page's first control (Skip to content), as it does on main, where the same
+  // press leaves the focus on the main content and no tabindex is on the scroller (a throwaway
+  // probe, builds Job infra-3135-i-b7p-2mvcn).
   await page.keyboard.press("Tab");
   await expect
     .poll(async () => {
@@ -13541,7 +13546,7 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
     .toEqual({
       drewRing: true,
       focusVisible: true,
-      inScroller: true,
+      inScroller: browserName !== "firefox",
       isBox: false,
     });
 });
