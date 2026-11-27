@@ -85,7 +85,8 @@ func TestUnboundedRemainingStaysPositiveTimesASmallFactor(t *testing.T) {
 func TestRemainingWithinTheMarginFailsTheTestByName(t *testing.T) {
 	timeout := Remaining(t)
 	child := exec.Command(os.Args[0], "-test.run=^TestRemainingWithinTheMarginChild$", "-test.timeout="+timeout.String(), "-test.v")
-	child.Env = append(os.Environ(), remainingChildEnv+"=1")
+	// CONTROL: the child stalls 11 s before its call of Remaining, standing in for a loaded machine.
+	child.Env = append(os.Environ(), remainingChildEnv+"=1", "TESTWAIT_CONTROL_STALL=1")
 	output, err := child.CombinedOutput()
 	text := string(output)
 	if err == nil || !strings.Contains(text, "--- FAIL: TestRemainingWithinTheMarginChild (") {
@@ -116,6 +117,9 @@ func TestRemainingWithinTheMarginChild(t *testing.T) {
 		t.Skip(remainingChildEnv + " is not set: this test is the child of TestRemainingWithinTheMarginFailsTheTestByName")
 	}
 	deadlineOf = func(*testing.T) (time.Time, bool) { return time.Now().Add(remainingChildLeft), true }
+	if os.Getenv("TESTWAIT_CONTROL_STALL") != "" {
+		time.Sleep(11 * time.Second)
+	}
 	got := Remaining(t)
 	t.Logf("Remaining returned %s", got)
 }
