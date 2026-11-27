@@ -174,8 +174,7 @@ func isWord(r rune) bool {
 }
 
 // strip is Python's str.strip with no argument: s without the white space that ste-lint reads
-// (isSpace) at its two ends. A caller that cuts a line into sentences names each by it, so a
-// sentence starts at its first word and ends at its last.
+// (isSpace) at its two ends.
 func strip(s string) string {
 	return strings.TrimFunc(s, isSpace)
 }
