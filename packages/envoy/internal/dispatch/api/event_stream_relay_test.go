@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,7 +140,27 @@ func receiveRelayed(t *testing.T, database *store.Store, subscription <-chan rel
 		event, open := <-subscription
 		received <- relayReceipt{event: event, open: open}
 	}()
-	receipt := horizontest.WaitInProcess(t, "the relay's next event", received, database)
+	var receipt relayReceipt
+	select {
+	case receipt = <-received:
+	case <-time.After(60 * time.Second):
+		var head int64
+		var activity string
+		_ = database.Pool.QueryRow(context.Background(), `select coalesce(max(id), 0) from events`).Scan(&head)
+		_ = database.Pool.QueryRow(context.Background(), `select coalesce(string_agg(concat_ws(' ', pid, state, backend_xid, left(query, 120)), E'\n'), '') from pg_stat_activity where datname = current_database()`).Scan(&activity)
+		buf := make([]byte, 1<<24)
+		buf = buf[:runtime.Stack(buf, true)]
+		var kept []string
+		for _, stack := range strings.Split(string(buf), "\n\n") {
+			if strings.Contains(stack, "eventStreamRelay") || strings.Contains(stack, "Horizon") || strings.Contains(stack, "pglisten") || strings.Contains(stack, "receiveRelayed") {
+				kept = append(kept, stack)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "relay-debug TIMEOUT %s: events head %d\nactivity:\n%s\nstacks:\n%s\n", t.Name(), head, activity, strings.Join(kept, "\n\n"))
+		t.Logf("relay-debug TIMEOUT %s: events head %d\nactivity:\n%s\nstacks:\n%s", t.Name(), head, activity, strings.Join(kept, "\n\n"))
+		panic("relay-debug: the relay's next event did not arrive in 60s")
+	}
+	_ = horizontest.WaitInProcess[relayReceipt]
 	if !receipt.open {
 		t.Fatal("the relay's subscription ended")
 	}
