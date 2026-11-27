@@ -1759,8 +1759,10 @@ test("the filters and the syntax help are behind Filters, and / in the empty box
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
-
   try {
+    // The bar's first reads (the person, the conversations, the projects) land before the keys:
+    // an answer that lands between two of them redraws the bar outside the keys' act.
+    await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
     const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
     const button = screen.getByRole("button", { name: "Filters" });
     expect(button).toHaveAttribute("aria-expanded", "false");
