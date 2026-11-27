@@ -24,12 +24,20 @@ export interface Deadline {
 
 /**
  * The runner a command line names. The command is the first argument after the program that is
- * no flag: `bun test …`, and `bun test --test-worker …` for a `--parallel` worker. The guard is
- * the last `--timeout=<ms>` or `--timeout <ms>`; a worker's command line carries it as the first
- * form whether or not the person's command set it (measured on Bun 1.4.4).
+ * no flag: `bun test …`, and `bun test --test-worker …` for a `--parallel` worker. The guard the
+ * waits of `./wait` end by is the package's declared guard (`declareGuard`, from its test preload)
+ * when it declared one, whatever the command line says: the preload also calls `bun:test`'s
+ * `setDefaultTimeout(ms)`, which wins over the command line's `--timeout` for Bun's own per-test
+ * kill (measured on Bun 1.4.4), so the declared guard is the length Bun enforces and the one these
+ * waits must end before. A package that declares none takes the command line's last `--timeout=<ms>`
+ * or `--timeout <ms>`, else Bun's default. This matters most under `bun test --parallel`, whose
+ * worker command line carries `--timeout=5000` whether or not the person set one (measured on Bun
+ * 1.4.4): without the declared guard that 5000 ms, not the preload's `setDefaultTimeout`, would set
+ * these waits' deadline.
  */
-export function runnerFrom(args: readonly string[]): Runner {
+export function runnerFrom(args: readonly string[], declaredGuardMs?: number): Runner {
   const inBunTest = args.slice(1).find((arg) => !arg.startsWith("-")) === "test";
+  if (declaredGuardMs !== undefined) return { inBunTest, guardMs: declaredGuardMs };
   let timeout: string | undefined;
   for (const [index, arg] of args.entries()) {
     if (arg === "--timeout") timeout = args[index + 1];
@@ -70,10 +78,69 @@ function ownCommandLine(): string[] {
     .filter((arg) => arg !== "");
 }
 
+/**
+ * Whether this process is a worker of `bun test --parallel`, from `--test-worker` on its command
+ * line (Bun 1.4.4). A package's test preload declares its guard only here: a non-parallel `bun test`
+ * runs every file in one process, where a preload's `setDefaultTimeout` reaches only the first file
+ * (Bun reads no `[test] timeout` from bunfig.toml and resets the default to 5000 ms between files),
+ * so declaring there would raise this deadline for every file while Bun kills the later ones at
+ * 5000 ms. Under `--parallel`, with more than one file, each file is its own worker process and
+ * reloads the preload, so the declaration reaches them all. A `--parallel` run of a single file
+ * takes no worker and so keeps the non-parallel behaviour.
+ */
+export function isParallelWorker(args: readonly string[] = ownCommandLine()): boolean {
+  return args.includes("--test-worker");
+}
+
 let runner: Runner | undefined;
+
+/** The guard a package's test preload declared (`declareGuard`); it wins over the command line, so
+ *  the deadline these waits end by follows the preload's `setDefaultTimeout`. Undefined until a
+ *  preload declares one. */
+let declaredGuardMs: number | undefined;
+
+/**
+ * Declares the per-test guard for this package's `bun test`, from its test preload. The preload
+ * calls `bun:test`'s `setDefaultTimeout(ms)` with the same value, which wins over the command
+ * line's `--timeout` for Bun's own per-test kill (Bun 1.4.4); this guard wins the same way for the
+ * deadline every wait of `./wait` ends by, so Bun's kill and that deadline are one length whatever
+ * the command — `bun test`, `bun test --parallel` (whose worker carries `--timeout=5000`), or the
+ * package's `bun run test`. It forgets any runner read before the declaration, so the next wait
+ * reads the declared guard.
+ */
+export function declareGuard(ms: number): void {
+  if (!Number.isInteger(ms) || ms < 0) {
+    throw new Error(`declareGuard needs whole milliseconds, not ${JSON.stringify(ms)}`);
+  }
+  declaredGuardMs = ms;
+  runner = undefined;
+}
 
 /** The newest mark `./row-deadline` took, on `performance.now()`'s clock. */
 let newestMark: number | undefined;
+
+/**
+ * A guard a single row set for its own waits (`useRowGuard`), for a row that needs more than the
+ * command's guard by design, such as one that starts a cold role pane (5-6 s). It is forgotten at
+ * each mark, so it belongs to the one row that set it. The row also passes the same value as the
+ * third argument of `test`/`it`, which Bun honours under `bun test`, `--parallel` and `bun run test`
+ * alike, so Bun's per-test kill and this deadline agree.
+ */
+let rowGuardMs: number | undefined;
+
+export function useRowGuard(ms: number): void {
+  if (!Number.isInteger(ms) || ms <= 0) {
+    throw new Error(`useRowGuard needs whole milliseconds above zero, not ${JSON.stringify(ms)}`);
+  }
+  rowGuardMs = ms;
+  // Re-arm the mark's alarm (the fake-clock path of `realTimeDeadline`) at the new guard; the
+  // real-time `deadlineFor` reads the row guard live at each wait.
+  if (newestMark !== undefined) {
+    if (markAlarm !== undefined) Atomics.notify(markAlarm.cell, 0);
+    const { at } = deadlineFor(newestMark, "the row-deadline preload");
+    markAlarm = Number.isFinite(at) ? alarmAfter(at - performance.now()) : undefined;
+  }
+}
 
 /**
  * A real-time alarm: `passed` turns true, and `reached` resolves, once its delay has gone by in
@@ -133,6 +200,7 @@ let markAlarm: Alarm | undefined;
 /** Records now as the moment Bun last started the guard that the next wait runs under, and arms
  *  that guard's deadline in real time. The previous mark's alarm is woken, so it ends at once. */
 export function markRow(): void {
+  rowGuardMs = undefined;
   newestMark = performance.now();
   if (markAlarm !== undefined) Atomics.notify(markAlarm.cell, 0);
   const { at } = deadlineFor(newestMark, "the row-deadline preload");
@@ -151,7 +219,7 @@ export function realTimeDeadline(caller: string): {
   readonly reached: Promise<void>;
   readonly source: string;
 } {
-  runner ??= runnerFrom(ownCommandLine());
+  runner ??= runnerFrom(ownCommandLine(), declaredGuardMs);
   if (!runner.inBunTest) {
     throw new Error(`${caller} waits on Bun's fake clock, which only \`bun test\` runs`);
   }
@@ -174,9 +242,9 @@ export function realTimeDeadline(caller: string): {
  * throws.
  */
 export function deadlineFor(start: number, caller: string): Deadline {
-  runner ??= runnerFrom(ownCommandLine());
+  runner ??= runnerFrom(ownCommandLine(), declaredGuardMs);
   if (runner.inBunTest) {
-    const guard = runner.guardMs;
+    const guard = rowGuardMs ?? runner.guardMs;
     if (guard === 0) {
       return { at: Number.POSITIVE_INFINITY, source: "with no deadline (bun test --timeout 0)" };
     }
@@ -187,7 +255,9 @@ export function deadlineFor(start: number, caller: string): Deadline {
         : "";
     return {
       at: (newestMark ?? start) + guard - margin,
-      source: `${margin} ms before the row's guard of ${guard} ms (bun test --timeout)${counted}`,
+      source:
+        `${margin} ms before the row's guard of ${guard} ms ` +
+        `(${rowGuardMs !== undefined ? "useRowGuard" : "bun test --timeout"})${counted}`,
     };
   }
   const proof = process.env["LEGION_PROOF_DEADLINE_MS"];
