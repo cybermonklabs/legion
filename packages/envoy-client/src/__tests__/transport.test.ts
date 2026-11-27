@@ -1105,15 +1105,51 @@ describe("EnvoyClient", () => {
 
     const result = await client.setRole({ sessionID: "ses_sender", role: "controller" });
 
+    // The answer carries no warnings, as no answer of a listener predating the field does: [].
     expect(result).toEqual({
       claimed: true,
       interest: expect.objectContaining({ topics: ["notifications.role.controller"] }),
+      warnings: [],
     });
     // A hard claim sends no `soft` field, so an older listener sees an
     // unchanged request.
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_sender",
       role: "controller",
+    });
+  });
+
+  test("a granted claim answers the listener's warnings beside the interest, never inside it", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    const recorded = recordFetch([
+      jsonResponse({
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+        warnings: [handover, edge],
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.setRole({
+      sessionID: "ses_new",
+      role: "controller",
+      previousSessionID: "ses_old",
+    });
+
+    expect(result).toEqual({
+      claimed: true,
+      interest: {
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+      },
+      warnings: [handover, edge],
     });
   });
 
@@ -1140,9 +1176,14 @@ describe("EnvoyClient", () => {
     });
   });
 
-  test("previous_session_id is sent with a soft claim and dropped from a hard one", async () => {
+  test("previous_session_id is sent with a soft claim and a hard one, and only when it names a session", async () => {
     const interest = { session_id: "ses_child", machine_id: "host-a", dir: "/work", topics: [] };
-    const recorded = recordFetch([jsonResponse(interest), jsonResponse(interest)]);
+    const recorded = recordFetch([
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+    ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
     await client.setRole({
@@ -1156,6 +1197,8 @@ describe("EnvoyClient", () => {
       role: "controller",
       previousSessionID: "ses_parent",
     });
+    await client.setRole({ sessionID: "ses_child", role: "controller" });
+    await client.setRole({ sessionID: "ses_child", role: "controller", previousSessionID: "" });
 
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_child",
@@ -1163,9 +1206,19 @@ describe("EnvoyClient", () => {
       soft: true,
       previous_session_id: "ses_parent",
     });
-    // A hard claim is last-claim-wins already; the predecessor is meaningless
-    // and stays off the wire.
+    // A hard claim names the session it replaces too, whose unread messages the listener hands
+    // to the claimant; a listener older than that reads it on a soft claim alone.
     expect(await recorded.requests[1]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+      previous_session_id: "ses_parent",
+    });
+    // No predecessor, or an empty one, leaves the key off the wire.
+    expect(await recorded.requests[2]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+    });
+    expect(await recorded.requests[3]?.json()).toEqual({
       session_id: "ses_child",
       role: "controller",
     });

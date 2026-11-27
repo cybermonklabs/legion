@@ -24,12 +24,15 @@ export interface LegionClaimHost {
    * this session holds its Envoy name, and what serves it reads the capability then. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the daemon sends the
-   * claim's task and every notice on. It is the boot's last step and runs after `claims/ready`
+   * claim's task and every notice on. `replaces` is the registration's `replaces`, the session
+   * this one replaces, undefined where it names none: the claim sends it as
+   * `previous_session_id`, so the listener hands that session's unread direct and role messages
+   * to this one once the claim lands. It is the boot's last step and runs after `claims/ready`
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
    * first — at once where the turn started while ready was still being retried. Throws when the
    * role cannot be held, which is logged and stops the session; a claim the listener answered
    * 503 is claimed again instead (`claimRoleAtFirstTurn`). */
-  readonly claimRole: (role: string) => Promise<void>;
+  readonly claimRole: (role: string, replaces?: string) => Promise<void>;
   /** Hands the host `started`, the signal to call once the session's first turn has started —
    * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
    * `claims/register` has answered, before `claims/ready`, so a turn that starts while that
@@ -90,7 +93,8 @@ export interface LegionClaimBoot {
  * `claims/ready`, retried on an outage or a transport failure (`callReadyWithRetry`); the regain
  * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
  * after this function has settled, the Envoy role claimed at the first turn the signal reported
- * or at the bound, whichever comes first.
+ * or at the bound, whichever comes first, naming the session the registration says this one
+ * replaces (`replaces`), whose unread messages the listener then hands to this one.
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -176,7 +180,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     stopAfterRegistration(host, claim.claimToken, step, error);
     return { claimed: Promise.resolve() };
   }
-  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
+  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, claim.replaces, firstTurn) };
 }
 
 /** The opening of the sentence below, which the skill-scenario rig reads a stopped half's own
@@ -262,26 +266,31 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
 /**
  * The boot's last step, run after the boot itself has settled: `role` claimed on Envoy at the
  * first turn `firstTurn` reports or at the bound, whichever comes first, and once however many
- * of the two arrive. The timer is armed and the step handed over in that order and both before
- * this returns, so a turn that started while the boot was still readying claims inside that
- * hand-over and loses nothing, and the timer is unreferenced where the runtime offers it: the
- * bound is a backstop and keeps no process alive for its own sake.
+ * of the two arrive, naming `replaces`, the session the registration says this one replaces
+ * (`LegionClaimHost.claimRole`). The timer is armed and the step handed over in that order and
+ * both before this returns, so a turn that started while the boot was still readying claims
+ * inside that hand-over and loses nothing, and the timer is unreferenced where the runtime
+ * offers it: the bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes, with `claimRole` as the step it names, which is what tells this failure
  * from the boot's own in a log holding one line. A claim the listener answered 503
- * (`listenerAskedToClaimAgain`) is no refusal: the listener wrote no claim and asks for the
- * claim again (`Retry-After`) - every try of its write met a conflict, or the takeover record a
- * claim writes first, for the holder it takes the role from, did not store - so the claim is made
+ * (`listenerAskedToClaimAgain`) is no refusal: the listener asks for the claim again
+ * (`Retry-After`) - it wrote no claim, because every try of its write met a conflict or the
+ * takeover record a claim writes first, for the holder it takes the role from, did not store; or
+ * the claim landed and stands, and only the handover of the session it replaces (`replaces`) was
+ * not judged or its record did not store (`claimStandsWithoutHandover`) - so the claim is made
  * again after a wait that starts at `roleClaimRetryFirstDelayMs` and doubles up to
- * `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log line per wait, until it lands or is refused. The
- * session stays up meanwhile: the role's messages wait for it, with the holder the claim would
- * have replaced or on the role's kept lane. The promise answers when the step has run, either
- * way, and never rejects.
+ * `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log line per wait, naming the listener's answer,
+ * until it lands or is refused. The session stays up meanwhile: the role's messages wait for it,
+ * with the holder the claim would have replaced or on the role's kept lane, or reach it already
+ * where the claim stands. The promise answers when the step has run, either way, and never
+ * rejects.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
   role: string,
+  replaces: string | undefined,
   firstTurn: (claim: () => void) => void
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
@@ -292,7 +301,7 @@ function claimRoleAtFirstTurn(
     clearTimeout(bound);
     void (async () => {
       try {
-        await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
+        await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), role, {
           log: host.log,
           firstDelayMs: host.roleClaimRetryFirstDelayMs,
           signal: host.signal,
@@ -315,12 +324,15 @@ const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
  * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
- * conflict, or the takeover record a claim writes first did not store - and asks for the claim
- * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
+ * 503 (`listenerAskedToClaimAgain`) and asks for the claim again: it wrote no claim - every try of
+ * its write met a conflict, or the takeover record a claim writes first did not store - or the
+ * claim landed and stands, and only the handover of the session it names as replaced was not
+ * judged or its record did not store (`claimStandsWithoutHandover`), which the listener's answer
+ * says. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
  * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
- * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
- * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
+ * answered and its answer, and the 503 itself beside it, so a caller can say which of the two it
+ * waits on; the timer is unref'd, so it holds no process open. Any other failure is thrown at once,
+ * for the caller to stop on. An aborted `signal` - the host stopping - ends the
  * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
  * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
  * person is waiting on to fail where they see it.
@@ -329,7 +341,7 @@ export async function claimRoleAgainOnBusy(
   claim: () => Promise<void>,
   role: string,
   options: {
-    readonly log: (line: string) => void;
+    readonly log: (line: string, error: unknown) => void;
     readonly firstDelayMs?: number | undefined;
     readonly signal?: AbortSignal | undefined;
     /** The most claims made, the first included; the 503 of the last is thrown. Unset, no bound. */
@@ -345,7 +357,8 @@ export async function claimRoleAgainOnBusy(
       if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}; claiming it again in ${wait} ms: ${messageFor(error)}`,
+        error
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);
@@ -377,4 +390,21 @@ export function listenerAskedToClaimAgain(error: unknown): boolean {
   return (
     typeof details === "object" && details !== null && "status" in details && details.status === 503
   );
+}
+
+/** The `code` of a listener's 503 to a role claim that landed and stands, whose handover of the
+ *  session it replaces was not judged or whose handover record did not store
+ *  (`listenerwire.CodeHandoverUnrecorded`). */
+const HANDOVER_UNRECORDED_CODE = "handover_unrecorded";
+
+/**
+ * Whether `error` is the listener's 503 to a role claim that landed and stands, so the session
+ * holds the role, and that only the handover of the session the claim replaces is not recorded
+ * yet: its `code` is `handover_unrecorded`. Every other claim 503 wrote nothing. Read by name and
+ * shape, as `listenerAskedToClaimAgain` reads it.
+ */
+export function claimStandsWithoutHandover(error: unknown): boolean {
+  if (!(error instanceof Error) || !listenerAskedToClaimAgain(error)) return false;
+  const { code } = error as Error & { readonly code?: unknown };
+  return code === HANDOVER_UNRECORDED_CODE;
 }
