@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 
 import { isCredentialFeatureOff } from "../../api/client";
 import { useRestrictedMember } from "../../hooks/useRestrictedMember";
@@ -18,6 +19,35 @@ import { GroupsSection } from "./GroupsSection";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectsSection } from "./ProjectsSection";
 
+/** The id an address's `#` part names, or `undefined` for none and for a part that is no valid
+ *  percent-encoding (`#%E0%A4%A`), which opens Settings at its top rather than throwing. */
+function fragmentId(hash: string): string | undefined {
+  if (hash.length <= 1) return undefined;
+  try {
+    return decodeURIComponent(hash.slice(1));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Settings. Its groups, in this order, one under another in a single column at every width
+ * (the layout rule of `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
+ *
+ * 1. Heading: the page's title and the one line that says what it holds.
+ * 2. Projects (`ProjectsSection`).
+ * 3. Agent tokens (`AgentTokensSection`).
+ * 4. Live grants and Sign-ins (`GrantsSection`, `SignInsSection`), drawn only on a Dispatch with
+ *    a secrets broker; a Dispatch without one has nothing for them to list.
+ * 5. Architecture sources (`ArchitectureSourcesSection`).
+ * 6. Delivery timeline: its heading, its line, and its form (`DeliverySettingsForm`).
+ * 7. The issue page (`IssuePagePreference`).
+ * 8. Legion daemons (`LegionDaemonsSection`).
+ *
+ * Each section lays out its own rows; none sits beside another. An address that names a section
+ * by its `#` part (`/settings#architecture-sources-heading`, which an issue's Components line
+ * links to while its project has no source) opens the page at that section.
+ */
 export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
   // A restricted member reads none of the deployment's own rows (`useRestrictedMember`): no

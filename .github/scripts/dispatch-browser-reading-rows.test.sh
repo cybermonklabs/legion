@@ -7,7 +7,10 @@
 # failed, was skipped, or was cancelled part of the way or after it had copied every leg. Where
 # both succeeded, the cases cover a leg's blob or count absent, every leg's blob absent, a count
 # that holds no number, a merged report that is absent, not JSON, JSON whose stats jq cannot sum,
-# or stats that sum to no whole number, and a merged total equal to, under or over the legs'.
+# or stats that sum to no whole number, and a merged total equal to, under or over the legs'. One
+# case holds the script to its caller's jobs: a run of a pull request labelled full-ci runs the
+# full and the pull-request lanes, two of ci.yaml's three callers of dispatch-browser.yaml, and the
+# pull-request lane's reading must not read the full lane's legs as its own.
 #
 # The case it was written for is run 44754426131, attempt 1. There the job's time limit
 # cancelled the merge job's `bun install`, both steps were skipped, and this reading said "no
@@ -18,14 +21,16 @@
 # downloaded artifacts, the selected blob reports and row counts, and the merged report. The
 # root also holds a copy of the script under test, the real one beside this file, and a
 # stand-in for .github/scripts/dispatch-browser-run-reads.sh, which the script calls relative
-# to its working directory. The stand-in writes a fixture's jobs instead of reading GitHub; the
-# real read is dispatch-browser-run-reads.test.sh's. The root's bin/ holds a stand-in `bun`, first
+# to its working directory. The stand-in writes a fixture's jobs of the caller it is handed
+# instead of reading GitHub; the real read, which keeps only the jobs named under that caller,
+# is dispatch-browser-run-reads.test.sh's. The root's bin/ holds a stand-in `bun`, first
 # on the call's PATH, for the script's reading of the shard legs' row lists
 # (packages/dispatch/e2e/tools/leg-rows.ts, whose own tests are leg-rows.test.ts): it records its
 # arguments and answers with the case's status. The script is run from that root through
 # the merge job's own call: the step "Reading one, the rows" as dispatch-browser.yaml beside
 # this directory writes it, with each `${{ steps.<id>.conclusion }}` replaced by the case's
-# conclusion. So a workflow that passes the script the wrong conclusion fails here too.
+# conclusion and `${{ inputs.job }}` by the case's caller. So a workflow that passes the script
+# the wrong conclusion or no caller fails here too.
 #
 # NO CASE REACHES THE NETWORK OR PLAYWRIGHT: each one is directories, files and the script.
 #
@@ -55,16 +60,21 @@ if [ -z "$step_run" ]; then
   exit 1
 fi
 
+# The id of the job that calls dispatch-browser.yaml, which the merge job's call passes as
+# `${{ inputs.job }}`: ci.yaml's full lane, dispatch-browser, unless a case says otherwise.
+caller=dispatch-browser
+
 # fixture <name>: one case's root, with its $RUNNER_TEMP, its step summary, the script under
 # test, the stand-in run-reads script and the stand-in bun. The stand-in bun takes only
 # leg-rows.ts, appends its arguments to bin/bun.calls, and exits with the status in
 # bin/leg-rows.status (0 when there is none), printing an error line when that is not 0. The
-# stand-in run-reads writes the jobs in `jobs.fixture.json` to
-# the out-file it is given, in the shape the real read writes: an array of {id, name,
-# conclusion, leg}. The four shards ran and the alone leg was skipped, so it owes no blob. It
-# carries a leg name, so only the script's filter on the conclusion keeps it out of the legs that
-# owe one. Echoes the root. A repeated name is refused here rather than surfacing as one case
-# reading another's files.
+# stand-in run-reads takes only the `jobs` mode with its out-file and caller, appends its
+# arguments to run-reads.calls, and writes the jobs in `jobs.<caller>.json` to the out-file, in
+# the shape the real read writes: an array of {id, name, conclusion, leg}. A caller the case
+# holds no jobs for fails it. The fixture holds dispatch-browser's: the four shards ran and the
+# alone leg was skipped, so it owes no blob. It carries a leg name, so only the script's filter on
+# the conclusion keeps it out of the legs that owe one. Echoes the root. A repeated name is
+# refused here rather than surfacing as one case reading another's files.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -77,8 +87,9 @@ fixture() {
   cat > "$root/.github/scripts/dispatch-browser-run-reads.sh" <<'STANDIN'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1" = jobs ] || { echo "stand-in run-reads: mode $1" >&2; exit 2; }
-cp "$(dirname "$0")/jobs.fixture.json" "$2"
+[ "$1" = jobs ] && [ "$#" -eq 3 ] || { echo "stand-in run-reads: $*" >&2; exit 2; }
+printf '%s\n' "$*" >> "$(dirname "$0")/run-reads.calls"
+cp "$(dirname "$0")/jobs.$3.json" "$2"
 STANDIN
   chmod +x "$root/.github/scripts/dispatch-browser-run-reads.sh"
   mkdir -p "$root/bin"
@@ -93,7 +104,7 @@ status=$(cat "$here/leg-rows.status" 2>/dev/null || echo 0)
 exit "$status"
 STANDIN
   chmod +x "$root/bin/bun"
-  cat > "$root/.github/scripts/jobs.fixture.json" <<'JOBS'
+  cat > "$root/.github/scripts/jobs.dispatch-browser.json" <<'JOBS'
 [
   {"id": 10, "name": "dispatch-browser / binaries", "conclusion": "success", "leg": null},
   {"id": 11, "name": "dispatch-browser / shard (1)", "conclusion": "success", "leg": "shard-1"},
@@ -119,7 +130,7 @@ leg() {
 # downloaded <root> <leg> <rows>: one leg's artifact as the download step leaves it, in a
 # directory named for the artifact under $RUNNER_TEMP/blobs, before any selection.
 downloaded() {
-  local dir="$1/temp/blobs/dispatch-browser-blob-$2-1"
+  local dir="$1/temp/blobs/$caller-blob-$2-1"
   mkdir -p "$dir/blob-report" "$dir/rows"
   printf '%s\n' "$2" > "$dir/blob-report/report-$2.zip"
   printf '%s\n' "$3" > "$dir/rows/$2.txt"
@@ -132,15 +143,31 @@ merged() {
     '{stats: {expected: $e, unexpected: $u, flaky: $f, skipped: $s}}' > "$1/temp/report.json"
 }
 
+# two_callers <root>: the jobs of a run that runs two of ci.yaml's three callers of
+# dispatch-browser.yaml, the full and the pull-request lanes, as one of a pull request labelled
+# full-ci does. dispatch-browser-pr, the pull-request lane, has the fixture's legs under its own
+# name, its alone leg skipped; the full lane's alone leg ran, so dispatch-browser's jobs owe its
+# blob report.
+two_callers() {
+  local scripts="$1/.github/scripts"
+  jq 'map(.name |= sub("^dispatch-browser / "; "dispatch-browser-pr / "))' \
+    "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.dispatch-browser-pr.json"
+  jq 'map(if .leg == "alone-webkit-alone" then .conclusion = "success" else . end)' \
+    "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.full-lane.json"
+  mv "$scripts/jobs.full-lane.json" "$scripts/jobs.dispatch-browser.json"
+}
+
 # run_rows <root> <download conclusion> <selection conclusion>: the merge job's call of the
-# script, with its two conclusions filled in, run from that root with the five variables the
-# runner sets and the token the step gives it. A call holding an expression this harness does
-# not fill is refused rather than run with the expression's text as an argument. Sets `out` to
-# the combined output and `status` to the exit code. Not a subshell, so both survive the call.
+# script, with its two conclusions and $caller filled in, run from that root with the five
+# variables the runner sets and the token the step gives it. A call holding an expression this
+# harness does not fill is refused rather than run with the expression's text as an argument.
+# Sets `out` to the combined output and `status` to the exit code. Not a subshell, so both
+# survive the call.
 run_rows() {
   local cmd=$step_run
   cmd=${cmd//'${{ steps.download-blobs.conclusion }}'/$2}
   cmd=${cmd//'${{ steps.select-blobs.conclusion }}'/$3}
+  cmd=${cmd//'${{ inputs.job }}'/$caller}
   case "$cmd" in
     *'${{'*)
       echo "the step's call holds an expression this harness does not fill: $cmd" >&2
@@ -159,6 +186,7 @@ error_line() { grep '::error::' <<<"$out" || true; }
 notice_line() { grep '::notice title=dispatch-browser rows::' <<<"$out" || true; }
 table_rows() { grep -c -- "$2" "$1/summary.md" || true; }
 bun_calls() { cat "$1/bin/bun.calls" 2>/dev/null || true; }
+run_reads_calls() { cat "$1/.github/scripts/run-reads.calls" 2>/dev/null || true; }
 
 echo "case: the download step never ran, as in run 44754426131 attempt 1"
 # The job's time limit cancelled `bun install`, so the download and the selection were skipped
@@ -204,15 +232,17 @@ check "and holds no MISSING, which is the word for a blob the selection did not 
 check "the leg the lane skipped owes nothing and is not named" \
   "$(is "$(contains "$out" 'alone')" false)"
 
-echo "case: the merge job's step passes the script both conclusions"
+echo "case: the merge job's step passes the script both conclusions and its caller"
 # The script is only as right as the call: a step that passed the download's conclusion alone
-# could not tell a selection that never completed from a leg that sent nothing.
+# could not tell a selection that never completed from a leg that sent nothing, and one that
+# passed no caller would read no lane's jobs as its own.
 check "the call passes the download step's conclusion" \
   "$(contains "$step_run" '"${{ steps.download-blobs.conclusion }}"')"
 check "and the selection step's" "$(contains "$step_run" '"${{ steps.select-blobs.conclusion }}"')"
 check "and the selection step carries that id" \
   "$(contains "$(grep -A 1 "      - name: Take the newest attempt of each leg's blob report" "$workflow")" \
     'id: select-blobs')"
+check "and the id of the job that calls the workflow" "$(contains "$step_run" '"${{ inputs.job }}"')"
 
 echo "case: the download step was cancelled with one leg's artifact already on the runner"
 # The limit reached the download itself. The selection after it was skipped, so shard 2's
@@ -404,6 +434,39 @@ check "and the summary says the same" \
 check "and marks each leg's blob held" "$(is "$(table_rows "$root" '| yes |$')" 4)"
 check "and reads the shard legs' row lists once, from the selected rows, for the shards alone" \
   "$(is "$(bun_calls "$root")" "packages/dispatch/e2e/tools/leg-rows.ts $root/temp/selected-blobs/rows shard-1 shard-2 shard-3 shard-4")"
+
+echo "case: the pull-request lane reads its own legs and none of the full lane's"
+# ci.yaml's dispatch-browser and dispatch-browser-pr jobs both call dispatch-browser.yaml, and a
+# pull request labelled full-ci runs both in one run, whose jobs read lists both lanes' legs under
+# the same leg names. The script hands that read its caller's id, and the read keeps that
+# caller's jobs alone. Here the full lane's alone leg ran, so a reading handed the full lane's
+# jobs would name that leg as having sent no blob report to this lane, which never ran it.
+caller=dispatch-browser-pr
+root=$(fixture pr-caller)
+two_callers "$root"
+for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
+merged "$root" 120 0 0 0
+run_rows "$root" success success
+check "exits 0" "$(is "$status" 0)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+check "reads its jobs once, handing the read this caller's id" \
+  "$(is "$(run_reads_calls "$root")" "jobs $root/temp/jobs.json dispatch-browser-pr")"
+check "the notice holds this lane's four shards and nothing else" \
+  "$(contains "$(notice_line)" 'holds 120 rows, against 120 printed by the legs (shard-1 30, shard-2 30, shard-3 30, shard-4 30)$')"
+check "and the full lane's alone leg is not named" "$(is "$(contains "$out" 'alone')" false)"
+caller=dispatch-browser
+# The control: the same blobs read as the full lane's merge job. Its jobs owe the alone leg's
+# blob, which this run never sent, so the fixture's two lanes are told apart by the caller alone.
+root=$(fixture full-caller)
+two_callers "$root"
+for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
+merged "$root" 120 0 0 0
+run_rows "$root" success success
+check "the full lane's reading of the same blobs fails" "$(is "$status" 1)"
+check "naming the alone leg its own jobs owe" \
+  "$(contains "$(error_line)" "::error::no blob report arrived from: alone-webkit-alone; the merged report is short of those legs' rows$")"
+check "having handed the read its own id" \
+  "$(is "$(run_reads_calls "$root")" "jobs $root/temp/jobs.json dispatch-browser")"
 
 echo "case: every owed blob arrived, the counts agree, and the shard legs' row lists do not"
 # The counts cannot see a row no shard ran, nor one two shards ran; the row lists can, and the
@@ -616,7 +679,20 @@ out=$(cd "$root" && env RUNNER_TEMP="$root/temp" GITHUB_STEP_SUMMARY="$root/summ
 status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
-check "naming both conclusions it takes" \
-  "$(contains "$out" '<download conclusion> <selection conclusion>. It was given: success$')"
+check "naming both conclusions and the caller it takes" \
+  "$(contains "$out" '<download conclusion> <selection conclusion> <job>. It was given: success$')"
+
+echo "case: the script given both conclusions and no caller"
+root=$(fixture no-caller)
+set +e
+out=$(cd "$root" && env RUNNER_TEMP="$root/temp" GITHUB_STEP_SUMMARY="$root/summary.md" GH_TOKEN=t \
+  GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=1 \
+  .github/scripts/dispatch-browser-reading-rows.sh success success 2>&1)
+status=$?
+set -e
+check "fails the step" "$(is "$status" 1)"
+check "naming what it takes and what it was given" \
+  "$(contains "$out" '<selection conclusion> <job>. It was given: success success$')"
+check "and reads no jobs" "$(is "$(run_reads_calls "$root")" "")"
 
 summary "dispatch-browser-reading-rows.sh names what its inputs did"

@@ -2,12 +2,13 @@
 
 Legion runs teams of coding agents on the issues you hand it, and brings each one back as a pull
 request that is ready to merge. Root processes own issue trees: each root issue gets an architect
-that writes its spec and splits the work, and the daemon runs a planner, an implementer, a tester, a
-reviewer and a merger over each change. The Legion daemon keeps the durable state, gives each agent
+that writes its spec and splits the work, and the daemon runs over each change the steps its plan
+names (in the default steps a planner, an implementer, a tester, a reviewer and the architect's own
+acceptance), then a merger. The Legion daemon keeps the durable state, gives each agent
 its credentials and routes the events between them. Issues, specs and every decision a person makes
 live in Dispatch. Legion is for people who want agents to work tracked issues end to end while they
 keep the decisions: what to build, whether the spec is right, the answers to the agents' questions,
-which credentials the agents may use, and the merge.
+which credentials the agents may use, and the rules the merge lands under.
 
 Documentation: <https://cybermonklabs.github.io/legion/>
 
@@ -19,15 +20,19 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 `legion`: you label an issue yourself, or ask the controller session the operator starts to label
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
-only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
-pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
+only you can answer. Once you approve the spec, the daemon runs the phase workers of the steps the
+architect's plan names, in the order it names them (planner, implementer, tester and reviewer in
+the default steps), and then the merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, or a
+Claude Code one for a phase worker the deployment puts there, in a tmux pane on one host or, on
+Kubernetes, in the one [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod of
+its issue, and the planner, the implementer, the tester and the reviewer each record a handoff on
+the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
-from Todo through In Progress, Testing, Needs Review and Retro to Done. The architect accepts the
-reviewed change, the merger posts `READY` on the issue and submits the merge, the pull request
-merges under the repository's own rules and closes the issue, and the implementer then checks the
-change in production once it is deployed, recording that on the pull request.
+from Todo through the statuses of the steps it runs (In Progress, Testing, Needs Review and Retro
+in the default steps) to Done. The architect accepts the change where its plan has that step, the
+merger merges the pull request itself under the repository's own rules, the merge closes the
+issue, and the role your project's `production_check` names (the tester by default) then checks
+the change in production once it is deployed, recording that on the pull request.
 
 [Legion's documentation](https://cybermonklabs.github.io/legion/legion/) ·
 [a walkthrough video of one issue](https://cybermonklabs.github.io/legion/legion/walkthrough/)
@@ -142,11 +147,12 @@ root `package.json`.
 
 ```sh
 bun install                                                  # every workspace
-bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+.github/scripts/check-biome-tree.sh                          # what CI's required lint job runs: `bunx biome check .`, failing on a file too large for Biome to read
+bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # one package, every warning and error printed, as CI's Biome steps print them
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
-bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+bun run --cwd packages/contracts gen:api && bunx tsc --noEmit -p scripts/dispatch  # likewise each scripts/ directory with a tsconfig.json
 go -C packages/daemon test ./...                             # the Legion daemon
 go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
 go -C packages/daemon test ./internal/api -run '^TestName$'  # one test
@@ -155,6 +161,18 @@ gofmt -l packages/daemon packages/envoy
 (cd packages/daemon && go build ./cmd/legion)                # then ./legion <command> --help
 bun run dispatch:local                                       # Dispatch, seeded and signed in
 ```
+
+The Bun test scripts that run a package's files side by side name their worker count:
+`--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
+`test:harness`. A bare `--parallel` starts one worker per CPU. On a 180-CPU machine whose user may
+run 4,096 tasks, that failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27
+rows of pi-legion's (threads refused with EAGAIN). On CI's 4-CPU runners eight workers take no
+longer than four: `test:web` 100 s against 101 s, `test:harness` 78 s against 113 s (medians of
+three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count. Most of its tasks are
+the Oh My Pi processes its tests start, and Oh My Pi sizes each of its thread pools to the
+machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp-harness.ts`,
+`ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
+on a 64-CPU machine and holds 40 with the pools set.
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
@@ -190,8 +208,8 @@ entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
 and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+skills, and `CONTRIBUTING.md` the pull request process. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 

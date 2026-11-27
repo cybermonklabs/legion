@@ -31,8 +31,8 @@ func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 }
 
 // writeSessionEvent appends one event of titlesIssue at at, stamped with actor as the writer
-// stored it: a write's actor is JSONB on the events row, which is where ResolveSessionTitles
-// reads a session's title from.
+// stored it: a write's actor is JSONB on the events row, and the trigger on events records the
+// title it stamps in session_titles, which is where ResolveSessionTitles reads it from.
 func writeSessionEvent(t *testing.T, ctx context.Context, pool *store.Pool, at time.Time, actor json.RawMessage) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
@@ -62,13 +62,14 @@ func actorJSON(t *testing.T, actor model.Actor) json.RawMessage {
 // stamped. A session that wrote but never stamped a title is absent from the map, which is the
 // limit chosen for INFRA-1368: nothing here backfills a name, so SessionTitle answers its bare id.
 func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	seedTitlesIssue(t, ctx, pool)
-
 	const (
 		named    = "ses_release_sender"
 		nameless = "ses_never_titled"
 	)
+	seedTitlesIssue(t, ctx, pool)
+
 	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	writeSessionEvent(t, ctx, pool, at, actorJSON(t, model.Actor{
 		Kind: "session", ID: named, Origin: &model.ActorOrigin{SessionTitle: "Release sender"},

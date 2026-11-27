@@ -37,6 +37,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -329,7 +331,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			form:   exchangeForm(mintPodToken(t, cluster, clusterKey, otherAccount, exchangeAudience, "pod-uid-unlisted"), "example-unlisted"),
 			status: http.StatusBadRequest, code: "invalid_request",
 			says:   "no entry lists the service account " + otherAccount,
-			proves: "a sound, correctly-audienced pod token of an account BROKER_EXCHANGE_ACCOUNTS does not list is refused, naming the account",
+			proves: "a sound, correctly-audienced pod token of an account no exchange entry lists is refused, naming the account",
 		},
 		{
 			name:   "a token minted for another audience mints nothing",
@@ -694,8 +696,8 @@ func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
 // naming no session and no scope, and is answered a token the listed API account reads back as
 // exactly the read entry's: the scope read, the project scope none, the entry's service and the
 // session it fixes, no person and no project, and this test's own key. Nothing was registered for
-// the pod, since the entry fixes the session. The same request naming the scope read is refused
-// invalid_scope, so the scope is the entry's to grant and never the request's.
+// the pod, since the entry fixes the session. A trade that asks for read is
+// TestTheBinaryNarrowsATradeOnRequest's.
 func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -725,13 +727,125 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		if token == "" {
 			t.Fatal("the exchange minted no access token, so there is nothing to read back")
 		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person, a project or a second scope would each be a field the
+		// literal does not carry.
+		answer := live.introspected(t, token, apiToken)
+		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+		}
+	})
+}
+
+// TestTheBinaryNarrowsATradeOnRequest is the live proof of narrowing, on the real binary and a
+// fresh schema: a pod entry's trade and a read entry's trade that ask for the scope read are each
+// answered a token the listed API account reads back as the same identity under the narrowed word
+// of its project scope, holding read, bound to this test's own key, and the read entry's trade
+// that names a cut reads back with that cut. Each answer is its kind's in the golden file the
+// shared verifier, Dispatch, the listener and the NATS auth service are held to
+// (ciphertokentest.NarrowedAnswers), the read entry's with the cut beside it.
+func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	registrarToken := accountToken(t, cluster, clusterKey, registrarAccount)
+	live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession, registrarToken)
+	const cut = "2026-11-18T09:30:00.123456Z"
+	for _, c := range []struct {
+		name string
+		form url.Values
+		// kind is the answer's in the golden file, filled with session; cut is the cut the
+		// trade names, which the golden answer is read back with.
+		kind, session, cut string
+	}{
+		{"a pod entry's trade",
+			with(exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession), "scope", oauthwire.ScopeRead),
+			"pod-entry", heldSession, ""},
+		{"a read entry's trade",
+			with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead),
+			"read-entry", readerSession, ""},
+		{"a read entry's trade with a cut",
+			with(with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead), oauthwire.FormAsOf, cut),
+			"read-entry", readerSession, cut},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := live.exchange(t, c.form)
+			token, _ := body["access_token"].(string)
+			if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" || body["scope"] != oauthwire.ScopeRead {
+				t.Fatalf("the read trade = %d %v, want 200 with a DPoP-bound access token holding the scope read", status, body)
+			}
+			answer := live.introspected(t, token, apiToken)
+			want, ok := ciphertokentest.NarrowedAnswers(t, jkt, c.session, answer.ExpiresAt)[c.kind]
+			if !ok {
+				t.Fatalf("the narrowed answers hold no answer for %s", c.kind)
+			}
+			want.AsOf = c.cut
+			if !reflect.DeepEqual(answer, want) {
+				t.Errorf("introspection answered %+v, want %+v", answer, want)
+			}
+		})
+	}
+}
+
+// TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount is the live proof of a job entry, on
+// the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_JOB_ACCOUNTS lists for
+// public,PRIVA with a session of its own presents its projected token with a DPoP proof of its own
+// key and no client credential, naming no session and no project, and is answered a token the
+// listed API account reads back as exactly the job's: its account as the service, the project
+// scope public, the one private project its entry lists, the session the entry fixes, this
+// test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
+// entry fixes the session.
+func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
+	const (
+		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
+		jobSession = "example-sweeper"
+		jobPodUID  = "pod-uid-sweeper"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_JOB_ACCOUNTS="+jobAccount+"=public,PRIVA="+jobSession)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	var token string
+
+	t.Run("a job entry's pod token mints a token with no session and no project named", func(t *testing.T) {
+		status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, jobAccount, exchangeAudience, jobPodUID), ""))
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the job entry fixes the session, so the pod names none and is registered for nothing", jobAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the job's token, naming its account and no person", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
 		status, body := live.introspect(t, token, apiToken)
 		if status != http.StatusOK {
 			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
 		}
 		// Read back through the one declaration both ends of the route share, so the answer is
-		// compared whole: a person, a project or a second scope would each be a field the
-		// literal does not carry.
+		// compared whole: a person or a scope would each be a field the literal does not carry.
 		raw, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
@@ -740,19 +854,109 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		if err := json.Unmarshal(raw, &answer); err != nil {
 			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
 		}
-		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: jobSession, Service: jobAccount, ProjectScope: oauthwire.ProjectScopePublic, Projects: []string{"PRIVA"}, ExpiresAt: answer.ExpiresAt}
 		if !reflect.DeepEqual(answer, want) {
-			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+			t.Errorf("introspection answered %+v, want %+v: a job's token names its account as its service, the project scope public and the private projects its entry lists, and no person and no scope", answer, want)
 		}
 		if answer.ExpiresAt <= time.Now().Unix() {
 			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
 		}
 	})
+}
 
-	t.Run("the same request naming the scope read mints nothing", func(t *testing.T) {
+// TestTheBinaryExchangesAPersonlessAccountEntrysPodToken is the live proof of an account entry
+// that names no person and no project (<service account>===<session>), on the real binary and a
+// fresh schema: the broker boots with it beside two entries naming a person, a pod of the account
+// presenting its projected token with a DPoP proof of its own key and no client credential is
+// answered a token, and the listed API account reads that token back as the account's own: the
+// project scope named, the account as its service, the session the entry fixes, no person, no
+// project and no scope, and this test's own key. That very answer is a session's credential to
+// the rule every resource server reads (ciphertoken.SessionCaller), so the verifier admits what
+// the broker mints. The same pod asking for read is answered the narrowed token the golden file
+// holds for that kind, which the same rule refuses, as every read-only token is refused to a
+// verifier that serves none. The same pod naming a project is refused, as under any entry naming
+// none, and a broker whose entry names a project and no person refuses to start, naming the rule.
+func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
+	const (
+		personlessAccount = "system:serviceaccount:example-ns:example-public"
+		personlessSession = "example-public-session"
+		personlessPodUID  = "pod-uid-public"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	binary := buildBroker(t)
+	broker := startBroker(t, brokerOptions{Binary: binary, Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+			personlessAccount+"==="+personlessSession)})
+	broker.AwaitRecord(t, "token exchange", map[string]any{"state": "on", "accounts": 3})
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, personlessAccount, exchangeAudience, personlessPodUID), "")
+	var token string
+
+	t.Run("the pod of an entry naming no person mints a token", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the entry names no person and fixes the session, so the pod names none and is registered for nothing", personlessAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the account's own token", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		answer := live.introspected(t, token, apiToken)
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: an entry naming no person mints a named token that names the account as its service and the session it fixes, and names no person, no project and no scope", answer, want)
+		}
+		caller, err := ciphertoken.SessionCaller(answer)
+		wantCaller := ciphertoken.Caller{Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed}
+		if err != nil || !reflect.DeepEqual(caller, wantCaller) {
+			t.Errorf("the shared verifier rule read the broker's answer as %+v, %v; want %+v: every resource server must admit the token the broker mints for an entry naming no person", caller, err, wantCaller)
+		}
+	})
+
+	t.Run("the same pod asking for read mints its narrowed token", func(t *testing.T) {
 		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
-		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
-			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		read, _ := body["access_token"].(string)
+		if status != http.StatusOK || read == "" || body["token_type"] != "DPoP" || body["scope"] != oauthwire.ScopeRead {
+			t.Fatalf("the read trade of %s's pod token = %d %v, want 200 with a DPoP-bound access token holding the scope read", personlessAccount, status, body)
+		}
+		answer := live.introspected(t, read, apiToken)
+		want, ok := ciphertokentest.NarrowedAnswers(t, jkt, personlessSession, answer.ExpiresAt)["pod-entry-no-person"]
+		if !ok {
+			t.Fatal("the narrowed answers hold no answer for pod-entry-no-person")
+		}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want the golden answer %+v: the read trade keeps the account as its service and the session, narrows the project scope to read-named and holds read alone", answer, want)
+		}
+		if caller, err := ciphertoken.SessionCaller(answer); err == nil {
+			t.Errorf("the shared verifier rule read the narrowed answer as %+v: a verifier that serves no read-only token must refuse it", caller)
+		}
+	})
+
+	t.Run("the same pod naming a project mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, oauthwire.FormProjects, project))
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming %s under an entry naming no project = %d %v, want 400 invalid_request and no access token", project, status, body)
+		}
+	})
+
+	t.Run("an entry naming a project and no person refuses the start", func(t *testing.T) {
+		out := runRefusedBroker(t, binary, append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+			"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+				personlessAccount+"="+project+"=")...)
+		if !strings.Contains(out, "names no person only when it names no project either") {
+			t.Fatalf("the broker refused to start, but its output does not name the rule:\n%s", out)
 		}
 	})
 }
@@ -1276,20 +1480,27 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 		}
 	})
 	t.Run("the same trade while Dispatch cannot be reached is refused, for the client to trade again", func(t *testing.T) {
-		// The device-code grant of erin's machine login asks the hold gate about her, which warms
-		// the broker's 30-second cache of her answer (projectaccess.CacheTTL); a trade inside it
-		// would be answered from that cache and ask the stand-in nothing. The broker is its own
-		// process here, so no clock of this test's can age that cache (projectaccess.UseClock moves
-		// an in-process client's clock alone), and another person would warm it at their own
-		// login just the same. So Dispatch goes down before erin's login: her device-code grant
-		// gets no answer to cache, and the trade asks Dispatch about her itself, while it is down.
+		// The device-code grant of erin's machine login asks the hold gate about her. With Dispatch
+		// down it caches that failed person read for two seconds, which MemberKind now shares. An
+		// exchange inside that window is correctly refused from the failure but cannot prove an
+		// exchange read Dispatch. Keep Dispatch down and retry until the exchange itself reaches
+		// the stand-in; that attempt proves the outage refusal below.
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
 		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
 		before := dispatch.Calls()
-		status, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
-		if dispatch.Calls() == before {
-			t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+		outageDeadline := time.Now().Add(10 * time.Second)
+		var status int
+		var body map[string]any
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if dispatch.Calls() > before {
+				break
+			}
+			if time.Now().After(outageDeadline) {
+				t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
 		description, _ := body["error_description"].(string)
 		if status != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" || body["access_token"] != nil ||
@@ -1569,6 +1780,31 @@ func (l *liveBroker) exchange(t *testing.T, form url.Values) (int, map[string]an
 func (l *liveBroker) introspect(t *testing.T, token, bearer string) (int, map[string]any) {
 	t.Helper()
 	return l.post(t, l.plain, "/v1/oauth/introspect", url.Values{"token": {token}}, bearer)
+}
+
+// introspected is token's introspection answer as the listed account whose token bearer is reads
+// it, read back through the one declaration both ends of the route share (oauthwire.Introspection)
+// so a test compares it whole. It fails the test on any status but 200 and on an answer that is no
+// introspection, and holds the answer's exp to the future, which a comparison built from that same
+// exp cannot catch.
+func (l *liveBroker) introspected(t *testing.T, token, bearer string) oauthwire.Introspection {
+	t.Helper()
+	status, body := l.introspect(t, token, bearer)
+	if status != http.StatusOK {
+		t.Fatalf("introspection by the listed API account = %d %v, want 200", status, body)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer oauthwire.Introspection
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+	}
+	if answer.ExpiresAt <= time.Now().Unix() {
+		t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+	}
+	return answer
 }
 
 // registerPodSession records that the pod podToken names may exchange under session, the way a

@@ -147,6 +147,9 @@ import (
 // viewer passes every visibility arm at its `all` flag, so a pair bound to it alone measures none
 // of what the project and party rules cost an open member or a token that lists projects.
 func TestStatementTimings(t *testing.T) {
+	// Not parallel: its assertion compares two timings. Each pair fails unless the after text's
+	// median is below the before text's (benchtime.Pair, PairSeries) or within a bound of it
+	// (PairWithin), and a reading taken beside another test's work is that test's reading too.
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 	project, _, _ := strings.Cut(subjects.Issue, "-")

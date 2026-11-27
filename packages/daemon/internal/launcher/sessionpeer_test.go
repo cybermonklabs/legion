@@ -166,6 +166,9 @@ func (r *peerRig) check(t *testing.T) *sessionPeer {
 // the agent is refused, also when it runs the agent's executable, and so are the shim's other
 // children, and an orphan that runs `legion worker-shim` with its child.
 func TestTheSessionPeerCheckAdmitsTheLauncherAndTheAgentAlone(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which the session
+	// peer check reads; outside the tests that set it, only a launcher with a writer audience
+	// runs that check, and every test that gives a launcher one is serial.
 	r := newPeerRig(t)
 	for _, tc := range []struct {
 		pid  int
@@ -204,6 +207,9 @@ func TestTheSessionPeerCheckAdmitsTheLauncherAndTheAgentAlone(t *testing.T) {
 // the agent ended has another start time, and it is refused, though its place in the table and its
 // executable are the agent's.
 func TestTheSessionPeerCheckRefusesAProcessThatTookTheAgentsPid(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which the session
+	// peer check reads; outside the tests that set it, only a launcher with a writer audience
+	// runs that check, and every test that gives a launcher one is serial.
 	r := newPeerRig(t)
 	check := r.check(t)
 	if err := check.admit(sessionproxy.Peer{PID: peerAgent}); err != nil {
@@ -220,6 +226,9 @@ func TestTheSessionPeerCheckRefusesAProcessThatTookTheAgentsPid(t *testing.T) {
 // agent: a connection is refused, and nothing is pinned. Once the wrapper execs the agent, the
 // same pid runs the agent's executable, and it is admitted.
 func TestTheSessionPeerCheckKnowsAWrappedAgentOnlyOnceTheWrapperHasExeced(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which the session
+	// peer check reads; outside the tests that set it, only a launcher with a writer audience
+	// runs that check, and every test that gives a launcher one is serial.
 	r := newPeerRig(t)
 	wrapper := guardProcess{pid: peerAgent, ppid: peerShim, exe: "/usr/bin/dash",
 		args: []string{"/bin/sh", "-c", `legion-setup && exec "$@"`, "legion-start", r.agent, "--mode", "rpc"}, ns: testerNamespace}
@@ -242,6 +251,9 @@ func TestTheSessionPeerCheckKnowsAWrappedAgentOnlyOnceTheWrapperHasExeced(t *tes
 // A Claude Code generation has no agent that connects: the launcher keeps its session. So its
 // check admits the launcher alone, and it needs no agent executable.
 func TestTheSessionPeerCheckOfAClaudeCodeGenerationAdmitsOnlyTheLauncher(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which the session
+	// peer check reads; outside the tests that set it, only a launcher with a writer audience
+	// runs that check, and every test that gives a launcher one is serial.
 	r := newPeerRig(t)
 	exe := launcherExe(t)
 	r.pod.add(
@@ -269,6 +281,9 @@ func TestTheSessionPeerCheckOfAClaudeCodeGenerationAdmitsOnlyTheLauncher(t *test
 // generation running, with a table it cannot read, and with no role-init, no shim or no agent in
 // the table, the agent's pid is refused with the reason. The launcher is admitted all the same.
 func TestTheSessionPeerCheckRefusesWithoutItsGenerationItsTableItsShimOrItsAgent(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (usePeerProc), which the session
+	// peer check reads; outside the tests that set it, only a launcher with a writer audience
+	// runs that check, and every test that gives a launcher one is serial.
 	for _, tc := range []struct {
 		name string
 		// change takes from the rig what the case lacks.
@@ -329,7 +344,7 @@ func newWriterRig(t *testing.T, database ompsessions.Database, dialer *sessionDi
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(r.rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+	if err := os.WriteFile(filepath.Join(r.rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(ownToken("launcher-token-tester")+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(r.rolesDir, SessionWriterDirName), 0o755); err != nil {
@@ -422,6 +437,7 @@ func roleExecutable(t *testing.T, dir string) string {
 // runs. Each reaches the session table through the fake dialer, and the proxy logs no refusal. An
 // Oh My Pi generation and a Claude Code one admit the launcher alike.
 func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (sessionDatabaseAt).
 	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_writer_test"))
 	database.ImpersonateServiceAccount, database.WriterAudience = testServiceAccount, testWriterAudience
 	shortenResumeLookup(t)
@@ -485,6 +501,9 @@ func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
 // file and text that is not an integer each refuse the start before anything is written or
 // dialed, naming the file and what it read. A scope of 1 lets the start go on.
 func TestAWriterGenerationIsRefusedUnlessYamaForbidsTracingTheAgent(t *testing.T) {
+	// Not parallel: it writes the package variable ptraceScopeFile (useTraceScope), which only a
+	// start under a writer audience reads (requireTraceScope), and every test that sets it or
+	// gives a launcher a writer audience is serial.
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -529,6 +548,9 @@ func TestAWriterGenerationIsRefusedUnlessYamaForbidsTracingTheAgent(t *testing.T
 // the agent by it, so a start that names none, or a relative one, is refused before anything is
 // written or dialed. A Claude Code start names none and goes on.
 func TestAnOhMyPiWriterStartMustNameItsAgentsExecutableAsAnAbsolutePath(t *testing.T) {
+	// Not parallel: it writes the package variable ptraceScopeFile (useTraceScope), which only a
+	// start under a writer audience reads (requireTraceScope), and every test that sets it or
+	// gives a launcher a writer audience is serial.
 	useTraceScope(t, "1\n")
 	claude := []string{claudelaunch.SessionVariable + "=" + claudelaunch.NewSessionID()}
 	for _, tc := range []struct {
@@ -566,6 +588,7 @@ func TestAnOhMyPiWriterStartMustNameItsAgentsExecutableAsAnAbsolutePath(t *testi
 // sends the workload-identity file's token, though the writer token sits under the same roles
 // directory.
 func TestTheMetadataEndpointExchangesItsOwnTokenAndNeverTheWriterToken(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (holdMetadataVariables).
 	holdMetadataVariables(t, "")
 	rolesDir := t.TempDir()
 	identity := filepath.Join(rolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile)
@@ -619,10 +642,13 @@ const (
 // peerPlan is what the stand-ins read: the generation's URL file as the role sees it, and the
 // roles directory as the launcher sees it, under which the agent looks for the writer token. The
 // plan names the directory and not the token's path, so the environment it travels in holds
-// that path only where the launcher puts it.
+// that path only where the launcher puts it. End is when the stand-ins must end (reentryEnd):
+// the shim's argv is the one the shim rule knows (roleShim), which carries no -test.timeout, so
+// the shim hands its agent the deadline the test put here.
 type peerPlan struct {
 	DSNFile  string
 	RolesDir string
+	End      time.Time
 }
 
 // The files the stand-ins write in the role's own /tmp: what the child saw, what the agent saw,
@@ -636,15 +662,21 @@ const (
 
 // sessionPeerShim is the shim stand-in: the test binary run as `<binary> worker-shim`, the
 // argv the shim rule knows a shim by (roleShim), so TestMain runs it before the test framework
-// reads any argument. It starts the agent stand-in as its one direct child, and exits with that
-// child's status, as the shim ends with its agent.
+// reads any argument. It starts the agent stand-in as its one direct child, with the plan's end
+// as its deadline, and exits with that child's status, as the shim ends with its agent.
 func sessionPeerShim() int {
+	var plan peerPlan
+	if err := json.Unmarshal([]byte(os.Getenv(peerPlanEnv)), &plan); err != nil {
+		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
+		return 1
+	}
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
 		return 1
 	}
-	agent := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	args := reentryUntil(plan.End, "TestSessionPeerStandInHelper")
+	agent := exec.Command(self, args...)
 	agent.Env = append(os.Environ(), peerStandInEnv+"=agent")
 	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr
 	if err := agent.Run(); err != nil {
@@ -661,6 +693,7 @@ func sessionPeerShim() int {
 // echoes it through the proxy. The child stays until the test lets it end, so the test can read
 // its pid in the launcher's process table; the agent stays until the child ends.
 func TestSessionPeerStandInHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	which := os.Getenv(peerStandInEnv)
 	if which == "" {
 		return
@@ -677,13 +710,17 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
+	// Each wait of a stand-in is under the hang guard of its own test binary (beforeDeadline),
+	// whose deadline its starter set (reentry): how soon the proxy answers is not what the case
+	// reads.
+	guard := beforeDeadline(t)
 	if which == "child" {
-		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket)); err != nil {
+		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket, guard)); err != nil {
 			fail(err)
 		}
 		for {
 			if _, err := os.Stat(filepath.Join("/tmp", peerRelease)); err == nil {
-				os.Exit(0)
+				exitHelper(t)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -692,19 +729,17 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
-	child := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	child := exec.Command(self, reentry(t, "TestSessionPeerStandInHelper")...)
 	child.Env = append(os.Environ(), peerStandInEnv+"=child")
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
 		fail(err)
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(filepath.Join("/tmp", peerChildSaw)); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			fail(errors.New("the child never reported its connection"))
-		}
+	if !testwait.Holds(guard, 20*time.Millisecond, func() bool {
+		_, err := os.Stat(filepath.Join("/tmp", peerChildSaw))
+		return err == nil
+	}) {
+		fail(errors.New("the child never reported its connection"))
 	}
 	token := "read"
 	if _, err := os.ReadFile(filepath.Join(plan.RolesDir, SessionWriterDirName, SessionWriterTokenFile)); err != nil {
@@ -713,11 +748,11 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err := sayInTmp(peerAgentEnviron, strings.Join(os.Environ(), "\x00")); err != nil {
 		fail(err)
 	}
-	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket)); err != nil {
+	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket, guard)); err != nil {
 		fail(err)
 	}
 	_ = child.Wait()
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // peerSocket is the socket the URL file at path names, as Oh My Pi's client reads it: the
@@ -739,14 +774,15 @@ func peerSocket(path string) (string, error) {
 }
 
 // peerConnect connects to socket and answers "admitted" when the proxy carries a round trip to
-// the upstream, which echoes it, and otherwise what ended the connection.
-func peerConnect(socket string) string {
-	conn, err := net.DialTimeout("unix", socket, 10*time.Second)
+// the upstream, which echoes it, and otherwise what ended the connection. guard bounds the dial
+// and the round trip, and is the caller's hang guard.
+func peerConnect(socket string, guard time.Duration) string {
+	conn, err := net.DialTimeout("unix", socket, guard)
 	if err != nil {
 		return "unreachable: " + err.Error()
 	}
 	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(guard)); err != nil {
 		return "unreachable: " + err.Error()
 	}
 	if _, err := conn.Write([]byte("ping")); err != nil {
@@ -782,6 +818,9 @@ type peerGeneration struct {
 // startPeerGeneration starts the generation and returns once the agent stand-in has reported.
 func startPeerGeneration(t *testing.T) *peerGeneration {
 	t.Helper()
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	requireRoleNamespaces(t)
 	useTraceScope(t, "1\n")
 	scratch := namespaceScratch(t, "")
@@ -802,6 +841,7 @@ func startPeerGeneration(t *testing.T) *peerGeneration {
 	plan, err := json.Marshal(peerPlan{
 		DSNFile:  filepath.Join(generationDir(filepath.Join(fixed, RolePrivateDir), 1), ompsessions.DSNFileName),
 		RolesDir: g.rolesDir,
+		End:      reentryEnd(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -825,7 +865,7 @@ func (g *peerGeneration) roleTmp(name string) string {
 func (g *peerGeneration) said(name string) string {
 	g.t.Helper()
 	var said string
-	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(g.roleTmp(name))
 		said = string(body)
 		return err == nil
@@ -850,6 +890,9 @@ func (g *peerGeneration) release() {
 // The agent connects next and is admitted: its round trip reaches the upstream. Inside the role's
 // namespaces the agent cannot read the writer token, which the roles directory holds.
 func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (useRoleLayout, through
+	// startPeerGeneration), which parallel tests read (roleCoverFlags); its other writes,
+	// launcherExecutable and ptraceScopeFile, only a start under a writer audience reads.
 	g := startPeerGeneration(t)
 	defer g.release()
 	if said := g.said(peerChildSaw); said != "connect=refused" {
@@ -883,7 +926,7 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 	child := table.Children(agent.PID)[0]
 	want := fmt.Sprintf("sessionproxy: refused a connection to %s from pid %d (%q): pid %d is not the agent of generation 1, which is pid %d",
 		testInstance, child.PID, child.Name, child.PID, agent.PID)
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
 		t.Fatalf("the launcher's log holds no line %q: %s", want, g.log.String())
 	}
 	if refusals := strings.Count(g.log.String(), "refused a connection"); refusals != 1 {
@@ -895,6 +938,9 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 // stand-in's environment, which holds all its role-init and its shim were given, names neither,
 // and no file of the generation's directory holds either.
 func TestTheWriterTokenIsInNoEnvironmentAndNoFileOfItsGeneration(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (useRoleLayout, through
+	// startPeerGeneration), which parallel tests read (roleCoverFlags); its other writes,
+	// launcherExecutable and ptraceScopeFile, only a start under a writer audience reads.
 	g := startPeerGeneration(t)
 	defer g.release()
 	for _, entry := range strings.Split(g.said(peerAgentEnviron), "\x00") {

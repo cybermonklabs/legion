@@ -33,23 +33,3 @@ func TestCheckPersonLoginTakesOnlyAStoredEmail(t *testing.T) {
 		}
 	}
 }
-
-// TestServiceAccountSubjectIsOneAccount: a subject is one system:serviceaccount:<namespace>:<name>,
-// with nothing that could split a comma-joined list or hide a second account.
-func TestServiceAccountSubjectIsOneAccount(t *testing.T) {
-	for _, subject := range []string{"system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:a:b.c-d"} {
-		if !ServiceAccountSubject.MatchString(subject) {
-			t.Errorf("%q is refused, want it taken", subject)
-		}
-	}
-	for _, subject := range []string{
-		"", "envoy-broker", "system:serviceaccount:dispatch", "system:serviceaccount:dispatch:",
-		"system:serviceaccount:Dispatch:envoy-broker", "system:serviceaccount:dispatch:envoy-broker,system:serviceaccount:x:y",
-		"system:serviceaccount:dispatch:envoy broker", "system:serviceaccount:-dispatch:envoy-broker",
-		"system:serviceaccount:" + strings.Repeat("a", 64) + ":envoy-broker",
-	} {
-		if ServiceAccountSubject.MatchString(subject) {
-			t.Errorf("%q is taken, want it refused", subject)
-		}
-	}
-}

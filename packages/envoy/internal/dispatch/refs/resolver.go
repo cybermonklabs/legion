@@ -3,7 +3,6 @@ package refs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -75,8 +74,8 @@ type sourceReads struct {
 	pending *PendingDocument
 }
 
-// prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it
-// is resolved within, and the prefix itself.
+// prefixKey is one short id as the resolver reads its candidates (readPrefixCandidates): the kind
+// of item it names, the owner it is resolved within, and the prefix itself.
 type prefixKey struct {
 	kind   string
 	scope  Scope
@@ -115,6 +114,13 @@ func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKi
 	reader := NewReader(ctx, q, writer, fromKind, fromID, origins)
 	reader.source.pending = document
 	return reader
+}
+
+// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
+// references: what a write that cuts the head of the same text an edge shows cuts it against
+// (EditedTargets).
+func (r *Reader) ServerURL() string {
+	return r.serverURL
 }
 
 // writtenBy is the Reader of the same write for a text of r's source that writer wrote rather
@@ -249,12 +255,12 @@ func (r *Reader) scope() (string, error) {
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference
 // itself names and not across the whole kind, among the items the reader's writer may see
-// (ResolvePrefix, for the writer and as the zero Viewer: the index writes the graph every
-// authenticated caller reads, so it reads no direct message's first line). An item the writer may
-// not see is no candidate, so a prefix it alone carries names nothing and one it shares with a
-// visible item names that item, as ResolvePrefix answers the writer. A prefix that names nothing,
-// one two items or more carry, and one whose owner no Scope holds are all left out of the answer,
-// which leaves the mention as the text wrote it.
+// (resolveItem, which reads them as ResolvePrefix does, for the writer and as the zero Viewer: the
+// index writes the graph every authenticated caller reads, so it reads no direct message's first
+// line). An item the writer may not see is no candidate, so a prefix it alone carries names
+// nothing and one it shares with a visible item names that item, as ResolvePrefix answers the
+// writer. A prefix that names nothing, one two items or more carry, and one whose owner no Scope
+// holds are all left out of the answer, which leaves the mention as the text wrote it.
 func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 	resolved := make(map[int]string, len(prefixes))
 	for index, prefix := range prefixes {
@@ -283,7 +289,10 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 }
 
 // resolveItem is the whole id key names for the reader's writer, "" where it names nothing or two
-// items or more. An error is a failure reaching the database alone.
+// items or more. It is ResolvePrefix's two halves read apart: the candidates as that function
+// reads them (readPrefixCandidates) and the item among them by value (pickPrefixCandidate), so its
+// one error is a candidate reader's failure reaching the database, and no refusal that quotes the
+// prefix a body wrote is built on the way to the log (Reader.failed).
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
 	writer, err := r.seenBy()
 	if err != nil {
@@ -296,7 +305,10 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 	case errors.Is(err, pgx.ErrNoRows), errors.As(err, new(*ErrPrefixAmbiguous)):
 		return "", nil
 	}
-	return "", err
+	if candidate, ok := pickPrefixCandidate(key.kind, key.prefix, found); ok {
+		return candidate.ID, nil
+	}
+	return "", nil
 }
 
 // seenBy is the reader's writer as the visibility predicate binds it (VisibilityArg). A writer

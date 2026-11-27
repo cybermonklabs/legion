@@ -55,6 +55,12 @@ import (
 // (not_held_until, Unix seconds rounded down), past which the resource server keeps no such answer,
 // and one whose deadline has passed is answered with a not_held_until every clock is past. Any other
 // case the gate cannot tell is *HoldUncheckableError, never an answer.
+//
+// A token narrowed to reading is answered with its narrowed project scope, its scope (read, or
+// read person) and its cut (AsOf), and its end is decided again at every introspection: the store
+// reads it live only while its own row, the launcher credential it names and the machine login's
+// token it was traded from are (oauthstore.Store.GetAccessTokenSession), so a revoke or a retire
+// any broker build made ends it, and the library then reports it inactive.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -94,16 +100,18 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 		}
 		answer.CredentialCreatedAt = unixSeconds(session.Extra[ClaimCredentialCreatedAt])
 	}
+	answer.AsOf, _ = session.Extra[ClaimAsOf].(string)
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
-		if answer.ProjectScope == oauthwire.ProjectScopeNamed {
+		if oauthwire.BaseProjectScope(answer.ProjectScope) == oauthwire.ProjectScopeNamed {
 			// A named token an exchange decided before the list stored its one project under
 			// another claim and none under this one. Read as no projects, it would pass as a named
 			// token naming none, the public-session account's shape, which holds it to no project;
 			// it is answered not live instead, so its holder trades again for a token of this
-			// release. A person token of that release stored no project claim at all, which meant
-			// then what an empty list means now, so it reads as naming none; a machine login's own
-			// token, which no exchange decided, carries neither claim.
+			// release. A narrowed named token is read as its base word, so one stored with no list
+			// is not live either. A person token of that release stored no project claim at all,
+			// which meant then what an empty list means now, so it reads as naming none; a machine
+			// login's own token, which no exchange decided, carries neither claim.
 			return oauthwire.Introspection{}, nil
 		}
 		return p.withHold(ctx, answer, session)
@@ -125,16 +133,9 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	return p.withHold(ctx, answer, session)
 }
 
-// withHold is answer with Held set when Dispatch holds the person it names, its person or, for a
-// machine login's own token, which names none, the login's operator (session's extraOperator), and
-// with NotHeldUntil set to the deadline the gate serves a person it does not hold until, in Unix
-// seconds rounded down so no reader keeps the answer later than the gate serves it. A person whose
-// not-held answer has passed its deadline is answered active and not held, with NotHeldUntil
-// oauthwire.NotHeldUntilPassed, so every reader refuses the token as a deadline passed, as it
-// refuses one whose kept answer lapsed: Dispatch and the Envoy listener 503 BROKER_UNAVAILABLE
-// with Retry-After: 60, and the NATS auth service under deadline_passed. Every other case the gate
-// cannot tell (hold.ErrUncheckable, tested after a passed deadline and before a hold, so a held
-// answer it could not keep is no answer either) is *HoldUncheckableError.
+// withHold is answer with the hold gate's Verdict on the person it names mapped onto it
+// (HoldAnswer): its person or, for a machine login's own token, which names none, the login's
+// operator (session's extraOperator).
 func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {
 	person := answer.Person
 	if person == "" {
@@ -143,36 +144,46 @@ func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection,
 	if person == "" {
 		return answer, nil
 	}
-	until, err := p.exchange.Hold.CheckUntil(ctx, person)
-	switch {
-	case err == nil:
-		if !until.IsZero() {
-			answer.NotHeldUntil = until.Unix()
+	return HoldAnswer(answer, p.exchange.Hold.Decide(ctx, person))
+}
+
+// HoldAnswer is answer with v, the hold gate's verdict on the person it names, mapped onto it as
+// the broker's introspection answers: Held set for hold.Held; for hold.Served, NotHeldUntil set to
+// the deadline the gate serves the person until, in Unix seconds rounded down so no reader keeps
+// the answer later than the gate serves it; and for hold.DeadlinePassed, active and not held with
+// NotHeldUntil oauthwire.NotHeldUntilPassed, so every reader refuses the token as a deadline
+// passed, as it refuses one whose kept answer lapsed: the Envoy listener 503 BROKER_UNAVAILABLE
+// with Retry-After: 60, and the NATS auth service under deadline_passed (Dispatch reads neither
+// field yet). Every other kind decides nothing, a held answer the gate could not keep among them,
+// and is *HoldUncheckableError, with no answer. It is exported for the NATS auth service's tests,
+// which introspect sessions no broker store holds.
+func HoldAnswer(answer oauthwire.Introspection, v hold.Verdict) (oauthwire.Introspection, error) {
+	switch v.Kind {
+	case hold.Served:
+		if !v.Until.IsZero() {
+			answer.NotHeldUntil = v.Until.Unix()
 		}
-	case errors.Is(err, hold.ErrDeadlinePassed) && !errors.Is(err, hold.ErrHeld):
-		answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
-	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-		return oauthwire.Introspection{}, &HoldUncheckableError{Person: person, Err: err}
-	default:
+	case hold.Held:
 		answer.Held = true
+	case hold.DeadlinePassed:
+		answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
+	default:
+		return oauthwire.Introspection{}, &HoldUncheckableError{Verdict: v}
 	}
 	return answer, nil
 }
 
 // HoldUncheckableError is Introspect's failure when the hold gate cannot tell whether Dispatch
-// holds the person a live token names. Its text is the one the introspection route answers 503
-// HOLD_UNCHECKABLE with, naming the person and why in hold.Reason's fixed words; Err is the gate's
-// own error, for the log alone, which it wraps.
+// holds the person a live token names (Verdict). Its text is the one the introspection route
+// answers 503 HOLD_UNCHECKABLE with, naming the person and why in fixed words
+// (hold.Verdict.Words); it wraps the gate's own error, which is for the log alone.
 type HoldUncheckableError struct {
-	Person string
-	Err    error
+	Verdict hold.Verdict
 }
 
-func (e *HoldUncheckableError) Error() string {
-	return "whether Dispatch holds " + e.Person + " cannot be read: " + hold.Reason(e.Err)
-}
+func (e *HoldUncheckableError) Error() string { return e.Verdict.Words() }
 
-func (e *HoldUncheckableError) Unwrap() error { return e.Err }
+func (e *HoldUncheckableError) Unwrap() error { return e.Verdict.Err }
 
 // unixSeconds reads a Unix time a session's extras hold, as the exchange wrote it (an int64) or as
 // it reads back out of the stored request's JSON (a float64), and 0 for anything else.

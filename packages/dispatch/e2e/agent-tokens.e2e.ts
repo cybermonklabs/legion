@@ -1,5 +1,10 @@
-import { baseUrl, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { mkdirSync } from "node:fs";
+
+import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
+
+import { baseUrl, createIssue, createProject, e2eAgentToken, getIssue } from "./api";
+import { runDispatch } from "./dispatch-cli";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
@@ -13,8 +18,46 @@ async function createAskWithToken(issue: string, token: string): Promise<Respons
   });
 }
 
-// @pr: Sign-in and tokens: a personal token's ask is attributed to its owner, stays private, and Settings revokes it.
-test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({
+async function whoamiWithToken(token: string): Promise<Response> {
+  return fetch(new URL("/api/v1/whoami", baseUrl), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+async function createCommentWithToken(issue: string, token: string): Promise<Response> {
+  return fetch(new URL(`/api/v1/issues/${issue}/comments`, baseUrl), {
+    body: JSON.stringify({
+      actor: { id: "reader-session", kind: "session" },
+      body: "Written with a read-only token.",
+    }),
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+/** Presses New token with the label `label` and the boxes as they stand. Answers the token the
+ *  page shows once, after checking it is the one the mint answered. */
+async function makeToken(page: Page, label: string): Promise<string> {
+  await page.getByLabel("Token label").fill(label);
+  const minted = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/me/agent-tokens"
+  );
+  await page.getByRole("button", { name: "New token" }).click();
+  const answer = await minted;
+  expect(answer.status(), `the mint of ${label}`).toBe(201);
+  const { token } = (await answer.json()) as { token: string };
+  await expect(
+    page.getByRole("status").filter({ hasText: "Copy this token now." }).locator("code").first()
+  ).toHaveText(token);
+  return token;
+}
+
+// This row carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
+// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), and the read-only token row below
+// took its place there, since it drives the same Settings section. The full lane runs this one.
+test("a personal agent token attributes its ask, remains private, and is revoked from Settings", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

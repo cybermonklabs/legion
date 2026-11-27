@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // storeStepWait bounds how long a run waits for the write under test to queue behind a hold, and
@@ -91,6 +92,7 @@ const storeStepWait = 30 * time.Second
 // here too, at the tick's own call site, after the event read that runs before it
 // (requireTheRollTicksObjectPassLockOrder).
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
 	for _, writer := range []docsWriter{rig.tick(), rig.settledVersion(), rig.settledAsk(), rig.settledAskAndVersion(), rig.tickEvents()} {
@@ -270,7 +272,7 @@ func (r *docsWriterRig) tick() docsWriter {
 			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
 			r.awaitDurable(t, document)
 			return docsRun{document: document, write: func() error {
-				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1})
+				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1}, nil)
 				if err != nil {
 					return err
 				}
@@ -1065,7 +1067,7 @@ func (r *docsWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx, 
 		released = true
 		_ = holder.Rollback(context.Background())
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return holder, release
 }
 

@@ -10,7 +10,7 @@ import (
 
 // An address is held by one account of the identity provider at a time, and Dispatch decides
 // which. When another account takes an address Dispatch holds for a person, Dispatch names
-// the account it replaced (POST /v1/person-subjects/revoke), and the broker records it in 0042's
+// the account it replaced (POST /v1/person-subjects/revoke), and the broker records it in 0047's
 // replaced_person_subjects: every credential that account holds under the address, and every
 // session it holds on the broker's own approval page, ends in the revoke's own transaction
 // (enroll.Service.RevokePersonSubject), and every later sign-in trade, machine-login approval and
@@ -28,7 +28,7 @@ import (
 // before the address moved stays valid for an hour.
 
 // IssuerSubject is one account of an identity provider: its issuer, as oidc.CanonicalIssuer spells
-// it, and its `sub`. The zero value names no account: a row written before migration 0042, or a
+// it, and its `sub`. The zero value names no account: a row written before migration 0047, or a
 // machine login whose approval an older Dispatch relayed without the approving account.
 type IssuerSubject struct {
 	Issuer  string
@@ -57,17 +57,34 @@ func LockPerson(ctx context.Context, tx pgx.Tx, person string) error {
 	return err
 }
 
-// SubjectReplaced reports whether account is recorded, in tx, as an account that no longer
-// holds person's address. The caller holds LockPerson. An account not recorded is never
-// replaced.
-func SubjectReplaced(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) (bool, error) {
+// ErrSubjectReplaced is a sign-in trade (RecordPersonSignIn), an approval-page sign-in
+// (Store.CreateBrowserSession) or a machine login's approval (machine.Service.ApplyDecision) by an
+// account a revoke recorded as one that no longer holds the person's address
+// (RecordReplacedSubjectTx): the broker refuses that account every new credential and session
+// there.
+var ErrSubjectReplaced = errors.New("store: another account holds this person's address now")
+
+// LockPersonAs takes LockPerson for person in tx and then answers ErrSubjectReplaced when account
+// is recorded, in tx, as an account that no longer holds person's address; an account not recorded
+// is never replaced. A sign-in trade, an approval-page sign-in and a machine login's approval each
+// begin with it, so a revoke of that account either commits before the read, which then refuses
+// them, or waits for them to commit and ends what they wrote. The lock is held until tx ends.
+func LockPersonAs(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) error {
+	if err := LockPerson(ctx, tx, person); err != nil {
+		return err
+	}
 	if !account.Recorded() {
-		return false, nil
+		return nil
 	}
 	var replaced bool
-	err := tx.QueryRow(ctx, `select exists (select 1 from replaced_person_subjects
-		where person = $1 and issuer = $2 and subject = $3)`, person, account.Issuer, account.Subject).Scan(&replaced)
-	return replaced, err
+	if err := tx.QueryRow(ctx, `select exists (select 1 from replaced_person_subjects
+		where person = $1 and issuer = $2 and subject = $3)`, person, account.Issuer, account.Subject).Scan(&replaced); err != nil {
+		return err
+	}
+	if replaced {
+		return ErrSubjectReplaced
+	}
+	return nil
 }
 
 // SubjectReplacedWithin reports whether Dispatch has named any account replaced at person's
@@ -99,7 +116,7 @@ var ErrSubjectIsHolder = errors.New("store: the replaced account and the holder 
 // ReplacedSubjectDeleteSetting is the setting a delete from replaced_person_subjects must name its
 // row in first, in the deleting transaction itself, as the JSON array
 // jsonb_build_array(pg_current_xact_id()::text, person, issuer, subject)::text
-// (replacedSubjectDeleteMarkSQL), before the row's guard lets the delete through (migration 0042,
+// (replacedSubjectDeleteMarkSQL), before the row's guard lets the delete through (migration 0047,
 // guard_replaced_person_subjects). The transaction's id makes a marker left on a pooled connection
 // name nothing in any later transaction, and the array names one row whatever its fields hold,
 // where fields joined by a separator could name two.
@@ -122,7 +139,7 @@ const replacedSubjectDeleteMarkSQL = `select set_config($1, jsonb_build_array(pg
 // It first reads the greatest session generation a revoke it applied at person's address carried
 // (person_replacement_generations). A revoke carrying a lower one was superseded by a later
 // replacement at the address, so it writes nothing and answers that greatest generation, and the
-// caller ends nothing either; migration 0042's comment says why such a revoke can arrive. A revoke
+// caller ends nothing either; migration 0047's comment says why such a revoke can arrive. A revoke
 // at or above the greatest generation applies and raises it to its own. It answers nil when it
 // applied.
 func RecordReplacedSubjectTx(ctx context.Context, tx pgx.Tx, person, issuer, subject, holder string, sessionGeneration int64) (supersededBy *int64, err error) {

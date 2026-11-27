@@ -54,7 +54,7 @@ func (ts *testServer) signInAs(t *testing.T, person, thumbprint, machine string,
 	}
 	defer tx.Rollback(ctx)
 	if _, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account,
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account, EndUnrecorded: true,
 	}); err != nil {
 		t.Fatalf("record the sign-in of %s on %s: %v", person, machine, err)
 	}

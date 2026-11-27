@@ -105,6 +105,12 @@ var (
 	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
 	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrKeyBindsReadToken refuses a launcher credential minted or moved onto a key a live read
+	// token is bound to (keyBindsReadToken): a key that signs launcher proofs is bound to no
+	// read token, and a read token's key signs no launcher proof. Nothing is written. KeyHeld does
+	// not report it: each caller answers it with a refusal of its own, which names the read token
+	// and the cure, a new key.
+	ErrKeyBindsReadToken = errors.New("a live read token is bound to this key, and a key that signs launcher proofs binds no read token")
 	// ErrRestrictedMember refuses an enrollment that would act for a person Dispatch calls a
 	// restricted member (projectaccess.MemberRestricted): a person an access list admitted from
 	// outside the deployment's sign-in domain. Such a person's machine login enrolls no session,
@@ -137,6 +143,14 @@ var (
 	// AGENT_SECRETS_PROJECTS, so the one setting the refusal names is the one each of them reads.
 	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
+
+// KeyHeld reports whether err refuses a launcher credential's key because another live
+// credential holds it (a unique violation, store.IsUniqueViolation). A key a live read token is
+// bound to is ErrKeyBindsReadToken, which KeyHeld leaves to the caller: the two refusals name
+// different holders and different cures.
+func KeyHeld(err error) bool {
+	return store.IsUniqueViolation(err)
+}
 
 type Credential struct {
 	ID       uuid.UUID
@@ -352,10 +366,8 @@ type Service struct {
 	testSchemaReadHook func()
 }
 
-// execer is satisfied by both *pgxpool.Pool (via Store.Pool) and pgx.Tx, so mintLauncherCredential
-// can run either standalone or joined to a caller's own transaction —
-// machine.Service.ApplyDecision's own approval commit, so a crash between minting and recording
-// its decision rolls back both together instead of leaving an orphaned, unrecoverable credential.
+// execer is satisfied by both *pgxpool.Pool (via Store.Pool) and pgx.Tx, so Replay can run either
+// standalone or joined to a caller's own transaction.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
@@ -366,21 +378,52 @@ type execer interface {
 // re-verification checks against recordID's approved credential-request record. recordID may be
 // "" only for a credential with no backing record at all (test fixtures unrelated to the
 // machine-login flow); AuthenticateLauncher refuses such a credential outright. approver is the
-// account that approved it (migration 0042), which a revoke of that account, once it no longer
+// account that approved it (migration 0047), which a revoke of that account, once it no longer
 // holds the operator's address, ends it by; the zero value records none, as an approval an
 // older Dispatch relayed carries none.
-func (s *Service) mintLauncherCredential(ctx context.Context, exec execer, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
+//
+// It runs on db, which is the caller's own transaction — machine.Service.ApplyDecision's own
+// approval commit, so a crash between minting and recording its decision rolls back both together
+// instead of leaving an orphaned, unrecoverable credential — or, for a test fixture, the pool. It
+// refuses a key a live read token is bound to first (keyBindsReadToken).
+func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
+	if err := keyBindsReadToken(ctx, db, thumbprint); err != nil {
+		return uuid.Nil, err
+	}
 	id := uuid.New()
-	_, err := exec.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject)
+	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject)
 		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires, nullable(approver.Issuer), nullable(approver.Subject))
 	if err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil
+}
+
+// keyBindsReadToken refuses, on db, a launcher credential minted or moved onto thumbprint while a
+// live read token is bound to it (oauthstore.KeyHoldsReadToken, which takes the key's advisory
+// lock first, the lock oauthstore.Store.CreateAccessTokenSession takes before it stores a read
+// token, so of the two writers binding one key in transactions at once only one commits). It is
+// the check in both statements that write launcher_credentials.key_thumbprint, so every path that
+// reaches them is refused: a device login's approval, the token login route, a Google machine's
+// trade and a person's.
+//
+// The refusal is ErrKeyBindsReadToken, naming the key. Each caller answers it with a refusal of
+// its own beside the one it gives a key another live credential holds (KeyHeld):
+// machine.ErrKeyBindsReadToken (409 KEY_BINDS_READ_TOKEN) for an approval and a token login, and
+// oauth.ErrMachineKeyBindsReadToken (invalid_grant, with a hint of its own) for a trade.
+func keyBindsReadToken(ctx context.Context, db oauthstore.Querier, thumbprint string) error {
+	held, err := oauthstore.KeyHoldsReadToken(ctx, db, thumbprint)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("%w: the key %s", ErrKeyBindsReadToken, thumbprint)
+	}
+	return nil
 }
 
 // MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine and
@@ -468,7 +511,8 @@ func (s *Service) IssueTokenLogin(ctx context.Context, login TokenLogin) (uuid.U
 // boxes, holds a credential of its own and no login moves another's. Its host and its pod are
 // login's. Each login writes a launcher_credential.token_login audit row naming the subject, the
 // pod the token is bound to, the key, and both expiries. A key another live credential holds is
-// a unique violation (store.IsUniqueViolation), and nothing is written.
+// a unique violation (store.IsUniqueViolation), and a key a live read token is bound to is
+// ErrKeyBindsReadToken (keyBindsReadToken); either way nothing is written.
 func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenLogin) (uuid.UUID, error) {
 	var operator *string
 	if login.Operator != "" {
@@ -483,6 +527,9 @@ func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenL
 	// waits for the drop and then reads the schema the drop left; and it does not conflict with
 	// itself, so two logins never wait for each other.
 	if _, err := tx.Exec(ctx, `lock table launcher_credentials in row exclusive mode`); err != nil {
+		return uuid.Nil, err
+	}
+	if err := keyBindsReadToken(ctx, tx, login.Thumbprint); err != nil {
 		return uuid.Nil, err
 	}
 	// Postgres resolves one conflict target against one index, so which index the schema has
@@ -2458,15 +2505,6 @@ func signInCredential(subject *string) bool {
 	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
 }
 
-// PodOperatorMappings counts the Kubernetes service accounts that BROKER_POD_OPERATORS maps to
-// person (record.CanonicalLogin), whether or not a pod of one holds a live login: a pod of each can
-// log in as person at any time with its own token, with no step of theirs. GET /v1/person-access
-// counts it as access that outlives the browser, as it counts an exchange entry.
-func (s *Service) PodOperatorMappings(person string) int {
-	mine, _ := s.podAccounts(record.CanonicalLogin(person))
-	return len(mine)
-}
-
 // podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
 // record.CanonicalLogin spells it (mine), and every subject it maps (mapped).
 func (s *Service) podAccounts(person string) (mine, mapped []string) {
@@ -2743,17 +2781,7 @@ func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string)
 	if err != nil || thumbprint == "" {
 		return false, 0, err
 	}
-	var credential, host string
-	var service *string
-	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-		where key_thumbprint = $1 and revoked_at is null for no key update`, thumbprint).Scan(&credential, &host, &service)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return true, ended, nil
-	case err != nil:
-		return false, 0, err
-	}
-	more, err := endCredential(ctx, tx, credential, host, service, actor, reason)
+	more, err := endKeyCredential(ctx, tx, thumbprint, nil, actor, reason)
 	if err != nil {
 		return false, 0, err
 	}
@@ -2765,7 +2793,7 @@ func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string)
 const NoAccountSignInActor = "broker:sign-in-recording-no-account"
 
 // RecordPersonSignIn records a person's trade in tx (store.RecordPersonSignIn), the exchange's own
-// transaction, and, when that trade ended a sign-in from before migration 0042, which records no
+// transaction, and, when that trade ended a sign-in from before migration 0047, which records no
 // account and so might have been any account's, ends the launcher credential that sign-in held and
 // every session it enrolled (endCredential), as revoking the sign-in does. The sessions another
 // account enrolled there would otherwise go on reading that account's secrets on this box after a
@@ -2780,20 +2808,31 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade) er
 	if err != nil || !ended {
 		return err
 	}
-	var credential, host string
-	var service *string
-	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-		where key_thumbprint = $1 and subject = $2 and revoked_at is null for no key update`,
-		in.Thumbprint, exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)).Scan(&credential, &host, &service)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil
-	case err != nil:
-		return err
-	}
-	_, err = endCredential(ctx, tx, credential, host, service, NoAccountSignInActor,
+	subject := exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)
+	_, err = endKeyCredential(ctx, tx, in.Thumbprint, &subject, NoAccountSignInActor,
 		"a trade ended the sign-in that held it, which recorded no account")
 	return err
+}
+
+// endKeyCredential ends, in tx, the live launcher credential that holds the box key thumbprint and
+// everything it holds (endCredential), writing actor and reason on every row it writes, and answers
+// how many live access tokens ended with it: 0 when no live credential holds the key. subject, when
+// not nil, ends only the credential that subject names, and leaves one of any other subject that
+// holds the key. The row is read `for no key update`, which is the hold endCredential asks of its
+// caller.
+func endKeyCredential(ctx context.Context, tx pgx.Tx, thumbprint string, subject *string, actor, reason string) (int, error) {
+	var credential, host string
+	var service *string
+	err := tx.QueryRow(ctx, `select id, host, service from launcher_credentials
+		where key_thumbprint = $1 and ($2::text is null or subject = $2) and revoked_at is null for no key update`,
+		thumbprint, subject).Scan(&credential, &host, &service)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+	return endCredential(ctx, tx, credential, host, service, actor, reason)
 }
 
 // endCredential revokes launcher credential id in tx, whose row the caller holds: it sets

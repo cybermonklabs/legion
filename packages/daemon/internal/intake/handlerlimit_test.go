@@ -51,6 +51,7 @@ const maxTimerWindow = 2_147_483 * time.Second
 // and one that sets its own keeps exactly what it set, which is what the package's own rigs rely
 // on when they cut a handler in under a second (ackprogress_test.go:175, :535, :601, :666).
 func TestTheIntakeHandlerLimitCoversTheReadsItsWindowBounds(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		// name says which deployment the window belongs to, since the number alone does not.
 		name    string
@@ -146,7 +147,8 @@ var otherFactBoundedReads = map[string]string{
 // consumerSpecNotReads are the ConsumerSpec function fields that are no read at all, by field
 // name, with what each is instead. Nothing bounds them and nothing in the limit answers for them.
 var consumerSpecNotReads = map[string]string{
-	"Now": "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"Now":        "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"WakeOutbox": "the outbox lane's wake a give-up calls once its transaction has committed a notice, after the handling; it signals a channel and waits on nothing",
 }
 
 // recordedPullRequestRead is the one bounded read of a review's handling that reflection cannot
@@ -169,6 +171,7 @@ const recordedPullRequestRead = 1
 // makes, or no read at all. A field in none of them fails this row by name, so whoever adds the
 // read has to say which it is and bring boundedReadsPerFact with them.
 func TestEveryConsumerSpecReadIsCountedInTheHandlerLimit(t *testing.T) {
+	t.Parallel()
 	tables := map[string]map[string]string{
 		"reviewBoundedReads":    reviewBoundedReads,
 		"otherFactBoundedReads": otherFactBoundedReads,
@@ -298,6 +301,7 @@ const readSlack = 5 * time.Second
 // deadline here can pass while the row runs, and the fact is handled the moment it is delivered;
 // what the row measures are deadlines, not elapsed time.
 func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})

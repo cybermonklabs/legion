@@ -155,9 +155,13 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // the count stands where the last real turn left it and the settling itself earns no
       // reminder. Reminding such a session at once only buys another refusal, which is what left
       // the implementer of dispatch://INFRA-264 reminded for ever; the runner arms a delayed one
-      // instead, by which time the daemon — which counts these turns over
-      // `POST /legion/v1/claims/turn-outcome` — has failed the claim if the provider refused it
-      // out of its budget, and a failed claim is reminded of nothing.
+      // instead, and a claim the daemon has failed by then is reminded of nothing. The daemon
+      // fails one at once for a refusal whose status cannot clear, or that Oh My Pi classes as
+      // OpenAI's cyber-policy refusal (`cyber_policy`, whatever the status), of a prompt's turn or
+      // of a reminder's own, which it judges from the turn-outcome report since no prompt ran it,
+      // and never for any other refusal, however long the run: at six in a row the daemon sends
+      // the `provider-errors` notice once (dispatch://INFRA-4508; `providerErrorRunReached` in the
+      // daemon says to whom).
       return { state };
     case "reminded":
       return state.state === "closed"

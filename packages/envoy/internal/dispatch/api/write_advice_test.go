@@ -916,6 +916,7 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 // omitted for that reason, so the write did not wait out the two seconds. The write's wall-clock
 // time depends on the machine and is not checked.
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
 	spec := "# Failure isolation\n"

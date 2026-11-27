@@ -42,9 +42,10 @@ import (
 // sent, so its state is bounded whatever the backlog was, and it is freed with the subscription
 // when the page unsubscribes or the socket closes.
 //
-// The event log can be reset under a reader (`truncate events restart identity`, the browser
-// suite's e2e/seed.ts): the ids restart at 1 and the relay, which notices, ends the generation and
-// with it every open subscription, and each page subscribes again. A page only ever raises its
+// The event log can be reset under a reader (the browser suite's e2e/seed.ts deletes its rows and
+// restarts its ids; `truncate events restart identity` does the same): the ids restart at 1 and
+// the relay, which notices, ends the generation and with it every open subscription, and each page
+// subscribes again. A page only ever raises its
 // cursor and never lowers it, so it resumes with a since above the new log's newest id. Unclamped,
 // the live loop would then drop every event of the new log for ever, on a subscription that stays
 // open: a reader silent for good, with nothing logged and nothing failed. So a since above the

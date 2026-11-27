@@ -23,6 +23,8 @@ import (
 // trimmer can run is the launcher's own manager's to say (manager.applyAck, volumeTrimming), so
 // the case drives the real launcher.
 func TestARefusedAnswerStopsTheSweepInFlight(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 25) // a hundred entries, against a volume that never reaches the low mark
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
@@ -57,10 +59,10 @@ func TestARefusedAnswerStopsTheSweepInFlight(t *testing.T) {
 	pod.conns[podRoles[0]] = again
 	releaseSweep()
 
-	testwait.Eventually(t, "the trimmer to stop the sweep on settings it refuses", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stop the sweep on settings it refuses", func() bool {
 		return f.logged("the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it") == 1
 	})
-	testwait.Eventually(t, "the trimmer to name the key and the value it refuses", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to name the key and the value it refuses", func() bool {
 		return f.logged(fmt.Sprintf("high_percent is %d", wide.HighPercent)) == 1
 	})
 	if trims.hasStopped() {

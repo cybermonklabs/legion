@@ -20,9 +20,12 @@ import (
 )
 
 // The daemon's own retries of a claim in a new session meet the hold's refusal of that new session
-// (supervise's mayForget, review rounds 18 and 19 of #4220), and they log it by its cause. While
-// the Envoy listener names the recorded session, which another claim's live process runs under, as
-// the claim's role holder, the retry waits until that process stops, which in the case the refusal
+// (supervise's mayForget, review rounds 18 and 19 of #4220), and they log it by its cause. The
+// controller keeper asks for that new session when its retry's resume of the recorded session is
+// refused because another claim recorded that session first (claim.SessionHeldRefusal, R5 of
+// dispatch://INFRA-4508), which is how each keeper row here reaches the hold. While the Envoy
+// listener names the recorded session, which another claim's live process runs under, as the
+// claim's role holder, the retry waits until that process stops, which in the case the refusal
 // exists for is an operator's suspend of that claim: the controller keeper writes it once per
 // episode at Warn, naming the claim to suspend and the bound, and each later retry's Warn carries
 // the reason; a start row answers it as a wait (wait.ErrWaiting, the one wait contract), which
@@ -37,7 +40,6 @@ import (
 func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 	t.Parallel()
 	const taken = "ses-taken"
-	refusedTwice := []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true}, {Generation: 1, Sequence: 2, Refused: true}}
 	// shared is a supervisor whose session taken another claim, legion-943's implementer,
 	// recorded first, and whose listener answers every role lookup with lookup.
 	shared := func(t *testing.T, lookup func(context.Context, string) (string, string, error)) *supervisor {
@@ -54,18 +56,19 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 	unauthorized := func(context.Context, string) (string, string, error) {
 		return "", "", fmt.Errorf("look up the holder: %w", &notify.RoleLookupRefused{Status: 401, Reason: `listener returned 401 Unauthorized: {"error":"unauthorized"}`})
 	}
-	// keeper runs a failed daemon controller, whose provider refused its recorded session out of
-	// its budget, through the keeper's first look and three retries, an hour apart.
+	// keeper runs a failed daemon controller that records taken, a session legion-943's
+	// implementer recorded first, through the keeper's first look and three retries, an hour apart:
+	// each retry's resume is refused, and the keeper asks for a new session, which the hold refuses.
 	keeper := func(t *testing.T, lookup func(context.Context, string) (string, string, error)) string {
 		t.Helper()
 		sup := shared(t, lookup)
 		token := claim.ControllerToken("legion")
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Role: claim.RoleController,
-			Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/controller.jsonl", TurnOutcomes: refusedTwice}, ""); err != nil {
+			Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/controller.jsonl"}, ""); err != nil {
 			t.Fatalf("create the failed controller: %v", err)
 		}
 		var logs syncBuffer
-		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 		clock := time.Now()
 		k.now = func() time.Time { return clock }
 		for i := range 4 {
@@ -95,7 +98,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 		if len(held) != 1 {
 			t.Fatalf("the keeper logged the wait %d times over three retries, want once:\n%s", len(held), logs)
 		}
-		for _, want := range []string{`"level":"WARN"`, "legion claims suspend --claim legion-legion-legion-943-implementer", "ten minutes"} {
+		for _, want := range []string{`"level":"WARN"`, "legion claims suspend --claim legion-legion-legion-943-implementer", "the `suspend` of the controller's `legion` tool", "ten minutes"} {
 			if !strings.Contains(held[0], want) {
 				t.Errorf("the wait's line %s does not hold %s", held[0], want)
 			}
@@ -143,11 +146,11 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 		sup.deps.Limits.LaunchFailures = 1
 		token := claim.ControllerToken("legion")
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Role: claim.RoleController,
-			Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/controller.jsonl", TurnOutcomes: refusedTwice}, ""); err != nil {
+			Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/controller.jsonl"}, ""); err != nil {
 			t.Fatalf("create the failed controller: %v", err)
 		}
 		var logs syncBuffer
-		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 		clock := time.Now()
 		k.now = func() time.Time { return clock }
 		step := func() {
@@ -222,6 +225,74 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 					t.Fatalf("the tester records %q, want %s kept", m.Claim().Session, taken)
 				}
 			})
+		}
+	})
+}
+
+// The controller keeper asks for a new session in one case alone (controllerKeeper.keep, R5 of
+// dispatch://INFRA-4508): its retry's resume of the recorded session is refused because one of the
+// session's names is held for another claim or for none (supervise.IsSessionHeldElsewhere). A
+// retry whose resume is not refused resumes the recorded session, and one refused for another
+// cause — here a session file no hold can cover (claim.SessionNameUnheldRefusal), a 409 of the
+// same type as the held refusal — asks for no new session: that refusal is the retry's answer, as
+// before R5, and the claim keeps the session it records.
+func TestTheControllerKeeperAsksForANewSessionOnlyForASessionHeldElsewhere(t *testing.T) {
+	t.Parallel()
+	const recorded = "ses-controller"
+	token := claim.ControllerToken("legion")
+	// retried is a failed daemon controller recording recorded and file, after the keeper's first
+	// look and its first retry, an hour later: the supervisor, its runtime, and that retry's answer.
+	retried := func(t *testing.T, file string) (*supervisor, *fake.Runtime, error) {
+		t.Helper()
+		sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Role: claim.RoleController,
+			Generation: 1, State: supervise.StateFailed, Session: recorded, SessionFile: file}, ""); err != nil {
+			t.Fatalf("create the failed controller: %v", err)
+		}
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, quietLogger())
+		clock := time.Now()
+		k.now = func() time.Time { return clock }
+		if err := k.keep(); err != nil {
+			t.Fatalf("the keeper's first look: %v", err)
+		}
+		clock = clock.Add(time.Hour)
+		err := k.keep()
+		m, _ := sup.Machine(token)
+		m.Wait()
+		return sup, rt, err
+	}
+
+	t.Run("a retry whose resume is not refused resumes the recorded session", func(t *testing.T) {
+		sup, rt, err := retried(t, "/tmp/controller.jsonl")
+		if err != nil {
+			t.Fatalf("the retry answered %v, want it admitted", err)
+		}
+		m, _ := sup.Machine(token)
+		if c := m.Claim(); c.Session != recorded || c.Abandoned.Session != "" {
+			t.Fatalf("the controller records session %q and abandoned %+v, want %s resumed and nothing abandoned", c.Session, c.Abandoned, recorded)
+		}
+		if resumes, spawns := len(resumesOf(rt, token)), len(rt.CallsOf("Spawn")); resumes != 1 || spawns != 0 {
+			t.Fatalf("the retry made %d resumes and %d spawns, want the recorded session resumed and no new agent", resumes, spawns)
+		}
+	})
+
+	t.Run("a resume refused for a session file no hold can cover asks for no new session", func(t *testing.T) {
+		const unholdable = "/tmp//controller.jsonl"
+		sup, rt, err := retried(t, unholdable)
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionNameUnheldRefusal("session file") {
+			t.Fatalf("the retry answered %v, want the resume's refusal %v", err, claim.SessionNameUnheldRefusal("session file"))
+		}
+		if errors.Is(err, supervise.ErrForgetWaitsForRole) || supervise.IsSessionHeldElsewhere(err) {
+			t.Fatalf("the retry answered %v, want no new session asked for and no hold of one", err)
+		}
+		m, _ := sup.Machine(token)
+		if c := m.Claim(); c.Session != recorded || c.SessionFile != unholdable || c.Abandoned.Session != "" {
+			t.Fatalf("the controller records session %q (%q) and abandoned %+v, want %s and its file kept and nothing abandoned",
+				c.Session, c.SessionFile, c.Abandoned, recorded)
+		}
+		if resumes, spawns := len(resumesOf(rt, token)), len(rt.CallsOf("Spawn")); resumes != 0 || spawns != 0 {
+			t.Fatalf("the refused retry made %d resumes and %d spawns, want none", resumes, spawns)
 		}
 	})
 }

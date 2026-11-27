@@ -38,11 +38,11 @@ Agent messages  --/       |
 - NATS cluster across all machines via Tailscale mesh, with JetStream for durable notifications and core NATS for live role routing
 - JetStream stream `ENVOY_NOTIFICATIONS` with 72h retention for non-role notification replay on listener restart, and an optional byte limit (`ENVOY_STREAM_MAX_BYTES`) past which it refuses new publishes (`DiscardNew`; the sender gets the retryable `bus.ErrStreamFull`, which the webhook answers 503) and keeps every stored message for its 72h, so the limit is sized above the stream's 72-hour volume; per-machine durable consumers carry a 7d inactive threshold so the server garbage-collects consumers of decommissioned listeners
 - Role lanes and delivery-exception lanes for role topics use core NATS; they have no durable consumer, retention, or replay. Stream reconciliation excludes role subjects and purges any role message captured while that configuration is updated. The listener forwards a role message to its holder's agent subject, which the stream stores, so a holder on consumer delivery gets the forward through its session consumer also after a restart.
-- Session consumers: a session that asks at registration (`delivery`) gets a durable pull consumer `s-<session id>` on the stream, filtered on its agent subject and its stored followed topics; the listener that owns the session relays it in stream order on `notifications.envoy.deliver.<session id>` (core NATS, not stored) and acks a message only on the session's `done`, which the session sends once it has written the message. That consumer is the only way a message reaches a session: no plain NATS subscription of the session's own and no fallback path carries one. The consumer is deleted when the session's registration ends (`DELETE /v1/sessions/<id>`) and by the listener's periodic sweep over the sessions the registry judges gone (`ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL`, 5m by default, at most 256 a pass); before each delete the consumer's ack floor is recorded on `notifications.envoy.resume.<session id>`, a lane of the stream no consumer filter takes, so a session that comes back with no resume point of its own is created again there. The inactive threshold, which each listener derives at start from its own windows so that it stands above that sweep bound (`bus.InactiveThresholdFor`; 1h floor), is only the server's backstop for a consumer neither delete reached.
+- Session consumers: a session that asks at registration (`delivery`) gets a durable pull consumer `s-<session id>` on the stream, filtered on its agent subject and its stored followed topics; the listener that owns the session relays it in stream order on `notifications.envoy.deliver.<session id>` (core NATS, not stored) and acks a message only on the session's `done`, which the session sends once it has written the message. A filter built from a stored row (a relay restart, an unsubscribe, a takeover of the session's role) holds only the topics one judgment keeps (`storedTopicFiltered`, then the row's merges): it drops another session's private stream subject (its inbox, a failed-delivery lane, or a wildcard reaching one), a Legion controller notice lane whose role the session does not hold now, as that role's claim record on the role bucket stream's leader says (`store.Registry.ReadLaneHolders`, `store.LaneHolders.Keeps`), a role lane, a topic the server refuses as a filter subject, a topic that does not begin with `notifications.`, and a wildcard that feeds a merge reaching another session's subjects; it drops no topic for what the deployed stream captures now. Of those drops only the last two are logged. A publish's `recipients` counts a session only through a topic that same judgment keeps. A claim that takes a Legion controller role from another session filters that session's consumer on its stored row again before the claim is answered, inside the claim route's 3.5 s budget, so a notice published on the role's lane after the answer reaches the new holder alone; a narrowing that did not land is logged at WARN. That consumer is the only way a message reaches a session: no plain NATS subscription of the session's own and no fallback path carries one. The consumer is deleted when the session's registration ends (`DELETE /v1/sessions/<id>`) and by the listener's periodic sweep over the sessions the registry judges gone (`ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL`, 5m by default, at most 256 a pass); before each delete the consumer's ack floor is recorded on `notifications.envoy.resume.<session id>`, a lane of the stream no consumer filter takes, so a session that comes back with no resume point of its own is created again there. The inactive threshold, which each listener derives at start from its own windows so that it stands above that sweep bound (`bus.InactiveThresholdFor`; 1h floor), is only the server's backstop for a consumer neither delete reached.
 - Session replies: each relay frame's reply subject is the listener's reply inbox, then the session's id, then a token of 128 random bits (`bus.SessionReplySubject`, `crypto/rand.Text`), so no session can work out the token of a frame sent to another from its own. The relay moves a frame only on a reply whose subject names the session the frame was sent to: a reply that names another session, on the frame's token, moves nothing (`sessionRelays.onReply`). The first such reply is logged at WARN, then at most one a minute, each line counting in `held` the replies held back before it (`relayRefusedReplyLogEvery`). The send route's connection probe and Dispatch's agent stream replay (`agentstream.NATS.Replay`), the other two requests a session answers, ask on such a subject too, each on a reply inbox of its own, so neither reaches the relay's reply handler.
 - Session trust: a session the NATS auth service admits holds a grant of its own (`natsgrant.Session`): it subscribes its own relay subject and control subject alone, and publishes its replies under its own id alone (`bus.SessionReplies`, `_INBOX.*.<session id>.>`), so it can neither read another session's frames nor answer one. A holder of the shared session user (`core.SessionPermissions`, a `gcp:NatsHub`'s `sessionUser`) or of a host user (`core.HostPermissions`) can still read any session's relay subject and publish `done` to the reply subject a frame carries, which acknowledges that session's message away, since the relay reads the session the subject names and not who published the reply. That stays open while a hub renders either user.
 - The stream and every KV bucket hold the deployment's replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1; more than 1 needs a clustered NATS), and the stream at least the byte limit `ENVOY_STREAM_MAX_BYTES` when set: a start creates them at that count and limit, raises one found with fewer copies or a smaller limit (or none), and never lowers either, and every program that owns the stream (each listener, the Dispatch server) runs a keeper that every 30 seconds raises the stream's copies and byte limit back to its settings, puts back the discard policy and `envoy_stream_id`, and raises its own buckets' copies. An operator's raise of the limit stands, and programs with different settings do not fight: the largest stands. JetStream's stream update has no compare-and-swap, so a start with other or no settings can put back what it read until the next keeper pass; a clustered deployment sets the same `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` in every program
-- JetStream KV bucket `envoy_interests` for session subscriptions
+- JetStream KV bucket `envoy_interests` for session subscriptions. A subscription too large for one NATS message (the server's max payload) is stored in chunks under `=chunk.<generation>.<index>` and a manifest under the session's id, written last; readers join and check the chunks, so they read the old subscription or the new one whole (`internal/kvchunk`). The known-session records of `envoy_known_sessions` are stored the same way
 - JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves the bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
 - JetStream KV bucket `legion_agents`, no TTL and never deleted, for the Legion agent registry: one entry per Legion session the daemon ran, under `session.<id>` and the same entry under `issue.<ISSUE>.<id>` and `role.<role_token>.<id>` (`project.*` is the daemon's own and no listener read reaches it)
 - Each listener serves both buckets from an in-memory copy its watcher keeps (`internal/kvwatch`), and the role claims of `envoy_roles` too. A watcher reads its bucket again on a reconnect, a recreated bucket or a failed watch without emptying the copy: every row stays until the new read completes, each delivered record replaces its row as it arrives, and only the completed read removes the rows it did not find. An incomplete read removes nothing, and the listener reads again itself. The role claim watcher also reads its bucket in full one minute after each read that completed, by the same rules, so a claim the copy lost is put back and one the bucket no longer holds is taken out within 2 minutes. No act decides from that copy: each reads the role's claim record from the bucket when it acts.
@@ -85,7 +85,7 @@ requires a bearer checks no `Host`.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/sessions` | GET | Lists the `live` sessions across all machines, and the `unresponsive` ones too when asked with `include=unresponsive` — joins `envoy_interests` (topics, dir) with `envoy_sessions` (self-subscribed delivery mode, `plugin`, `plugin_version`, `client_instance_id`), and reports as each session's `roles` those whose claims in `envoy_roles` name it, from the listener's watched view of that bucket, whatever role topics its record carries. Every row's `port` is 0, since a registration naming a port is refused and the field stays only because every released client parses it. Each row carries the session's `state` (`live` or `unresponsive`), its `last_seen`, computed from its registration's `UpdatedAt`, and `client_instance_id`, the client process that wrote that registration, left out where the entry carries none: a row and the single answer of `/v1/registry/{session_id}` are one shape built one way (`sessionInfoWith`), so every field of one is a field of the other. The list is not itself the liveness answer, and a row's absence is not death. A cache view, and a list cannot be made authoritative key by key, so a caller holding one session id asks `/v1/registry/{session_id}` instead. Answers the refilling 503 while either copy cannot be served. A row's topics come from the listener's interest copy alone (`store.Registry.Cached`, `listedSessionInfo`), with no read of the bucket per row, which over a slow KV leader would hold the answer for seconds per row; a copy that can be served has completed a read of the whole bucket, so a session it holds no interest record for subscribed to nothing. Such a session is listed with `topics` as `[]`, never `null`, as `packages/contracts/fixtures/envoy-session-no-interests.json` states, and so is one whose record's topics are null and one whose id the interest bucket refuses as a key (an earlier listener's id past its get bound that `envoy_sessions` still lists, or one outside nats.go's key alphabet) that the copy holds no record for. The roles of every row are read in one pass (`store.Registry.RolesBySession`), and a claims view that is not complete is a read that did not answer: a 503 with `Retry-After: 1`, never a row with no roles. The claims view answers only while it is complete (`store.Registry.RolesHeldBy`): the role claim watcher's first scan delivered every claim, and after a recreated bucket's reset only once the refill's scan has; until then it is `store.ErrRoleViewNotReady`, never a holder without its role. A scan kvwatch's own idle wait ended is read again 5 s later (`rereadDelay`) until one completes. The view can drift from the bucket while it follows it, so the role claim watcher reads the bucket whole again a minute after each read that completed: a role a row lacks, or still names after its claim moved, is right again within 2 minutes (`store.RoleClaimRepairBound`), and the list keeps answering from the view meanwhile |
-| `/v1/interests/subscribe` | POST | Persist a session's subscribed topics; `self_subscribed: true` marks a session that holds its own NATS connection, one the listener relays its consumer to ("Session consumers" under "Runtime shape", above, states how a session's messages reach it). A registration whose `port` is above 0 is refused `400 {"error":"port is not supported: …","expected":["port"]}` before anything is stored: the listener delivers to no port. A stored record this build cannot decode (`store.ErrMalformedInterest`) is replaced, not merged, logged at WARN by the registry; the session's role claims are kept. A write route (see “Write route answers” below). A `notifications.` topic no stream subject captures, and that is no role lane, is left out of the stored row and named in `warnings`, the registration's other topics stored and the answer still 200, since nothing would ever be delivered on it and refusing the whole registration would leave that session no consumer at all; a caller that names one itself is refused by name instead, at `/v1/messages/publish` and at either plugin's subscribe tool, and told to follow a `notifications.team.<name>` topic. A topic that reaches a private stream subject other than the session's own agent subject (another session's `notifications.agent.<other>`, a failed-delivery lane `notifications.envoy.exceptions.notifications.agent.<id>` including its own, a Legion daemon notice under `notifications.legion.>` such as the controller lane `notifications.legion.<project>.controller`, or a wildcard such as `notifications.agent.>`, `notifications.envoy.>` or `notifications.>`) is not stored and is named in `warnings`, so neither the fan-out nor a session's own consumer hands a session another session's inbox, a failed delivery's payload or the controller's notices. An optional `delivery` object (`consumer`, `epoch`, `resume`) asks for a session consumer, created or refiltered before the call answers; the answer's `delivery` says `consumer` (with the relay `subject` and `stream_id`), and a registration the listener can give no consumer is refused by name — `503 no_grant`, `consumer_limit` or `consumer_error`, `409 not_requested` or `invalid_session_id` — with nothing written (`subscribeHandler` in `cmd/listener/api.go` decides before either write; the reasons are in `cmd/listener/session_delivery.go`) |
+| `/v1/interests/subscribe` | POST | Persist a session's subscribed topics; `self_subscribed: true` marks a session that holds its own NATS connection, one the listener relays its consumer to ("Session consumers" under "Runtime shape", above, states how a session's messages reach it). A registration whose `port` is above 0 is refused `400 {"error":"port is not supported: …","expected":["port"]}` before anything is stored: the listener delivers to no port. A stored record this build cannot decode (`store.ErrMalformedInterest`) is replaced, not merged, logged at WARN by the registry; the session's role claims are kept. A write route (see “Write route answers” below). A `notifications.` topic that neither the deployed stream nor this build captures, and that is no role lane, is left out of the stored row and named in `warnings`, the registration's other topics stored and the answer still 200, since nothing would ever be delivered on it and refusing the whole registration would leave that session no consumer at all; a caller that names one itself is refused by name instead, at `/v1/messages/publish` and at either plugin's subscribe tool, and told to follow a `notifications.team.<name>` topic. A topic this build stores is kept also while the deployed stream does not capture it, as during a hub move's quiesce, and the session's consumer filters on every topic of its stored row whatever the deployed stream captures, so a message stored on such a topic once the stream captures it again is delivered. A topic that reaches a private stream subject other than the session's own agent subject (another session's `notifications.agent.<other>`, a failed-delivery lane `notifications.envoy.exceptions.notifications.agent.<id>` including its own, a Legion daemon notice under `notifications.legion.>` such as the controller lane `notifications.legion.<project>.controller`, or a wildcard such as `notifications.agent.>`, `notifications.envoy.>` or `notifications.>`) is not stored and is named in `warnings`, so neither the fan-out nor a session's own consumer hands a session another session's inbox, a failed delivery's payload or the controller's notices. Two more kinds of topic are left out of the session's consumer filter, and so of the stored row: a topic that does not begin with the literal `notifications.` (the stream stores nothing outside it, and one with a wildcard first token, such as `*.team.foo`, would widen the filter through the reduction below), and a wildcard topic that fed a merge of the filter's reduction reaching another session's private subjects (the server takes no overlapping filters, so two wildcards that each pass the rule above alone, such as `notifications.envoy.exceptions.foo.*` and `notifications.envoy.exceptions.*.bar`, would reduce to `notifications.envoy.exceptions.>`). Each is named in `warnings` with the reason on every registration and logged at WARN (`listener left a topic out of the session's consumer filter`, with the session and the topic) at most once per session and topic an hour, the stored row's own copy from an earlier build included, so no publish counts the session as a recipient for a topic its consumer never delivers; until that session's next registration, a publish counts no session as a recipient through such a topic of a row or a known-session record an earlier build stored, and the durable path skips such a session for a message it matches only through one, logging the same line (`from` `fanout`, with the subject) at most once per session and topic every ten minutes. A change of a session consumer's filter, an update in place or a restart at the ack floor that deletes and creates it again, that drops a subject no subject of the new filter contains while the stream holds messages on it from the consumer's position on passes them over (the server goes on from that position with the new filters), and the same line names it (`from` `narrowing`, `topics` the dropped subjects, `pending_by_topic` the messages on each and `pending_passed_over` their sum): an update's once the server took it, from the consumer's next sequence, and a restart's once its delete landed, from its ack floor plus one, before its create, so a create that fails leaves the loss named. A restart whose delete brings no answer (a timeout, a lost connection, an answer that does not decode), which the server may have applied, reads the consumer back on a 2 s bound of its own: a consumer gone gives the line as a landed delete does, one still there gives none (the next restart counts from its floor), and a read back that fails too gives the line with `delete_confirmed` `false`; an answer the server sent, its refusal under the grant included, is definite and gives none. Each count is read on its own subject just before the change, so a message stored on the subject or delivered from it between that read and the change makes the real loss differ from it by one; a widening, which drops a subject for one that contains it, passes nothing over and logs nothing. A create where no consumer stands counts nothing, since nothing records the filter of the consumer it replaces: the resume record of a consumer the listener deleted holds its floor and the stream's identity alone, the server's own removal of an idle consumer records nothing, and a restart's retry at its pending start reads no consumer. Such a create passes over at most the messages the stream holds on the subjects the replaced consumer carried and its filter does not contain, from its start (the resume floor plus one, the pending start, or the caller's) to the stream's last sequence at the create; a restart's retry, only on subjects its filter drops beyond those the restart's own line counted. An optional `delivery` object (`consumer`, `epoch`, `resume`) asks for a session consumer, created or refiltered before the call answers; the answer's `delivery` says `consumer` (with the relay `subject` and `stream_id`), and a registration the listener can give no consumer is refused by name — `503 no_grant`, `consumer_limit` or `consumer_error`, `413 too_large` for a filter whose request is past the server's max payload, `409 not_requested` or `invalid_session_id` — with nothing written (`subscribeHandler` in `cmd/listener/api.go` decides before either write; the reasons are in `cmd/listener/session_delivery.go`) |
 | `/v1/interests/unsubscribe` | POST | Remove persisted topics for a session and answer in `removed` exactly the topics that left the record, never an echo of the request; a consumer-delivery session's consumer stops filtering on them. A stored record this build cannot decode is left as it is (it routes none of its topics), logged at WARN. The request carries `client_instance_id`, the process handing the interests back, and that decides which role claims it frees: of the roles the topics name, only the claims naming that same process, so a second process that resumed this session's id frees none of the holder's. An absent process matches nothing: a release that states no process frees no claim, and a claim that names no process (one whose claimant stated none: an older client's, or a session pod's claim of its launch role) is freed by no release this route makes; the role claim reaper frees it. A role lane topic whose claim this release did not free stays in the record and is left out of `removed`, because one record serves every process running under one session id and that topic is the interest half of a claim that still stands, written there by the claim itself; no delivery rides on it, since a role lane never enters a session's consumer filter and a role message goes to its holder's agent subject with the holder read off the claim. Such a release — stating no process, not forcing, and naming that role's own lane topic — is a hand-back, and it marks the claim it could not free (`handed_back`), whether that claim names a process or none: no registration renews or adopts a marked claim, `GET /v1/roles/<role>` answers `handed_back` meanwhile, and the role claim reaper frees the role at its first pass past the live window, unless the holder, which reads a marked claim as a role it does not hold, claims it back at its next heartbeat. A release that loses its conditional delete to a record written since reads the claim again, and one still naming that same session and that same process, and carrying the same `grant_id`, is its own holder's renewal, so the delete goes out again at the revision that renewal left, three deletes in all; a claim renewed under every one of them is left standing and fails the route naming the role, rather than reporting a release it did not make. A claim granted again since the release read the claim, to any process, the one the release states included, and in any millisecond, is no claim the release read, and it is left standing as the hand-back's mark leaves it. This route never forces a release; `DELETE /v1/interests/{session_id}` is the only caller that does. A write route |
 | `/v1/interests/` | GET | List persisted interests. Answers the refilling 503 while the interest copy cannot be served |
 | `/v1/interests/{session_id}` | GET/DELETE | Get or delete a session's persisted interests. A GET reads a cache miss from the bucket within 3.5 s: 404 only for a key the bucket does not hold, 413 or 400 for an id NATS will not take as a key, `500 {"error":"envoy: the interest record of session <id> is unreadable: <reason>"}` with no `Retry-After` for a record this build cannot decode (`store.ErrMalformedInterest`), 503 with `Retry-After: 1` for a read that did not answer. A DELETE removes a record this build cannot decode too, forcing the release of every role claim the session holds whichever process holds it, with 204; it is the one caller that forces a release, because an operator clearing a session's interests states no process and a release naming none frees nothing a process the claim names holds. It names no role's lane topic either, so it is no hand-back and marks nothing. It is a write route |
@@ -96,7 +96,7 @@ requires a bearer checks no `Host`.
 | `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…]}`: a role token's sessions, newest first (the first is the current holder), `[]` when none |
 | `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 1 MiB, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer. Every read comes from the bucket itself, never a cache |
 | `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, and a session the store holds no entry within the gone horizon for is looked up in the known-session store (every session that registered in the last 30 days): `200` with `state` `connected` or `stopped` stores the message, a `409` refuses a stopped target the request asked `connected_only` of, and a 404 means neither store knows the session; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). An optional `role`, the role a Dispatch message for a `role:` route is sent for, goes on the envelope; it is taken only from the principal `ENVOY_DISPATCH_PRINCIPAL` names, as `apiAuth` verified it, and refused `403` naming `role` from every other caller. When the role's claim names another session than the target, or none, the message is kept on the role's kept lane and answered `202` with `kept` and `kept_until`. |
-| `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds (see "Role delivery and exceptions"). Any other `notifications.` topic no stream subject captures is refused `400` by name, since no session would receive it. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
+| `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. That answer carries `recipients`, the sessions other than the sender whose interest row or known-session record follows the topic through a topic the filter built from its stored row holds ("Session consumers" above), and `recipients_connected`, how many of those are live; a topic no session follows that way answers `recipients` 0. Counting a controller notice lane reads that role's claim record from the role bucket stream's leader, within 500 ms, and a read that did not answer leaves both counts out. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds (see "Role delivery and exceptions"). Any other `notifications.` topic that neither the deployed stream nor this build captures is refused `400` by name, since no session would receive it. A topic this build stores that the deployed stream does not capture, as during a hub move's quiesce, is sent nowhere and answered the 503 below that says the message was not sent, with `Retry-After: 1` (`bus.ErrSubjectNotDeployed`): the caller may send it again later. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
 | `/healthz` | GET | Health check (always available, even during startup); its bus checks answer within 3 s, and a rebuild of the KV watches that has not succeeded for a minute after a reconnect is `200 degraded` naming the `KV watch rebuild` - not a refusal, which would take the probes' only listener out and replace it with one that rebuilds into the same failure on empty caches, so the state pages through the `<N>-reconnect-hooks-stalled` alarm instead - while a rebuild that fails and is run again under that minute leaves the answer it had (see “Webhook and health check bounds” below). The healthy answer, and every degraded one that keeps its fields, carries `role_claim_repair`: `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` before one completes, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it. A read older than the bound is `200 degraded` naming `role claim repair unavailable`, never `503`, and `GET /v1/sessions` still answers `200` from the copy then |
 
 ## Session state
@@ -198,6 +198,7 @@ attempt:
 | The stream answers the publish as a duplicate, and the copy cannot be read back: the read fails or does not answer, the verdict names sequence 0, or that sequence no longer holds a copy with the request's dedupe key | `503 {"error":"envoy: the stream already knows this message's id, and no stored copy of it was read: <reason>"}` with `Retry-After: 1` and no envelope, recorded `stored_copy_unreadable`, and with `"code":"maybe_stored"` where an earlier send of the same publish went unanswered (`bus.ErrUnacknowledged`); the same request again gets the copy once it can be read |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | A clustered stream refuses the publish because an earlier publish under the same message id is still in process (`bus.ErrDuplicateInProcess`) | The listener publishes again every 50 ms until the stream names the earlier copy, and answers that copy as the duplicate rows above do (`publishPastInProcess`, `publishHeld`); a request whose budget ends first gets `503 {"error":"envoy: an earlier attempt of this message is still being stored: <reason>","code":"maybe_stored"}` with `Retry-After: 1`, recorded `earlier_attempt_in_process`, which costs its sender nothing unless a send of its own went out unanswered |
+| The deployed stream, as this listener's client last read its subjects, does not capture the target's agent subject, a subject this build stores, as during a hub move's quiesce (`bus.ErrSubjectNotDeployed`) | `503 {"error":"envoy: the message was not sent, and may be sent again later: <reason>"}` with `Retry-After: 1`, recorded `subject_not_deployed`, with nothing sent or stored; the prefix is `MESSAGE_NOT_SENT_PREFIX` in `packages/contracts`, which `envoy-client` reads as a message nothing stored, so the caller may send it again later |
 | Any other publish failure | `503` with the prefix `envoy: the message bus did not answer` and `Retry-After: 1`, carrying the bus's own reason |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
@@ -279,7 +280,7 @@ A counted message costs its sender one where the route stores it, may have store
 a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
 one once the route reports its wake. A role send's `504` costs one whether or not a forward went
 out, also when the window ended before the first forward (`roleSend.timedOut`), and so does its
-`503` for a window that ended with its forward in process (`roleSend.endedInProcess`). A role send
+`503` for a window that ended with its forward in process (`roleSend.maybeStored`). A role send
 costs one for a forward the stream confirmed, also one it answered as a duplicate. The listener does
 not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
 the listener sent the message to the stream and the write's acknowledgement did not arrive in time
@@ -338,16 +339,17 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. The `event_id` of an accepted repeat is the stored copy's, whatever its
 answer carries. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable`, `stream_full`, `stored_copy_unreadable`, `earlier_attempt_in_process` and
-`sender_rate_limited`, plus `no_live_session` for send,
+`bus_unavailable`, `stream_full`, `stored_copy_unreadable`, `earlier_attempt_in_process`,
+`subject_not_deployed` and `sender_rate_limited`, plus `no_live_session` for send,
 `session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,
-and `role_unclaimed`, `role_lapsed`,
+and `role_unclaimed`, `role_lapsed`, `role_no_source_session`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish, where a
 role send whose window ends with its forward in process is `earlier_attempt_in_process`. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
-refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two
+refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing, and
+`role_no_source_session` a send that named no source session and so was kept for nobody. Two
 refusals carry no such line, because neither reaches a handler: the 401 the API auth wrapper
 writes, and a request the starting gate turns away while the routes are still opening, which logs
 `request refused while starting` itself. The line of a message the sender limit refused, and of
@@ -387,7 +389,14 @@ is conditional on the revision it read (`store.Registry.UpsertWithin`, `Remove`,
 A session holds a role exactly when the role's claim in `envoy_roles` names it, so a claim's
 rollback and its old holder's topic cleanup are best-effort tidying of interest topics within the
 same budget: a claim that landed answers 200 whatever the cleanup did, and a topic left behind
-gives nobody the role.
+gives nobody the role. Two writes of a session consumer's filter follow such store work before the
+answer. An unsubscribe's (`refollow`) runs on a budget of its own, `sessionConsumerCallTimeout`
+(5 s), after the 3.5 s. A claim that took a Legion controller role from another session narrows
+that session's filter (`narrowFormerHolder`: a role claim read from the role bucket stream's
+leader, a row read, the wait for that session's lock and one consumer call) within what is left
+of the claim's own 3.5 s, on a context the client's hang-up does not cancel, so `POST /v1/roles/set`
+still answers inside its budget, and a narrowing the budget cut short is logged at WARN naming
+the role, its lane and both sessions.
 
 ## Webhook bodies
 
@@ -474,7 +483,12 @@ gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publ
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+that with `keep: false`, the publish names no `source_session`, or the keep was refused or
+failed. A publish that names no `source_session` is never kept, because the dead letter of a
+copy that expires goes to that session and there is none: its 404's `error` names the role and
+says that nothing was kept and why, and the listener reads that the role has no live holder from
+the role bucket stream's leader and the holder's registration from the session bucket stream's
+leader, never from a copy (`roleSend.resolve`). A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
@@ -485,11 +499,31 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). A send whose last attempt ended while the stream still refused its
-forward as in process is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and
-the error `envoy: an earlier attempt of this message is still being stored: <reason>`, recorded
+`bus.ErrForwardNotStored`). A forward the stream stored later than `roles.ForwardFenceAge` and the
+route's 3.5 s budget after the resolution that chose its holder (`roles.ForwardStoredTooLate`)
+may sit on a holder that lost the role. The route reads the role's claim from the role bucket
+stream's leader before it answers (`withdrawLateForward`). When the claim still names the
+forward's holder, the holder reads the forward from its own subject, a takeover copies it should
+the holder lose the role later, and the send is answered `200`. When the claim names another
+session or none, the route withdraws the forward. It publishes a withdrawal mark to the role's
+kept lane under the `Nats-Msg-Id` that a takeover pass's or the session relay's copy of that frame
+takes, and the stream's own duplicate window (72 hours, longer than any takeover record's life)
+decides which landed first. When the mark landed first, no copy of the frame can store, and the
+send is answered `504 delivery_failed` with an error that wraps `roles.ErrForwardStoredTooLate`;
+the sender's retry resolves the holder again and is the message's delivery, unless the role is
+back with the forward's holder by then, when the retry meets the withdrawn frame as a duplicate
+and is answered `200` for a frame no takeover copies. When a copy landed first, the mark comes
+back a duplicate, the copy is already on the kept lane, and the send is answered `200`. When the
+claim cannot be read, or no mark can be published at all, the send is answered `503` with
+`code: "maybe_stored"` and `Retry-After: 1`. That branch can give the role's holder a second copy
+under a new event id if a later pass copies the forward and the sender retries: that duplicate is
+accepted in place of a loss nothing reports. Nothing is deleted: the forward stays on the holder's
+subject and the mark on the kept lane, where the walk ends it with an Info line and forwards it to
+no one. A send whose last attempt ended while the stream still refused its forward as in process
+is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and the error `envoy: an
+earlier attempt of this message is still being stored: <reason>`, recorded
 `earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder
-(`roleSend.endedInProcess`). The route publishes no exception: its sender has the answer.
+(`roleSend.maybeStored`). The route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of
@@ -503,30 +537,40 @@ holder stops at a copy inside its hour, or three walks running make no progress 
 that failed is waited out on a widening cadence while the holder is live. The role's cursor,
 `notifications.envoy.kept.cursor.<role>`, carries the lane's progress and one walk's claim of it,
 so two listeners walking one lane do not forward a copy twice. A handover this process lost - a
-restart, a rolling deploy - is picked up by a sweep every five minutes and at the listener's own
-start, which hands over every lane that holds copies after its cursor, whether the role has a
-live holder, a holder that is not live or no claim at all. A walk that finds no live holder ends
-each copy whose hour ended and stops at the first copy inside its hour, which waits for the
-role's next live holder. The walk and the handover, the sweep's included, read who holds the role
-from its claim record in the role bucket, never from the listener's copy of the claims: a walk
-reads the record before each copy and goes on only while it names the holder the walk forwards
-to, and a read that did not answer ends the walk as a failed one. Each forwarded copy carries
-`kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's
-age.
+restart, a rolling deploy - is picked up by a sweep every five minutes, which hands over every lane
+that holds copies after its cursor, whether the role has a live holder, a holder that is not live
+or no claim at all. Each listener sweeps at a phase of its own in each five minutes of the clock,
+read from a hash of its host name (in Kubernetes, the pod's name), so its first sweep comes within
+five minutes of its start and two listeners started together do not sweep together. A walk that
+finds no live holder ends each copy whose hour ended and stops at the first copy inside its hour,
+which waits for the role's next live holder. The walk and the handover, the sweep's included, read
+who holds the role from its claim record in the role bucket, never from the listener's copy of the
+claims: a walk reads the record before each copy and goes on only while it names the holder the walk
+forwards to, and a read that did not answer ends the walk as a failed one. Each forwarded copy
+carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the
+message's age.
 
 Each copy is kept for one hour from the time the stream stored it. No walk forwards a copy whose
 hour ended: the first walk that reads it drops it, whether or not any session holds the role, and
 counts it on `envoy_role_kept_expired_total`. When the listener kept that copy and its publish
-named a sender session, the walk sends that session a dead letter. The walk also sends that
+named a sender session, the walk sends that session a dead letter; the publish route keeps no copy
+for a publish that names none. The walk also sends that
 session a dead letter for such a copy inside its hour whose live holder does not take the copy's
 delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is a stored
 envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's
-event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The stream
+event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The summary
+of a copy from source `dispatch` is the head of a Dispatch comment's or message's body, which its
+author can edit or delete before the copy's hour ends, so that copy's dead letter quotes none of
+it: it names the post by its id and its `dispatch://` reference, read from the Dispatch event the
+copy's payload holds, or by the copy's event id alone where that event names no post
+(`keptCopyNamed`). The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
-letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour
-left, and no live session holds the role, each sweep raises the role's wake report again, at
-most once for a role in each five-minute interval across every listener. `GET /v1/roles/<role>`
+letter. A copy Dispatch's outbox kept gets no dead letter at all: whatever its age, the walk tells
+Dispatch with an expiry notice instead (below). While a lane holds a copy the listener kept with
+at least twenty minutes of its hour left, and no live session holds the role, each sweep raises
+the role's wake report again, at most once for a role in each five-minute interval across every
+listener. `GET /v1/roles/<role>`
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
 the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
@@ -585,14 +629,20 @@ needs it. A role message is one whose topic is the role's, or whose `role` field
 the relay, the kept lane's walk and an edge listener's frame rule tell it by one read
 (`readRoleFrame`): past a leading UTF-8 byte order mark, the message's top-level fields are split
 by their brackets and strings, at any depth,
-and only its `topic` and `role` fields are read, each by its exact key, the last of a repeated key
-winning, as the plugins' `JSON.parse` reads them. So a later `"TOPIC"` key, an event id written as
-a number, or a value nested deeper than the 10,000 levels `encoding/json` reads does not change
-what it is. The envelope is then read field by field, a field whose value its type does not take
-left unset, so the message is still copied whatever the listener's wire rules or the envelope's
-own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the
-holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer,
-while one written as a JSON string is left out, as `encoding/json` leaves it.
+as the plugins' `JSON.parse` splits them, and only its `topic` and `role` fields are read, each by
+its exact key, the last of a repeated key winning. The plugins read `topic` the same way; they
+never read `role` from an inbound frame, so the rule for it is the listener's own. So a later
+`"TOPIC"` key, an event id written as a number, or a value nested deeper than the 10,000 levels
+`encoding/json` reads does not change what it is. That read keeps the event id beside the two and
+no other field, so the relay's read of a frame makes no allocation for each key the frame holds,
+and its error names a field and its JSON type, or a key quoted and cut to 40 characters of the
+quote, never a whole value: the walk logs it. Only for a role message to copy is the envelope then
+read, field by field from every field, a field whose value its type does not take left unset, so
+the message is still copied whatever the listener's wire rules or the envelope's own say of it.
+An `urgency` or `source` word a newer build adds is kept in the copy, for the holder's reader to
+judge, and an `issued_at`
+written as `1795191371979.0` is read as that integer, while one written as a JSON string is left
+out, as `encoding/json` leaves it.
 An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy
 leaves it out, and the holder reads the message with no `expects_reply`. A message
 that is not a JSON object, or whose topic or `role` is not a string and names no role, is not
@@ -613,9 +663,27 @@ that already showed the message drops the copy by its event id. A pass reads at 
 two hundred messages and writes the record again with the sequence it reached. The claim route's
 handover runs passes before it walks the lane, and the sweep runs passes of every record that is
 not finished every five minutes, so a listener that stopped at any step delays a message and loses
-none. A record is finished by the first pass that starts more than 71 hours after the claim and
-reads to the end of the subject, and then ages out with the stream. A release of the role, the
-reaper's delete of its claim and a claim no read answers leave the records where they are.
+none. A record is finished by the first pass that starts more than one hour after the claim, the
+keep window, and reads to the end of the subject; no pass runs it again or writes over it, each
+listener reads it again only when the age limit takes one of its subject's older messages, and it
+ages out with the stream. Every forward that resolved the previous holder before the
+claim starts inside the fence below, so it is stored before that pass reads. A listener whose NATS
+user holds none of the session consumers' calls, Dispatch's and a host's, runs no pass and reads no
+record: it asks the server once per ten minutes whether its user may read a session consumer, and
+the listeners whose users may run every pass. A release of the role, the reaper's delete of its
+claim and a claim no read answers leave the records where they are.
+
+An edge listener's frame rule (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`) tells a role
+message by the same read, inside a rule of its own. Before it reads the role, it withholds a frame
+that names `topic` or `role` under more than one key or under a key that differs from the name
+only in case (`ambiguous_key`), so a later `"TOPIC"` or `"ROLE"` key withholds the frame there
+rather than leaving its role as it is, a frame with a top-level `__proto__` key, and a Dispatch
+frame whose payload is no event of a project the token lists, unless it is a person's message to
+the session in its own conversation on its own agent subject (`dispatchDirectMessage`). It then
+judges a role message by its role only when its topic is a role lane or an agent subject in the old
+form or in the new form under one of the token's projects (`roleFrameVerdict`,
+`roleMarkOnAgentSubject`); a role-marked frame with any other topic, or none, it judges by its
+topic, as a frame with no role mark.
 
 The session relay delivers a role message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the
@@ -632,7 +700,11 @@ role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. The outbox judges the stream's
+acknowledgement of its forward the same way: one stored later than that fence and its
+acknowledgement window (`roleForwardAckTimeout`, 5 s) after the resolution is no delivery
+(`roles.ForwardStoredTooLate`), and the event stays pending for the next read to resolve the
+holder again. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -640,10 +712,18 @@ can reach both sessions.
 Every other `notifications.` topic the route takes is published to the stream and answered `200`
 once the stream stored it. The route forwards it to nobody: each session that registered the
 topic reads it from its own consumer, which the listener holding that session relays, whether the
-session was connected at the publish or comes back later. A topic no stream subject captures is
-refused `400` by name (`bus.ReachesNoSession`), since nothing would store it and no session would
-ever receive it, and no retry turns that into a delivery; `notifications.team.<name>`, the one
-namespace an agent names itself, is captured and stored.
+session was connected at the publish or comes back later. A topic that neither the deployed
+stream nor this build captures is refused `400` by name (`bus.ReachesNoSession`), since nothing
+would store it and no session would ever receive it, and no retry turns that into a delivery;
+`notifications.team.<name>`, the one namespace an agent names itself, is captured and stored. A
+topic this build stores is never sent over core NATS: while the deployed stream, as the
+listener's client last read its subjects, does not capture it (a hub move's quiesce, an
+operator's edit of the subjects), the bus sends nothing and refuses the publish
+(`bus.ErrSubjectNotDeployed`), and the route answers the `503` that says the message was not
+sent, with `Retry-After: 1` (the send route's answer for an agent subject above). The caller may
+send it again later: `envoy-client` sends it once more 250 ms later and then hands the caller the
+error, which no wait that short outlasts. The refusal ends at the client's next read of the
+subjects after the stream captures the topic again, at most 70 s when that read succeeds.
 
 The role lane, a core-NATS queue subscriber in each listener, carries a role topic a client
 publishes straight onto NATS rather than through the route. It resolves the holder at delivery
@@ -674,12 +754,80 @@ holder through the one resolution the listener's routes and its lane use (`roles
 Dispatch's events no longer cross `notifications.role.*`. That resolution writes nothing to the
 role bucket here either. A role with no claim, and one whose holder is `gone`, is kept on that
 role's kept lane for one hour for the holder that claims it next, as the listener's own copies
-are, and the `gone` holder's claim is left where it is for the role claim reaper. The listener's
-walk drops an outbox copy at the end of its hour and sends nobody a dead letter for it, so the
-person or session that wrote the Dispatch event is not told. An `unresponsive` holder's event
-stays pending and is retried, as a read that failed is, until that session answers or its
-record passes the gone horizon. A copy kept for it would wait one hour at most, and its end would
-tell nobody. The outbox raises no exception.
+are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
+copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
+an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
+it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
+counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
+lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
+`Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
+`Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
+stream's stored-message read its grant holds; `ListenerHost` and `Host` also subscribe every
+notification topic, so they receive it. No session's own set (`Session`, `SessionPattern`) can
+read it: no consumer filter takes it, no session may register an interest reaching it, those sets
+hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
+`Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
+30 seconds, and after every scan, with the stored-message read it already holds
+(`readKeptExpiries`). Its cursor in `outbox_kept_expiry_cursor` names the stream it counts in by
+the stream's identity (`bus.StreamIDMetadataKey`), which the outbox reads at most every 30
+seconds: a stream created again numbers its notices below a cursor of the one before it, so the
+outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
+notices from the first. It passes over a notice whose role is no valid role name, that was stored
+on another role's expiry subject, whose event was never routed to that role, or that does not
+name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
+message there that no read can decode, or another copy than Dispatch's copy of that event under
+the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
+first message the stream still holds, so the stream's retention did not remove a copy there: the
+stream removes messages oldest first by its age alone, since it discards new messages at its byte
+limit, and this assumes it has no per-subject limit, which would remove older messages mid-stream. A
+passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
+It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
+the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
+logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the
+event's copy again, read
+back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
+forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
+of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
+and appends a `role.undelivered` event on the event's own issue, document or project, written by
+a system actor so it reaches no role, which a person reads in that owner's history. It stops the
+same way, with fewer keeps, when a copy cannot be kept again: the stream's retention has removed
+it; the stream holds at its sequence a message no read can decode or another event's copy, which
+only a stream created again since the notice's record can hold there; or NATS refused its keep or
+its forward for good. Where the bound
+is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
+is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
+that cannot be kept again ends nothing while another copy of the event carries its delivery on,
+that is, while another expiry of it is still owed a keep or was kept, forwarded or skipped after
+this one was recorded; its row is settled `carried`, and nothing else is written. The outbox also
+notes the event in
+`outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of the
+document a document event is about: the first such note of a role on an issue opens a one-hour
+window, every later note of that role there joins it, and once the hour has ended the outbox
+posts one message naming every event of the window, through the issue message route's own writer
+(`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route either.
+The window is kept in Postgres, and its message is written under an id derived from the issue,
+the role, the moment the window opened and the events it names. So a restart does not lose the
+window, and a post made again after a crash between the post and its mark writes no second
+message. A note joins only a window whose message is not posted yet. A long window's events go in
+several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message passes
+the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document kept
+from before the name bound can have, is named by the document's id and the reference's length
+instead. Only the publisher hold's holder records a notice, claims an expiry or posts a window.
+Each write that may append a `role.undelivered` record - a notice's record, and a record of a
+copy that cannot be kept again - is one holder transaction: it reads the hold's row first with
+no lock, and locks it for share only as its last statement before the commit, rolling back when
+the hold is no longer its own. So a takeover of the hold either lands before that lock and makes
+the record roll back, or waits for its commit, and the new holder reads every write it made; and
+the hold's renewal never waits behind a record that is itself waiting on an issue's lock. The
+pass's other writes to `outbox_role_copy_expiries` are single statements that check the hold
+themselves. An event of
+no issue and
+of no issue's document never has a copy kept for a role, since the route is read from the issue
+alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
+`unresponsive` holder's event stays pending and is retried, as a read that failed is, until that
+session answers or its record passes the gone horizon: a copy kept for it would spend one of
+those three keeps on a session that is still alive. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from

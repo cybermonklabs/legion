@@ -35,6 +35,7 @@ import (
 // production's size, below the 4 times R2 of INFRA-4241 asks for. Five Coverage calls at once at
 // twice the size each took 9.9 s.
 func TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	loadSmallCoverageCorpus(t, database)

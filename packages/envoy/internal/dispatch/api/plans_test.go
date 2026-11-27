@@ -17,15 +17,13 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The plan of an issue's run and the rating of its retro, as the Legion daemon writes them
 // (PUT /api/v1/issues/{key}/plans/{id}, PUT /api/v1/issues/{key}/steps/{id}/rating), and the read
 // of a project's finished issues (GET /api/v1/projects/{key}/plans), driven over the credentials a
-// daemon and a person present.
+// daemon and a person present. plans_writer_test.go has who may write the plan and the rating.
 
 // at is the moment n minutes after the first step of every run below started.
 func at(n int) time.Time { return stepStart.Add(time.Duration(n) * time.Minute) }
@@ -890,36 +888,60 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 	}
 }
 
-// Only the daemon of the issue's project writes its plan, as it writes its steps (403 STEP_WRITER);
-// an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
-// appends no event and answers the plan as it stands.
-func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
+// A later version of an owner's plan replaces the plan of its run: written at version 1 and then
+// at version 2 under the run's one id, the write answers version 2, and the read of the project
+// lists the issue with version 2 and version 2's tasks. Version 1 arriving again after it, as a
+// write that arrives late, is answered 200 with the plan as it stands and changes nothing.
+func TestALaterVersionOfAnOwnersPlanReplacesThePlanOfItsRun(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
-	issues := createListedIssues(t, handler, "LEG", 2)
-	issue, closed := issues[0], issues[1]
-	path := "/api/v1/issues/" + issue + "/plans/"
-
-	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), defaultPlanBody(nil, 1), "alice")
-	expectRefusal(t, "a person's plan", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
-	other := putPlanRecord(t, handler, issue, uuid.NewString(), defaultPlanBody(map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + "OTHER"}, 1))
-	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG")
-	missing := putPlanRecord(t, handler, "LEG-999", uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
-	expectRefusal(t, "a plan of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
-
-	before := issueEventTypes(t, handler, issue)
-	id := uuid.NewString()
-	written := putPlanRecordOK(t, handler, issue, id, defaultPlanBody(daemonSessionOf("LEG"), 1))
-	if written.ID != id || written.Issue != issue || written.Generation != 1 || written.Source != "default" ||
-		written.ArtifactID != nil || written.Version != nil || len(written.Tasks) != 1 || !slices.Equal(written.Tasks[0].Steps, defaultStepLine) {
-		t.Fatalf("the plan write answers %s, want the default plan of %s", asJSON(t, written), issue)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	id, document := uuid.NewString(), uuid.NewString()
+	owner := func(version int, tasks []model.PlanTask) map[string]any {
+		return map[string]any{
+			"actor": daemonSessionOf("LEG"), "generation": 1, "source": "owner",
+			"artifact_id": document, "version": version, "tasks": tasks,
+		}
 	}
-	if after := issueEventTypes(t, handler, issue); !slices.Equal(before, after) {
-		t.Fatalf("the issue's events went from %v to %v, want no event for a plan write", before, after)
+	first := []model.PlanTask{{ID: "api", Steps: []string{"implementer", "tester", "reviewer"}}}
+	second := []model.PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "docs", Steps: []string{"implementer"}}}
+	want := planRecordLine(&model.PlanRecord{
+		ID: id, Issue: issue, Generation: 1, Source: "owner", ArtifactID: &document, Version: new(2), Tasks: second,
+	})
+
+	putPlanRecordOK(t, handler, issue, id, owner(1, first))
+	if written := putPlanRecordOK(t, handler, issue, id, owner(2, second)); planRecordLine(&written) != want {
+		t.Fatalf("version 2 of the plan answers\n%s\nwant\n%s", planRecordLine(&written), want)
+	}
+	if late := putPlanRecordOK(t, handler, issue, id, owner(1, first)); planRecordLine(&late) != want {
+		t.Fatalf("version 1 written after version 2 answers\n%s\nwant the plan as it stands\n%s", planRecordLine(&late), want)
 	}
 
-	closeIssue(t, handler, closed)
-	putPlanRecordOK(t, handler, closed, uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
+	closeIssue(t, handler, issue)
+	read := readPlans(t, handler, "LEG", "")
+	if len(read.Issues) != 1 || read.Issues[0].Issue != issue {
+		t.Fatalf("the read lists %d issues, want %s alone", len(read.Issues), issue)
+	}
+	if listed := planRecordLine(read.Issues[0].Plan); listed != want {
+		t.Fatalf("the read lists %s with the plan\n%s\nwant\n%s", issue, listed, want)
+	}
+}
+
+// planRecordLine is a plan as a reader receives it, on one line, so two compare whole and a
+// difference prints whole.
+func planRecordLine(plan *model.PlanRecord) string {
+	if plan == nil {
+		return "no plan"
+	}
+	artifact, version := "null", "null"
+	if plan.ArtifactID != nil {
+		artifact = *plan.ArtifactID
+	}
+	if plan.Version != nil {
+		version = strconv.Itoa(*plan.Version)
+	}
+	return fmt.Sprintf("%s %s gen %d %s artifact %s version %s tasks %v",
+		plan.ID, plan.Issue, plan.Generation, plan.Source, artifact, version, plan.Tasks)
 }
 
 // Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a step whose role is
@@ -982,30 +1004,6 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, issues[0], issues[1])
 }
 
-// A plan's source is one of the store's sources, which two enum tags restate for the schema: the
-// request's (planRecordInput.Source) and the answer's (model.PlanRecord.Source). The store's own list
-// is read from its refusal of a source it does not take, which names every source it takes, so a
-// source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
-func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
-	t.Parallel()
-	handler := newTestHandler(t)
-	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	response := putPlanRecord(t, handler, issue, uuid.NewString(),
-		withFields(defaultPlanBody(daemonSessionOf("LEG"), 1), map[string]any{"source": "no-such-source"}))
-	refusal := decodeBody[refusalAnswer](t, response)
-	_, listed, named := strings.Cut(refusal.Error, "one of ")
-	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {
-		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), codePlanInput)
-	}
-	sources := strings.Split(listed, ", ")
-	for _, shape := range []reflect.Type{reflect.TypeFor[planRecordInput](), reflect.TypeFor[model.PlanRecord]()} {
-		field, _ := shape.FieldByName("Source")
-		if tagged := strings.Split(field.Tag.Get("enum"), ","); !slices.Equal(tagged, sources) {
-			t.Errorf("%s.Source is tagged enum %v, want the store's sources %v", shape, tagged, sources)
-		}
-	}
-}
-
 // holdsPlan closes issue, which the read of a project lists only once it is finished, and answers
 // whether that read lists a plan for it: the plans of an issue a test wrote are seen only so. A read
 // that does not list the finished issue at all fails the test, since an answer of false would then
@@ -1022,4 +1020,34 @@ func holdsPlan(t *testing.T, handler http.Handler, issue string) bool {
 	}
 	t.Fatalf("the read of %s's plans does not list %s, which was just closed: %s", project, issue, asJSON(t, read.Issues))
 	return false
+}
+
+// The read of a project's finished issues answers the experiment and the variant the records of
+// each issue's newest run name, as the experiment route wrote them, and null for an issue whose
+// records name none.
+func TestTheReadOfAProjectNamesEachIssuesVariant(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	drawn := createTestIssue(t, handler, "LEG", "An issue of an experiment")
+	plain := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Rotate the signing key"}, "alice").Key
+	id := recordRuns(t, handler, "LEG", drawn, run{kind: "step", role: "implementer", place: 2, started: new(at(0))})[0]
+	recordRuns(t, handler, "LEG", plain, run{kind: "step", role: "implementer", place: 2, started: new(at(0))})
+	body := withFields(stepIdentity(daemonSessionOf("LEG")), map[string]any{"experiment": "planning", "variant": "b"})
+	if written := putExperiment(t, handler, drawn, id, body); written.Code != http.StatusOK {
+		t.Fatalf("write the variant of %s: status=%d body=%s, want 200", drawn, written.Code, written.Body.String())
+	}
+	closeIssue(t, handler, drawn)
+	closeIssue(t, handler, plain)
+
+	got := map[string]string{}
+	for _, issue := range readPlans(t, handler, "LEG", "").Issues {
+		named := "null/null"
+		if issue.Experiment != nil && issue.Variant != nil {
+			named = *issue.Experiment + "/" + *issue.Variant
+		}
+		got[issue.Issue] = named
+	}
+	if want := map[string]string{drawn: "planning/b", plain: "null/null"}; !maps.Equal(got, want) {
+		t.Fatalf("the read names the variants %v, want %v", got, want)
+	}
 }

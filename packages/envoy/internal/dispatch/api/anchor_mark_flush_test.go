@@ -30,6 +30,7 @@ const skippedFlushLog = "the flush is skipped"
 // it, and nothing orphaned - on a closed issue too, where this branch takes the version from the
 // stored document.
 func TestAMarkAnchoredCommentAsksItsFlushBeforeTheDocumentsLock(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, test := range []struct {
 		name   string
 		closed bool

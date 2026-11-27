@@ -3,7 +3,7 @@
 `migrations/` holds every `<version>_<name>.up.sql` boot applies in version order, with the `<version>_<name>.census.sql` each one declares for the pre-deploy census.
 `<version>` is one of the numbers the set grew up with, each of whose files keeps the number it landed with, and for every migration added since the UTC moment its author created it, `YYYYMMDDHHMMSS` (`date -u +%Y%m%d%H%M%S`):
 two pull requests open at once cannot both claim one timestamp, while both would claim the next number.
-This file sits beside that directory rather than in it because the directory is embedded with `all:` and `pgmigrate.Load` refuses a set holding a file named anything but `<version>_<name>.up.sql`, `.down.sql` or `.census.sql`, which would refuse every boot.
+This file sits beside that directory rather than in it because the directory is embedded with `all:`, and both readers of it, `pgmigrate.LoadBuilt` at boot and `pgmigrate.Load` in the store's tests, refuse a set holding a file named anything but `<version>_<name>.up.sql`, `.down.sql` or `.census.sql`, which would refuse every boot.
 
 Boot applies every version `schema_migrations` lacks, in version order, so a fresh database applies the whole set in that order, and a migration that merges below one a database has already applied still runs there, once.
 A deployed database applies a migration when the release carrying it deploys:
@@ -128,8 +128,9 @@ Strays of the columns the guard leaves free, because their writers move them bot
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated: a new version is a new row.
+A new version is a new row, and a row is updated in one case alone: the fill's re-read, after a fill of a lower rules version wrote (`textversions`' `rereadBatch`), writes again a post's row whose cut body that version read from another source than this build reads first, with its body, its `body_from` and its vector.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
+Its `rules` is the lowest rules version that wrote the rows up to the cursor; a batch of a higher version that finds a lower one stored reads again what that version passed over before it writes past the cursor, and only that re-read raises the column.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
 No migration writes a row of either table.
@@ -139,7 +140,8 @@ A version holds at the cut when it started at or before the cut, and no later ve
 So an item has at most one version at a time, and none before its first version started.
 The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
 It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
-Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
+`deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.

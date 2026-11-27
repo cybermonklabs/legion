@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
@@ -26,6 +25,7 @@ import (
 // request naming 16 is granted at once. A broker with no such client takes either
 // (requests.TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects).
 func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	dispatch := projectaccesstest.NewServer(t, nil, nil)
 	rig := ciphertest.NewRig(t, ciphertest.WithDispatchAccess(dispatch.URL, dispatch.Account, nil))
 	binary := buildAgentSecrets(t)
@@ -41,7 +41,7 @@ func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "reason-box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "reason-box-" + t.Name(), Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}

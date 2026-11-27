@@ -16,8 +16,10 @@
  *    no Docker socket, and they name that installation's directory.
  *
  *  Both keep the stack's data under the run's own temporary directory, which the pool makes and
- *  removes (`e2e/harness-pool.ts`), and both answer on 127.0.0.1: the server's dev sign-in
- *  refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
+ *  removes (`e2e/harness-pool.ts`), and both serve on a unix socket in a directory of the stack's
+ *  own there and on no TCP port: Postgres binds no socket it is handed, and a TCP port found free
+ *  and given to it by number is any other process's to take before it binds it. The server's dev
+ *  sign-in refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
  *  (`e2e/run-server.sh`).
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
@@ -170,15 +172,21 @@ async function serverSettings(env: NodeJS.ProcessEnv): Promise<string[]> {
 }
 /** How long a stack's server may take to answer `select 1`. */
 const readyMs = 120_000;
-/** How many ports a cluster tries before it gives up (see `freePort`). */
-const bindAttempts = 3;
+/** The port a stack's server is told, which names its socket file (`.s.PGSQL.5432`) in the
+ *  stack's own socket directory and binds nothing: each server listens on no TCP address. */
+const socketPort = 5432;
+/** The longest socket path a server can bind: `sun_path` of `struct sockaddr_un` holds 108 bytes
+ *  including its terminator, so 107 bytes of path. Measured on this Linux: a 107-byte path binds
+ *  and a 108-byte one is refused with EINVAL, "AF_UNIX path too long". */
+const socketPathLimit = 107;
 
 /** One stack's Postgres. */
 export interface StackDatabase {
   /** The `DATABASE_URL` this stack's servers and psql use. */
   readonly url: string;
-  /** The port it serves on, which the harness logs and no other stack shares. */
-  readonly port: number;
+  /** The directory of the unix socket it serves on, which the harness logs and no other stack
+   *  shares. */
+  readonly socketDirectory: string;
   /** Stops the server. `keepLog` asks the image provider to print the container's whole log on
    *  stderr before the container goes, since it is the one record of what that server said: the
    *  pool asks for it for a run whose logs it keeps, a failed one, and for a start that failed or
@@ -200,29 +208,40 @@ export interface StackPostgres {
   start(index: number, signal?: AbortSignal): Promise<StackDatabase>;
 }
 
-/** A port the OS chose and nothing holds. Another listener can take it between here and the
- *  moment the server binds it, which is why `startCluster` and the image provider try another
- *  port rather than failing: a Postgres server cannot inherit the socket the way the harness's
- *  own listeners do (`scripts/e2e/lib/held-port.py`). */
-async function freePort(): Promise<number> {
-  const socket = createServer();
-  const chosen = Promise.withResolvers<number>();
-  socket.once("error", chosen.reject);
-  socket.listen(0, "127.0.0.1", () => {
-    const address = socket.address();
-    if (address === null || typeof address === "string") {
-      chosen.reject(new Error("the OS named no port for a listening socket"));
-    } else {
-      chosen.resolve(address.port);
-    }
-  });
-  try {
-    return await chosen.promise;
-  } finally {
-    const closed = Promise.withResolvers<void>();
-    socket.close(() => closed.resolve());
-    await closed.promise;
+/** The `DATABASE_URL` of `database` on the server whose socket is in `socketDirectory`, signed in
+ *  as `user` (`user:password`): no host in the URL's authority, and the directory as `host` in
+ *  its query, the form libpq and pgx both read as a unix socket there. The directory is
+ *  percent-encoded whole, so neither reads a space, a `+` or a `/` in it as anything else. A
+ *  directory holding a comma is refused: pgx and libpq read `host` as a comma-separated list of
+ *  hosts however the comma is encoded, so no URL can name that directory to them. A directory
+ *  whose socket file would pass `socketPathLimit` is refused too, naming the path and its length:
+ *  the binaries provider's own `pg_ctl` says so at once, but the image provider's server binds
+ *  the path inside its container, where nothing this process reads says why, so the run would
+ *  otherwise spend `ready`'s {@link readyMs} on a server that can never answer and then show
+ *  psql's "too long" from the host side. Exported for `__tests__/harness-postgres-darwin.test.ts`,
+ *  which holds both refusals: a start would reach this only after `go` has printed the connection
+ *  limit and docker has pulled, which is minutes of work this says nothing about. */
+export function socketUrl(user: string, database: string, socketDirectory: string): string {
+  if (socketDirectory.includes(",")) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: the stack's socket directory ${socketDirectory} ` +
+        "holds a comma, which pgx and libpq read as a list of hosts: run it with a TMPDIR whose " +
+        "path holds none."
+    );
   }
+  const socketPath = join(socketDirectory, `.s.PGSQL.${socketPort}`);
+  const length = Buffer.byteLength(socketPath);
+  if (length > socketPathLimit) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: the stack's socket ${socketPath} is ${length} ` +
+        `bytes, past the ${socketPathLimit} a unix socket path holds, so no server could bind ` +
+        "it: run it with a shorter TMPDIR."
+    );
+  }
+  return (
+    `postgres://${user}@/${database}?host=${encodeURIComponent(socketDirectory)}` +
+    `&port=${socketPort}&sslmode=disable`
+  );
 }
 
 /** One stack's server, with a stop under way reported as the interruption it is: psql rejects a
@@ -241,25 +260,40 @@ async function stackOf(
 }
 
 /** Waits until `url` answers `select 1`: a server that is up has read its data directory, run
- *  its own recovery and opened its port. */
-async function ready(url: string, what: string, signal?: AbortSignal): Promise<void> {
+ *  its own recovery and opened its socket. With `pidOne`, it waits until the server that answers
+ *  is its container's process 1, read from the first line of its `postmaster.pid`: the image's
+ *  entrypoint first runs a server of its own on the same socket to make the database, stops it,
+ *  and only then hands the container to the server it was given. A server on a TCP port the
+ *  entrypoint's own never listens on was the only one to answer there; on the socket both do. */
+async function ready(
+  url: string,
+  what: string,
+  signal?: AbortSignal,
+  pidOne = false
+): Promise<void> {
   const deadline = Date.now() + readyMs;
   for (;;) {
+    let failure: unknown;
     try {
-      await sqlAt(url, ["select 1"], signal);
-      return;
+      const statement = pidOne
+        ? "select split_part(pg_read_file('postmaster.pid'), chr(10), 1)"
+        : "select 1";
+      const answer = (await sqlAt(url, [statement], signal)).trim();
+      if (!pidOne || answer === "1") return;
+      failure = `the server that answers is process ${answer}, the entrypoint's own, not process 1`;
     } catch (error) {
       // The psql above was killed by the signal, or the one before it was: a stopping run waits
       // out none of the deadline that is left.
       if (signal?.aborted === true) throw new Interrupted();
-      if (Date.now() > deadline) {
-        throw new Error(
-          `The Dispatch e2e harness cannot start: ${what} did not answer within ` +
-            `${readyMs / 1000} s: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-      await sleep(200);
+      failure = error instanceof Error ? error.message : String(error);
     }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `The Dispatch e2e harness cannot start: ${what} did not answer within ` +
+          `${readyMs / 1000} s: ${String(failure)}`
+      );
+    }
+    await sleep(200);
   }
 }
 
@@ -398,11 +432,11 @@ function binariesProvider(
       server
     );
     try {
-      const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
+      const admin = socketUrl("postgres", "postgres", templateDir);
       await ready(admin, "the stacks' Postgres template", signal);
       await sqlAt(admin, [`create database ${databaseName}`], signal);
       await sqlAt(
-        `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`,
+        socketUrl("postgres", databaseName, templateDir),
         ["create extension vector"],
         signal
       );
@@ -433,13 +467,13 @@ function binariesProvider(
         } catch (error) {
           // The postmaster is up from `startCluster` on, and a wait the run's signal or the
           // deadline ended returns no `StackDatabase`, so no caller holds a stop for it: the
-          // pool would delete this data directory under a server still serving a loopback port.
-          // A stop that fails here is a server that is already gone, which is why the failure
-          // the caller sees is the wait's.
+          // pool would delete this data directory under a server still serving. A stop that fails
+          // here is a server that is already gone, which is why the failure the caller sees is the
+          // wait's.
           await stop().catch(() => {});
           throw error;
         }
-        return { port, url, stop };
+        return { socketDirectory: stackDir, url, stop };
       }),
   };
 }
@@ -461,11 +495,29 @@ async function containerLog(container: string, tail: "20" | "all" = "20"): Promi
 
 function imageProvider(
   image: string,
+  dir: string,
   run: string,
   env: NodeJS.ProcessEnv,
   reaper: Reaper,
   stall: Stall | undefined
 ): StackPostgres {
+  // Each stack's server answers on a unix socket in a directory of this machine that docker mounts
+  // into its container. A docker engine that runs its containers in a VM carries no unix socket
+  // across that mount, so the socket would never answer: on macOS, where every engine is such a
+  // VM (Docker Desktop, colima), the run is refused here, by name, before any container starts.
+  // The same holds for a VM-backed engine on Linux, which this cannot read from the platform:
+  // such a run fails at the ready wait with psql finding no socket, and the refusal below names
+  // the variable that runs a local Postgres instead.
+  if (process.platform === "darwin") {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${pgImageVariable} serves each stack's Postgres on ` +
+        "a unix socket in a directory docker mounts into the container, and a docker engine in a " +
+        "VM (Docker Desktop, colima, and every engine on macOS) carries no unix socket out of " +
+        "that VM. Name a local Postgres installation's " +
+        `directory, the one holding initdb and pg_ctl, in ${pgBinVariable} instead, and unset ` +
+        `${pgImageVariable}.`
+    );
+  }
   // The stall's directory, read-only at its own path, and the library preloaded into every
   // process of the container, the server's among them.
   const stalled =
@@ -488,7 +540,6 @@ function imageProvider(
     start: (index, signal) =>
       stackOf(signal, async (): Promise<StackDatabase> => {
         const what = `stack ${index}'s Postgres`;
-        let refused = "";
         const started = await serverSettings(env);
         await stall?.built();
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
@@ -574,10 +625,38 @@ function imageProvider(
             },
           };
         }
-        throw new Error(
-          `The Dispatch e2e harness cannot start: ${what} got none of ${bindAttempts} ports from ` +
-            `${image}: ${refused}`
-        );
+        try {
+          await ready(url, what, signal, true);
+          // The image carries the extension; the database the image made still has to install it,
+          // as migration 0072 needs it.
+          await sqlAt(url, ["create extension if not exists vector"], signal);
+        } catch (error) {
+          // It is the server inside that never answered. Its own last lines are read before it is
+          // removed.
+          const said = await containerLog(container);
+          await remove();
+          throw new Error(
+            `The Dispatch e2e harness cannot start: ${what} came up from ${image} on its socket in ` +
+              `${socketDirectory} and then ${error instanceof Error ? error.message : String(error)}; ` +
+              `the container said: ${said}`
+          );
+        }
+        return {
+          socketDirectory,
+          url,
+          stop: async (keepLog) => {
+            // The log of a `services:` container, which GitHub printed at the end of the job,
+            // is what merge-group run 44456291758's failure was read from; a stack's
+            // container goes with its run, so a failed run prints it here first.
+            if (keepLog) {
+              console.error(
+                `e2e/harness-postgres.ts: ${what} (container ${container}) logged:\n` +
+                  (await containerLog(container, "all"))
+              );
+            }
+            await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+          },
+        };
       }),
   };
 }

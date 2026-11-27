@@ -24,6 +24,13 @@ import (
 
 const requestTimeout = 10 * time.Second
 
+// listenerServer is how a request's error names the Envoy listener when its address does not parse
+// (redact.RequestError). envoy_url can carry a user name and a password, and a dial's or a
+// resolver's error names the host, which is a password's tail when it holds an unencoded "@": every
+// request that got no answer is named through redact.RequestError, which unwraps to the request's
+// own error.
+const listenerServer = "the Envoy listener"
+
 // refusalBodyLimit bounds how much of a refused publish's body the error carries: the listener
 // answers `{"error": ...}` (packages/envoy/cmd/listener/api.go writeJSONError).
 const refusalBodyLimit = 4096
@@ -131,38 +138,48 @@ const RoleTopicPrefix = "notifications.role."
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
 // daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
-// every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
-// triage handed to Legion (admission), a root that keeps its admission slot while its architect
-// waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
-// the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
-// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
-// outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
-// tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
-// stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), one
-// of the controller's own programs its pod's memory guard ended (`memory-guard-kill`, workflow's
-// controllerMemoryGuardKill, once for each kill), and
-// the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
-// (admit.Admission.wakeController and its callers say when; the tick alone carries
+// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own,
+// and only the kinds named here (#4065): a root in triage handed to Legion (`triage`, admission);
+// the slot wakes admission sends through wakeController, `slot-free` and `todo`, on which the
+// controller runs its prioritization pass and its deployment's intake, and `tick`, its periodic
+// wake (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
-// admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
-// `todo` or `awaiting-person`: it names the free slots in its summary and report, and work reaches
-// Legion only when a person hands it over or a role reports a clear defect the controller files
-// (skill://legion-controller, "Free slots"). It sits among the issue topics, where no
-// issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it
-// as an interest while it holds the controller role (legionControllerNoticeSubject,
+// admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
+// admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
+// work the daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for
+// each arm and run of its tree); a person's decision on a tree Legion is not
+// running (`parked-decision`, the outbox's parkDecision and workflow's relayParkedDecision); a
+// hold the tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate);
+// a tree architect's own failed claim while its root is not done (`worker-died`, workflow's
+// claimFailed), and the stall of that architect whose replacement failed its claim over a stop
+// the runtime did not confirm (`worker-stalled`, the daemon's enqueueStallNotice), both because
+// every other notice of the tree reaches that architect; an issue whose pod an update round
+// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates); a start the session store
+// could not answer (`session-store-fault`, workflow's
+// sessionStoreFault); a claim whose turns keep ending in a provider error (`provider-errors`,
+// supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
+// is the tree root's architect's own, and a child's own architect's run is told to the architect
+// above that child; one of the controller's own programs its pod's memory guard ended
+// (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once for each kill); the messages
+// the intake gave up, counted in one notice that waits a minute for the give-ups after its first
+// (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), which the controller replays or
+// discards (its replay_give_up and discard_give_up); and the
+// operator's pause and resume of the project (`project-paused` and `project-resumed`,
+// record.ProjectPause, queued in the store's Pause and Resume), of which the controller's own pause
+// or resume tells it nothing. A free slot alone is no reason for the controller to take an issue:
+// work reaches Legion only when a person hands it over or a role reports a clear defect the
+// controller files (skill://legion-controller, "Free slots"). It sits among the issue topics, where
+// no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers
+// it as an interest while it holds the controller role (legionControllerNoticeSubject,
 // packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
 // (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
-// retains it and the controller's session receives it from its own JetStream consumer, whose
-// filter that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets
-// the project's controller role holder register it, and no other session), so a notice published
-// while that session was away is delivered when it registers again, its consumer keeping the
-// place it acknowledged. A session new to the lane is given a consumer at the stream's end, so a
-// freshly started controller is handed none of what came before it and learns that from `legion
-// state` and Dispatch.
+// retains it and the controller's session receives it from its own JetStream consumer, whose filter
+// that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets the
+// project's controller role holder register it, and no other session), so a notice published while
+// that session was away is delivered when it registers again, its consumer keeping the place it
+// acknowledged. A session new to the lane is given a consumer at the stream's end, so a freshly
+// started controller is handed none of what came before it and learns that from `legion state` and
+// Dispatch.
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
@@ -212,6 +229,11 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 //     — the claim a released role leaves standing until the listener's reaper frees it — keeping
 //     nothing, as it answers keep: false: ErrHolderUnresponsive for a holder_state of
 //     unresponsive, and ErrNoHolder for any other state, gone among them.
+//   - 404 unclaimed or holder_lapsed is also what a listener that keeps nothing for a publish
+//     naming no source session answers a role no live session holds, since no notice of an expired
+//     copy could reach the sender; this publisher names none, so against such a listener this is
+//     the answer for every role with no live holder, read as above (ErrNoHolder or
+//     ErrHolderUnresponsive), and the caller is the message's keeper.
 //   - Every other answer is the error Publish makes of it.
 //
 // A repeat of the same dedupe key while its copy is still on the lane inside its hour is answered
@@ -242,9 +264,10 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if err != nil {
 		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
+	route := p.baseURL + "/v1/messages/publish"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -252,7 +275,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, fmt.Errorf("publish notice to %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
@@ -375,14 +398,14 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
@@ -417,26 +440,28 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
 // one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
 // the listener gives the same way however often it is asked — a body read whole that does not
-// decode, a 404 naming no holder under any reason but unclaimed, and any status but 200, 404 and
-// the transient ones — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
-// reach, an answer whose body could not be read to its end (unreadAnswer), and a 429, 502, 503
-// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear. The
+// decode, a 404 naming no holder under any reason but unclaimed, its own 500
+// (listenerwire.FaultStatus, a claim record it cannot decode on this route), and any status but
+// 200, 404 and an outage — is a *RoleLookupRefused, a fault an operator fixes. A listener it
+// cannot reach, an answer whose body could not be read to its end (unreadAnswer), and every
+// listener outage status (listenerwire.Outage, which says where each comes from) are plain errors
+// the caller waits on and asks again about; the wait is bounded by the caller's own. The
 // listener answers from a direct get of its role-claim bucket, which a lagging copy of the bucket
-// can answer for the milliseconds after a claim write: the race any read of the bucket has, and
-// a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
+// can answer for the milliseconds after a claim write: the race any read of the bucket has, and a
+// forget made on such an answer is no worse than one made a moment earlier (review round 16 of
 // #4220, #64).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, err)
+		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
+		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	refused := func(reason string) error {
@@ -454,8 +479,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
 	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
-	switch response.StatusCode {
-	case http.StatusNotFound:
+	if response.StatusCode == http.StatusNotFound {
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
@@ -470,7 +494,8 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 			return "", "", nil
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	}
+	if listenerwire.Outage(response.StatusCode) {
 		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
 	}
 	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
@@ -478,10 +503,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
 // asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body read
-// whole that does not decode, or a 404 naming no holder under a reason it does not know. Status is
-// the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
-// an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
-// logs it as the fault it is rather than as a wait.
+// whole that does not decode, a 404 naming no holder under a reason it does not know, or any other
+// status that is neither an answer it reads nor an outage. Status is the answer's HTTP status and
+// Reason what was wrong with it. Asking again changes nothing until an operator fixes the listener
+// or the daemon's bearer, so a caller that retries on a backoff logs it as the fault it is rather
+// than as a wait.
 type RoleLookupRefused struct {
 	Status int
 	Reason string
@@ -574,14 +600,14 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {

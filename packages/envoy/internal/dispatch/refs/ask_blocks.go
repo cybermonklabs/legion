@@ -184,7 +184,19 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r, answered *Reader) [
 //
 // The parts are read through r, the Reader of the write that holds the ask's text, which the
 // write that reconciled the ask's own question through it passes on (PlanReplace, ReindexOwed),
-// so one write asks the database once per kind for the question and its parts together.
+// so one write asks the database once per kind for the question and its parts together. Each
+// part's stored excerpt is cut around the dashboard URLs of r's deployment (BlockExcerpt).
+//
+// The parts are the rest of the ask's text beside its question, so the write that queues them
+// is where it settles what the forms queue holds for the ask (RefsFormsOwed), after the parts'
+// own delete from ask_block_refs, which owes that queue the ask (migration 20261117025910), and
+// after the question's delete from refs (20261117025906). A write that queued the question's
+// reconciliation before the parts settles it in the statement that ends the parts' index
+// (ItemIndexing.SettlingForms); one that writes the parts alone - an answer, a resolution, a
+// restoration, the block index of an owed ask - reconciles the question's own references after
+// them, dated `at`, and settles it there (Replacement.SettlingForms). Either way the ask is left
+// owing nothing once this build has indexed its whole text, and no write of it leaves the
+// question's references to a build that read the ask with another grammar.
 //
 // An ask whose row carries an edited_at is planned as edited (ItemIndex.Edited), which is read
 // from the row rather than from the index: an edit's own update of edited_at is queued and has
@@ -239,9 +251,10 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 		answered = r.writtenBy(askAnswerer(*ask.Answer))
 	}
 	return itemBlockSource{
-		blocks:  parts,
-		bodySum: sum,
-		madeBy:  makers,
+		blocks:    parts,
+		bodySum:   sum,
+		serverURL: r.serverURL,
+		madeBy:    makers,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
 			return ids, counter, nil
@@ -333,6 +346,15 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID string, origins text.Or
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}
+	// The question's edges were read beside the parts' links when the ask's index was read
+	// (ItemIndex.HeldRefs), so its reconciliation is planned against them with no read of its own.
+	found := text.Refs(resolve.Mentions(ask.Question))
+	if held, read := index.HeldRefs(); read {
+		repair.refs = PlanReplaceFrom(held, string(ItemAsk), askID, found, &writtenAt)
+	} else if repair.refs, err = PlanReplace(ctx, q, string(ItemAsk), askID, found, &writtenAt); err != nil {
+		return ItemRepair{}, fmt.Errorf("index ask %s: %w", askID, err)
+	}
+	repair.refs, repair.mentions = repair.refs.SettlingForms(), true
 	return repair, nil
 }
 

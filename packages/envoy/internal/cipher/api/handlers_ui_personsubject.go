@@ -33,8 +33,8 @@ type personSubjectRevokedResponse = wire.PersonSubjectRevokedResponse
 // which might be its. What the holder made, and a service's login, are untouched. A repeat ends
 // nothing and answers zeros. A revoke whose session generation is below the greatest one a revoke
 // applied at the address carried was superseded by a later replacement there: it writes and ends
-// nothing, and answers state "superseded" with that greatest generation (superseded_by), which
-// Dispatch leaves owed and reports, since its own generations for the address are then below the
+// nothing, and answers wire.PersonSubjectSuperseded with that greatest generation
+// (superseded_by), so its caller can tell that its own generations for the address are below the
 // broker's; the line it logs names both generations.
 //
 // Every field is required, 400 otherwise (SESSION_GENERATION_REQUIRED for the session
@@ -42,7 +42,7 @@ type personSubjectRevokedResponse = wire.PersonSubjectRevokedResponse
 // from an earlier move, the address coming back to it, stops refusing it. The session generation is
 // recorded beside the replaced account, so an approval Dispatch checked at an earlier generation is
 // refused (machine.Service.ApplyDecision), and decides whether a later replacement superseded the
-// revoke. No Dispatch sends this route without it: the route and the field came in one change. The
+// revoke. The route and the field came in one change, so no caller sends the route without it. The
 // issuer is compared as oidc.CanonicalIssuer spells it, so Google's two spellings are one. The
 // address and the accounts are the caller's word, as every relayed revoke takes its person. That
 // word does more than take power away: naming the holder lifts the refusal an earlier revoke
@@ -89,7 +89,7 @@ func (s *server) revokePersonSubject(w http.ResponseWriter, r *http.Request, cal
 		slog.Warn("person subject revocation superseded: a later replacement at the address has been applied, so this one changed nothing",
 			answer.ClipFields([]any{"caller", callerName, "person", person, "issuer", issuer, "subject", body.Subject,
 				"holder_subject", body.HolderSubject, "session_generation", *body.SessionGeneration, "superseded_by", *revoked.SupersededBy})...)
-		writeJSON(w, http.StatusOK, personSubjectRevokedResponse{State: "superseded", SupersededBy: revoked.SupersededBy})
+		writeJSON(w, http.StatusOK, personSubjectRevokedResponse{State: wire.PersonSubjectSuperseded, SupersededBy: revoked.SupersededBy})
 		return
 	}
 	slog.Info("person subject revocation relayed", answer.ClipFields([]any{"caller", callerName, "person", person, "issuer", issuer,
@@ -97,7 +97,7 @@ func (s *server) revokePersonSubject(w http.ResponseWriter, r *http.Request, cal
 		"signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.Tokens,
 		"approval_sessions", revoked.ApprovalSessions})...)
 	writeJSON(w, http.StatusOK, personSubjectRevokedResponse{
-		State: "revoked", SignIns: revoked.SignIns, MachineLogins: revoked.MachineLogins, TokensEnded: revoked.Tokens,
+		State: wire.PersonSubjectRevoked, SignIns: revoked.SignIns, MachineLogins: revoked.MachineLogins, TokensEnded: revoked.Tokens,
 		ApprovalSessions: revoked.ApprovalSessions,
 	})
 }

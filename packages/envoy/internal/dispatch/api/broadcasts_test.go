@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // broadcastListener is a fake Envoy listener for the broadcast tests: it advertises the given
@@ -914,10 +915,10 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 
 // awaitBroadcastDeliveries reads the broadcast back until no recipient's attempt is pending:
 // delivery runs behind the create response, so a test that asserts on settled attempts waits for it.
+// The wait's one bound is the test binary's deadline less testwait's margin.
 func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) broadcastResponse {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	return testwait.UntilPolling(t, 20*time.Millisecond, "every recipient of the broadcast to hold a settled attempt (the broadcast last read)", func() (broadcastResponse, bool) {
 		read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+id, nil, "alice")
 		if read.Code != http.StatusOK {
 			t.Fatalf("read broadcast: status=%d body=%s", read.Code, read.Body.String())
@@ -929,14 +930,8 @@ func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) bro
 				settled = false
 			}
 		}
-		if settled {
-			return stored
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("recipients still without a settled attempt: %#v", stored.Recipients)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return stored, settled
+	})
 }
 
 // LEGION-233 review, P1. The send answers as soon as the messages are committed and delivers
@@ -1065,14 +1060,14 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 
 	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
 		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner"},
 	}, "alice"))
 	message := created.Recipients[0].Message.ID
 
-	<-parked
+	testwait.Receive(t, "the broadcast's worker to park on its attempt", parked)
 	// The worker is held. From here the listener answers everyone else at once, so the human's
 	// own send is never the one being held.
 	listenerState.Lock()
@@ -1089,24 +1084,23 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}
 	close(release)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var pending int
-		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from message_deliveries where message_id = $1 and state = 'pending'`,
-			message).Scan(&pending); err != nil {
-			t.Fatalf("count pending attempts: %v", err)
-		}
-		if pending == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("an attempt is still pending; the worker never finished")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The broadcast's delivery runs as the server's detached work (broadcasts.go): once that has
+	// returned, the worker has done all it will, a send of an attempt it wrongly opened included.
+	idle := make(chan struct{})
+	go func() {
+		served.detached.wait()
+		close(idle)
+	}()
+	testwait.Receive(t, "the broadcast's worker to finish", idle)
+	var pending int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from message_deliveries where message_id = $1 and state = 'pending'`,
+		message).Scan(&pending); err != nil {
+		t.Fatalf("count pending attempts: %v", err)
 	}
-	// Give a worker that wrongly opened an attempt of its own time to send it.
-	time.Sleep(200 * time.Millisecond)
+	if pending != 0 {
+		t.Fatalf("%d attempts are still pending once the worker finished", pending)
+	}
 
 	listenerState.Lock()
 	sends := append([]string(nil), listenerState.sends...)

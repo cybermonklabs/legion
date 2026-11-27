@@ -116,7 +116,9 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func())
 		"whole suite (testlimits.ServerConnections + the reserve). A smaller one does not fail here but "+
 		"later, as 53300 refusals inside a room, a lease or a socket.\n"+
 		"To fix it:\n"+
-		"- In CI, the lane runs .github/scripts/pg-connection-ceiling.sh before its tests.\n"+
+		"- In CI, raise max_connections in .github/scripts/postgres-service-settings.sh and in every "+
+		"Postgres service's command: line under .github/workflows (check-workflow-files.sh names each "+
+		"one that differs); the lane's .github/scripts/pg-connection-ceiling.sh checks it before its tests.\n"+
 		"- On a server you own, restart it with -c max_connections=%d.\n"+
 		"- In a Legion pod whose legion-testpg still starts the server at 100 connections (an image "+
 		"built before legion-testpg was sized from testlimits), start a Postgres of your own on the "+

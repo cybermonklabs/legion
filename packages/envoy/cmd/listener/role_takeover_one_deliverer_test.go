@@ -316,6 +316,7 @@ func requireNoKeptCopyEnded(t *testing.T, rig *delivererRig) {
 // as bytes (hearMarks), so a frame that reached one is counted by its mark however little of it a
 // reader of JSON takes, with the issued_at it carries.
 func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("1 after a takeover the previous holder registers again and receives none of the role's messages, each reaches the new holder, one relay line per message", func(t *testing.T) {
 		rig := newDelivererRig(t)
 		const (
@@ -465,8 +466,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		eventID := rig.publishToRole(t, role, "while the claim cannot be read")
 		seq := rig.lastSeqOf(t, holder, eventID)
 		// Two refused reads: the frame was given back once and delivered to the relay again.
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
-			t.Errorf("the session relay read role %s's claim %d times within 10s of the message's store, want at least two", role, rig.claimReads.Load())
+		if !testwait.Holds(listenerWaitBound(t), 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
+			t.Errorf("the session relay read role %s's claim %d times in time of the message's store, want at least two", role, rig.claimReads.Load())
 		}
 		requireNoneHeard(t, heard, "the holder "+holder+" while its role's claim could not be read", eventID)
 		if rig.ackedThrough(holder, seq) {
@@ -475,10 +476,10 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 
 		rig.refuseClaimRead.Store(false)
 		if !heard.await(30*time.Second, eventID) {
-			t.Errorf("the holder %s did not receive event %s within 30s of its role's claim answering again: it received %v", holder, eventID, heard.all())
+			t.Errorf("the holder %s did not receive event %s in time of its role's claim answering again: it received %v", holder, eventID, heard.all())
 		}
 		if !rig.awaitAckedThrough(holder, seq, 15*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its delivery", holder, seq)
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d in time of its delivery", holder, seq)
 		}
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, holder, heard)
 	})
@@ -507,8 +508,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		rig.refuseCopy.Store(true)
 		late := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"late-forward-"+id.New())
 		seq := rig.storeOn(t, previous, late)
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
-			t.Errorf("the session relay tried to copy the role message %d times within 10s of its store, want at least two", rig.copies.Load())
+		if !testwait.Holds(listenerWaitBound(t), 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
+			t.Errorf("the session relay tried to copy the role message %d times in time of its store, want at least two", rig.copies.Load())
 		}
 		requireNoneHeard(t, heardPrevious, "the previous holder "+previous+" while the copy could not be stored", late.EventID)
 		if rig.ackedThrough(previous, seq) {
@@ -520,7 +521,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 
 		rig.refuseCopy.Store(false)
 		if !rig.awaitAckedThrough(previous, seq, 30*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 30s of the copy's publish answering again", previous, seq)
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d in time of the copy's publish answering again", previous, seq)
 		}
 		if copies := rig.keptCopies(t, role, late.EventID); copies != 1 {
 			t.Errorf("role %s's kept lane holds %d copies of event %s once the copy could be stored, want exactly one", role, copies, late.EventID)
@@ -552,10 +553,23 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		}
 		// Each copy the walk forwards is stored on the holder's own subject, and the holder's
 		// relay reads the role's claim before it sends that frame. The holder has received
-		// every copy before row 4 counts claim reads, so none of those reads falls in its count.
+		// every copy, the role message stored after them and the message to itself below, before
+		// row 4 counts claim reads, so none of those reads falls in its count.
 		if !heardHolder.awaitMarks(30*time.Second, frames...) {
 			t.Errorf("the holder %s did not receive every role message from role %s's kept lane within 30s: it received %v", holder, role, heardHolder.allMarks())
 		}
+		// A copy forwarded twice can reach the holder after the first copy of every frame has,
+		// so the holder's counts below are read once it received a role message stored after
+		// the frames, which takes their path behind them (laterRoleMessage) and so reaches it
+		// after any such copy the relay or the walk made before that message's, and then a
+		// message to itself stored once the handover ended, which reaches it after any the
+		// handover made later (awaitHandoverReceived).
+		later := laterRoleMessage(t, role)
+		rig.storeFrames(t, sessionID, []markedFrame{later})
+		if !heardHolder.awaitMarks(30*time.Second, later) {
+			t.Errorf("the holder %s did not receive %q, stored after the frames, within 30s: it received %v", holder, later, heardHolder.allMarks())
+		}
+		rig.awaitHandoverReceived(t, role, holder, heardHolder)
 		// The message to the session came after the role messages in stream order, so the relay
 		// had judged each of them when the session received it.
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
@@ -567,7 +581,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 				// The holder answers each frame done at once, so its consumer sends a frame again
 				// only after its ack wait (bus.SessionConsumerAckWait, 60s) passes with no
 				// acknowledgement: a second frame here is a second copy forwarded, which the
-				// copy's message id rules out.
+				// copy's message id rules out, and it would have reached the holder before the
+				// role message stored after the frames did.
 				if n := heardHolder.countMark(frame.mark); n != 1 {
 					t.Errorf("the holder %s received %q %d times, want once: it received %v", holder, frame, n, heardHolder.allMarks())
 				}
@@ -789,10 +804,12 @@ func newRelayBench(b *testing.B) *relayBench {
 		roleDeadLetters:     met.NewCounter("bench_role_dead_letters", "bench"),
 		roleKeptUndecodable: met.NewCounter("bench_role_kept_undecodable", "bench"),
 		publishDeadLetter:   client.PublishStoredAs,
+		publishExpiryNotice: client.PublishKeptCopyExpiry,
 		keepPublish:         client.PublishStoredAck,
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		consumerGrant:       &consumerGrantAnswer{},
 	})
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
@@ -801,6 +818,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		b.Fatalf("open the session-consumer connection: %v", err)
 	}
 	b.Cleanup(delivery.close)
+	cfg.consumerGrant.set(delivery.holdsConsumerGrant)
 	relays, err := startSessionRelays(delivery, cfg)
 	if err != nil {
 		b.Fatalf("start the session relays: %v", err)

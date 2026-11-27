@@ -1,15 +1,19 @@
-// broker_token_approve_test.go holds that no token the secrets broker issued holds the approve
-// scope, whatever its project scope, so every route that needs approve refuses each of them at the
-// gate, while the browser session of the person a token names is answered there as before. A
-// broker token is made from a file on the machine that holds it (a machine login or a person's
-// sign-in), so whoever copies that file holds it; approve settles what only the person settles, so
-// it needs the person's browser or a personal token they chose to give it. The answer to an
-// approval request checks approve inside its handler, and its test is
-// TestAnsweringAnApprovalAskNeedsTheApproveScope's broker row.
+// broker_token_approve_test.go holds that no token the secrets broker issued for a machine to hold
+// holds the approve scope, whatever its project scope, so every route that needs approve refuses
+// each of them at the gate, while the browser session of the person a token names is answered
+// there as before. The one broker-issued token that holds approve, the approve-only token the
+// broker's proxy spends and no machine holds, is approve_only_token_test.go's. A broker token is
+// made from a file on the machine that holds it (a machine login or a person's sign-in), so
+// whoever copies that file holds it; approve settles what only the person settles, so it needs
+// the person's browser, a personal token they chose to give it, or that approve-only token. The
+// answer to an approval request checks approve inside its handler, and its test is
+// TestAnsweringAnApprovalAskNeedsTheApproveScope's broker row. A job's token does not hold person
+// either, since it names no person, so every route that needs person refuses it at the same gate.
 package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -32,14 +36,17 @@ type approveTestToken struct {
 }
 
 // approveTestTokens is every kind of token the broker mints for a session: one acting as its
-// person, refused for approve itself; one an operator's entry mapped to one project and one of a
-// machine nobody signed in on, which hold no scope and are refused for person, the row's first;
-// and a read-only one, which the read-only gate answers before any scope is read.
+// person, refused for approve itself; one an operator's entry mapped to one project, one of a
+// machine nobody signed in on and a job's two, named and public, which hold no scope and are
+// refused for person, the row's first; and a read-only one, which the read-only gate answers
+// before any scope is read.
 func approveTestTokens(jkt string) []approveTestToken {
 	return []approveTestToken{
 		{"a person-scoped broker token", "a-person-scoped-token", personScopedTokenAnswer(jkt), codeScopeRequired, model.ScopeApprove},
 		{"a named broker token", "a-named-token", liveNamedToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a service-only broker token", "a-service-only-token", serviceOnlyToken(jkt), codeScopeRequired, model.ScopePerson},
+		{"a job's named broker token", "a-job-named-token", liveJobNamedToken(jkt), codeScopeRequired, model.ScopePerson},
+		{"a job's public broker token", "a-job-public-token", liveJobPublicToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a read-only broker token", "a-read-only-token", readOnlyToken(jkt), contracts.DispatchReadOnlyToken, ""},
 	}
 }

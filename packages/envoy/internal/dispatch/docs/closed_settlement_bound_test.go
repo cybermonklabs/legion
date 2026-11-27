@@ -59,6 +59,7 @@ var errEverySettlementFails = errors.New("the test fails every settlement of thi
 // So the 120 others have all settled after ⌈120/50⌉ + 1 = 4 passes, and no pass arms more than 50.
 // The failing documents still owe a settlement at the end.
 func TestTheResumptionArmsNoMoreThanItsBoundInOnePass(t *testing.T) {
+	t.Parallel()
 	if settlementResumeBatch != 50 {
 		t.Fatalf("settlementResumeBatch is %d, want 50: the spec gives the reason for 50, and this test's counts are chosen for it", settlementResumeBatch)
 	}
@@ -114,6 +115,7 @@ func TestTheResumptionArmsNoMoreThanItsBoundInOnePass(t *testing.T) {
 // 40 have all settled after ⌈40/50⌉ + 1 = 2 passes. Read from B's record of its passes, pass 2 ran
 // there, and A's record shows it armed nothing more.
 func TestFailingSettlementsWaitBehindOnWhicheverServiceRunsThePass(t *testing.T) {
+	t.Parallel()
 	if settlementResumeBatch != 50 {
 		t.Fatalf("settlementResumeBatch is %d, want 50: this test's counts are chosen for it", settlementResumeBatch)
 	}
@@ -179,7 +181,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

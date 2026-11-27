@@ -6,8 +6,8 @@
 -- machine login names one project, which the broker checks against Dispatch every time, so no new
 -- token of a project is minted past the broker's cache; the logins themselves, and the tokens
 -- already traded from them, are the broker's, which Dispatch can end only by calling the broker
--- after the removal commits. So the removal records the debt here, in its own transaction, and the
--- server's revocation loop (api: revokeOwedMachineLogins) pays it after the commit by revoking every
+-- after the removal commits. So the removal records the debt here, in its own transaction, and a
+-- revocation loop of the server, which a later slice adds, pays it after the commit by revoking every
 -- machine login the member approved for their own machines, again and again until the broker
 -- confirms: a broker that does not answer, or a process that dies between the commit and the call,
 -- leaves the row for the next pass of any process. The removal does not wait on the broker, so an
@@ -22,11 +22,11 @@
 -- the broker for it at once and a failed call waits before it is tried again; `done_at` is when the
 -- broker confirmed it, null while it is owed.
 --
--- A recorded revocation announces itself on dispatch_broker_revocations at commit, the channel the
--- revocation loop already wakes on in every process, through the function broker_revocations
--- announces itself with (broker_revocations_notify, migration 20261116232217, its search_path set by
--- 20261119065002), which names no table. The trigger fires on an insert and on a write of
--- `generation` alone, so the loop's own claims and settlements, which write neither, wake nothing.
+-- A recorded revocation announces itself on dispatch_broker_revocations at commit, the channel
+-- the revocation loop is to wake on in every process, through the function broker_revocations
+-- announces itself with (broker_revocations_notify, migration 20261116232217), which names no table.
+-- The trigger fires on an insert and on a write of `generation` alone, so the loop's own claims and
+-- settlements, which write neither, wake nothing.
 --
 -- The table is new, so the migration touches no existing row.
 create table machine_login_revocations (

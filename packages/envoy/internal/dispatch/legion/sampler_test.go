@@ -428,8 +428,8 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 	// The two ticks a RunLeased loop makes for one period, with the moment each was due: the
 	// value the ticker delivered, which is the same on both processes.
 	due := time.Now()
-	ranFirst := duty.Exclusive(t.Context(), firstLeases, SampleLease, due, SampleInterval, first.Pass)
-	ranSecond := duty.Exclusive(t.Context(), secondLeases, SampleLease, due, SampleInterval, other.Pass)
+	ranFirst := duty.Exclusive(t.Context(), nil, firstLeases, SampleLease, due, SampleInterval, first.Pass)
+	ranSecond := duty.Exclusive(t.Context(), nil, secondLeases, SampleLease, due, SampleInterval, other.Pass)
 
 	if ranFirst == ranSecond {
 		t.Fatalf("first ran = %v, second ran = %v: exactly one process serves a period", ranFirst, ranSecond)
@@ -449,8 +449,8 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 	// once, and the other stores nothing.
 	daemon.serves(stateOf("implementing", "planner"))
 	next := due.Add(SampleInterval)
-	duty.Exclusive(t.Context(), secondLeases, SampleLease, next, SampleInterval, other.Pass)
-	duty.Exclusive(t.Context(), firstLeases, SampleLease, next, SampleInterval, first.Pass)
+	duty.Exclusive(t.Context(), nil, secondLeases, SampleLease, next, SampleInterval, other.Pass)
+	duty.Exclusive(t.Context(), nil, firstLeases, SampleLease, next, SampleInterval, first.Pass)
 	if moved := observations(t, database, "INFRA")[len(stored):]; len(moved) != 1 || moved[0] != `INFRA-1/phase="implementing"` {
 		t.Fatalf("the second period wrote %v, want the one change once", moved)
 	}

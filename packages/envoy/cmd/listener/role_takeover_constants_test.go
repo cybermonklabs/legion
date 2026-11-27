@@ -10,15 +10,29 @@ import (
 
 // R2 rests on three numbers that live in different places: a forward starts only on a resolution
 // younger than roles.ForwardFenceAge, the keep window less one sweep interval, so it is stored
-// inside the hour a takeover's copy reads; and a takeover record's passes run for
-// takeoverRecordLife, one hour short of the stream's age limit and duplicate window, so no record a
-// pass needs ages out. A change to one that leaves the others fails here.
+// inside the hour a takeover's copy reads; a takeover record's passes run for takeoverRecordLife,
+// that hour, so the pass that ends a record has read every such forward; and the record's last
+// write, at the latest one sweep interval past its life, comes before the stream's age limit takes
+// its first, so no record a pass needs ages out. (What the cache of finished records rests on is
+// stated once, on bus.Client.TakeoverRecords.) A change to one that leaves the others fails here.
 func TestTheTakeoverCopysBoundsHoldTogether(t *testing.T) {
+	t.Parallel()
 	if want := roleKeepWindow - roleWakeInterval; roles.ForwardFenceAge != want {
 		t.Errorf("roles.ForwardFenceAge = %s, want roleKeepWindow less roleWakeInterval, %s", roles.ForwardFenceAge, want)
 	}
-	if want := contracts.DeliveryDuplicateWindow - time.Hour; takeoverRecordLife != want {
-		t.Errorf("takeoverRecordLife = %s, want the duplicate window less an hour, %s", takeoverRecordLife, want)
+	if takeoverRecordLife != roleKeepWindow {
+		t.Errorf("takeoverRecordLife = %s, want the keep window, %s", takeoverRecordLife, roleKeepWindow)
+	}
+	if last := takeoverRecordLife + roleWakeInterval; last >= contracts.DeliveryDuplicateWindow {
+		t.Errorf("a record's last pass, %s after its claim, is at or past the stream's age limit, %s", last, contracts.DeliveryDuplicateWindow)
+	}
+	// A forward the role lane reports in time (roles.ForwardStoredTooLate, roleForwardTimeout) is
+	// one the record's passes read only while the fence, that forward's wait and the claim route's
+	// budget (sendRequestBudget), inside which the claim lands, fit inside the record's life. Each
+	// is read here from its own constant, so a change to one that breaks the sum fails here.
+	if sum := roles.ForwardFenceAge + roleForwardTimeout + sendRequestBudget; sum >= takeoverRecordLife {
+		t.Errorf("the fence %s, the role lane's forward wait %s and the claim's budget %s come to %s, at or past a takeover record's life, %s",
+			roles.ForwardFenceAge, roleForwardTimeout, sendRequestBudget, sum, takeoverRecordLife)
 	}
 	if now := time.Unix(1_800_000_000, 0); roles.ResolutionTooOld(time.Time{}, now) ||
 		roles.ResolutionTooOld(now.Add(-roles.ForwardFenceAge+time.Second), now) ||

@@ -37,15 +37,17 @@ import (
 // is collected by calling decide for each kind of subject token — a pod's, whose entry gives the
 // named project scope, a pod's of a read entry, whose project scope is none, a machine access
 // token's, whose scope is the person's, and a machine's Google identity token, whose entry names a
-// service — and taking the union, since `machine` is written for one kind of trade and deleted for
-// the others. So a claim a new scope or a new decision adds is a claim this fails until the list
-// names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
-// request rather than writing it into the extras: `scope`, which an introspection answers from the
-// granted scopes and a read entry's token alone carries (writeProjectScope), joins the union when
-// any decision granted one. The one claim no decision writes, the launcher credential a machine's
-// exchange mints (machineCredential, which runs after decide because the credential does not
-// exist until the request's key is bound), is added to that union by name; what proves it is
-// written is the live exchange in cmd/cipherd.
+// service — and for one trade that asks for read with a cut, whose token carries `as_of`, and
+// taking the union, since `machine` is written for one kind of trade and deleted for the others
+// and `as_of` is written only for a cut. So a claim a new scope or a new decision adds is a claim
+// this fails until the list names it. The OAuth scope a decision grants is a claim too, though
+// decide grants it on the request rather than writing it into the extras: `scope`, which an
+// introspection answers from the granted scopes and which a read entry's token, a narrowed one and
+// a Legion daemon's token carry (writeProjectScope), joins the union when any decision granted
+// one. The one claim no decision writes, the launcher credential a machine's exchange mints
+// (machineCredential, which runs after decide because the credential does not exist until the
+// request's key is bound), is added to that union by name; what proves it is written is the live
+// exchange in cmd/cipherd.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
@@ -112,13 +114,15 @@ func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 type claimsSubject struct {
 	tokenType    string
 	token, actor map[string]any
+	// cut, when set, makes the trade one that asks for read with that cut.
+	cut string
 }
 
 // claimsDecider is a provider whose exchange decides each kind of subject token, and one subject
 // token of each kind it accepts: a pod's, whose entry gives the named project scope, a read
 // account's pod, whose read entry gives the none scope, a machine access token's, whose scope is
-// the person's, a machine's Google identity token, whose entry names a service, and a person's
-// own, with the machine's as the actor.
+// the person's, the same token traded for read at a cut, a machine's Google identity token, whose
+// entry names a service, and a person's own, with the machine's as the actor.
 func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	t.Helper()
 	policy, err := exchange.NewSet([]exchange.AccountEntry{{
@@ -165,6 +169,13 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 			oauthwire.ExtraCredentialID: claimsCredentialID,
 		},
 	}, {
+		tokenType: tokenTypeAccessToken,
+		token: map[string]any{
+			"sub":                       claimsPerson,
+			oauthwire.ExtraCredentialID: claimsCredentialID,
+		},
+		cut: "2026-11-18T09:30:00.123456Z",
+	}, {
 		tokenType: oauthwire.SubjectTokenTypeGoogle,
 		token: map[string]any{
 			"aud":            claimsGoogleAudience,
@@ -198,6 +209,11 @@ func decideOn(t *testing.T, provider *Provider, subject claimsSubject, session *
 			oauthwire.FormSession: {claimsSessionName},
 		},
 		Session: session,
+	}
+	if subject.cut != "" {
+		// Where the library puts the scopes a request names, which is where decide looks for read.
+		request.RequestedScope = oauth2.Arguments{oauthwire.ScopeRead}
+		request.Form.Set(oauthwire.FormAsOf, subject.cut)
 	}
 	if subject.actor != nil {
 		// Where the library puts an actor token it has validated, which decide reads a person's

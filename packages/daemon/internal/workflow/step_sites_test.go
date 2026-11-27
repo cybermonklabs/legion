@@ -23,7 +23,13 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 // stepEngine is the engine the step record tests drive: testEngine with no design gate, the fixed
 // clock stepClock, and agent as the daemon's read of a step's agent (nil reads none).
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
-	engine := testEngine(config.DesignGateOff, nil)
+	return gatedStepEngine(config.DesignGateOff, agent)
+}
+
+// gatedStepEngine is stepEngine on a deployment whose design gate is policy, as the daemon builds
+// its engine at boot.
+func gatedStepEngine(policy config.DesignGate, agent func(claim.Token) StepAgent) *Engine {
+	engine := testEngine(policy, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
 	if agent != nil {
 		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }
@@ -181,6 +187,7 @@ func assertEnd(t *testing.T, w record.StepRecord, kind string, step int, generat
 // them, and they meet in one record only when both compute one id. The count of starts is what
 // carries it: a row of the store, raised by the start and read unchanged by the end.
 func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, between func(pool *pgxpool.Pool)) (start, end record.StepRecord, pool *pgxpool.Pool) {
 		pool = migratedPool(t)
 		stepRoot(t, pool, phase.Implementing)
@@ -222,6 +229,7 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 // nanoseconds, so an end that wrote its own moment as the start, or a start finer than what its
 // end reads back, shows here.
 func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	began := time.Date(2026, 11, 17, 1, 2, 3, 456789123, time.UTC)
@@ -244,6 +252,7 @@ func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
 // the work back to, and starts the implementer again: a second start of step 2, which is another
 // record than the first.
 func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Planning)
 	engine := stepEngine(nil)
@@ -274,6 +283,7 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 // the row the outbox holds, where the forward end of the retro before it names none. A 0 left out
 // would read as a return to nowhere.
 func TestAMoveBackToTheRetroReturnsToPlaceZero(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Retro)
 	engine := stepEngine(nil)
@@ -306,6 +316,7 @@ func TestAMoveBackToTheRetroReturnsToPlaceZero(t *testing.T) {
 // keeps the phase, so the step the issue stands in neither ends nor starts again, and its run goes
 // on through the merge.
 func TestAConflictEndsNoStep(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Testing {
@@ -322,16 +333,21 @@ func TestAConflictEndsNoStep(t *testing.T) {
 // of a step whose run is open writes nothing either (StartStepRecord), since that run goes on; a
 // start once the run ended opens the next run, whose end is queued again.
 func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		if err := engine.endStep(ctx, tx, issue, stepStopped); err != nil {
+		w, err := engine.walk(ctx, tx, issue)
+		if err != nil {
 			return err
 		}
-		return engine.endStep(ctx, tx, issue, stepStopped)
+		if err := engine.endStep(ctx, tx, issue, w, stepStopped); err != nil {
+			return err
+		}
+		return engine.endStep(ctx, tx, issue, w, stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -374,6 +390,7 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 // the model. A daemon that reads no agent writes neither, so the record names no session and no
 // model.
 func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Testing)
 	raisedAt := stepClock.Add(-time.Hour)
@@ -425,6 +442,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 // the review's alone: the sign-off that ends accepting passes the reviewer's row, and the record
 // of acceptance names no report.
 func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
+	t.Parallel()
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	reviewer := treeRoleToken(t, "LEGION-208", claim.RoleReviewer)
 	for _, tc := range []struct {
@@ -516,7 +534,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				if tc.want != phase.Accepting {
 					return
 				}
-				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
+				apply("sign-off", rootsSignOff(t, pool, engine, "LEGION-208"))
 				var ended bool
 				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 5) {
 					if w.Report != nil {
@@ -537,6 +555,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 // already merged, where no merger starts. Each still writes its start, and the merge's close ends
 // it passed, under the agent its start named, none.
 func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
+	t.Parallel()
 	t.Run("accepting", func(t *testing.T) {
 		pool := migratedPool(t)
 		stepRoot(t, pool, phase.Reviewing)
@@ -594,6 +613,7 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 // operator suspended, which no start wakes before the operator's resume: neither holds its role,
 // and the tree's architect owns the child.
 func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
+	t.Parallel()
 	tree, own := treeRoleToken(t, "LEGION-208", claim.RoleArchitect), treeRoleToken(t, "LEGION-209", claim.RoleArchitect)
 	reads := map[string]StepAgent{
 		tree: {Session: "ses-root-architect", Model: "anthropic/root-model"},
@@ -626,7 +646,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				}
 				engine := stepEngine(agent)
 				enter(pool, engine)
-				applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
+				applyFacts(t, pool, engine)("sign-off", rootsSignOff(t, pool, engine, "LEGION-209"))
 				if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 					t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 				}
@@ -675,6 +695,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 // end still writes one record: the count 0, every identity field, and its start from the role's
 // entry, so the route makes the node.
 func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Testing)
 	t0 := stepClock.Add(-3 * time.Hour)
@@ -701,6 +722,7 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 // its very moment where the clock gave the two one reading. Each merge waits on a child, whose
 // departure closes the root.
 func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
+	t.Parallel()
 	retroCompleted := stepClock.Add(-2 * time.Hour)
 	for _, tc := range []struct {
 		name   string
@@ -743,16 +765,21 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 
 // An issue at admitted runs no step: the architect works that phase (phase.RoleFor), and the
 // task's first step is planning. So an end and a start of the step an issue at admitted stands in
-// write nothing, and the move out of admitted writes the start of planning and no end, the
-// architect's own completion beside it or not. It is what the three readers of phase.RoleFor in
-// steps.go answer for admitted (internal/textcheck's roleForReaders): startAgent and upgradedStart
-// are never asked there, and endOfTransition's answer is read by no end.
+// write nothing, and the opening of its gate (StartFirstPhase) writes the start of planning and no
+// end. It is what the three readers of phase.RoleFor in steps.go answer for admitted
+// (internal/textcheck's roleForReaders): startAgent and upgradedStart are never asked there, and
+// endOfTransition's answer is read by no end.
 func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.endStep(ctx, tx, root, stepStopped); err != nil {
+		w, err := engine.walk(ctx, tx, root)
+		if err != nil {
+			return err
+		}
+		if err := engine.endStep(ctx, tx, root, w, stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)
@@ -760,7 +787,7 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	if writes := stepWrites(t, pool, root.Key); len(writes) != 0 {
 		t.Fatalf("an end and a start at admitted wrote %+v, want nothing", writes)
 	}
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, HandoffRecord: "architect-handoff"})
+	firstStep(t, pool, engine, root.Key)
 	writes := stepWrites(t, pool, root.Key)
 	if len(writes) != 1 || !isStart(writes[0]) || writes[0].Kind != "step" || writes[0].Step != 1 || writes[0].Role != "planner" {
 		t.Fatalf("the move out of admitted wrote %+v, want the start of step 1 alone", writes)

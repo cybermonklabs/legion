@@ -160,7 +160,7 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the version write's locks", early.report, early.err)
 	}
 	waited := lockstep.WaitingStatement(t, database, pid)
@@ -237,7 +237,7 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the owed row", early.report, early.err)
 	}
 	waited := lockstep.WaitingStatement(t, database, pid)
@@ -313,7 +313,7 @@ func TestTheBackfillStatesNoMentionAVersionDeletedWhileItWaited(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the version write's locks", early.report, early.err)
 	}
 	waited := lockstep.WaitingStatement(t, database, pid)

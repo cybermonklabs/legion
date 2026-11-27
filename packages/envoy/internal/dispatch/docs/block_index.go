@@ -334,7 +334,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		}
 		delete(liveAhead, document.id)
 		cold := s.srv.GetDoc(document.id) == nil
-		indexed, ahead, err := s.indexOwedDocument(ctx, document)
+		indexed, ahead, err := s.indexOwedDocument(ctx, document, nil)
 		switch {
 		case ctx.Err() != nil:
 			return tick, ctx.Err()
@@ -974,9 +974,10 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
-// (reindexScope), and the transaction that settles a queue row for the drain
-// (drainOwedDocument), which must owe the index with that write or do neither. A version write
-// queues the same statement in its write phase (queueDocumentIndexOwed).
+// (reindexScope, and drainFormsDocument, which indexes the document itself in the same pass), and
+// the transaction that settles a queue row for the drain (drainOwedDocument), which must owe the
+// index with that write or do neither. A version write queues the same statement in its write
+// phase (queueDocumentIndexOwed).
 func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string, rule int) error {
 	if _, err := exec.Exec(ctx, oweDocumentIndexStatement, artifactID, rule); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
@@ -1101,7 +1102,21 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // stands at, as this one may be, which the fence's own statement decides against the row as it
 // stands when it runs (refs' queueStand). A pass the row then refuses fails there and commits
 // nothing, and a mark of a higher rule written in between stays.
-func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
+//
+// settle is the forms queue's row the caller drains with this index (drainFormsDocument), nil for
+// the block index's own batch. It is read under the document owner's lock, after every check
+// above, and the index runs for it only while it holds the enqueued_at it was listed with
+// (refs.StillOwed): a row this index did not run for - a document another process indexed first,
+// one whose live text is ahead, one whose latest version moved - is left owed, and so is one a
+// write moved meanwhile, with nothing written for it. The index then settles every queue the
+// document is in, after its own deletes from block_refs and from refs (refs.BlockIndexing.Queue,
+// then the reconciliation of its references, which settles the forms queue:
+// refs.Replacement.SettlingForms), each of which owes the forms queue the document it rewrites
+// (migrations 20261117025906 and 20261117025907). It settles it only where its block pass won the
+// revision fence (indexRenderedVersion): a pass that lost writes no block, and leaves the row owed
+// for the next pass, as it leaves the block index's own mark. So a document rebuild-refs left
+// owed is settled by this build's block index of it, which writes its blocks, and not before.
+func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
 	}
@@ -1162,6 +1177,12 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		markdown, blocks = stored, nil
 	case markedAt != nil && markdown != stored:
 		return false, true, nil
+	}
+	if settle != nil {
+		owes, err := refs.StillOwed(queued, tx, *settle)
+		if err != nil || !owes {
+			return false, false, err
+		}
 	}
 	// The event that recorded this version is read before the index pass: it is the cause every
 	// node and tuple of the pass carries, and on this path it already exists, while on the

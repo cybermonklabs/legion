@@ -272,7 +272,10 @@ fi
 
 # --- Codex, pinned: one exact release from npm, its integrity and its binary package's checked
 # against the leg's own record of them before it runs. ---
-real_tools "$work/tools" bun npm node git tmux
+if ! tools_problem=$(real_tools "$work/tools" bun npm node git tmux); then
+  all_unknown "$tools_problem"
+  finish
+fi
 tools_path="$work/tools:$PATH"
 if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
   all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"
@@ -416,22 +419,34 @@ background="$background $!"
 # The model binds a port of the kernel's choosing and prints it, and answers GET /_ready with this
 # run's nonce: the port is used only once the server there answers that nonce, so a line that
 # names another server (another run's stand-in, a port read before the line was whole) is never
-# what Codex is pointed at.
+# what Codex is pointed at. The line and the port are looked at every pause. A server at the port
+# a whole line names (one that holds its closing `}`) that answers another word is not this run's
+# model, and the port was the kernel's to the model alone, so the wait ends there: no later read
+# finds this run's model at that port.
 model_port=''
 ready_port=''
+squatted=''
 deadline=$(($(now) + 30))
-while [ -z "$ready_port" ] && [ "$(now)" -lt "$deadline" ]; do
-  model_port=$(json_field port "$(cat "$work/model.out")")
+while [ -z "$ready_port" ] && [ -z "$squatted" ] && [ "$(now)" -lt "$deadline" ]; do
+  model_line=$(cat "$work/model.out")
+  model_port=$(json_field port "$model_line")
   case $model_port in
     '' | *[!0-9]*) ;;
     *)
-      [ "$(curl -q -sf --max-time 2 "http://127.0.0.1:$model_port/_ready" 2>/dev/null </dev/null)" != "$nonce" ] ||
+      model_ready=$(curl -q -sf --max-time 2 "http://127.0.0.1:$model_port/_ready" 2>/dev/null </dev/null)
+      if [ "$model_ready" = "$nonce" ]; then
         ready_port=$model_port
+      elif [ -n "$model_ready" ]; then
+        case $model_line in *'"port":'*'}'*) squatted=$model_ready ;; esac
+      fi
       ;;
   esac
-  [ -n "$ready_port" ] || sleep 1
+  [ -n "$ready_port" ] || [ -n "$squatted" ] || pause
 done
-if [ -z "$ready_port" ]; then
+if [ -n "$squatted" ]; then
+  all_unknown "the stand-in model did not answer this run's nonce at the port it printed ($model_port): the server there answered $(cell "${squatted:0:100}"): $(text_of "$work/model.out")"
+  finish
+elif [ -z "$ready_port" ]; then
   all_unknown "the stand-in model did not answer this run's nonce at the port it printed (${model_port:-none}) within 30 s: $(text_of "$work/model.out")"
   finish
 fi
@@ -695,7 +710,7 @@ EOF
       [ "$key" != Enter ] || return 0
       sent=$chosen
     fi
-    sleep 1
+    pause
   done
   return 1
 }
@@ -724,9 +739,9 @@ answer_screen() {
   case $mark in Allow*) send_allowed_at=$(now) ;; esac
   screens="${screens:+$screens; }$run: $title -> $choice"
   while [ "$(now)" -lt "$2" ]; do
-    case $(codex_pane "$run") in *"$mark"*) sleep 1 ;; *) return 0 ;; esac
+    case $(codex_pane "$run") in *"$mark"*) pause ;; *) return 0 ;; esac
   done
-  # One more read once the window has closed: a screen that went during the last sleep went, and
+  # One more read once the window has closed: a screen that went during the last pause went, and
   # the problem quotes the very read it judges.
   pane=$(codex_pane "$run")
   case $pane in *"$mark"*) ;; *) return 0 ;; esac
@@ -750,28 +765,44 @@ drive() {
     screen=$(codex_pane "$run")
     answer_screen "$run" "$deadline"
     [ "$?" -ne 1 ] || return 1
-    sleep 1
+    pause
   done
-  # One more read once the window has closed: a turn that began during the last sleep began.
+  # One more read once the window has closed: a turn that began during the last pause began.
   [ -z "$(logged "$run" tools)" ] || return 0
   drive_problem="Codex's turn did not begin within $2 s, held by a screen this leg does not expect: $(screen_text "$(codex_pane "$run")")"
   return 1
 }
-# session_of SECONDS: sets `session_found` to the session id of the record the plugin's
-# SessionStart hook files for the Codex started last (one not there before it started), waited
-# for up to SECONDS; empty when none came.
+# session_of RUN SECONDS: sets `session_found` to the session id of the record the plugin's
+# SessionStart hook files for RUN, the Codex started last (one not there before it started), or
+# leaves it empty when none came; and `record_ended`, the words for when the wait ended. The hook
+# runs as the session starts, before the turn's first request, so the wait ends at the record, or
+# at RUN's first model log line after that request (`whoami`, or `end`) with the records read once
+# more after it: a record that is not there then never comes. SECONDS bounds the wait where the
+# turn makes no later request. The records are read once before the bound is: a look of a loaded
+# machine can take longer than a short SECONDS, and a wait that ended before its first look would
+# say that no record came without having read one.
 session_of() {
-  local deadline each
+  local deadline each past
   session_found=''
-  deadline=$(($(now) + $1))
-  while [ -z "$session_found" ] && [ "$(now)" -lt "$deadline" ]; do
+  record_ended="within $2 s of its turn's start"
+  deadline=$(($(now) + $2))
+  while :; do
+    # The log is read before the records, so a record filed before the line is read after it.
+    past=''
+    [ -z "$(logged "$1" whoami)$(logged "$1" end)" ] || past=yes
     for each in "$data_dir/codex-sessions"/*.json; do
       [ -f "$each" ] || continue
       case $newline$known_records$newline in *"$newline$each$newline"*) continue ;; esac
       session_found=$(json_field session_id "$(tr -d '\n' <"$each")")
       [ -z "$session_found" ] || break
     done
-    [ -n "$session_found" ] || sleep 1
+    [ -z "$session_found" ] || break
+    if [ -n "$past" ]; then
+      record_ended="by its turn's next request, after which no record comes"
+      break
+    fi
+    [ "$(now)" -lt "$deadline" ] || break
+    pause
   done
 }
 # logged RUN STEP: the stand-in model's log line of RUN's STEP, or nothing.
@@ -808,7 +839,7 @@ finish_run() {
   while ! turn_read "$run" "$@" && codex_alive "$run" && [ "$(now)" -lt "$deadline" ]; do
     answer_screen "$run" "$deadline"
     [ "$?" -ne 1 ] || break
-    sleep 1
+    pause
   done
   if turn_read "$run" "$@"; then
     run_end="the turn of $run logged what its rows read"
@@ -829,7 +860,7 @@ background="$background $receive_pid"
 receiver_ready=''
 deadline=$(($(now) + 30))
 while [ -z "$receiver_ready" ] && [ "$(now)" -lt "$deadline" ] && running_child "$receive_pid"; do
-  case $(cat "$work/receive.out") in *'"ready":true'*) receiver_ready=yes ;; *) sleep 1 ;; esac
+  case $(cat "$work/receive.out") in *'"ready":true'*) receiver_ready=yes ;; *) pause ;; esac
 done
 receiver_problem=''
 [ -n "$receiver_ready" ] || receiver_problem="the probe's receiver did not start: $(text_of "$work/receive.out")"
@@ -842,19 +873,27 @@ drive main "$start_seconds" || main_problem=$drive_problem
 session=''
 # The SessionStart hook writes the record before the turn's first request, so once the turn began
 # it is there or never comes (hooks that did not run).
-[ -n "$main_problem" ] || { session_of "$list_seconds"; session=$session_found; }
+main_record_ended="within $list_seconds s of its turn's start"
+[ -n "$main_problem" ] || {
+  session_of main "$list_seconds"
+  session=$session_found
+  main_record_ended=$record_ended
+}
 listed=''
 list_answer=''
 list_read=''
 if [ -n "$session" ]; then
+  # The list is read once before the bound is, as session_of reads the records.
   deadline=$(($(now) + list_seconds))
-  while [ -z "$listed" ] && [ "$(now)" -lt "$deadline" ] && codex_alive main; do
+  while codex_alive main; do
     list_answer=$(probe sessions)
     if [ -z "$(unknown_of "$list_answer")" ] && [ "$(json_field status "$list_answer")" = 200 ]; then
       list_read=yes
       case $list_answer in *"\"$session\""*) listed=yes ;; esac
     fi
-    [ -n "$listed" ] || sleep 2
+    [ -z "$listed" ] || break
+    [ "$(now)" -lt "$deadline" ] || break
+    sleep 2
   done
 fi
 control_answer=''
@@ -875,14 +914,21 @@ elif [ -z "$main_problem" ] && codex_alive main; then
   if [ -n "$session" ]; then
     main_end="Codex main was stopped once its session had not been listed in $list_seconds s"
   else
-    main_end="Codex main was stopped once it had filed no session record in $list_seconds s"
+    main_end="Codex main was stopped once it had filed no session record $main_record_ended"
   fi
 else
   codex_stop main
   main_end=${main_problem:-Codex main ended}
 fi
+# C5 reads the receiver only once the model's envoy_send was answered (its `sent` line): then the
+# receiver has up to 15 s more for the message. With no such line, nothing the receiver reads is
+# read, so it is stopped at once. The line is read once, here, and C5 judges this same read: a
+# line written after it, by a Codex that outlived codex_stop's 10 s, came once the receiver was
+# stopped, and C5 reads no line.
+main_sent=$(logged main sent)
 if [ -n "$receiver_ready" ]; then
-  await_child "$receive_pid" 15 1
+  child_exit=''
+  [ -z "$main_sent" ] || await_child "$receive_pid" 15
   [ -n "$child_exit" ] || stop_child "$receive_pid"
 fi
 
@@ -901,7 +947,7 @@ if refuses "$refused_origin"; then
   say "codex --no-daemon edge-refused (ENVOY_URL $refused_origin)"
   codex_start edge-refused "ENVOY_URL=$refused_origin"
   if drive edge-refused "$start_seconds"; then
-    session_of "$list_seconds"
+    session_of edge-refused "$list_seconds"
     refused_session=$session_found
     finish_run edge-refused "$short_seconds" whoami
     refused_end=$run_end
@@ -951,7 +997,7 @@ fi
 
 # C1: the session on the edge's session list.
 if [ -z "$session" ]; then
-  row C1 "$want1" "Codex filed no session record within $list_seconds s of its turn's start ($main_end)$tools_note" UNKNOWN
+  row C1 "$want1" "Codex filed no session record $main_record_ended ($main_end)$tools_note" UNKNOWN
 elif [ -n "$listed" ]; then
   row C1 "$want1" "session $session listed at $listener" PASS
 elif [ -z "$list_read" ]; then
@@ -1104,7 +1150,6 @@ fi
 
 # C5: the session's envoy_send, read by the probe's receiver.
 send=$(logged main send)
-sent=$(logged main sent)
 received=$(cat "$work/receive.out" 2>/dev/null)
 received_line=''
 while IFS= read -r each; do
@@ -1116,12 +1161,12 @@ if [ -z "$inbound" ]; then
   row C5 "$want5" "not run: the session never held the probe's message, after which the model sends" UNKNOWN
 elif [ -n "$receiver_problem" ]; then
   row C5 "$want5" "$receiver_problem" UNKNOWN
-elif [ -z "$sent" ]; then
+elif [ -z "$main_sent" ]; then
   row C5 "$want5" "the model's envoy_send call got no output ($main_end)$tools_note" UNKNOWN
-elif [ "$(json_field ok "$sent")" != true ]; then
-  row C5 "$want5" "envoy_send answered an error: $(json_field detail "$sent")" FAIL
+elif [ "$(json_field ok "$main_sent")" != true ]; then
+  row C5 "$want5" "envoy_send answered an error: $(json_field detail "$main_sent")" FAIL
 elif [ -z "$received_line" ] || [ "$(json_field read "$received_line")" = null ]; then
-  row C5 "$want5" "envoy_send answered $(json_field detail "$sent"); the probe's session $receiver got no message holding it" FAIL
+  row C5 "$want5" "envoy_send answered $(json_field detail "$main_sent"); the probe's session $receiver got no message holding it" FAIL
 elif [ "$(json_field from "$received_line")" != "$session" ]; then
   row C5 "$want5" "the probe read the message from $(json_field from "$received_line"), not from the Codex session $session" FAIL
 else
@@ -1178,8 +1223,12 @@ else
     *'Your credential names session '*)
       row C7 "$want7" "bun $entry whoami: the credential names another session than $terminal_session: $(cell "${terminal_out:0:300}")" FAIL
       ;;
-    *" acts for $person_lower:"*"may write project $project and no other"*)
-      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, may write project $project and no other" PASS
+    # A release since a token naming a project also writes other projects says "Its token names
+    # project <P>."; a release before it says "It may write project <P> and no other.". The leg
+    # may pin either, and each names the project the token names.
+    *" acts for $person_lower:"*"Its token names project $project."* | \
+      *" acts for $person_lower:"*"may write project $project and no other"*)
+      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, its token names project $project" PASS
       ;;
     *) row C7 "$want7" "bun $entry whoami named another person or project: $(cell "${terminal_out:0:300}")" FAIL ;;
   esac

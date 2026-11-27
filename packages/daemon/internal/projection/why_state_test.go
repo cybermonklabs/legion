@@ -32,14 +32,14 @@ import (
 // record, which keeps a slot and so stands among the issues at work. Three have left the
 // workflow: LEGION-502, which is done, LEGION-503, which a person left on the backlog, and
 // LEGION-710, the parked root itself, whose park took its own record out of the workflow while
-// the status of the child below it stands. The other three stand past their own review, where
-// an issue holds no slot at all since dispatch://INFRA-2560 and so is named by none of the
-// three lists, only by `admission.held` under at_work: LEGION-700, whose tree's architect is
-// reading the head its worker built, LEGION-701, whose retro implementer is at work, and
-// LEGION-702, whose merger rests between its turns. Each of the three is at work in a tree that
-// runs, the resting claim no less than the other two: a claim nothing will wake is the daemon's
-// own judgement, which the fixture hands over as the stranded set and claim_stopped answers
-// first, so what is left for the last arm of the pass is a worker between its turns.
+// the status of the child below it stands. The other three stand in accepting, retro and
+// merging, where an issue holds no slot at all since dispatch://INFRA-2560 and so is named by
+// none of the three lists, only by `admission.held` under at_work: LEGION-700, whose tree's
+// architect is reading the head its worker built, LEGION-701, whose retro implementer is at work,
+// and LEGION-702, whose merger rests between its turns. Each of the three is at work in a tree
+// that runs, the resting claim no less than the other two: a claim nothing will wake is the
+// daemon's own judgement, which the fixture hands over as the stranded set and claim_stopped
+// answers first, so what is left for the last arm of the pass is a worker between its turns.
 //
 // Two more stand past their review and are working on nothing, and each is served `unlisted`
 // with the sentence of its held word: LEGION-703, which the daemon holds from its retro, where
@@ -50,7 +50,7 @@ import (
 // running. That tree's lifecycle stands open, so the linger is the whole of what says it runs
 // nothing (record.TreeRuns), and it is the one fact that tells LEGION-711 from LEGION-701 beside
 // it.
-// `unlisted` is the answer that child had before the phases past the review stopped holding a
+// `unlisted` is the answer that child had before accepting, retro and merging stopped holding a
 // slot as well, by another road: the park takes back the slot of every member of a tree it
 // stops (record.NeedsSlot), so there too it stood in none of the three lists.
 //
@@ -99,10 +99,11 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			lineIssue("LEGION-501", "LEGION-500", "in_progress", phase.Held, "K"),
 			lineIssue("LEGION-502", "LEGION-502", "done", phase.Done, "L"),
 			lineIssue("LEGION-503", "LEGION-503", "backlog", phase.Admitted, "M"),
-			// The tree that runs, every member of which stands past its own review and so
-			// holds none of the cap's slots, which the assertion over `admission.active`
-			// below is what proves: each of them reaches the last arm of the pass placed by
-			// no list, and what tells them apart there is the work rather than the phase.
+			// The tree that runs, every member of which stands in accepting, retro or merging, or
+			// is held from retro, and so holds none of the cap's slots, which the assertion over
+			// `admission.active` below is what proves: each of them reaches the last arm of the
+			// pass placed by no list, and what tells them apart there is the work rather than the
+			// phase.
 			// Three are at work — the architect reading the head LEGION-700's worker built,
 			// the retro of LEGION-701 and the merge of LEGION-702 — and are served no answer,
 			// because `unlisted` would serve a reader of `why` a sentence of the held list about
@@ -185,13 +186,13 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		{Token: token("LEGION-101", claim.RoleImplementer), Project: "legion", Tree: "LEGION-100", Issue: "LEGION-101",
 			Role: claim.RoleImplementer, State: supervise.StateFailed},
 	}
-	// The workers of the issues past their review, and the one the park suspended. The three
-	// of the running tree are a claim at work, a second at work and a third resting between
-	// its turns (supervise.StateIdle, one of the four states record's measure counts as no
-	// work under way), which is the pair of shapes the last arm must answer alike: the daemon
-	// will prompt an idle worker, and the set above is where a claim nothing will wake is
-	// named. The suspended worker of LEGION-711 is in no stranded set either, and for the
-	// reason the judgement itself gives: it refuses a tree that does not run
+	// The workers of the issues in accepting, retro and merging, and the one the park
+	// suspended. The three of the running tree are a claim at work, a second at work and a
+	// third resting between its turns (supervise.StateIdle, one of the four states record's
+	// measure counts as no work under way), which is the pair of shapes the last arm must
+	// answer alike: the daemon will prompt an idle worker, and the set above is where a claim
+	// nothing will wake is named. The suspended worker of LEGION-711 is in no stranded set
+	// either, and for the reason the judgement itself gives: it refuses a tree that does not run
 	// (workflow.Stranded, over record.TreeRuns), so a park strands nothing and every answer
 	// about that tree is the last arm's.
 	claims := append([]supervise.Claim{
@@ -240,12 +241,15 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			Reason: "Its phase is accepting and its tree's architect claim is stranded at suspended, so nothing will wake it."},
 		"LEGION-101": {State: api.WhyClaimStopped,
 			Reason: "Its phase is implementing and the implementer's claim is stranded at failed, so nothing will wake it."},
+		// Neither root has a priority, so each waits after P3 and its sentence says so.
 		"LEGION-200": {State: api.WhyWaiting,
-			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."},
+			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 1st of 2 issues with no priority that have not started, by its own Dispatch rank."},
 		// The member's own sentence and one clause more, because the line holds it and a link
 		// holds it at once; the line's own `reason` carries no such clause.
 		"LEGION-201": {State: api.WhyWaiting,
-			Reason: "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank. " +
+			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 2nd of 2 issues with no priority that have not started, by its own Dispatch rank. " +
 				"It waits on LEGION-900, which is not done."},
 		"LEGION-110": {State: api.WhyBlocked,
 			Reason: "It waits on LEGION-900 and LEGION-901, which are not done."},
@@ -273,7 +277,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 				"so no slot has been offered to it. No rule of the held list says what it waits for."},
 		"LEGION-711": {State: api.WhyUnlisted,
 			Reason: "Its tree is closed: LEGION-710 has finished, or lingers after leaving the workflow, " +
-				"and the daemon starts no issue of that tree."},
+				"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
+				"in the last case that root's promotion ends this hold."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]
@@ -294,7 +299,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 	}
 	// The clause the blocked member takes is the issue's own and never the line's: the two are
 	// separate fields, and a reader of `waitingLine.reason` reads the place alone.
-	if line.Reason != "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank." {
+	if line.Reason != "It has not started. It has no priority, so it waits after every issue at P0 to P3. "+
+		"It is 2nd of 2 issues with no priority that have not started, by its own Dispatch rank." {
 		t.Errorf("LEGION-201's waitingLine.reason = %q, want the place alone", line.Reason)
 	}
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -111,7 +113,17 @@ type liveSocket struct {
 	// waiting.
 	closed chan struct{}
 	// deadline orders the pong handler's extension of the read deadline with the last one the
-	// writer sets once it has closed; closing stops further extensions.
+	// writer sets once it has closed, or the drain of a frame past the read limit (endReads);
+	// closing stops further extensions. readsDue is that deadline, on clock
+	// (Deps.LiveSocketClock, clock.Real() where that is nil), and readsEnd the one timer that ends
+	// the page's reads once it is due, by setting the connection's read deadline to now
+	// (endReadsNow). Each awaitPong and endReads moves readsDue and the timer and lifts
+	// any deadline the timer already set on the connection, as each SetReadDeadline replaces the
+	// one before, expired or not: a pong already in the read buffer when the deadline fell due
+	// renews it before the next network read, and that read then waits for the page. The timer's
+	// function runs on a goroutine of its own and ends the reads only once the clock has reached
+	// readsDue (endReadsIfDue), so a deadline that fell due just as a later one replaced it - a
+	// drain's, or the close wait's - does not cut the later one short. A zero readsDue ends nothing.
 	deadline sync.Mutex
 	closing  bool
 	// subs is every subscription the socket holds, by sub. A delivery view's stays here after the
@@ -215,17 +227,71 @@ func (socket *liveSocket) awaitPong(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	if !socket.closing {
-		_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+		socket.endReadsInLocked(wait)
 	}
 }
 
 // endReads ends the page's reads within wait: the time its close frame has to arrive once the
-// socket sent its own, or none when the connection failed.
+// socket sent its own, or none when the connection failed, or the time the rest of a frame past
+// the read limit has to arrive (serveLiveSocket's drain). Its deadline replaces the pong
+// deadline, as a SetReadDeadline replaces the one before, so a pong deadline that falls due inside
+// the wait does not cut it short, and one the pong deadline's timer already set on the connection
+// is lifted with it (endReadsInLocked).
 func (socket *liveSocket) endReads(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	socket.closing = true
-	_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+	socket.endReadsInLocked(wait)
+}
+
+// endReadsInLocked moves the read deadline to wait from now on the socket's clock, in place of
+// the one before; a wait of zero or less ends the reads here. A positive wait lifts the deadline
+// an earlier timer set on the connection (endReadsNow), so a renewal after the reads were ended
+// gives the page the whole wait, as SetReadDeadline does over an expired deadline.
+func (socket *liveSocket) endReadsInLocked(wait time.Duration) {
+	if wait <= 0 {
+		socket.readsDue = time.Time{}
+		if socket.readsEnd != nil {
+			socket.readsEnd.Stop()
+		}
+		socket.endReadsNow()
+		return
+	}
+	_ = socket.conn.SetReadDeadline(time.Time{})
+	socket.readsDue = socket.clock.Now().Add(wait)
+	if socket.readsEnd == nil {
+		socket.readsEnd = socket.clock.AfterFunc(wait, socket.endReadsIfDue)
+		return
+	}
+	socket.readsEnd.Reset(wait)
+}
+
+// endReadsIfDue is the read deadline's timer firing: it ends the reads once the clock has reached
+// readsDue, and does nothing when a later arm moved readsDue on, or stopReadDeadline cleared it,
+// since the timer fired.
+func (socket *liveSocket) endReadsIfDue() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	if !socket.readsDue.IsZero() && !socket.clock.Now().Before(socket.readsDue) {
+		socket.endReadsNow()
+	}
+}
+
+// endReadsNow is the read deadline passing: a read in progress returns a timeout at once, and so
+// does every read after it. The caller holds deadline.
+func (socket *liveSocket) endReadsNow() {
+	_ = socket.conn.SetReadDeadline(time.Now())
+}
+
+// stopReadDeadline stops the read deadline's timer once the page's reads are over, so none
+// outlives its socket, and a timer that has fired already ends nothing.
+func (socket *liveSocket) stopReadDeadline() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	socket.readsDue = time.Time{}
+	if socket.readsEnd != nil {
+		socket.readsEnd.Stop()
+	}
 }
 
 // close sends the page a close frame with code and reason, and waits for its reply.
@@ -246,6 +312,7 @@ func (socket *liveSocket) close(code int, reason string) {
 func (socket *liveSocket) closeUnserved() {
 	defer socket.cancel()
 	defer socket.conn.Close()
+	defer socket.stopReadDeadline()
 	socket.close(gws.CloseServiceRestart, "")
 	for {
 		if _, _, err := socket.conn.NextReader(); err != nil {
@@ -395,6 +462,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()
+	defer socket.stopReadDeadline()
 	defer s.deliveryHub.Close(socket)
 	defer s.endLiveSubscriptions(socket)
 
@@ -431,7 +499,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(readErr, gws.ErrReadLimit) {
 		// The rest of the frame past the limit is still arriving. Reading it off before closing makes
 		// the close a FIN behind the 1009 gorilla wrote, not a reset that can overtake it.
-		_ = conn.NetConn().SetReadDeadline(time.Now().Add(liveSocketCloseWait))
+		socket.endReads(liveSocketCloseWait)
 		_, _ = io.Copy(io.Discard, conn.NetConn())
 	}
 }

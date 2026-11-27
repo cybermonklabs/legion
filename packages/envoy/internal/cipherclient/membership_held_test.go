@@ -27,7 +27,7 @@ const heldDescription = "ada@example.com's credentials are held by Dispatch; the
 
 // directoryHeldDescription is the same refusal from an Identity-Aware Proxy deployment's broker
 // (BROKER_HOLD_REQUIRES_DEADLINE), where the Workspace Directory's next active answer, not a
-// sign-in, ends the hold (hold.Gate.HeldWords).
+// sign-in, ends the hold (hold.Verdict.HeldWords).
 const directoryHeldDescription = "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
 
 // TestMembershipHeldIsNotPermanent: the broker's `membership_held` is not a refusal the client

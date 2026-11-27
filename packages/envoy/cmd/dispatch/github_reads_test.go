@@ -45,6 +45,9 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // wait's failure prints the last status and body /healthz answered, which is what the check's
 // negative control reads: a build without the member answers 200, ok true and no github at all.
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
+	t.Parallel()
+	// Two Dispatch processes at once, the second started while the first runs.
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// failure is the body GitHub answers the webhook's deliveries listing with, with a 503; nil
@@ -149,6 +152,7 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 // reconcile's intervals, and a first pass at start for the delivery reconcile and the
 // architecture import, whose first ticks are otherwise jittered over five minutes.
 func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedCIReconcileDefault(t, database)
 	seedDeliverySettings(t, database)

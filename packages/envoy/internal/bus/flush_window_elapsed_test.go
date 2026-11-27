@@ -5,12 +5,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A core publish whose flush window was spent before the flush began is answered with the text a
 // spent window has always had, which deployed log filters match. The negative control is the same
 // publish and flush with time left, which the server confirms.
 func TestASpentFlushWindowKeepsItsText(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -29,7 +31,9 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 		}
 		return confirmFlushed(w.conn, subject, before, deadline)
 	}
-	if err := flushWithin(time.Now().Add(5 * time.Second)); err != nil {
+	// No span of its own: the server's answer can come late on a loaded machine with nothing wrong,
+	// so the control's window is the test binary's deadline less testwait's margin (30 s).
+	if err := flushWithin(time.Now().Add(testwait.Remaining(t, 30*time.Second))); err != nil {
 		t.Fatalf("control: a flush with its window to spend answered %v", err)
 	}
 

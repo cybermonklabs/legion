@@ -472,9 +472,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
 	// not at the author check below: resolving a credential reads the store, and the pool
 	// refuses a second connection inside the transaction the next line opens
-	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person.
+	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person. The same
+	// read is the writer the check of who writes an issue's spec or Verification document judges.
 	var asThePerson *model.Actor
-	if s.callerHoldsScope(r, model.ScopePerson) {
+	writer := s.specWriterOf(r, actor)
+	if writer.person {
 		person, held := s.actingPerson(w, r)
 		if !held {
 			return
@@ -575,6 +577,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The check of who writes an issue's spec or Verification document, on the block's
+		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
+		// server attributes, not its wording.
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 		if input.Urgency != nil {
 			edit.Urgency = &requestedUrgency
@@ -629,8 +638,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
 	// them at the edited_at the queued update writes, which the row above carries already, queue
-	// the index after that update, and name what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
+	// the index after that update and after the question's reconciliation just queued, and name
+	// what they moved beside the rest.
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, true, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

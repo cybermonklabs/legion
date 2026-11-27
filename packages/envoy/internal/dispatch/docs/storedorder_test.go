@@ -171,6 +171,7 @@ func onlyMismatch(t *testing.T, report StoredOrderReport, kind StoredOrderMismat
 // unchecked, and a version inside the window recording an update a compaction folded into the base
 // is counted and compared with nothing.
 func TestStoredOrderChecker(t *testing.T) {
+	t.Parallel()
 	const seed = "First.\n\nSecond.\n"
 
 	t.Run("a history that replays passes", func(t *testing.T) {
@@ -371,6 +372,46 @@ func TestStoredOrderChecker(t *testing.T) {
 	})
 }
 
+// A version another renderer version wrote, or one no renderer version stamped, holds its
+// renderer's spelling of the fold's tree: its md5 and length differ from the fold's render, and
+// the check reads its markdown and reports no mismatch where that markdown reads as the render.
+// A version holding other text than the fold is still a mismatch, whatever its stamp.
+func TestStoredOrderReadsAVersionOfAnotherRendererVersionAsTheTreeItSpells(t *testing.T) {
+	t.Parallel()
+	another := pmdoc.RendererVersion - 1
+	for _, test := range []struct {
+		name     string
+		renderer *int
+		stored   string
+		clean    bool
+	}{
+		{"another renderer version's spelling of the fold's tree", &another, respelledLooseList, true},
+		{"an unstamped version's spelling of the fold's tree", nil, respelledLooseList, true},
+		{"another renderer version's version of other text", &another, "- first\n- second\n\n- fourth\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			history := newCraftedHistory(t, looseList)
+			history.version(test.stored, 1)
+			if _, err := history.database.Pool.Exec(context.Background(), `
+				update artifact_versions set renderer_version = $2
+				where artifact_id = $1 and number = (select max(number) from artifact_versions where artifact_id = $1)
+			`, history.artifactID, test.renderer); err != nil {
+				t.Fatalf("stamp the version's renderer version: %v", err)
+			}
+			report := history.check(time.Time{})
+			if test.clean {
+				if !report.Clean() || report.VersionsChecked != 1 {
+					t.Fatalf("report = %+v, want a clean check of the one version", report)
+				}
+				return
+			}
+			if mismatch := onlyMismatch(t, report, StoredOrderVersion); mismatch.Version != 2 || mismatch.DocUpdateVersion != 1 || !mismatch.FoldRenders {
+				t.Fatalf("mismatch = %+v, want version 2 at update 1 holding other text than the fold", mismatch)
+			}
+		})
+	}
+}
+
 // assertStoredOrder waits for the room's updates to be stored, then checks the document's stored
 // history and fails the test on each row that does not replay.
 func assertStoredOrder(t *testing.T, service *Service, artifactID string) StoredOrderReport {
@@ -422,8 +463,8 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 			close(releaseCh)
 		}
 	}
-	t.Cleanup(release)
-	t.Cleanup(func() {
+	testcleanup.Add(t, release)
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -458,6 +499,7 @@ func onFirst(room string, do func()) func(string) {
 // names a version of its fork in the same transaction. The version holds Bob's edit at the agent's
 // update, where the stored updates do not have it.
 func TestStoredOrderHeldBrowserEditUnderAnAgentVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID, entered, release := heldAppendService(t)
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
 	awaitHeldAppend(t, entered)
@@ -478,6 +520,7 @@ func TestStoredOrderHeldBrowserEditUnderAnAgentVersion(t *testing.T) {
 // update was classified as a change against the room before the deletion, but is stored after it,
 // where it changes nothing.
 func TestStoredOrderHeldBrowserEditInAParagraphTheAgentDeletes(t *testing.T) {
+	t.Parallel()
 	service, artifactID, entered, release := heldAppendService(t)
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
 	awaitHeldAppend(t, entered)
@@ -492,6 +535,7 @@ func TestStoredOrderHeldBrowserEditInAParagraphTheAgentDeletes(t *testing.T) {
 // room after that read (afterForkRead), and the version named in the same transaction re-forks the
 // room and renders his edit at the write's own update, before his append.
 func TestStoredOrderEditAfterTheForkReadIsNotInTheWritesVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	_, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
@@ -533,6 +577,7 @@ func removeSecondUnderBob(t *testing.T, service *Service, artifactID string, hoo
 // fork read Bob types into that paragraph. His update is classified against a room without the
 // removal, as a change, and stored after it, where it changes nothing.
 func TestStoredOrderEditAfterTheForkReadIntoADeletedParagraph(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	removeSecondUnderBob(t, service, artifactID, &service.afterForkRead)
 	assertStoredOrder(t, service, artifactID)
@@ -542,6 +587,7 @@ func TestStoredOrderEditAfterTheForkReadIntoADeletedParagraph(t *testing.T) {
 // once the write has committed and before the room receives it (afterLiveCommit), so his append
 // lands after the write's while his class was measured without it.
 func TestStoredOrderEditBetweenCommitAndPublishIntoADeletedParagraph(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	removeSecondUnderBob(t, service, artifactID, &service.afterLiveCommit)
 	assertStoredOrder(t, service, artifactID)
@@ -552,6 +598,7 @@ func TestStoredOrderEditBetweenCommitAndPublishIntoADeletedParagraph(t *testing.
 // beforeObserveUpdate), so the settlement finds nothing pending, records the head without Bob's
 // update, and renders the room with his edit in it.
 func TestStoredOrderSettlementOverAnUnstoredEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "First.", With: "First, agent."}}, storedOrderAgent, nil); err != nil {
 		t.Fatalf("agent's edit: %v", err)
@@ -573,11 +620,12 @@ func TestStoredOrderSettlementOverAnUnstoredEdit(t *testing.T) {
 	assertStoredOrder(t, service, artifactID)
 }
 
-// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsAuthorsAndCopyOnTheNextVersion:
+// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce:
 // Bob's edit reaches the room between the snapshot's authors and its copy, its observer held after
 // crediting it and before handing it to persistence (afterCaptureAuthorsTake, afterCreditUpdate).
 // The snapshot holds his edit at a doc_update_version without his update.
 func TestStoredOrderSnapshotOverAnUnstoredEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := joinedReplaceText(service, artifactID, "First, alice.\n\nSecond.\n", alice); err != nil {
@@ -616,6 +664,7 @@ func TestStoredOrderSnapshotOverAnUnstoredEdit(t *testing.T) {
 // first's edit, and its observer classifies both and hands its own update to persistence first.
 // The second update is stored before the one it depends on.
 func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	head := func() persistence.Version {
 		version, err := service.persistence.Head(context.Background(), artifactID)
@@ -639,6 +688,7 @@ func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
 // update is made on a basis holding his edit and stored before it, and the version renders it at
 // the second update.
 func TestStoredOrderAcceptWithABrowserEditBetweenItsOperations(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s1", By: storedOrderAgent}, "First", nil); err != nil {
 		t.Fatalf("mark the suggestion: %v", err)
@@ -667,6 +717,7 @@ func TestStoredOrderAcceptWithABrowserEditBetweenItsOperations(t *testing.T) {
 // update changes nothing, and the version the settlement then writes holds nothing of his. That
 // version must name the agent alone.
 func TestStoredOrderRemeasuredClassMovesCreditAndSettlement(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	removeSecondUnderBob(t, service, artifactID, &service.afterForkRead)
 	before := latestVersionNumber(t, service, artifactID)
@@ -742,7 +793,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	})
 	// As typeIntoDocument's: the writing ends, the room applies the peer's last update, and the
 	// last peer of the room waits for every update to be stored, before the connection closes.
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		close(stopped)
 		done.Wait()
 		client := peer.Doc.ClientID()
@@ -826,6 +877,7 @@ func soakWrite(service *Service, write func(ctx context.Context) error) error {
 // appended while its room held a browser update it had not stored, logs them with the mismatching
 // rounds and the per-write latency, and fails on any mismatch.
 func TestStoredOrderSoak(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	watched := &soakStore{VersionedStore: NewPgVersioned(database)}
 	service := New(Deps{
@@ -837,13 +889,13 @@ func TestStoredOrderSoak(t *testing.T) {
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	type soakDocument struct {
 		id             string

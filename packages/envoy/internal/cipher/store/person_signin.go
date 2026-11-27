@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 )
 
 // A person's sign-ins are rows of 0025's person_signins, one per box key: the person, the RFC
 // 7638 thumbprint of the key `agent-secrets login` made on that machine, the Google account of
-// the machine, the account of the person's own Google identity token that made it (0042: its
+// the machine, the account of the person's own Google identity token that made it (0047: its
 // issuer and `sub`, none on a row from before), and the times the row was made, last used and
 // revoked.
 //
@@ -23,8 +25,10 @@ import (
 // a person who revokes a sign-in is not undone by the box trading the very key again. A person
 // signing in on a second box is a second thumbprint and a row of its own, which is why revoking
 // one leaves the others working. The one row ever deleted is a live one from before migration
-// 0042, which records no account: the next trade under its key ends it and everything it holds
-// and writes a row of its own (RecordPersonSignIn), so a row's account is never changed.
+// 0047, which records no account, and only where the broker asks Dispatch
+// (SignInTrade.EndUnrecorded): there the next trade under its key ends it and everything it holds
+// and writes a row of its own (RecordPersonSignIn). Elsewhere such a row goes on recording none.
+// Either way a row's account is never changed.
 //
 // The three vocabularies - a lowercase login, an RFC 7638 thumbprint and a lowercase Google
 // account - are closed by the migration's own check constraints, which are the one place they
@@ -44,11 +48,6 @@ var ErrSignInMachineChanged = errors.New("store: this sign-in was made on anothe
 // ErrNoSignIn is a sign-in id that is not that person's, or is no sign-in at all.
 var ErrNoSignIn = errors.New("store: no sign-in of this person has that id")
 
-// ErrSignInSubjectReplaced is a trade whose person token names an account that no longer holds
-// the person's address: Dispatch gave the address to another account and named this one as
-// replaced (RecordReplacedSubjectTx), so the broker refuses it every sign-in, on any box key.
-var ErrSignInSubjectReplaced = errors.New("store: another account holds this person's address now")
-
 // ErrSignInSubjectChanged is a trade presenting a sign-in's box key with a person token of
 // another account than the one that made the sign-in. A sign-in is the account that made it as
 // well as the person, the key and the machine, since that account is what a revoke of a replaced
@@ -66,6 +65,13 @@ type SignInTrade struct {
 	// Account is the account the person's own Google identity token was minted for: its `iss`,
 	// as oidc.CanonicalIssuer spells it, and its `sub`. Every trade names one.
 	Account IssuerSubject
+	// EndUnrecorded is whether a live row of this person and key from before migration 0047,
+	// which records no account, is ended so this trade writes a row of its own: true where the
+	// broker asks Dispatch (BROKER_PROJECT_ACCESS_URL), whose binding of an address to one account
+	// is what a row's account is for. False keeps that row, records no account on it and ends
+	// nothing, as before the release; a revoke of any account at the address still ends it
+	// (SubjectSignInsTx), since it records none.
+	EndUnrecorded bool
 }
 
 // PersonSignIn is one live person_signins row as a person reads it on their own list.
@@ -87,28 +93,30 @@ type PersonSignIn struct {
 
 // RecordPersonSignIn records, in tx, that in.Person signed in on the machine in.MachineAccount
 // names with the box key in.Thumbprint, as the account in.Account, and answers whether it ended a
-// sign-in that recorded no account to do so. It answers ErrSignInSubjectReplaced when that
+// sign-in that recorded no account to do so. It answers ErrSubjectReplaced when that
 // account no longer holds the person's address, ErrSignInRevoked when that person has revoked
 // that key, ErrSignInMachineChanged when the sign-in that key belongs to was made on another
 // machine, and ErrSignInSubjectChanged when it was made by another account.
 //
-// A row's account is written once, when the row is inserted, and never changes: migration 0043's
+// A row's account is written once, when the row is inserted, and never changes: migration 0048's
 // trigger refuses any update of issuer or subject
 // (TestTheDatabaseRefusesAnyChangeOfARecordedAccount). The first trade of a person and a box key
 // inserts the row, recording the account; every later trade of that pair by that account is the
 // same sign-in, so it moves last_used_at and nothing else. A live row from
-// before migration 0042 records none, and might be any account's, so a trade under its key ends
-// it rather than adopting it: the row is deleted, which frees the pair's slot for the new row,
-// and every live access token of that person bound to that key ends in this same transaction
-// (endSignInTokensSQL), as revoking the sign-in ends them. The caller ends the launcher credential
-// the deleted row held, and every session enrolled under it, in this transaction too
-// (enroll.RecordPersonSignIn), which is what the answer is for. The token this trade mints is
-// written after this returns (oauth.Provider.exchangeGrant's NewAccessResponse), so it is not
-// among those ended. It takes tx rather than the pool because the exchange must write this and the
-// access token it is minting together: a revoke that commits first refuses the trade, and one that
+// before migration 0047 records none, and might be any account's. With in.EndUnrecorded a trade
+// under its key ends it rather than adopting it: the row is deleted, which frees the pair's slot
+// for the new row, and every live access token of that person bound to that key ends in this same
+// transaction (endSignInTokensSQL), as revoking the sign-in ends them. The caller ends the launcher
+// credential the deleted row held, and every session enrolled under it, in this transaction too
+// (enroll.RecordPersonSignIn), which is what the answer is for. Without it the trade is that row's,
+// which goes on recording no account: it moves last_used_at and nothing else, and ends nothing.
+// The token that this trade mints is written after this returns
+// (oauth.Provider.exchangeGrant's NewAccessResponse), so it is not among those ended. It takes tx
+// rather than the pool because the exchange must write this and the access token it is minting
+// together: a revoke that commits first refuses the trade, and one that
 // commits after it ends the token the trade minted (RevokePersonSignIn).
 //
-// It takes the person's lock first (LockPerson), and then reads whether the account is replaced,
+// It takes the person's lock first and then reads whether the account is replaced (LockPersonAs),
 // so a revoke of that account (enroll.Service.RevokePersonSubject) either commits before the read,
 // which then refuses the trade, or waits for this trade to commit and ends the row it wrote. The
 // read is what refuses a box key the person never traded before: no row conflicts with one. A
@@ -135,37 +143,34 @@ type PersonSignIn struct {
 // another person's k. The table's check refuses any login that is not lowercase. machineAccount,
 // a service account's address, is lowered here as it always was.
 func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in SignInTrade) (bool, error) {
-	if err := LockPerson(ctx, tx, in.Person); err != nil {
+	if err := LockPersonAs(ctx, tx, in.Person, in.Account); err != nil {
 		return false, err
 	}
-	replaced, err := SubjectReplaced(ctx, tx, in.Person, in.Account)
-	if err != nil {
-		return false, err
+	ended := false
+	if in.EndUnrecorded {
+		deleted, err := tx.Exec(ctx, `delete from person_signins
+			where person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
+			in.Person, in.Thumbprint, in.MachineAccount)
+		if err != nil {
+			return false, err
+		}
+		ended = deleted.RowsAffected() > 0
 	}
-	if replaced {
-		return false, ErrSignInSubjectReplaced
-	}
-	deleted, err := tx.Exec(ctx, `delete from person_signins
-		where person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
-		in.Person, in.Thumbprint, in.MachineAccount)
-	if err != nil {
-		return false, err
-	}
-	ended := deleted.RowsAffected() > 0
 	if ended {
 		if _, err := tx.Exec(ctx, endSignInTokensSQL, in.Person, in.Thumbprint); err != nil {
 			return false, err
 		}
 	}
 	var recorded int
-	err = tx.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account, issuer, subject)
+	err := tx.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account, issuer, subject)
 		values ($1, $2, lower($3), $4, $5)
 		on conflict (person, thumbprint) do update
 			set last_used_at = now()
 			where person_signins.revoked_at is null
 				and person_signins.machine_account = excluded.machine_account
-				and (person_signins.issuer, person_signins.subject) = (excluded.issuer, excluded.subject)
-		returning 1`, in.Person, in.Thumbprint, in.MachineAccount, in.Account.Issuer, in.Account.Subject).Scan(&recorded)
+				and ((person_signins.issuer, person_signins.subject) = (excluded.issuer, excluded.subject)
+					or (not $6 and person_signins.subject is null))
+		returning 1`, in.Person, in.Thumbprint, in.MachineAccount, in.Account.Issuer, in.Account.Subject, in.EndUnrecorded).Scan(&recorded)
 	if err == nil {
 		return ended, nil
 	}
@@ -213,9 +218,10 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 }
 
 // SubjectSignInsTx answers, in tx, the ids of person's live sign-ins that account may have made:
-// those recorded as its, and those recorded as nobody's, rows from before migration 0042 that no
-// trade has traded since, which might be any account's. A sign-in another account made is not
-// among them. The caller holds LockPerson, so no trade of person adds a row while it reads.
+// those recorded as its, and those recorded as nobody's, rows from before migration 0047 that are
+// still live (a trade ends one only with SignInTrade.EndUnrecorded), which might be any account's.
+// A sign-in another account made is not among them. The caller holds LockPerson, so no trade of
+// person adds a row while it reads.
 func SubjectSignInsTx(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) ([]string, error) {
 	rows, err := tx.Query(ctx, `select id::text from person_signins
 		where person = $1 and revoked_at is null and (subject is null or (issuer, subject) = ($2, $3))
@@ -227,10 +233,10 @@ func SubjectSignInsTx(ctx context.Context, tx pgx.Tx, person string, account Iss
 }
 
 // RevokePersonSignInTx ends sign-in id of person in tx and answers the box key thumbprint it
-// revoked and how many of that person's live access tokens it ended with it. A row already
-// revoked is revoked again by nobody: it answers an empty thumbprint, no tokens and no error,
-// as revoking a machine login twice answers the same. An id no sign-in of that person has is
-// ErrNoSignIn, so one person cannot learn another's ids by trying them.
+// revoked and how many of that person's live access tokens end with it. A row already revoked is
+// revoked again by nobody: it answers an empty thumbprint, no tokens and no error, as revoking a
+// machine login twice answers the same. An id no sign-in of that person has is ErrNoSignIn, so
+// one person cannot learn another's ids by trying them.
 //
 // It takes tx rather than the pool because ending the sign-in is only half of it: the launcher
 // credential that sign-in's trades mint is ended in the same transaction
@@ -249,6 +255,13 @@ func SubjectSignInsTx(ctx context.Context, tx pgx.Tx, person string, account Iss
 // transaction's start. A transaction that waited for a trade to commit, as the revoke of a
 // replaced account waits on the person's lock (enroll.Service.RevokePersonSubject), began before
 // the row it ends was made, and the table's check refuses a revoke dated before its row.
+//
+// A token a read trade of the sign-in narrowed to reading is bound to its holder's key, not to the
+// box key, and names the launcher credential on the box key instead: it is live only while that
+// credential is, so it ends when the caller revokes the credential, and nothing here writes it.
+// The count takes in each such token that is live now, read through oauthstore.NarrowedLive, the
+// rule introspection ends it by, so it is every token the revoke ends: the ones this statement
+// ends, and the read tokens that end with the credential.
 func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (string, int, error) {
 	var found, ended int
 	var thumbprint *string
@@ -263,8 +276,12 @@ func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (st
 			where active and (request #>> '{session,extra,person}', request #>> '{session,jwk_thumbprint}')
 				in (select person, thumbprint from revoked)
 			returning 1
+		), narrowed as (
+			select 1 from oauth_narrowed_access_tokens n
+			join launcher_credentials credential on credential.id = n.credential_id
+			where credential.key_thumbprint in (select thumbprint from revoked) and `+oauthstore.NarrowedLive+`
 		)
-		select (select count(*) from target), (select count(*) from tokens),
+		select (select count(*) from target), (select count(*) from tokens) + (select count(*) from narrowed),
 			(select thumbprint from revoked)`, id, person).Scan(&found, &ended, &thumbprint)
 	if err != nil {
 		return "", 0, err

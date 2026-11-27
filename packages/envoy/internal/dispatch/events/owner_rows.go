@@ -23,8 +23,8 @@ const (
 
 // OwnerRows are owner rows a writer takes before it writes under them, each by its owner key as
 // eventOwnerKey keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
-// issue owns. A backfill batch takes the owners of its documents and objects through them
-// (graphcensus's lockBlockDocuments and lockObjectOwners).
+// issue owns. A backfill batch takes the owners of its documents through them (graphcensus's
+// lockBlockDocuments and lockObjectOwners).
 type OwnerRows map[string]struct{}
 
 // Add records the owner of a thing: issue when an issue owns it, and otherwise the document

@@ -7,18 +7,19 @@
 # Who runs it, and what it takes:
 #
 #   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion> \
-#     <selection conclusion>
+#     <selection conclusion> <job>
 #
 # <download conclusion> is what the step "Download every leg's blob report" concluded, the merge
 # job's `${{ steps.download-blobs.conclusion }}`. <selection conclusion> is what the step "Take
 # the newest attempt of each leg's blob report" concluded, `${{ steps.select-blobs.conclusion }}`.
 # That second step writes the directory this reading reads; why this reading takes both is said
-# where it reads them, below.
+# where it reads them, below. <job> is the id of the job that calls the workflow, the merge job's
+# `${{ inputs.job }}`, which the read of this run's jobs keeps to the jobs named under it.
 # GH_TOKEN is the run's own `${{ github.token }}`, which the step's `env:` gives this script for
 # the read of this run's jobs. It is never an argument: an argument is on the process's command
 # line, which every process of the runner can read in /proc while the step runs.
 #
-# The conclusion is an argument rather than a key of the step's `env:`, for the reason
+# The conclusions and the job are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
@@ -39,19 +40,20 @@
 # dispatch-browser-run-reads.sh reads for this run's jobs.
 #
 # Run from the repository root, with those five set:
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success success
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success success dispatch-browser
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion and the" \
-    "blob selection's conclusion, with the run's token in GH_TOKEN: GH_TOKEN=<token>" \
+  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion, the" \
+    "blob selection's conclusion and the id of the job that calls dispatch-browser.yaml, with" \
+    "the run's token in GH_TOKEN: GH_TOKEN=<token>" \
     ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>" \
-    "<selection conclusion>. It was given: $*"
+    "<selection conclusion> <job>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 2 ] || usage "$@"
+[ "$#" -eq 3 ] && [ -n "$3" ] || usage "$@"
 
 blobs="$RUNNER_TEMP/selected-blobs/blob-report"
 counts="$RUNNER_TEMP/selected-blobs/rows"
@@ -73,6 +75,9 @@ jobs="$RUNNER_TEMP/jobs.json"
 # uploaded.
 downloaded=$1
 selected=$2
+# The id of the job that calls dispatch-browser.yaml: the jobs of this lane are the ones named
+# under it.
+caller=$3
 if [ "$downloaded" = success ] && [ "$selected" = success ]; then
   input="read"
 elif [ "$downloaded" = failure ]; then
@@ -96,10 +101,12 @@ how_ended() {
 # this workflow already holds it.
 # This run's attempt's jobs, read once here and read again by reading three below.
 # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
-# that both readings take. The jobs API lists the caller's jobs too, so the script
-# holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
-# embedder, visual and merge; a called workflow's job is named
-# `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
+# that both readings take. The jobs API lists the caller's jobs too, and the jobs of ci.yaml's
+# other callers of this workflow that share the run - dispatch-browser beside
+# dispatch-browser-pr on a pull request labelled full-ci, dispatch-references beside
+# dispatch-browser-pr on one that changes what the reference rows test - so the script holds the
+# name to `<caller> / ` and one of this workflow's seven - binaries, shard, alone,
+# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
@@ -133,11 +140,12 @@ how_ended() {
 # `|| { echo …; exit 1; }` block of its own. It still reads with `--paginate --slurp`
 # and runs the filter as a second `jq`, gh refusing `--slurp` beside `--jq`; the
 # script's head says the rest.
-.github/scripts/dispatch-browser-run-reads.sh jobs "$jobs"
+.github/scripts/dispatch-browser-run-reads.sh jobs "$jobs" "$caller"
 # The legs this lane owed, read from those jobs rather than written out a second time
 # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
-# before it could upload is in the list and still owes its blob.
+# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
+# visual job on the references lane - and owes nothing. A leg that failed before it
+# could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |

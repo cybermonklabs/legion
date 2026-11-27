@@ -9,6 +9,7 @@ import (
 )
 
 func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{
 		"repository": map[string]any{
 			"name":  "example-repo",
@@ -24,7 +25,7 @@ func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T)
 		},
 	}
 
-	observations := GithubCIObservations("check_run", body)
+	observations := GithubCIObservations("check_run", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -34,6 +35,7 @@ func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T)
 }
 
 func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{
 		"repository": map[string]any{
 			"name":  "example-repo",
@@ -50,7 +52,7 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 		},
 	}
 
-	observations := GithubCIObservations("check_suite", body)
+	observations := GithubCIObservations("check_suite", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -79,6 +81,7 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 // test wraps each in a check_suite webhook body whose suite names pull request 4464, as GitHub's
 // event names an open pull request at that head.
 func TestGithubCIObservationsLeavesOutASuiteRequestToItsApp(t *testing.T) {
+	t.Parallel()
 	const sha = "4198cda5fd0ae76e055089846f40f7be0d10dcf4"
 	captured := func(t *testing.T, file string) map[string]any {
 		t.Helper()
@@ -106,13 +109,13 @@ func TestGithubCIObservationsLeavesOutASuiteRequestToItsApp(t *testing.T) {
 	}
 	for _, action := range []string{"requested", "rerequested"} {
 		t.Run("a "+action+" delivery maps to nothing", func(t *testing.T) {
-			if observations := GithubCIObservations("check_suite", webhook(action, captured(t, "check_suite_queued_no_runs.json"))); len(observations) != 0 {
+			if observations := GithubCIObservations("check_suite", webhook(action, captured(t, "check_suite_queued_no_runs.json")), ""); len(observations) != 0 {
 				t.Fatalf("observations = %+v, want none", observations)
 			}
 		})
 	}
 	t.Run("a completed delivery maps to its suite", func(t *testing.T) {
-		observations := GithubCIObservations("check_suite", webhook("completed", captured(t, "check_suite_completed.json")))
+		observations := GithubCIObservations("check_suite", webhook("completed", captured(t, "check_suite_completed.json")), "")
 		want := CIObservation{
 			Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
 			AppID: "15368", SuiteID: "120620605808", Status: "completed", Conclusion: "success",
@@ -128,6 +131,7 @@ func TestGithubCIObservationsLeavesOutASuiteRequestToItsApp(t *testing.T) {
 // status its GraphQL query read into the same shape with GraphQL's upper-case state, so both map to
 // one observation. The sha and the number are the caller's; a null link or description is empty.
 func TestGithubStatusObservationMapsAListedStatus(t *testing.T) {
+	t.Parallel()
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	rest := map[string]any{
 		"id":          float64(4021),
@@ -167,6 +171,7 @@ func TestGithubStatusObservationMapsAListedStatus(t *testing.T) {
 // has PENDING and EXPECTED, and REST has pending: none of them maps to an observation, and neither
 // does a status with no context or a head with no sha.
 func TestGithubStatusObservationMapsOnlyATerminalStatus(t *testing.T) {
+	t.Parallel()
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	status := func(context, state string) map[string]any {
 		return map[string]any{"context": context, "state": state, "created_at": "2026-11-17T05:00:00Z"}
@@ -204,6 +209,7 @@ func TestGithubStatusObservationMapsOnlyATerminalStatus(t *testing.T) {
 // digest of the whole context after its ellipsis: two contexts that share the kept text stay two
 // entries, and one context keys the same entry every time.
 func TestAStatusIsCappedAtTheEnvelopeTextCap(t *testing.T) {
+	t.Parallel()
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	observe := func(t *testing.T, fields map[string]any) StatusObservation {
 		t.Helper()

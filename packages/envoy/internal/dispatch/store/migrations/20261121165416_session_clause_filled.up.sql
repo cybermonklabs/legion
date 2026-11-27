@@ -1,9 +1,9 @@
 -- 20261121165416_session_clause_filled.up.sql — a restricted viewer reads session_projects only once filled.
 --
--- session_projects places every session in the projects it acted in only once
--- `envoy-dispatch backfill-session-projects` has written session_projects_filled's row:
--- migration 20261116081157_session_projects_proven empties both tables, and the command's --reset
--- empties them again in a deployment that may already hold a private project, then refills
+-- session_projects places every session in the projects it acted in only once the backfill a
+-- later slice adds has written session_projects_filled's row: migration
+-- 20261116081157_session_projects_proven empties both tables, and the backfill's reset empties them
+-- again in a deployment that may already hold a private project, then refills
 -- session_projects pair by pair. session_clause_visible (migration 20261120020130) waited for the
 -- marker on its open arm alone. Its arm for a viewer that is not open (a restricted member, or a
 -- credential acting for one) passed a session that has a pair in a project the viewer sees and no

@@ -57,11 +57,7 @@ type settlement struct {
 	ledger *Ledger
 	tx     pgx.Tx
 	owner  artifactOwner
-	latest struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	latest latestVersionRow
 	// issueClosed is the document's issue row as this settlement's transaction read it under the
 	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
 	// for a document of no issue, so its zero value is open. A closed issue's document settles as
@@ -786,16 +782,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// an agent had just written; carryApproval now carries that approval to such a version
 	// instead, an event nothing in the log would explain). Its tree writes - stamping block ids,
 	// restoring an ask block's server-owned attributes - move the stored Proof state and often
-	// render the same markdown,
-	// and a version for one of those would repeat the version before it too (LEGION-229
-	// requirement 2).
+	// render the same markdown, and a version for one of those would repeat the version before it
+	// too (LEGION-229 requirement 2).
 	// contentChanged stays the first half of the test: a version an older renderer wrote is not
-	// this settlement's to canonicalise when nothing has touched the document since.
+	// this settlement's to canonicalise when nothing has touched the document since. The second
+	// half is whether the latest version holds this rendering (latestVersionRow.holds): byte for
+	// byte, or, for a version another renderer version wrote or none stamped, as markdown that
+	// reads as it. So a renderer change leaves no version behind it either where an edit was made
+	// and undone since, which changed the content and changed it back: the version holds the
+	// same tree in the spelling its renderer wrote.
 	contentChanged, err := contentChangedSinceVersion(ctx, tx, room, st.latest.docUpdateVersion)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
-	versioning := contentChanged && markdown != st.latest.markdown
+	versioning := contentChanged && !st.latest.holds(markdown)
 	settledVersion := st.latest.Number
 	if versioning {
 		settledVersion++
@@ -869,18 +869,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
-		// A person's version opens or moves on the document's edit notice, under the owner lock
-		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
-		// same order the notice a person's version opened before the close, due or held
-		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
-		// reopen, which would start from that row's from_version (openEditNotice), carries the
-		// edits this version saves.
-		if st.issueClosed {
-			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
-				return settleDone, st.abandon(err)
-			}
-		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// A person's version opens or moves on the document's edit notice, and a closed issue's
+		// deletes it (settledEditNotice).
+		if err := s.settledEditNotice(ctx, tx, room, st.issueClosed, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// A document body cites nodes whose rows carry a backlink count, so the version event
@@ -964,4 +955,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// settledEditNotice is what a settlement's version does to the document's edit notice, under the
+// owner lock the settlement took first: the sweep takes the two in that order too
+// (sendEditNotice). A person's version on an open issue opens or moves on the notice
+// (recordEditNotice). A closed issue's version opens none, and deletes in that same order the
+// notice a person's version opened before the close, due or held (holdEditNotice): neither a
+// reopen inside its quiet time nor the first notice after the reopen, which would start from that
+// row's from_version (openEditNotice), carries the edits this version saves. The version a joined
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
+func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
+	if closedIssue {
+		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
+	}
+	return s.recordEditNotice(ctx, tx, room, version, authors, latest)
 }

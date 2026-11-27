@@ -147,8 +147,7 @@ func (r *podUpdateRig) appliesASilenceOf(role claim.Role) {
 	}
 }
 
-// issue is the issue as the record holds it now, which is what the task the repair writes is
-// built from (workflow.ResumePhaseTask).
+// issue is the issue as the record holds it now.
 func (r *podUpdateRig) issue() record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
@@ -234,7 +233,7 @@ func aSilentPhaseWorker(t *testing.T, beside ...podUpdateRole) *podUpdateRig {
 // claim level with the entry its phase row names is sent, on the row that carried it.
 func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake.Conn, before int) {
 	t.Helper()
-	want := workflow.ResumePhaseTask(rig.issue())
+	want := resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue)
 	testwait.Eventually(t, "the silent worker to be prompted with its phase's task", func() bool {
 		return len(conn.Prompts()) > before
 	})
@@ -270,13 +269,16 @@ func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
 	})
 }
 
-// A phase worker whose pod was replaced comes back with its session and nothing to do: the round
-// that replaced the pod retired every task it held, the pod round is over, and no timer of the
-// daemon's and none of the worker's own process will prompt it again. The sweep is what finds
-// it, and every link of the chain is asserted here, not only the last: the fact writes the start
-// row, the lifecycle lane carries that row's task to the worker's connection, and the turn that
-// task starts moves the claim from ready to working. The other half of that truth — that the
-// end of the round itself prompts nobody — is
+// A phase worker whose pod was replaced, and whose ready gave it nothing, comes back with its
+// session and nothing to do: the round that replaced the pod retired every task it held, the pod
+// round is over, and no timer of the daemon's and none of the worker's own process will prompt it
+// again. This rig binds no ready as a workflow fact, so the ready that gives such a worker its
+// task when its new process is ready
+// (TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady) gives it nothing
+// here, and the sweep is the backstop that finds it. Every link of the chain is asserted here, not
+// only the last: the fact writes the start row, the lifecycle lane carries that row's task to the
+// worker's connection, and the turn that task starts moves the claim from ready to working. The
+// other half of that truth — that the end of the round itself prompts nobody — is
 // TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds.
 //
 // Beside the silent worker stands one the sweep must leave alone: the issue's tester, which
@@ -326,7 +328,7 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	rig.sweepForSilence()
 
 	want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: worker, Generation: 1,
-		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
+		Phase: phase.Implementing, Task: resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue), ResumeTask: true, NeedsSlot: true}}
 	if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying its phase's resume task",
 			podUpdateIssue, got, want)
@@ -462,7 +464,7 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 			t.Errorf("the notice's reason %q names an entry the phase row does not hold", notices[0].Reason)
 		}
 		want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1,
-			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
+			Phase: phase.Implementing, Task: resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue), ResumeTask: true, NeedsSlot: true}}
 		if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
 			t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no entry is resumed at none",
 				podUpdateIssue, got, want)
@@ -620,11 +622,11 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 		},
 		"a start for the phase is already queued": {
 			set: func(r *podUpdateRig) {
-				issue := r.issue()
+				resume := resumeTaskOf(r.t, r.pool, r.engine, podUpdateIssue)
 				if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 					return workflow.StartOrOwe(r.ctx, tx, r.records, podUpdateIssue, record.SuperviseRequest{Op: "start",
 						Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
-						Task: workflow.ResumePhaseTask(issue), ResumeTask: true}, r.clock.Now())
+						Task: resume, ResumeTask: true}, r.clock.Now())
 				}); err != nil {
 					r.t.Fatalf("queue the start that is already on its way: %v", err)
 				}
@@ -1079,7 +1081,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 
 	rig.sweepForSilence()
 
-	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue) {
 		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the background work the dead process reported died with its pod, so nothing will prompt this worker",
 			podUpdateIssue, got)
 	}
@@ -1123,7 +1125,7 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 
 	rig.sweepForSilence()
 
-	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue) {
 		t.Fatalf("the starts after the replacement's sweep = %+v, want one start row carrying the phase's resume task: the background work the dead process reported died with its pod",
 			got)
 	}
@@ -1177,7 +1179,7 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 
 	rig.sweepForSilence()
 
-	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue) {
 		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the refusal for the reminder spent the silence's id",
 			podUpdateIssue, got)
 	}
@@ -1224,7 +1226,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 
 	rig.sweepForSilence()
 
-	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue) {
 		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the report is the dead launch's, not the replacement's",
 			podUpdateIssue, got)
 	}

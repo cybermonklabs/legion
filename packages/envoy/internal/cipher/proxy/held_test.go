@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -44,7 +45,7 @@ const (
 	bobValue     = "ghp-the-real-bob-token"
 )
 
-var bobPlaceholder = requests.PlaceholderPrefix + "bobbobbobbobbobbobbobbobbobbob01"
+var bobPlaceholder = placeholder.Prefix + "bobbobbobbobbobbobbobbobbobbob01"
 
 // The words K2 gives the airlock's answers to ada, spelled out here rather than read from the
 // proxy, so a change to what the proxy says is a change this row sees. adaDirectoryHeld is what a
@@ -155,7 +156,8 @@ func newHeldRigWith(t *testing.T, registry *metrics.Registry, answers *metrics.C
 	h.account = &standInAccount{bearer: h.dispatch.Token}
 	client := projectaccess.New(h.dispatch.URL, h.account, nil)
 	client.UseClock(h.clock.read)
-	gate := hold.New(hold.Config{Access: client, Store: h.store, Log: slog.New(slog.DiscardHandler), Now: h.clock.read, RequireDeadline: requireDeadline})
+	client.Keep(h.store, slog.New(slog.DiscardHandler), nil)
+	gate := hold.New(hold.Config{Access: client, Log: slog.New(slog.DiscardHandler), Now: h.clock.read, RequireDeadline: requireDeadline})
 	h.rig = newRig(t, Options{Hold: gate, Watch: watchFast, Answers: answers}, func(c net.Conn) net.Conn {
 		h.accepts.Add(1)
 		return c
@@ -535,12 +537,16 @@ func TestHeldAirlockOpenConnectionIsRefused(t *testing.T) {
 		}
 		// Three asks of the stand-in, every one refused, so what the carried calls show is what
 		// the watch did with an answer that decides nothing rather than a watch that has not run.
+		// The client answers a person's reads from a refused read for two seconds by its clock
+		// (projectaccess's failureTTL), so each wait moves that clock past them for the watch's
+		// next check to ask again.
 		before := h.dispatch.Calls()
 		deadline := time.Now().Add(10 * time.Second)
 		for h.dispatch.Calls() < before+3 {
 			if time.Now().After(deadline) {
 				t.Fatalf("the stand-in was asked %d times in ten seconds; want three more than the %d before", h.dispatch.Calls(), before)
 			}
+			h.clock.set(h.clock.read().Add(2 * time.Second))
 			time.Sleep(watchFast)
 		}
 		h.carriesOn(t, ada, "while Dispatch refuses the broker: the uncheckable case leaves a carried call alone")
@@ -630,7 +636,7 @@ func TestHeldAirlockCarriedCallWhileDispatchIsDown(t *testing.T) {
 		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
 
 		h.dispatchDown()
-		if err := h.store.KeepPersonStanding(context.Background(), heldPerson, true, time.Now(), nil); err != nil {
+		if err := h.store.KeepPersonAnswer(context.Background(), heldPerson, projectaccess.MemberFull, new(true), time.Now(), nil); err != nil {
 			t.Fatalf("keep a held answer of %s: %v", heldPerson, err)
 		}
 		h.passThirtySeconds()

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerRequests } from "../../__tests__/network";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -13,6 +15,12 @@ import { whoAmIQuery } from "../../api/queries";
 import type { AgentToken, CreatedAgentToken, DispatchScope, Project } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AgentTokensSection } from "./AgentTokensSection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const token: AgentToken = {
   created_at: "2026-09-12T00:00:00Z",
@@ -158,7 +166,8 @@ function box(label: string, subject: string): HTMLInputElement {
 // A token's two scopes are what it may do: act as its person, and settle what its person
 // settles. The row shows the set the token holds and writes back the whole set, since the PATCH
 // replaces it rather than adding to it; no token holds Approve without Act as you, so each box
-// carries the other where the server would refuse the pair.
+// carries the other where the server would refuse the pair. A token that writes is offered no Read
+// only box, and no PATCH sends `read`: no token that writes becomes read only.
 test("a token's row shows the scopes it holds, and each change sends the whole set", async () => {
   const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
@@ -196,6 +205,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
       expect(box("Approve and control credentials", "architect").checked).toBe(true)
     );
     expect(box("Act as you", "architect").checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: "Read only (architect)" })).toBeNull();
 
     await user.click(box("Act as you", "architect"));
     await waitFor(() =>
@@ -203,6 +213,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     );
     await waitFor(() => expect(box("Act as you", "architect").checked).toBe(false));
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
+    for (const call of setAgentTokenScopes.mock.calls) expect(call[1]).not.toContain("read");
   } finally {
     cleanup();
     queryClient.clear();
@@ -763,8 +774,13 @@ function madeAt(id: string, name: string, offsetMs: number): AgentToken {
 /** The Settings token section, its mint answered `409 KEY_COMMITTED` and its list then read as
  *  `listed`; the list read before the press holds those of `listed` made before it, which the page
  *  tells apart from the lost mint's by id. `confirmAnswers` answers each `window.confirm` in
- *  turn. */
-async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswers: boolean[] = []) {
+ *  turn, and `boxes` are the mint form's boxes pressed before New token. */
+async function mintLostWith(
+  user: UserEvent,
+  listed: AgentToken[],
+  confirmAnswers: boolean[] = [],
+  boxes: readonly DispatchTokenScope[] = []
+) {
   const now = Date.now();
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
@@ -794,6 +810,7 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   const label = screen.getByLabelText<HTMLInputElement>("Token label");
   await user.click(label);
   await user.paste("reviewer");
+  for (const scope of boxes) await user.click(box(LABELS[scope], "new token"));
   await user.click(screen.getByRole("button", { name: "New token" }));
   await act(async () => {
     lostMint.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
@@ -928,6 +945,32 @@ test("a lost mint with several tokens made since the press lists them and revoke
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(first.id, keyedAttempt));
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     expect(page.revokeAgentToken).toHaveBeenCalledTimes(1);
+  } finally {
+    page.restore();
+  }
+});
+
+// A lost mint's replacement holds what the lost token held, read included: a read-only token's
+// replacement is read only too, never a token that writes.
+test("a lost read-only mint is replaced by a read-only token", async () => {
+  const lost: AgentToken = { ...madeAt("lost", "reviewer", 60_000), scopes: ["read", "person"] };
+  const page = await mintLostWith(userEvent.setup(), [lost, token], [true], ["approve", "read"]);
+
+  try {
+    // The lost mint asked for a read-only token.
+    expect(page.createAgentToken.mock.calls[0]?.[0]).toEqual({
+      name: "reviewer",
+      scopes: ["person", "read"],
+    });
+    await page.user.click(
+      await screen.findByRole("button", { name: "Revoke it and mint another" })
+    );
+    await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
+    await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
+    expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({
+      name: "reviewer",
+      scopes: ["person", "read"],
+    });
   } finally {
     page.restore();
   }

@@ -43,26 +43,29 @@ The Inbox opens the request in its reading column: the spec as the version to ap
 
 ## 4. The phases run
 
-After approval the daemon starts the planner, then the implementer, which opens the pull request,
-then the tester and the reviewer. The issue's status follows: `in_progress`, `testing`,
-`needs_review`, then `retro` once the reviewer has approved and the architect has accepted.
+After approval the daemon starts the issue's steps. On the default steps it starts the planner,
+then the implementer, which opens the pull request, then the tester and the reviewer. The issue's
+status follows: `in_progress`, `testing`, `needs_review`, then `retro` once the reviewer has
+approved and the architect has accepted.
 
-![The issue after the phases ran: Retro in its header beside the pull request link, #42, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
+![The issue after the phases ran: Retro in its header, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
 
 ## 5. The pull request
 
 The pull request's body follows Legion's template: the outcome, why, the change, how it was
 proven, what is not proven, and after the merge the production check your project asks for. Legion's reviewer approves it
-as the review App. In Dispatch, the issue's header links the pull request.
+as the review App. In Dispatch, the issue's Details, which the Details button on its header opens,
+links the pull request.
 
-![The issue header with the pull request Legion opened, linked as #42.](/legion/media/legion/pull-request.png)
+![The issue header with its Details open, and the pull request Legion opened linked there as #42.](/legion/media/legion/pull-request.png)
 
 ## 6. The acceptance
 
-When the reviewer approves, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the approval of the head) and accepts the change with a comment on the
-issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
-tester instead. Retro runs next.
+On the default steps, when the reviewer approves, the architect reads the evidence (the tester's
+handoff, each check of the issue with its latest result, the approval of the head) and accepts the
+change: it posts a comment on the issue, then signs off with the `legion` tool's `sign_off`, which
+moves the issue to `retro`, since the acceptance is the last of the default steps. A change that
+falls short goes back to an earlier step of its task instead. Retro runs next.
 
 ## 7. The merge
 
@@ -76,9 +79,9 @@ them. It closes the issue: the daemon reads the merged pull request and moves th
 
 ## 8. The production check
 
-After the close the tester gets the production check in its live session — the role your
-project's `production_check` names, which is the tester unless the setting is `off`, where no
-check opens. It asks your deploy
+After the close the tester gets the production check in its live session, or in a fresh one where
+the task had no tester step — the role your project's `production_check` names, which is the
+tester unless the setting is `off`, where no check opens. It asks your deploy
 role to carry the merge and waits for no reply; when production does not carry the merge yet, or
 carries it with a requirement only the deploy can show still unobserved, it reports `pending` with
 `wake_at`, the time it wants to look again, its pod goes, and the daemon brings it back at that

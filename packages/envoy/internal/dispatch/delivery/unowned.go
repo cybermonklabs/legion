@@ -40,3 +40,14 @@ func ListUnownedP0(ctx context.Context, pool *store.Pool, viewer any) ([]Unowned
 	}
 	return issues, rows.Err()
 }
+
+// CountUnownedP0 is how many issues ListUnownedP0 lists for project, which names one project,
+// counted by the statement rather than read. An empty project counts no issue and answers 0,
+// unlike ListUnownedP0's empty project, which lists every project's. Nothing in this tree calls it
+// yet: it is here because issues_open_p0's migration (20261117100010) and the plan test of this
+// package name its statement.
+func CountUnownedP0(ctx context.Context, q Querier, project string) (int, error) {
+	var count int
+	err := q.QueryRow(ctx, projectUnownedP0CountQuery, project).Scan(&count)
+	return count, err
+}

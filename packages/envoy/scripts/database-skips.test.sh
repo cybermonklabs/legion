@@ -2,11 +2,11 @@
 # packages/envoy/scripts/database-skips.test.sh
 #
 # Tests database-skips.sh, the skip counter of the envoy module's database-backed packages, with
-# five controls. Each control must fail as it states, or this test fails; each beside it a run
+# seven controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
-#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
-#      ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
+#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/
+#      and ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
 #      zz_planted_skip_test.go, is printed as `SKIP <package> TestPlantedSkip` and fails the
 #      counter; the same run without the overlay passes;
 #   2. with its variable unset or empty, the counter prints `database_skips=UNKNOWN` naming it,
@@ -34,6 +34,17 @@
 #      gives no reason is refused; and with either of `--var DISPATCH_TEST_DATABASE_URL --var
 #      BROKER_TEST_DATABASE_URL` unset or empty beside the other set, the counter prints
 #      `database_skips=UNKNOWN` naming that one and runs no test.
+#   6. --count-table over internal/fold, which is no package of the table, beside the broker
+#      API's package, which is: a skip planted in internal/fold is not counted and the run passes,
+#      printing both packages' times; a skip planted in the API's package is counted and fails the
+#      counter; a failure planted in internal/fold fails the counter, which prints it; a run of
+#      internal/fold alone prints database_skips=NONE and passes, and fails on that planted
+#      failure; and the option is refused beside --report and with no package.
+#   7. -run, as a leg of envoy-go-race-api pipes it in: a run of the API package under a -run that
+#      leaves most of its EXPECTED_SKIPS tests out passes, those lines being other legs'; a copy of
+#      the counter with a line for a test the package does not have reads UNKNOWN under a -run and
+#      names that line alone; a name with a non-ASCII letter is taken; a -run that is no list of
+#      whole test names is refused before any test runs; and the option is refused beside --report.
 #
 # Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -137,11 +148,12 @@ WAIT_BODY='func TestPlantedWait(t *testing.T) { t.Parallel(); time.Sleep(3 * tim
 
 func TestPlantedQuick(t *testing.T) { t.Parallel(); time.Sleep(100 * time.Millisecond) }'
 
-echo "database-skips.test.sh: control 1, a planted skip in each of three packages" >&2
+echo "database-skips.test.sh: control 1, a planted skip in each of four packages" >&2
 # Each package's -run names the planted test and a test the package passes with the database set
 # (the API package's, the tests its table excuses), so the run without the overlay holds tests.
 for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
   "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
+  "internal/holdrecord ^(TestPlantedSkip|TestNewRefusesAnIncompleteConfiguration)$" \
   "internal/dispatch/api ^(TestPlantedSkip|$API_ANCHOR|$api_expected)$"; do
   read -r dir run <<<"$row"
   name="planted-${dir//\//-}"
@@ -195,7 +207,7 @@ unknown_report() {
 { ev pass "$MODULE/internal/dispatch/store" TestElsewhere; ev skip "$MODULE/internal/dispatch/store" TestSkippedElsewhere
   ev pass "$MODULE/internal/dispatch/store"; } >"$WORK/elsewhere.json"
 count elsewhere bash "$COUNTER" --report "$WORK/elsewhere.json"
-unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ that passed or failed' \
+unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/ that passed or failed' \
   "a report holding no test of a package the patterns name is UNKNOWN"
 : >"$WORK/empty.json"
 count empty-report bash "$COUNTER" --report "$WORK/empty.json"
@@ -348,6 +360,98 @@ for name in DISPATCH_TEST_DATABASE_URL BROKER_TEST_DATABASE_URL; do
       "control 5: with $name $how beside the other variable set, the counter prints UNKNOWN naming it and runs no test" "$(seen "var-$how")"
   done
 done
+
+echo "database-skips.test.sh: control 6, --count-table" >&2
+# A unit leg's packages run in the counter's one go test, as envoy-go's unit legs run them: the
+# table's packages among them are counted, a skip of any other is not, a failure of any fails the
+# counter, and each prints its time. Here the leg is internal/fold, which is no package of the
+# table, beside the broker API's package, which is, both narrowed by -run.
+fold="$MODULE/internal/fold"
+table_run='-run=^(TestPlantedSkip|TestPlantedFail|TestHealthzIsPublic)$'
+plant fold-skip internal/fold "$SKIP_BODY"
+count table-skip env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/table-skip.out" &&
+  grep -qxF 'go_test_exit=0' "$WORK/table-skip.out" && grep -qE "^pass $fold " "$WORK/table-skip.err" &&
+  grep -qE "^pass $MODULE/internal/cipher/api " "$WORK/table-skip.err" && echo 0 || echo 1)" \
+  "control 6: a skip planted in a package of the run outside the table is not counted, and both packages' times are printed" \
+  "$(seen table-skip); stderr $(tr '\n' '|' <"$WORK/table-skip.err")"
+plant api-skip internal/cipher/api "$SKIP_BODY"
+count table-counted env GOFLAGS="-overlay=$WORK/api-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-counted)" = 1 ] && grep -qxF "SKIP $MODULE/internal/cipher/api TestPlantedSkip" "$WORK/table-counted.out" &&
+  grep -qxF 'database_skips=1' "$WORK/table-counted.out" && echo 0 || echo 1)" \
+  "control 6: a skip planted in the table's package among the run's is counted, and fails the counter" "$(seen table-counted)"
+plant fold-fail internal/fold 'func TestPlantedFail(t *testing.T) { t.Fatal("planted failure") }'
+count table-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/table-fail.out" &&
+  grep -qE '^go_test_exit=[1-9]' "$WORK/table-fail.out" && said table-fail "FAIL $fold TestPlantedFail" &&
+  said table-fail 'planted failure' && echo 0 || echo 1)" \
+  "control 6: a failure planted in a package of the run outside the table fails the counter, which prints it" "$(seen table-fail)"
+# A leg that holds no package of the table counts nothing: it says so, rather than read as a
+# count of zero, and go test's result alone decides.
+count table-none env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/
+judge "$([ "$(code table-none)" = 0 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none.out" &&
+  grep -qxF 'go_test_exit=0' "$WORK/table-none.out" && said table-none 'so this run counts no skip' &&
+  echo 0 || echo 1)" \
+  "control 6: a run with no package of the table prints database_skips=NONE, not a zero, and passes on go test's pass" "$(seen table-none)"
+count table-none-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/
+judge "$([ "$(code table-none-fail)" = 1 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none-fail.out" &&
+  grep -qE '^go_test_exit=[1-9]' "$WORK/table-none-fail.out" && said table-none-fail "FAIL $fold TestPlantedFail" &&
+  echo 0 || echo 1)" \
+  "control 6: a run with no package of the table still fails on a failed test, which it prints" "$(seen table-none-fail)"
+count table-report bash "$COUNTER" --report "$WORK/quiet.json" --count-table "${QUIET[@]}"
+judge "$([ "$(code table-report)" = 1 ] && said table-report 'refused beside it' && echo 0 || echo 1)" \
+  "control 6: --count-table is refused beside --report" "$(seen table-report)"
+count table-bare bash "$COUNTER" --count-table
+judge "$([ "$(code table-bare)" = 1 ] && said table-bare 'needs a PACKAGE' && echo 0 || echo 1)" \
+  "control 6: --count-table with no package is refused" "$(seen table-bare)"
+
+echo "database-skips.test.sh: control 7, -run (a leg's group)" >&2
+# A leg of envoy-go-race-api pipes `-run=^(Name|...)$` and the package into the counter. Each run
+# here names the counter's own -run, not GOFLAGS', and runs the API package.
+leg_run="-run=^($API_ANCHOR|TestSearchLatencyOnCorpus)\$"
+count leg bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "$leg_run" ./internal/dispatch/api/
+judge "$([ "$(code leg)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/leg.out" && echo 0 || echo 1)" \
+  "control 7: under a -run, an EXPECTED_SKIPS line whose test the package has and the pattern leaves out is another leg's, and the run passes" \
+  "$(seen leg)"
+# A line whose test the package does not have is held in every leg: no pattern selects it, and a
+# counter that dropped every line the pattern leaves out would let it go stale in all of them.
+stale="$tree_envoy/scripts/database-skips-stale.sh"
+sed "s|^\($API TestSearchLatencyOnCorpus .*\)|\1\n$API TestNoSuchTestAnywhere is planted here, a test the package does not have|" \
+  "$COUNTER" >"$stale"
+judge "$([ "$(($(wc -l <"$stale") - $(wc -l <"$COUNTER")))" = 1 ] && echo 0 || echo 1)" \
+  "control 7: the stale copy differs from the counter by exactly the planted line" \
+  "$(($(wc -l <"$stale") - $(wc -l <"$COUNTER"))) lines more"
+count leg-stale bash "$stale" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "-run=^($API_ANCHOR)\$" ./internal/dispatch/api/
+judge "$([ "$(code leg-stale)" = 1 ] && grep -qxF 'database_skips=UNKNOWN' "$WORK/leg-stale.out" &&
+  said leg-stale "TestNoSuchTestAnywhere" && echo 0 || echo 1)" \
+  "control 7: under a -run, an EXPECTED_SKIPS line whose test the package does not have still reads UNKNOWN and fails" \
+  "$(seen leg-stale)"
+judge "$( ! said leg-stale "TestSearchLatencyOnCorpus" && echo 0 || echo 1)" \
+  "control 7: and it names only that line, not the lines whose tests the package has and the pattern leaves out" \
+  "$(seen leg-stale)"
+for shape in '-run=^(.*)$' '-run=^(TestA)|(TestB)$' '-run=TestA'; do
+  count leg-shape bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+    "$shape" ./internal/dispatch/api/
+  judge "$([ "$(code leg-shape)" = 1 ] && said leg-shape 'usage:' && echo 0 || echo 1)" \
+    "control 7: $shape, no list of whole test names, is refused before any test runs" "$(seen leg-shape)"
+done
+# A name with a non-ASCII letter is a whole test name: go_legs.py lists and places one, so the
+# counter must take it too. It matches no test here, and the anchor still runs.
+count leg-unicode bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "-run=^($API_ANCHOR|TestÄnderungGibtEsNicht)\$" ./internal/dispatch/api/
+judge "$([ "$(code leg-unicode)" = 0 ] && ! said leg-unicode 'usage:' && grep -qxF 'database_skips=0' "$WORK/leg-unicode.out" &&
+  echo 0 || echo 1)" \
+  "control 7: a -run name holding a non-ASCII letter is taken, as go_legs.py takes it" "$(seen leg-unicode)"
+count leg-report bash "$COUNTER" --report "$WORK/quiet.json" "-run=^($API_ANCHOR)\$" "${QUIET[@]}"
+judge "$([ "$(code leg-report)" = 1 ] && said leg-report 'refused beside it' && echo 0 || echo 1)" \
+  "control 7: -run is refused beside --report" "$(seen leg-report)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

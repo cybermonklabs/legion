@@ -17,6 +17,7 @@ import (
 // for a build of a lower rule. A build of rule 1 after a rollback from rule 2 would otherwise
 // report the marks of rule 2 as a backlog that only grows, since it never drains them (R13).
 func TestABuildsBacklogCountsOnlyTheDocumentsItLists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	rule, higherRule := service.markingRule, service.markingRule+1
@@ -67,6 +68,7 @@ func dateOwedVersion(t *testing.T, database *store.Store, artifactID string, at 
 // age must follow the oldest owed document and not the newest, since a backlog dated by its
 // newest arrival reads as fresh however long its oldest has waited.
 func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	// Postgres holds a timestamp to the microsecond. The test's own clock is rounded to it, so
 	// a nanosecond the database cannot store cannot make the comparisons below fail.
@@ -114,6 +116,7 @@ func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testi
 // it by nothing would leave it counted in the backlog and invisible in the age, which is the
 // one row whose age an operator most needs: no tick will ever settle it.
 func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	made := time.Now().UTC().Truncate(time.Microsecond).Add(-5 * time.Hour)

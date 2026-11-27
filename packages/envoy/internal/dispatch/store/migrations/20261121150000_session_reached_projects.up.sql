@@ -7,10 +7,10 @@
 -- from a person - off its list, a group that admitted them off its list, out of such a group, the
 -- group deleted, or the project given to another owner - records, in the change's own transaction,
 -- a (session, project) pair here for every session tied to that person (session_owners)
--- (access.recordReachedProjects). The content rule reads a pair here as it reads one of
+-- (store.RecordReachedProjects). The content rule reads a pair here as it reads one of
 -- session_projects: a session that reached a project the viewer does not see answers that viewer
--- as one nobody holds. Nothing removes a pair, `envoy-dispatch backfill-session-projects --reset`
--- included: what a transcript holds stays in it.
+-- as one nobody holds. Nothing removes a pair, the reset of a later slice's backfill included: what
+-- a transcript holds stays in it.
 --
 -- A pair is written only where no row holds it, and the table has no unique key, for the reason
 -- session_projects and session_owners have none: a writer never waits on another's open insert.

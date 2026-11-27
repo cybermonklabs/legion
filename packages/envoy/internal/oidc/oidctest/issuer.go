@@ -280,10 +280,15 @@ func New(t TB) *Issuer {
 	mux.HandleFunc("POST /device_authorization", issuer.handleDeviceAuthorization)
 	mux.HandleFunc("POST /token", issuer.handleToken)
 	mux.HandleFunc("POST /revoke", issuer.handleRevoke)
-	issuer.server = httptest.NewServer(mux)
-	t.Cleanup(issuer.server.Close)
-	issuer.issuerClaim = issuer.server.URL
+	// The handlers read issuer.server, issuerClaim and tokenAuthMethods on the server's goroutines,
+	// and a request from a process the test starts orders nothing in this one. So each is set
+	// before the server serves: built unstarted, the claim taken from its listener, then started
+	// (Start sets the server's URL to that address before it serves).
+	issuer.server = httptest.NewUnstartedServer(mux)
+	issuer.issuerClaim = "http://" + issuer.server.Listener.Addr().String()
 	issuer.tokenAuthMethods = slices.Clone(googleTokenAuthMethods)
+	issuer.server.Start()
+	t.Cleanup(issuer.server.Close)
 	return issuer
 }
 

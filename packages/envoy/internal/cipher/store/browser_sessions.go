@@ -13,15 +13,10 @@ import (
 // Each function takes the SHA-256 of the session's cookie secret, never the secret itself, and
 // the caller's now: a session is live while its expires_at is after now, so the lookup and the
 // sweep draw the same line, as the sweeper's other expiries do on the time it passes them. Each
-// session records the Google account that signed in (0042's issuer and subject, none on a row
+// session records the Google account that signed in (0047's issuer and subject, none on a row
 // from before), which is what the revoke of an account that no longer holds the person's address
 // ends it by (DeleteSubjectBrowserSessionsTx). A decision made under a session reads it again in
 // its own transaction, under the person's lock (HoldBrowserSessionTx).
-
-// ErrBrowserSessionSubjectReplaced is a sign-in to the approval page by an account that no
-// longer holds the person's address: Dispatch gave the address to another account and named this
-// one as replaced (RecordReplacedSubjectTx), so the broker signs it in to no page under it.
-var ErrBrowserSessionSubjectReplaced = errors.New("store: another account holds this person's address now")
 
 // ErrBrowserSessionEnded is a decision whose approval-page session is no longer live when its
 // transaction reads it under the person's lock (HoldBrowserSessionTx): signed out, ended by
@@ -52,10 +47,10 @@ type BrowserSignIn struct {
 }
 
 // CreateBrowserSession writes in's session and deletes the browser's previous one, in one
-// transaction. It answers ErrBrowserSessionSubjectReplaced, writing and deleting nothing, when
+// transaction. It answers ErrSubjectReplaced, writing and deleting nothing, when
 // in.Account no longer holds in.Login's address.
 //
-// It takes the person's lock first (LockPerson), and then reads whether the account is replaced,
+// It takes the person's lock first and then reads whether the account is replaced (LockPersonAs),
 // as a sign-in trade does (RecordPersonSignIn): a revoke of that account
 // (enroll.Service.RevokePersonSubject) either commits before the read, which then refuses the
 // sign-in, or waits for this one to commit and deletes the session it wrote. Without the lock a
@@ -67,15 +62,8 @@ func (s *Store) CreateBrowserSession(ctx context.Context, in BrowserSignIn) erro
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err := LockPerson(ctx, tx, in.Login); err != nil {
+	if err := LockPersonAs(ctx, tx, in.Login, in.Account); err != nil {
 		return err
-	}
-	replaced, err := SubjectReplaced(ctx, tx, in.Login, in.Account)
-	if err != nil {
-		return err
-	}
-	if replaced {
-		return ErrBrowserSessionSubjectReplaced
 	}
 	if in.Previous != nil {
 		if _, err := tx.Exec(ctx, `delete from browser_sessions where secret_hash = $1`, in.Previous[:]); err != nil {
@@ -127,7 +115,7 @@ func (s *Store) DeleteBrowserSessionsForLogin(ctx context.Context, login string)
 }
 
 // DeleteSubjectBrowserSessionsTx deletes, in tx, every session of person, live or expired, that
-// account signed in or that records no account, a session from before migration 0042 that might
+// account signed in or that records no account, a session from before migration 0047 that might
 // be any account's, and answers how many it deleted: the approval-page half of the revoke of an
 // account that no longer holds person's address (enroll.Service.RevokePersonSubject). A session
 // another account signed in is not among them. The caller holds LockPerson, so no sign-in of

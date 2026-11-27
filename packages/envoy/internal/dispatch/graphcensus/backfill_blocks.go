@@ -138,7 +138,7 @@ var BlockRowsStatement = `
 			order by d.node_id
 			limit $2
 		),
-		caused as (
+		caused as materialized (
 			select version.artifact_id, version.changed_version, found.id
 			from (
 				select distinct artifact_id, issue_key, project_key, changed_version

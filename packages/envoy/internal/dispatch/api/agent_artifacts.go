@@ -15,7 +15,7 @@ import (
 // owner beside an issue and a project, addressed dispatch://agent/<session id>/artifact/<slug>.
 // It holds no document, appends no event and takes no lock but its own. This file is what the
 // artifact routes (artifacts.go) do differently for it: its owner key, its upload's lock and
-// owner lookups, its upload's missing event, and its read by slug.
+// owner lookups, its upload's missing event, its read by slug, and its list.
 
 // agentOwnsFilesOnly is the refusal of a markdown document uploaded to an agent's conversation.
 const agentOwnsFilesOnly = "an agent's conversation holds files and images; a document belongs to an issue or a project"
@@ -30,7 +30,21 @@ const (
 	agentArtifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
 		order by slug = $2 desc limit 1`
 	agentArtifactSlugTakenSQL = `select exists(select 1 from artifacts where session_id = $1 and slug = $2)`
+	// agentArtifactsSQL is the conversation's list, $1 the session id and $2 the most rows it
+	// answers (agentArtifactsListMax), newest first, id breaking a tie. It compares session_id
+	// for the reason the two lookups above do, so the partial index artifacts_session_id (0071),
+	// keyed (session_id, created_at), serves it in its own order and stops at the limit rather
+	// than a scan of every owner's artifacts.
+	agentArtifactsSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1
+		order by created_at desc, id desc limit $2`
 )
+
+// agentArtifactsListMax is the most files and images GET /api/v1/agents/{session_id}/artifacts
+// answers: the newest ones, each with its versions. The list is what a reference picker opens
+// under an agent's row, and a conversation that has sent more files than a reader scans there
+// answers the ones sent last, rather than every file it holds and every version of each. An
+// older file is still read by its slug.
+const agentArtifactsListMax = 100
 
 // agentOwnerKey is an agent's conversation's owner key, what its artifacts' ref_key holds before
 // `/<slug>`: artifactOwnerKey's session arm.
@@ -107,4 +121,28 @@ func (s *server) uploadAgentArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.uploadArtifactFor(w, r, artifactTarget{Session: session})
+}
+
+// GET /api/v1/agents/{session_id}/artifacts
+//
+// The conversation's newest files and images, at most agentArtifactsListMax of them, newest
+// first, each as the read by slug answers it with its versions, which are read for those rows
+// alone: what the reference picker lists under an agent's row, so a person can name one by its
+// dispatch://agent/<session id>/artifact/<slug> address without having pasted it.
+//
+// A conversation's files are part of the conversation, so the list admits exactly the callers the
+// conversation read GET /api/v1/agents/{session_id}/messages admits: the `person` scope its row
+// names (routeScopes) and actingPerson, which that read opens with too, before the path is read.
+// `session` therefore means what it means on that read, the session the request acts for, and a
+// credential that proved a session is refused one naming another (403 ACTOR_SESSION_MISMATCH).
+func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	session, err := requestSessionID(r)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeArtifactList(w, r, agentArtifactsSQL, session, agentArtifactsListMax)
 }

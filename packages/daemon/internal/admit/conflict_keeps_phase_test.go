@@ -18,11 +18,12 @@ import (
 
 // A confirmed conflict is merged forward in the phase the issue stands in, with no phase moved and
 // no start written (dispatch://INFRA-4374 R1), so it changes nothing of what the cap counts: an
-// issue past its review takes no slot for the merge, and an issue in testing keeps the slot it
-// already held (record.KeepsSlot). The conflict is read through the workflow engine as the daemon
-// reads it, two CONFLICTING reads of the head a minute apart against a base that requires a check
-// the head has not passed. In testing that asks the implementer and in merging the merger
-// (cybermonklabs/legion#4979); in accepting and retro the conflict waits for merging and nothing is
+// issue in accepting, retro or merging, which keep no slot, takes no slot for the merge, and an
+// issue in testing keeps the slot it already held (record.KeepsSlot). The conflict is read through
+// the workflow engine as the daemon reads it, two CONFLICTING reads of the head a minute apart
+// against a base that requires a check the head has not passed. In testing that asks the
+// implementer and in merging the merger (cybermonklabs/legion#4979); in accepting and retro of
+// these default steps the merge comes next, so the conflict waits for merging and nothing is
 // asked. The cap has room for every issue here, so a merge forward that owed a worker a start
 // would put the issue in the waiting line and the pass would grant it a slot; none does. The
 // active set the state shows (projection.Project's Admission.Active) agrees with the slot rows.
@@ -36,7 +37,7 @@ func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
 		number int
 	}{
 		{rowRuleCase{key: "LEGION-450", stands: phase.Accepting, status: "needs_review",
-			why: "the architect reads a reviewed head here, and the merge forward starts nobody"}, 450},
+			why: "the architect reads the head the step before its acceptance passed (in the default steps, a reviewed head), and the merge forward starts nobody"}, 450},
 		{rowRuleCase{key: "LEGION-451", stands: phase.Retro, status: "retro",
 			why: "the retro writes no more of the change, and the merge forward starts nobody"}, 451},
 		{rowRuleCase{key: "LEGION-452", stands: phase.Merging, status: "retro",

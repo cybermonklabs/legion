@@ -167,9 +167,53 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	return handler, database, directServer(deps)
 }
 
+// meaningVerdictBound is the bound a case gives the related-item check when its verdict is what
+// the check's meaning stage found: what the test binary's deadline leaves less
+// binaryDeadlineMargin (testwait.Remaining), in place of production's relatedMeaningAllowance
+// and crossProjectGrace (withRelatedBound). Under production's bounds a loaded machine's meaning
+// stage answered after three seconds, and the check answered by keywords alone and offered
+// nothing of another project, so the case failed on the machine's speed and not on what the stage
+// found. Under this one the stage's own answer decides; a stage that never answers still ends the
+// check, with the keyword stage's answer, which fails the case by name. The bound counts from each
+// check's start: a direct server reads it just before its checks (meaningVerdictServer), a
+// registered one when it is built (testServerOptions.relatedBound), where a check that starts more
+// than binaryDeadlineMargin after the build and never answers outlasts the binary's deadline, and
+// go test's own timeout names the case instead.
+//
+// Production's bounds keep rows of their own:
+// TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly and the second check of
+// TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing hold the three-second meaning allowance,
+// and TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer the grace.
+func meaningVerdictBound(t *testing.T) time.Duration {
+	t.Helper()
+	return testwait.Remaining(t, binaryDeadlineMargin)
+}
+
+// withRelatedBound gives s's related-item check bound for its meaning allowance and its wait for
+// the cross-project leg (meaningBound, crossProjectWait), and bound plus the time production leaves
+// the keyword stage past the meaning allowance for its own allowance (suggestionTimeout). The
+// meaning deadline still comes first, so a meaning stage that never answers ends the check by
+// keywords, saying the meaning search did not answer, as in production; with both at bound the
+// check's own deadline would fall a moment later and race it. Zero leaves s on production's
+// bounds. It answers s.
+func (s *server) withRelatedBound(bound time.Duration) *server {
+	if bound != 0 {
+		s.meaningBound, s.crossProjectWait = bound, bound
+		s.suggestionTimeout = bound + relatedCheckAllowance - relatedMeaningAllowance
+	}
+	return s
+}
+
+// meaningVerdictServer is a direct server on deps whose related-item check runs under
+// meaningVerdictBound, read now.
+func meaningVerdictServer(t *testing.T, deps Deps) *server {
+	t.Helper()
+	return directServer(deps).withRelatedBound(meaningVerdictBound(t))
+}
+
 // binaryDeadlineMargin is what binaryDeadlineGuard leaves of the test binary's deadline for the
 // failed case's cleanups - releasing a held read, closing its servers and dropping its database
-// - and for the binary's own end: the margin throughputWait leaves for the socket rig's.
+// - and for the binary's own end: the margin testwait's Until and Receive leave.
 const binaryDeadlineMargin = 30 * time.Second
 
 // binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline
@@ -178,7 +222,7 @@ const binaryDeadlineMargin = 30 * time.Second
 // selects on it, so code that never ends the wait fails that case by name, and leaves the binary's
 // timeout to the package's later tests. It bounds no measurement: it fires only where the wait
 // would otherwise last as long as the binary. A deadline that leaves no more than the margin to
-// begin with fails at once, by name, as throughputWait's does.
+// begin with fails at once, by name.
 func binaryDeadlineGuard(t *testing.T) <-chan time.Time {
 	t.Helper()
 	if _, bounded := t.Deadline(); !bounded {
@@ -375,7 +419,8 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // out: a check that waited for that fails by name before the binary's deadline. The case starts
 // the check at a moment it reads, and the embedder records its context's deadline, so that the
 // meaning search ran to the meaning allowance from the check's start is a value the case
-// compares rather than a time it measures.
+// compares rather than a time it measures. The span that must reach the meaning allowance is the
+// check's own, from the start it was handed to its return, read on the goroutine that ran it.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
 	t.Parallel()
 	embedder := &fakeEmbedder{delay: time.Minute}
@@ -387,11 +432,12 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	srv.suggestionTimeout = time.Hour
 
 	started := time.Now()
+	var answeredAt time.Time
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{who: everyReader, project: "MSLOW", text: "Nightly snapshots finish late"}, started)
 		return answer
 	})
-	elapsed := time.Since(started)
+	elapsed := answeredAt.Sub(started)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, meaning search having run out of time", suggestions)
@@ -467,7 +513,8 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 }
 
 // A keyword stage held a second, well past the old 300 ms bound, still answers within the
-// check's allowance.
+// check's allowance, and only once the lock is released: it has not answered while the lock is
+// held.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -483,19 +530,20 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
-	started := time.Now()
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "SLOW", text: "Zymurgy ledger totals drift"})
 	}()
 	time.Sleep(time.Second)
+	select {
+	case early := <-answered:
+		t.Fatalf("the check answered (%+v) while the lock it reads behind was still held", early)
+	default:
+	}
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
 	suggestions := <-answered
-	if elapsed := time.Since(started); elapsed < time.Second {
-		t.Fatalf("the check answered in %s, before the lock it reads behind was released", elapsed)
-	}
 	if suggestions.Outcome != "found" || !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("suggestions = %+v, want %s found once the lock was released", suggestions, key)
 	}
@@ -586,7 +634,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waitUntil(t, "the check's pick to wait on the term statistics", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
@@ -594,20 +642,10 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read lock waits: %v", err)
 		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the check's pick never waited on the term statistics")
-		}
-	}
+		return waiting > 0
+	})
 	endRequest()
-	var suggestions *model.Suggestions
-	select {
-	case suggestions = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check did not answer within 10s of its request ending")
-	}
+	suggestions := testwait.Receive(t, "the check's answer once its request ended", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -730,13 +768,10 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// only once it had failed, so an insert started more than half that before is the first.
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 5s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.UntilPolling(t, 20*time.Millisecond, what, func() (bool, bool) {
+			held := done()
+			return held, held
+		})
 	}
 	var answered time.Time
 	if err := database.Pool.QueryRow(context.Background(), "select clock_timestamp()").Scan(&answered); err != nil {
@@ -819,13 +854,8 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	select {
-	case recovered := <-waited:
-		if recovered != nil {
-			t.Fatalf("the shutdown wait panicked: %v", recovered)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown wait did not return within 10s of the lock's release")
+	if recovered := testwait.Receive(t, "the shutdown wait's return once the lock was released", waited); recovered != nil {
+		t.Fatalf("the shutdown wait panicked: %v", recovered)
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "timeout" {
@@ -866,7 +896,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")

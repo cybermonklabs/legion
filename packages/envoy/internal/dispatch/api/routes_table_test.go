@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,10 +13,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // routeIndexGolden is the committed index of the table: one route per line, sorted by path then
@@ -497,15 +498,24 @@ func personalTokenListing(t *testing.T, database *store.Store, owner string, pro
 // row that names `approve`, a token of that person holding `person` alone, which is refused.
 // That last probe is what holds the gate to the table: without it a row the table declares
 // `approve` whose gate asked only for `person` would pass every test here.
+//
+// A token holding `person`, `approve` and `p0`, the widest set a person's token may hold, keeps
+// every route the others reach (G4 of dispatch://INFRA-5637): it is admitted on every row that
+// admits the token holding `person` and `approve`, and on every `any` row that names no scope,
+// where the shared token is admitted. No probe body names a priority (routeProbeBody), so no
+// probe meets the check a priority of 0 makes.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
-	probe := func(route apiRoute, credential string) *httptest.ResponseRecorder {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		request := httptest.NewRequestWithContext(ctx, route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
+	withP0 := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove, model.ScopeP0)
+	// A probe ends on its route's answer, waited for through the shared wait, whose one bound is
+	// the test binary's deadline: a fixed deadline on the request ended a probe whose token read a
+	// loaded machine held past it, and the route then answered 5xx where it would have refused.
+	probe := func(t *testing.T, route apiRoute, credential string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
 		request.Header.Set("Content-Type", "application/json")
 		switch credential {
 		case "cookie":
@@ -517,27 +527,31 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 			// A personal token's plaintext, presented as the person's own credential.
 			request.Header.Set("Authorization", "Bearer "+credential)
 		}
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			answered <- response
+		}()
+		return testwait.Receive(t, fmt.Sprintf("the %s caller's probe of %s %s to answer", credential, route.Method, route.Pattern), answered)
 	}
 	expectAdmitted := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, why := authRefusal(response); refused {
 			t.Fatalf("%s %s is %q but refuses a %s caller with %s: %s", route.Method, route.Pattern, route.Auth, credential, why, response.Body.String())
 		}
 	}
 	expectRefused := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, _ := authRefusal(response); !refused {
 			t.Fatalf("%s %s is %q but admits a %s caller: %d %s", route.Method, route.Pattern, route.Auth, credential, response.Code, response.Body.String())
 		}
 	}
 	expectScopeRefusal := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		refused, why := authRefusal(response)
 		if !refused || why != "403 "+codeScopeRequired {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
@@ -555,9 +569,11 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 						expectScopeRefusal(t, route, personOnly)
 					}
 					expectAdmitted(t, route, personal)
+					expectAdmitted(t, route, withP0)
 					return
 				}
 				expectAdmitted(t, route, "bearer")
+				expectAdmitted(t, route, withP0)
 			case authBearer:
 				expectRefused(t, route, "anonymous")
 				expectRefused(t, route, "cookie")
@@ -569,12 +585,19 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
 // and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
+// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
+// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
+// comment has an author of kind session, so a person scope would shut every author of one out
+// of its own edit, and the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	t.Parallel()
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
+		// Turning a project's proven-sessions setting off is INFRA-4764's own row, and the
+		// person's as the default assignee above is: it weakens a check, which no credential the
+		// deployment configured may do.
+		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
@@ -594,6 +617,14 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// Which sessions Dispatch holds a record of is this change's own row: it answers only
+		// what the conversation read above already tells a caller, so it admits the callers
+		// that read admits and needs its scope.
+		"GET /api/v1/agents/known",
+		// The conversation's files are this change's own row: they are part of the conversation
+		// the read above shows, so the list admits the callers that read admits and needs its
+		// scope.
+		"GET /api/v1/agents/{session_id}/artifacts",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",
 		"GET /api/v1/broadcasts",
@@ -608,7 +639,6 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
-		"PATCH /api/v1/comments/{id}",
 		"POST /api/v1/comments/{id}/reject",
 		"GET /api/v1/artifacts/{id}/subscribers",
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",

@@ -51,7 +51,7 @@ func recordAs(t *testing.T, st *store.Store, person, thumbprint, machine string,
 	}
 	defer tx.Rollback(ctx)
 	if _, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account,
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account, EndUnrecorded: true,
 	}); err != nil {
 		return err
 	}
@@ -239,10 +239,11 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 	}
 }
 
-// A sign-in row from before migration 0042 records no account, and might be any account's. A trade
-// under its key never gives it one: it ends the row, deleting it, ends every live token already
-// traded on that person's key, and inserts a row of its own recording the trade's account, all in
-// its transaction, and says so (the answer the caller ends the row's credential by). The person's
+// A sign-in row from before migration 0047 records no account, and might be any account's. A trade
+// under its key with SignInTrade.EndUnrecorded, as where the broker asks Dispatch, never gives it
+// one: it ends the row, deleting it, ends every live token already traded on that person's key,
+// and inserts a row of its own recording the trade's account, all in its transaction, and says so
+// (the answer the caller ends the row's credential by). The person's
 // token on another box and another person's token on this key are left alone; a later trade of
 // the same account is the same sign-in, so it ends nothing and answers so.
 //
@@ -254,7 +255,7 @@ func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
 	var before string
 	if err := st.Pool.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account) values ($1, $2, $3) returning id::text`,
 		signInPerson, signInBoxOne, signInMachine).Scan(&before); err != nil {
-		t.Fatalf("a sign-in from before migration 0042: %v", err)
+		t.Fatalf("a sign-in from before migration 0047: %v", err)
 	}
 	if err := record(t, st, signInPerson, signInBoxTwo, signInMachine); err != nil {
 		t.Fatalf("record(%s, %s): %v", signInPerson, signInBoxTwo, err)
@@ -278,7 +279,7 @@ func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
 		}
 		defer tx.Rollback(ctx)
 		ended, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: newcomer,
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: newcomer, EndUnrecorded: true,
 		})
 		if err != nil {
 			t.Fatalf("the trade under the row: %v", err)
@@ -316,6 +317,43 @@ func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
 	}
 	if !tokenActive(t, st, "token-after-the-account") {
 		t.Error("a later trade of the account the row records ended a token minted under it, want it left alone")
+	}
+}
+
+// TestASignInRevokeCountsTheReadTokensItEnds: a person's read trade on a box mints a token
+// narrowed to reading, bound to a key made for its holder and naming the launcher credential the
+// sign-in holds, so it ends with that credential, which the revoke's caller ends in the same
+// transaction (enroll.Service.RevokePersonSignIn). So the revoke of a sign-in whose credential has
+// one access token and two narrowed read tokens answers tokens_ended 3. A narrowed token of the
+// person's sign-in on another box, and one of this credential that has already expired, are not
+// counted: the revoke ends neither.
+func TestASignInRevokeCountsTheReadTokensItEnds(t *testing.T) {
+	st := storetest.Open(t)
+	for _, box := range []string{signInBoxOne, signInBoxTwo} {
+		if err := record(t, st, signInPerson, box, signInMachine); err != nil {
+			t.Fatalf("record(%s, %s): %v", signInPerson, box, err)
+		}
+	}
+	held, other := storeCredential(t, st, signInBoxOne), storeCredential(t, st, signInBoxTwo)
+	storeAccessToken(t, st, "token-on-the-box", signInPerson, signInBoxOne)
+	for _, c := range []struct{ signature, credential, expires string }{
+		{"narrowed-1", held, "15 minutes"},
+		{"narrowed-2", held, "15 minutes"},
+		{"narrowed-other-box", other, "15 minutes"},
+		{"narrowed-expired", held, "-1 second"},
+	} {
+		storeNarrowedToken(t, st, c.signature, signInPerson, c.credential, c.expires)
+	}
+	target := signInFor(t, st, signInPerson, signInBoxOne)
+	thumbprint, ended, err := revokeSignIn(t, st, target.ID, signInPerson)
+	if err != nil {
+		t.Fatalf("RevokePersonSignInTx: %v", err)
+	}
+	if thumbprint != signInBoxOne {
+		t.Fatalf("the revoke answered the box key %q, want %q", thumbprint, signInBoxOne)
+	}
+	if ended != 3 {
+		t.Fatalf("the revoke answered tokens_ended %d, want 3: the access token minted on that box and the two live read tokens that end with its credential", ended)
 	}
 }
 
@@ -455,6 +493,41 @@ func tokenActive(t *testing.T, st *store.Store, signature string) bool {
 	return active
 }
 
+// storeCredential writes one live launcher_credentials row bound to the key thumbprint names, as
+// a sign-in's trade mints one on its box key, and answers its id.
+func storeCredential(t *testing.T, st *store.Store, thumbprint string) string {
+	t.Helper()
+	var id string
+	err := st.Pool.QueryRow(context.Background(), `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values (gen_random_uuid(), $1, 'example-host', $2, '{}', now() + interval '30 days') returning id::text`, signInPerson, thumbprint).Scan(&id)
+	if err != nil {
+		t.Fatalf("store the launcher credential on %s: %v", thumbprint, err)
+	}
+	return id
+}
+
+// storeNarrowedToken writes one active oauth_narrowed_access_tokens row shaped as a person's read
+// trade writes one: bound to a holder's key (signInBoxThree) rather than the box key, naming the
+// launcher credential credential, and expiring expires (a Postgres interval) from now.
+func storeNarrowedToken(t *testing.T, st *store.Store, signature, person, credential, expires string) {
+	t.Helper()
+	request, err := json.Marshal(map[string]any{
+		"client_id": "dispatch-token-exchange",
+		"session": map[string]any{
+			"extra":          map[string]any{"person": person, "session": "example-session", "project_scope": "read-person"},
+			"jwk_thumbprint": signInBoxThree,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Pool.Exec(context.Background(), `insert into oauth_narrowed_access_tokens (signature, request_id, credential_id, request, expires_at, jwk_thumbprint)
+		values ($1, $1, $2, $3, now() + $4::interval, $5)`, signature, credential, request, expires, signInBoxThree)
+	if err != nil {
+		t.Fatalf("store the narrowed token %s: %v", signature, err)
+	}
+}
+
 // TestMigrationTwentyFiveHoldsOneSignInPerPersonAndBoxKey: the unique index is what makes a
 // person's second trade of a box key move the row it already has rather than add another, and a
 // revoked row is inside it, so the pair's slot is kept for good and a trade of a revoked key
@@ -525,7 +598,7 @@ func TestATradeRacingTheRevokeThatCommitsFirstIsRefused(t *testing.T) {
 		}
 		defer trading.Rollback(ctx)
 		if _, err := store.RecordPersonSignIn(ctx, trading, store.SignInTrade{
-			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: accountOf(signInPerson),
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: accountOf(signInPerson), EndUnrecorded: true,
 		}); err != nil {
 			traded <- err
 			return

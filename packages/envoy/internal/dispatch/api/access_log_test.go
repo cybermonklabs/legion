@@ -2,11 +2,13 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // logBuffer is a log sink the server's goroutines may write while the test reads it.
@@ -43,6 +46,7 @@ func accessLines(t *testing.T, logged *logBuffer) []string {
 // A person's read writes one line naming the route, the person (by their login's hash) and the
 // answer, and no request after it writes a second line for the same request.
 func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
 	logged := captureLog(t)
@@ -75,6 +79,7 @@ func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 // A bearer's write is named by the session it acts as, never by the token it sent, and the line
 // holds neither the token nor the body the caller wrote.
 func TestABearersRequestIsNamedByItsSessionAndCarriesNoToken(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
 	logged := captureLog(t)
@@ -115,6 +120,7 @@ func TestABearersRequestIsNamedByItsSessionAndCarriesNoToken(t *testing.T) {
 // A request no credential authenticates is logged with its refusal and no caller, so a flood of
 // refused requests is visible too.
 func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler := newTestHandler(t)
 	logged := captureLog(t)
 
@@ -141,15 +147,23 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 
 // A socket that outlives its request resolves its caller again on every heartbeat, and that
 // resolution names no one on the line: a shared-token bearer's re-resolution would otherwise
-// replace the session the socket was admitted as with a nameless shared token.
+// replace the session the socket was admitted as with a nameless shared token. The socket stays
+// open until ten of those resolutions have returned, so the line is written after them.
 func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
 	logged := captureLog(t)
 	served := directServer(deps)
 	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, true, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
-		time.Sleep(100 * time.Millisecond) // ten heartbeats
+		testwait.Until(t, "ten heartbeats to resolve the socket's caller again (the resolutions returned)", func() (int32, bool) {
+			if r.Context().Err() != nil {
+				t.Fatalf("the socket closed after %d heartbeat resolutions: %v", resolved.Load(), context.Cause(r.Context()))
+			}
+			n := resolved.Load()
+			return n, n >= 10
+		})
 	}))
 	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
 	request.Header.Set("Authorization", "Bearer agent-token")

@@ -813,6 +813,22 @@ test("a facet pick leaves the window rolling: it writes no from or to, and subsc
   });
 });
 
+// The search is asked for once the typing rests (`useSettled`): the URL keeps every keystroke, and
+// the page subscribes the text the typing rested on, never a text it passed through on the way.
+test("the search subscribes the text the typing rested on, once", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(emptyTimeline);
+  await user.type(screen.getByLabelText("Search"), "widget");
+  expect(currentSearch().get("q")).toBe("widget");
+  await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "q=widget" });
+  expect(
+    socket
+      .subscribes()
+      .flatMap((frame) => (frame.view.kind === "timeline" ? [frame.view.query] : []))
+  ).toEqual(["", "q=widget"]);
+});
+
 test("the window control: a preset rolls and clears the brush, a custom range writes its days", async () => {
   const user = userEvent.setup();
   renderPage(

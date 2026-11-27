@@ -45,13 +45,11 @@ import (
 // draws (holdIndexTuple). A lock on a table an earlier step wrote says nothing of a later step
 // that writes it too, so that table is not read for the later step.
 func TestTheSeedsDocumentWriteTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := newSeedLockFixture(t)
 	f.run.plan.projects = []projectPlan{{Key: seedLockProject}}
 	f.run.bands = map[string]int{}
-	// The block ids the seed lays its documents out with (renderVersion), as its run sets them.
-	pmdoc.SetBlockIDGenerator(f.run.blockIDs())
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
 
 	t.Run("the write takes no owner row", func(t *testing.T) {
 		index := f.nextDocument()

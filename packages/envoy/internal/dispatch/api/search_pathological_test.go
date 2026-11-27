@@ -49,6 +49,8 @@ import (
 // would otherwise spend its drain budget settling 1 MiB documents, finds no document loaded and
 // leaves each to resume.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
+	// Not parallel: it holds wall-clock save times to a growth ratio (growsLinearly over time.Since),
+	// which the package's parallel tests would share the machine with.
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
 	documents := 0
@@ -104,40 +106,66 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	// at 21,844, the most one write's element limit allows of it, before the fix, and 27 ms and
 	// 1.5 s after it, on one machine at a load of 309 to 343. Replaced blocks that stand apart, kept
 	// blocks between them, still cost a walk each in ygo (pmdoc's TestUpdateIsLinearInTheBlockCount).
-	// Each rung is timed in this process's CPU (cputest.Process), since a rung's wall time at these
-	// sizes is mostly the request's own cost and the runner's load, over as many replacements, each
-	// of a document of its own, as the clock needs to resolve their time (cputest.Measure). No test
-	// in this package calls t.Parallel.
+	// Each rung is timed in CPU, since a rung's wall time at these sizes is mostly the request's own
+	// cost and the runner's load, over as many replacements, each of a document of its own, as the
+	// clock needs to resolve their time (cputest.MeasureThread); each replacement's base is read
+	// before the window opens.
+	//
+	// Every rung holds more blocks than a write indexes in its own request (docs'
+	// deferBlockIndexBlocks, 2,000; the quote is a block of its own), so each rung's replacement
+	// leaves its blocks to the block-index reconciliation and every window does the same kinds of
+	// work. A first rung of 682 blocks indexed its blocks in the request where the larger rungs did
+	// not, so it timed work they left out, and the bound on them, a multiple of its time, was
+	// looser by that work. The first rung is a tenth of the largest, so the ladder grows 5 and 10
+	// times: a save linear in its blocks grows at most that much, inside bounds of 20 and 40, and a
+	// quadratic one 25 and 100 times.
+	//
+	// The clock is the request's own thread's (cputest.OnThread), not the process's: the handler
+	// serves each request on this test's goroutine and the save does its work there, so the thread
+	// clock counts the save and leaves out the garbage collector's mark workers. Those mark the
+	// whole process's heap, which in a package run holds whatever earlier tests left live, and a
+	// collection lands in a window when it falls due, not because of what the window's save does.
+	// pmdoc's growth tests keep collections out another way (pmdoc's timedWindow): they collect
+	// before each window, stop the collector during it and read the process clock. That holds only
+	// while the heap stays under the 3 GiB memory limit it sets for the window, past which a
+	// collection runs in the window and the window fails with an error; here the heap is what
+	// earlier tests in the package run left live, which this test does not set, plus about 340-350
+	// MiB for each replacement at the largest rung. The process clock it reads also counts every
+	// other goroutine. The thread clock needs no collector settings and leaves both out.
+	// On the process clock the ladder's earlier rungs, 682 to 21,844 blocks, read 26 ms at 3 KiB
+	// against 6.33 s at 127 KiB at a load of about 1,060, where the same test alone at that load
+	// read 21 ms against 968 ms. With 6 GiB kept live beside it and GOGC=5, so that a collection
+	// of that heap fell due in nearly every large window, the process clock failed those rungs 10
+	// runs of 10, reading up to 19.6 s at 127 KiB, and the thread clock passed 10 of 10, reading
+	// 0.49-1.19 s there against 12-23 ms at 3 KiB. A quadratic step planted in pmdoc's Update or in
+	// the docs service's replacement still fails the ladder. No test in this package calls
+	// t.Parallel.
 	t.Run("replacing many blocks", func(t *testing.T) {
 		const from, to = "> #\n", "> ***\n"
-		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{682 * len(to), 5_461 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
+		owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{2_184 * len(to), 10_922 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
 			blocks := size / len(to)
 			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
-			upload := func(name string, body []byte) {
-				owner := "/api/v1/issues/" + issue.Key + "/artifacts"
-				fields := map[string]string{"name": name}
-				if base := uploadBaseNamed(t, handler, owner, name); base != nil {
-					fields["precondition"] = encodeUploadBase(t, base)
-				}
+			upload := func(fields map[string]string, body []byte) {
 				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
 				if response.Code != http.StatusCreated {
 					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
 				}
 			}
-			took, _ := cputest.Measure(func(runs int) (time.Duration, error) { // this batch has no error to report
-				names := make([]string, runs)
-				for i := range names {
+			return cputest.MeasureThread(func(runs int) func() {
+				replacements := make([]map[string]string, runs)
+				for i := range replacements {
 					documents++
-					names[i] = fmt.Sprintf("many-blocks-%d.md", documents)
-					upload(names[i], headings)
+					name := fmt.Sprintf("many-blocks-%d.md", documents)
+					upload(map[string]string{"name": name}, headings)
+					replacements[i] = map[string]string{"name": name, "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, owner, name))}
 				}
-				before := cputest.Process()
-				for _, name := range names {
-					upload(name, rules)
+				return func() {
+					for _, fields := range replacements {
+						upload(fields, rules)
+					}
 				}
-				return cputest.Process() - before, nil
 			})
-			return took
 		})
 	})
 }

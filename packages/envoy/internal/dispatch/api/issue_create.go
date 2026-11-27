@@ -85,8 +85,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
-	if !ok {
+	// The caller's credential rides with the actor the create records, which carries none
+	// (model.Actor.Recorded), for the p0 check below. The one project the credential names rides
+	// with the writer too (callerProject), for the project checks, as the PATCH reads it.
+	caller, err := s.requestWriter(r, input.Actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	// A restricted member names no issue's repository (refuseRepoOfRestrictedMember): refused
@@ -198,6 +202,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A create that names priority 0 makes its new issue's own priority P0, which needs the p0
+	// scope (p0_scope.go): a priority the issue's parent has is none of the new issue's own. The
+	// check is here, after the answer for an external ref Dispatch already imported, which makes
+	// no new issue and changes no priority, and before the near-copy gate, which writes a
+	// near_copy_checks row at its 409, and before everything else the create writes.
+	if err := refuseP0WithoutScope(caller.credential, priority, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
 	// and defaultAssignee below fills it in, so a new issue always has somebody on it. Only the
 	// PATCH clears an issue's assignee.
@@ -232,9 +245,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// `external` at each site.
 	//
 	// The gate's candidate set leaves out the new issue's whole ancestor chain, which is read
-	// here, before the transaction. A parent that does not exist or sits in another project
-	// yields an empty chain and still gets its own refusal inside the transaction, so no error
-	// changes order.
+	// here, before the transaction. A parent that does not exist yields an empty chain and still
+	// gets its own refusal inside the transaction, so no error changes order.
 	var outcome nearCopyOutcome
 	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
 	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
@@ -283,6 +295,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Whether the credential is a person's, for the check of a create under a parent
+	// (refuseSpecWriter), read before the transaction opens (specWriterOf). A create under no
+	// parent is not checked and reads nothing for it.
+	var writer specWriter
+	if parentKey != "" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -325,11 +344,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A parent of another project passes on no assignee, as it passes on no repository,
+		// components or legion label: the chain's parent step (defaultAssignee) reads only a
+		// parent of the new issue's own project, so such an issue falls to its own project's
+		// default.
 		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
-			return
+			parentAssignee = nil
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes the spec of an issue Legion runs, on the new row as the create
+		// leaves it: its labels, and its parent's chain, whose architects pass. A parent of another
+		// project ends that chain at the new row, so the check judges the new issue as a root of
+		// its own project, which it does not judge. It runs before the project's owner lock and the
+		// spec's document call, and before the create's first write.
+		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
+			act: specWriteCreate, under: parentKey, labels: labels, project: input.Project,
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -445,7 +478,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// is not written yet (writeAdviceBefore).
 	advice := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
-		adviceIssueRow{parent: parentRef, labels: labels}, adviceAsks{},
+		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
 
 	// The write phase: the statements from here on run back to back.
@@ -485,6 +518,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert. A close of the
+	// parent whose update ran first makes this read wait for its commit and read done. A close
+	// whose update comes after this read waits for this create to commit, and its second read
+	// sees the new child (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := tx.QueryRow(r.Context(), `
+			select title, status from issues where key = $1 for share
+		`, parentKey).Scan(&parentTitle, &parentStatus); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, conflict)
+			return
+		}
+	}
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project; what that write states waits for
@@ -652,6 +704,35 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
+// readCreateParent reads, under a create's locks, the parent that the create names: the project
+// of that issue and its assignee. A parent may be an issue of any project. caller is the one
+// project the request's credential names, empty for a credential that names none. A parent that
+// no issue holds answers parentNotFound. A credential that names one project is asked about the
+// parent again here, under the locks, as the lock step asked before them
+// (lockIssueDependencyWrite), and this read is the final check. A parent of a private project
+// that the credential does not name answers parentNotFound too, as a parent that does not exist.
+func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (string, *string, error) {
+	var project string
+	var assignee *string
+	var private bool
+	err := tx.QueryRow(ctx, `
+		select i.project_key, i.assignee, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, parent).Scan(&project, &assignee, &private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, parentNotFound(parent)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return "", nil, parentNotFound(parent)
+	}
+	return project, assignee, nil
+}
+
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
 // transaction's own statement_timeout. Every create waits on it before it is written: past it the
 // create goes in and is told that no near-copy check was made, which is what a slow read must cost
@@ -660,10 +741,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 // 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
 // 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
 // INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
-// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
-// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
-// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
-// read from near_copy_checks after it is deployed.
+// estimate, not a measurement: the rows written before read_ms and read_stage held no read time
+// past the bound. If production's reads are a uniform multiple of the replay's (about three times,
+// which puts the replay's 70th percentile at 500 ms), 2 s covers the replay's slowest read. How long
+// each read takes, and the step a read the bound cuts was in, is read from near_copy_checks'
+// read_ms and read_stage.
 const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
@@ -715,7 +797,7 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, who, project, title, spec, ancestors)
 	refusals := gate.refusals()
-	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {
 	case !gate.answered():
 		check.outcome, check.reason = nearCopyNotMade, gate.NotMade

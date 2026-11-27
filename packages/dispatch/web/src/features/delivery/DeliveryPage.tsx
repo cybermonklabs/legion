@@ -185,16 +185,6 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   return [{ window: windowChoice, filters, view, brush }, setState];
 }
 
-/** `value`, once it has held still for `delayMs`. */
-function useSettled<T>(value: T, delayMs: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSettled(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-  return settled;
-}
-
 /** The Timeline | List segmented toggle. */
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }): ReactNode {
   const item = (value: Mode, label: string) => (
@@ -388,7 +378,11 @@ export function DeliveryPage(): ReactNode {
     setNotConfigured(!notConfigured);
   }
   return (
-    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
+    // From `xl` the page is the window's height and the chart takes what its header leaves, never
+    // less than its own `min-h-[28rem]`. Where the window is too short for both - 1280x800 and
+    // 1280x720 - the page scrolls inside this box, rather than spill past the shell, which made
+    // the document scroll on past it and took the shell's Navigation off the top of the screen.
+    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)] xl:overflow-y-auto">
       <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h1 className={`text-xl font-bold ${textPrimaryOnCanvas}`}>Delivery timeline</h1>
         {notConfigured ? null : (

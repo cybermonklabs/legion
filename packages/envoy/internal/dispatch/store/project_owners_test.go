@@ -4,11 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // projectAccessVersion stores who may see a project: projects.owner and projects.visibility, the
-// access lists, the groups, people.member_kind, agent_tokens.projects and the sessions' projects
-// (INFRA-3862).
+// access lists, the groups, people.member_kind, agent_tokens.projects and the sessions' projects.
 const projectAccessVersion = 20261116015736
 
 // The person the operator's setting names in these tests (DISPATCH_PROJECT_OWNER_FALLBACK).
@@ -43,7 +44,7 @@ func TestEveryProjectHasAnOwner(t *testing.T) {
 		t.Fatalf("create a project after the migration: %v", err)
 	}
 
-	if err := EnsureProjectOwners(ctx, store.Pool, ownerFallback); err != nil {
+	if err := EnsureProjectOwners(ctx, store.Pool, ownerFallback, giveByUpdate); err != nil {
 		t.Fatalf("EnsureProjectOwners(%q): %v", ownerFallback, err)
 	}
 
@@ -93,7 +94,7 @@ func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 				t.Fatalf("seed a restricted member: %v", err)
 			}
 
-			err := EnsureProjectOwners(ctx, store.Pool, setting.fallback)
+			err := EnsureProjectOwners(ctx, store.Pool, setting.fallback, giveByUpdate)
 			if err == nil {
 				t.Fatalf("EnsureProjectOwners(%q) = nil, want a refusal naming LOST and STRAY", setting.fallback)
 			}
@@ -135,6 +136,28 @@ func TestAWriteThatClearsTheOwnerIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnOwnerIsANonEmptyLowercaseLogin: projects.owner holds a stored login, which the boot's check
+// (`owner is null`) and every reader compare byte for byte, so a write of an empty or mixed-case
+// owner is refused with check_violation and leaves the owner as it was.
+func TestAnOwnerIsANonEmptyLowercaseLogin(t *testing.T) {
+	ctx := context.Background()
+	store := openMigratedProjectStore(t)
+	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('KEPT', 'Kept', 'carol@example.com')`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	for _, owner := range []string{"", "Dave@example.com"} {
+		if _, err := store.Pool.Exec(ctx, `update projects set owner = $1 where key = 'KEPT'`, owner); !isSQLState(err, "23514") {
+			t.Errorf("owner %q: %v, want check_violation (23514)", owner, err)
+		}
+		if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, owner) values ('NEW', 'New', 'carol@example.com', $1)`, owner); !isSQLState(err, "23514") {
+			t.Errorf("an insert naming owner %q: %v, want check_violation (23514)", owner, err)
+		}
+	}
+	if got := projectOwner(t, store, "KEPT"); got != "carol@example.com" {
+		t.Fatalf("owner after the refused writes = %q, want carol@example.com", got)
+	}
+}
+
 // TestAnInsertWithNoOwnerTakesTheDefaultAssignee: every insert into projects, whichever of the
 // many writers makes it, stores an owner, because a project with no owner named takes its default
 // assignee; an insert that names an owner keeps it.
@@ -163,6 +186,15 @@ func openMigratedProjectStore(t *testing.T) *Store {
 		t.Fatalf("migrate: %v", err)
 	}
 	return store
+}
+
+// giveByUpdate is the store's own stand-in for the boot's giver (access.GiveOwnerless, which this
+// package cannot import): it writes the owner of a project that still has none, and nothing else.
+// The boot's own record of the grant is held by cmd/dispatch's DISPATCH_PROJECT_OWNER_FALLBACK row
+// and access's TestTheBootsGrantIsRecordedAsTheCommandsIs.
+func giveByUpdate(ctx context.Context, tx pgx.Tx, key, owner string) error {
+	_, err := tx.Exec(ctx, `update projects set owner = $2 where key = $1 and owner is null`, key, owner)
+	return err
 }
 
 func projectOwner(t *testing.T, store *Store, key string) string {

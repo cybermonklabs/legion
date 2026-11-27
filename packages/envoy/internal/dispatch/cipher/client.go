@@ -36,7 +36,6 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -57,11 +56,9 @@ type Client struct {
 	Account *ciphertoken.AccountToken
 	HTTP    *http.Client
 	// deviceGrant is the last read of the broker's RFC 8414 metadata, which ServesDeviceGrant
-	// answers from, and approverFields the last read of its settings, which TakesApproverFields
 	// answers from. A Client is built once per process and shared, never copied, which is what
 	// lets it hold a mutex.
-	deviceGrant    deviceGrant
-	approverFields approverFields
+	deviceGrant deviceGrant
 }
 
 // Option configures a Client.
@@ -76,11 +73,12 @@ func WithTimeout(timeout time.Duration) Option {
 // holding Dispatch's own projected Kubernetes ServiceAccount token, which every call presents:
 // the broker reads the calling service's identity from it (BROKER_API_ACCOUNTS) and then takes a
 // machine login's approver, and a revoke's, from the login Dispatch sends — resolved by
-// Dispatch's own session, not read from an env var here.
+// Dispatch's own session, not read from an env var here. A file it cannot read is named by its
+// setting, TokenFileSetting, never by its path.
 func New(baseURL, tokenFile string, options ...Option) *Client {
 	client := &Client{
 		URL:     strings.TrimSuffix(baseURL, "/"),
-		Account: ciphertoken.NewAccountToken(tokenFile),
+		Account: ciphertoken.NewAccountToken(TokenFileSetting, tokenFile),
 		HTTP:    &http.Client{Timeout: defaultTimeout},
 	}
 	for _, option := range options {
@@ -88,6 +86,10 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 	}
 	return client
 }
+
+// TokenFileSetting is the setting that holds the file New reads Dispatch's ServiceAccount token
+// from: cmd/dispatch reads the file's path from it, and names it in a refusal, by this constant.
+const TokenFileSetting = "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"
 
 // Error carries the broker's status and its {"code","error"} body so handlers can forward
 // both verbatim to the browser. Only a non-2xx broker response produces one; a call that stopped
@@ -166,30 +168,10 @@ func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage,
 
 // Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the
 // deciding human's canonical login as Dispatch's session resolved it, and Code, for a machine
-// login, is the typed confirmation code the human entered. An approve to a broker that takes the
-// approver fields (TakesApproverFields) also names the Google account that approves, the one bound
-// to the credential that made the approve (api.approverStanding), when it is bound to one:
-// ApproverIssuer, Dispatch's sign-in issuer as oidc.CanonicalIssuer spells it, and
-// ApproverSubject, that account's `sub`. The broker records them on the machine login it mints, so
-// a later revocation of that account ends the login and the broker refuses an approval by it once
-// it is revoked (403 APPROVER_REPLACED). Every other decision, and an approve whose credential is
-// bound to no account, leaves both out: an approve carries both or neither, since the broker
-// refuses one alone (400 APPROVER_ACCOUNT_INPUT).
-//
-// An approve to such a broker also carries ApproverSessionGeneration, the approver's address's
-// session generation (user_sessions.generation, 0 when it holds none) as the same check read it:
-// every recording of an account moves that generation in its own transaction, and each revocation
-// the broker is told of carries the generation its replacement left, so the broker refuses an
-// approve carrying a lower one (403 APPROVER_REPLACED), which was checked before that replacement,
-// whatever account it names. Every other decision leaves it out, and so does an approve to a broker
-// that does not say it takes the three fields: a broker from before them refuses a body carrying
-// any of them (400 INVALID_DECISION), so that approve carries the approver and the code alone.
+// login, is the typed confirmation code the human entered.
 type Decision struct {
-	Approver                  string  `json:"approver"`
-	Code                      *string `json:"code,omitempty"`
-	ApproverIssuer            string  `json:"approver_issuer,omitempty"`
-	ApproverSubject           string  `json:"approver_subject,omitempty"`
-	ApproverSessionGeneration *int64  `json:"approver_session_generation,omitempty"`
+	Approver string  `json:"approver"`
+	Code     *string `json:"code,omitempty"`
 }
 
 func (d Decision) body() (json.RawMessage, error) {
@@ -294,34 +276,6 @@ func (c *Client) RevokeSignIn(ctx context.Context, signInID, person string) (jso
 		return nil, err
 	}
 	return c.do(ctx, http.MethodPost, "/v1/person-signins/"+url.PathEscape(signInID)+"/revoke", body)
-}
-
-// PersonAccess asks the broker what person has there that outlives their browser session (GET
-// /v1/person-access): their own live machine logins, their unrevoked sign-ins on a machine, the
-// exchange entries that name them, and the Kubernetes service accounts BROKER_POD_OPERATORS maps
-// to them. person is a login as model.CanonicalLogin spells it, which the broker's answer names
-// back.
-//
-// It answers the counts once the broker answers 200 naming person, and an error for anything else,
-// each naming person: an *Error for any other status, a 404 included (the route needs a broker that
-// serves it; any other 404 is a wrong DISPATCH_AGENT_SECRETS_URL or a proxy in the way), an
-// *AccountTokenError for Dispatch's own token, and a plain error for a transport failure, the
-// client's window (defaultTimeout) among them, or an answer that is not the broker's for person.
-// A caller that cannot tell what the person has keeps what it would otherwise forget.
-func (c *Client) PersonAccess(ctx context.Context, person string) (wire.PersonAccessResponse, error) {
-	var access wire.PersonAccessResponse
-	query := url.Values{"person": {person}}
-	answer, err := c.do(ctx, http.MethodGet, "/v1/person-access?"+query.Encode(), nil)
-	if err != nil {
-		return access, fmt.Errorf("agent-secrets: ask what %s has that outlives the browser: %w", person, err)
-	}
-	if err := json.Unmarshal(answer, &access); err != nil {
-		return access, fmt.Errorf("agent-secrets: read what %s has that outlives the browser: %w", person, err)
-	}
-	if access.Person != person {
-		return access, fmt.Errorf("agent-secrets: asked what %s has that outlives the browser, the broker answered for %q", person, access.Person)
-	}
-	return access, nil
 }
 
 // signInRevoke is the body the broker's sign-in revoke takes. It is not a Decision because a
@@ -451,129 +405,4 @@ func (c *Client) readDeviceGrant(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("agent-secrets: read %s: %w", metadataPath, err)
 	}
 	return slices.Contains(document.GrantTypesSupported, deviceCodeGrant), nil
-}
-
-// settingsPath is the broker's GET /v1/settings, public like the metadata above, which says among
-// other things whether the broker takes the approver fields (approver_fields).
-const settingsPath = "/v1/settings"
-
-// ApproverFieldsTTL is how long one definite answer of the broker's settings answers
-// TakesApproverFields (approver_fields true, or settings answered without it): the bound within
-// which Dispatch follows a broker that starts or stops saying it takes the approver fields. The fact
-// changes only when the broker is deployed again, so it is the five seconds the device grant's read
-// is (deviceGrantTTL), for the same reasons: a burst of approves reads once, and an operator who has
-// just moved the broker sees Dispatch follow within seconds. A read that fails is not kept: the next
-// approve reads again.
-const ApproverFieldsTTL = 5 * time.Second
-
-// approverFields remembers the last definite answer of whether the broker takes the approver
-// fields, until ApproverFieldsTTL after the read that gave it: the broker's settings naming
-// approver_fields true, or answering 200 without it. A read that fails is never remembered, and an
-// answer is never used past its window, unlike deviceGrant's.
-type approverFields struct {
-	// mu guards the remembered answer and nothing else, and is never held across the read, as
-	// deviceGrant's is not.
-	mu    sync.Mutex
-	takes bool
-	until time.Time
-	// flight is the one settings read in progress, which every caller finding nothing fresh joins.
-	flight singleflight.Group
-	// now is the clock the window is read on; nil reads time.Now. A test holds it still, so whether
-	// a read is fresh is not decided by the wall clock.
-	now func() time.Time
-}
-
-func (a *approverFields) clock() time.Time {
-	if a.now != nil {
-		return a.now()
-	}
-	return time.Now()
-}
-
-// fresh is the remembered answer while it is younger than ApproverFieldsTTL.
-func (a *approverFields) fresh() (takes, fresh bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.takes, a.clock().Before(a.until)
-}
-
-// keep remembers what a read that succeeded said, for ApproverFieldsTTL.
-func (a *approverFields) keep(takes bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.takes, a.until = takes, a.clock().Add(ApproverFieldsTTL)
-}
-
-// TakesApproverFields answers whether this broker's GET /v1/settings says it takes the approver
-// fields of a machine login's approve (approver_fields: approver_issuer, approver_subject and
-// approver_session_generation), from a read at most ApproverFieldsTTL old: true when the settings
-// answer approver_fields true, and false when the broker answers its settings 200 without it, as a
-// broker from before them does, one that refuses an approve carrying any of them 400
-// INVALID_DECISION.
-//
-// Any other read is an error, never an answer: a transport failure, a non-2xx answer, a settings
-// answer that is not a JSON object or whose approver_fields is not the literal true or false (null
-// included), Dispatch's own token it cannot read (an *AccountTokenError), and ctx ending first. An
-// approve then relays nothing (api.approveCredentialRecord), since leaving the fields out of an
-// approve to a broker that takes them would leave its account and generation checks to that
-// broker's 50-second fallback, and sending them to one that does not would be refused.
-//
-// The read runs on ctx with its cancellation dropped, bounded by the call's own window
-// (defaultTimeout), as ServesDeviceGrant's does: the answer is every waiting caller's. A caller
-// waits for it only until ctx ends, while the read goes on for the next caller: an approve's ctx
-// carries the deadline its relay must meet (api.relayDeadline).
-func (c *Client) TakesApproverFields(ctx context.Context) (bool, error) {
-	if takes, fresh := c.approverFields.fresh(); fresh {
-		return takes, nil
-	}
-	read := c.approverFields.flight.DoChan(settingsPath, func() (any, error) {
-		if takes, fresh := c.approverFields.fresh(); fresh {
-			return takes, nil
-		}
-		takes, err := c.readApproverFields(context.WithoutCancel(ctx))
-		if err != nil {
-			return false, err
-		}
-		c.approverFields.keep(takes)
-		return takes, nil
-	})
-	select {
-	case answer := <-read:
-		if answer.Err != nil {
-			return false, answer.Err
-		}
-		return answer.Val.(bool), nil
-	case <-ctx.Done():
-		return false, fmt.Errorf("agent-secrets: read %s: %w", settingsPath, context.Cause(ctx))
-	}
-}
-
-// readApproverFields reads the broker's settings and answers their approver_fields: false for a
-// settings object that names none, and an error for an answer that is not a JSON object or whose
-// approver_fields is not the literal true or false (null included, which json.Unmarshal would read
-// into a bool as false with no error).
-func (c *Client) readApproverFields(ctx context.Context) (bool, error) {
-	body, err := c.do(ctx, http.MethodGet, settingsPath, nil)
-	if err != nil {
-		return false, err
-	}
-	var settings map[string]json.RawMessage
-	if err := json.Unmarshal(body, &settings); err != nil {
-		return false, fmt.Errorf("agent-secrets: read %s: %w", settingsPath, err)
-	}
-	if settings == nil {
-		return false, fmt.Errorf("agent-secrets: read %s: the answer is null, not the broker's settings", settingsPath)
-	}
-	raw, named := settings["approver_fields"]
-	if !named {
-		return false, nil
-	}
-	switch string(bytes.TrimSpace(raw)) {
-	case "true":
-		return true, nil
-	case "false":
-		return false, nil
-	default:
-		return false, fmt.Errorf("agent-secrets: read %s: approver_fields is %s, not true or false", settingsPath, raw)
-	}
 }

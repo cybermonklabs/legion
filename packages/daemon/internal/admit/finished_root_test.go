@@ -111,9 +111,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
 		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
 	}
-	// A root that waits for its merge stands in merging, which is past its own review, so it
-	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
-	// children below say.
+	// A root that waits for its merge stands in merging, which keeps none of the cap's rows, so
+	// it holds none while it waits. Its tree runs on, which the untouched children below say.
 	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
@@ -245,8 +244,8 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Fatalf("carried gate = %#v, %v", gate, err)
 				}
 				pr, err := records.PullRequest(context.Background(), tx, child)
-				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 2 {
-					t.Fatalf("carried pull request = %#v, %v", pr, err)
+				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 1 {
+					t.Fatalf("carried pull request = %#v, %v; want it at head-42 with its settlement's generation 1 kept", pr, err)
 				}
 				handover, err := records.Handover(context.Background(), tx, child)
 				if err != nil || handover != nil {
@@ -351,8 +350,8 @@ func TestAHandedOverChildWithNoGateToCarryIsNotMarkedCarried(t *testing.T) {
 		if gates, err := records.GatesOf(context.Background(), tx, child); err != nil || len(gates) != 0 {
 			t.Fatalf("gates = %#v, %v; want none, since the old root had none", gates, err)
 		}
-		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-			t.Fatalf("pull request = %#v, %v; want it carried at generation 2", pr, err)
+		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 1 {
+			t.Fatalf("pull request = %#v, %v; want it carried with its settlement's generation 1 kept", pr, err)
 		}
 		if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil || handedRoot.Generation != 2 || handedRoot.GateCarried {
 			t.Fatalf("handed-over root = %#v, %v; want generation 2 with no gate carried", handedRoot, err)
@@ -504,7 +503,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Working copy: branch legion/" + child + ". Resume the existing phase work."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}

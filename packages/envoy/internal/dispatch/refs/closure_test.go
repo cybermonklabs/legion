@@ -182,6 +182,7 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 // node of this data is reserved for one, so the predicates it binds leave every row main's
 // statement answered at depth 1.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
 	references, err := Closure(context.Background(), fixture.database.Pool, serverReader, "CORE-1")
@@ -208,6 +209,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // server's own viewer folds every project and party arm away, so a plan read for it alone never
 // shows a member's.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
 	for _, reader := range planReaders("CORE") {
@@ -348,6 +350,7 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 // shows the fixture is as hard as the real graph. Every count of every statement, and of main's,
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
+	t.Parallel()
 	fixture := newOneHopFixture(t, true)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
@@ -565,6 +568,7 @@ func insertItemWithID(t *testing.T, tx pgx.Tx, kind ItemKind, id, issueKey strin
 // is first checked to answer at depth 1, and each named fixture also holds a second hop, which a
 // read past one hop answers. None holds a typed pointer, which main's statement does not read.
 func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
+	t.Parallel()
 	// The out side of TestTheReferencesReadReadsOnlyTheIssuesOwnLinks' graph, its pointer a
 	// plain mention.
 	t.Run("the out side of the one-hop fixture", func(t *testing.T) {

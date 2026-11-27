@@ -1,12 +1,14 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -213,8 +215,16 @@ const inboxReadMarkAgentReplies = `
 // magnitude of headroom for a busier server and cuts no honest request off. The ceiling
 // matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
-// is better killed, which rolls the transaction back and frees them.
-const inboxReadStatementTimeout = "10s"
+// is better killed, which rolls the transaction back and frees them. The dismissal's transaction
+// (dismissInboxThreads) holds the same locks and takes the same bound.
+const inboxReadStatementTimeout = 10 * time.Second
+
+// boundInboxStatements is the statement the mark-all's and the dismissal's transactions open with:
+// every statement after it is bounded by inboxReadStatementTimeout, unless a test set a bound of
+// its own (server.inboxStatementBound).
+func (s *server) boundInboxStatements() string {
+	return fmt.Sprintf("set local statement_timeout = '%dms'", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())
+}
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
 // against the issues.priority each stands for. inboxReadNone is the value that stands for the
@@ -570,7 +580,7 @@ func (s *server) markInboxReadThreads(
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, who, actor, login,

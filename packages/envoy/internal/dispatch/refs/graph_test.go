@@ -332,6 +332,7 @@ const mainLoadBlockNodes = `
 // sizes. With -v the test logs the head's in statement of a document, on one line that starts
 // "head in statement, document:", for c-production-load.
 func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newEdgesFixture(t)
 	pool := fixture.database.Pool
 	every := append(append(slices.Clone(fixture.reads), fixture.probe), fixture.kinds...)

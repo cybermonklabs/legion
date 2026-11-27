@@ -395,6 +395,7 @@ func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
 // plain text after this release booted (during the roll, or after a rollback) is retired at the
 // next boot.
 func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := openEmptyTestStore(t)
 	pool, flow := revokingPool(t)
@@ -474,6 +475,7 @@ func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 // retire forgets the token only while the row still holds the value the sweep read: a sign-in
 // recorded since keeps its own refresh token.
 func TestRetireKeepsASignInRecordedSinceTheRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	_, flow := revokingPool(t)
@@ -594,6 +596,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 // The revoke and the new subject commit together: a revoke that fails leaves the row's subject and
 // refresh token as they were, so the next sign-in under the new subject revokes again.
 func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
@@ -633,6 +636,7 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 // for the first to commit and then ends the first's sessions, as it would had the first committed
 // before it began. The first is held mid-transaction, its row written and not committed.
 func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
@@ -686,6 +690,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 // holder's refresh token. A sign-in pool's confirmation, under the empty subject a pool's row
 // records, writes nothing to a row that records an account.
 func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
@@ -769,6 +774,7 @@ func TestConfirmSubjectWritesOnlyOverTheSignInItRead(t *testing.T) {
 // account's subject it writes nothing, and under the row's own it advances the generation and
 // forgets the token, keeping the subject. A row with no subject ends only for an empty one.
 func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)

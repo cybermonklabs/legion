@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const (
@@ -93,6 +94,52 @@ func TestChatPostsToTheRouteAppendedToTheBase(t *testing.T) {
 				t.Errorf("request tools = %+v, want none for a request that carries none", got.Tools)
 			}
 		})
+	}
+}
+
+// An endpoint that carries a made-up token as its user name, with nothing listening: the error is
+// the failure's class alone and holds no part of the token, though net/http's error quotes the
+// request URL with only a password masked. Boot refuses such a DISPATCH_CHAT_ENDPOINT or
+// DISPATCH_AZURE_CHAT_ENDPOINT (and the client one with a query); the client prints none of it all
+// the same.
+func TestChatPrintsNoTokenOfTheEndpointOnAFailedCall(t *testing.T) {
+	const token = "madeUpChatToken0123"
+	client, err := going.NewHTTPClient(going.HTTPConfig{
+		Place:    "endpoint",
+		Endpoint: "http://" + token + "@" + testport.Refused(t) + "/v1",
+		Model:    "gpt-test",
+		Tokens:   staticTokens{token: testToken},
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	_, err = client.Chat(t.Context(), testRequest(), nil)
+	if err == nil || err.Error() != "going: chat completions: connection refused" {
+		t.Fatalf("Chat = %v, want the failed call's class alone", err)
+	}
+	if strings.Contains(err.Error(), token[:10]) {
+		t.Errorf("Chat = %q, which holds part of the token", err)
+	}
+}
+
+// A clean endpoint's failed call prints the failure itself, without net/http's quote of the URL:
+// a refused dial names the address it dialled, and a TLS failure the certificate's fault, which the
+// operator reads to fix it, where the class alone said "TLS failed".
+func TestChatPrintsTheFailureOfACleanEndpoint(t *testing.T) {
+	refused := testport.Refused(t)
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(tlsServer.Close)
+	for endpoint, want := range map[string]string{
+		"http://" + refused + "/v1": "going: chat completions: dial tcp " + refused + ": connect: connection refused",
+		tlsServer.URL + "/v1":       "going: chat completions: tls: failed to verify certificate: x509: ",
+	} {
+		client, err := going.NewHTTPClient(going.HTTPConfig{Place: "endpoint", Endpoint: endpoint, Model: "gpt-test", Tokens: staticTokens{token: testToken}})
+		if err != nil {
+			t.Fatalf("NewHTTPClient: %v", err)
+		}
+		if _, err = client.Chat(t.Context(), testRequest(), nil); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("Chat at %s = %v, want %q", endpoint, err, want)
+		}
 	}
 }
 

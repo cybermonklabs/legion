@@ -141,9 +141,9 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed stri
 // RemovalOwes reports whether a removal of the person login from project key's list owes the
 // revocation of their machine logins, as q reads it: the list names them and they are a restricted
 // member. It is the one rule for it: LockForAccessWrite reads it with no lock to decide whether to
-// take the person's approval lock first, and api.removePerson reads it again under the project's
-// lock, before it takes them off, to decide whether to record the debt. Its error names the
-// project and never the person (TestNoAccessErrorNamesAPerson).
+// take the person's approval lock first, and the removal route a later slice adds reads it again
+// under the project's lock, before it takes them off, to decide whether to record the debt. Its
+// error names the project and never the person (TestNoAccessErrorNamesAPerson).
 func RemovalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
 	var owes bool
 	if err := q.QueryRow(ctx, `
@@ -157,9 +157,9 @@ func RemovalOwes(ctx context.Context, q Querier, key, login string) (bool, error
 
 // ReadOwner answers project key's owner as q reads it, nil for a project with none, and
 // ErrProjectNotFound for an unknown key, taking no lock. LockForAccessWrite reads it again under
-// the project's owner lock, and only that read decides a write; a write reads it first to refuse a
-// caller who does not own the project before it takes any lock (api.ownerWrite), so a refused write
-// holds up no other.
+// the project's owner lock, and only that read decides a write; a write route, which a later slice
+// adds, reads it first to refuse a caller who does not own the project before it takes any lock,
+// so a refused write holds up no other.
 func ReadOwner(ctx context.Context, q Querier, key string) (*string, error) {
 	var owner *string
 	err := q.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
@@ -193,12 +193,6 @@ func readProjectWritten(ctx context.Context, q Querier, key string) (model.Proje
 	return readProject(ctx, q, key, `p.key = $1`, key)
 }
 
-// ReadProjectWritten is readProjectWritten for an owner's write of the api package that changes no
-// list (api.resetProjectAccessPerson): the project's access as tx left it, after the owner's check.
-func ReadProjectWritten(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
-	return readProjectWritten(ctx, tx, key)
-}
-
 // readProject reads the access of the one project where names, with args, or ErrProjectNotFound.
 func readProject(ctx context.Context, q Querier, key, where string, args ...any) (model.ProjectAccess, error) {
 	var access model.ProjectAccess
@@ -225,9 +219,10 @@ func readProject(ctx context.Context, q Querier, key, where string, args ...any)
 
 // OwnerAllowed answers owner's stored form, the canonical login, when owner may own a project or a
 // group: a full member who has signed in. Anyone else - a restricted member, or a login nobody has
-// signed in with - is ErrOwnerNotAllowed. Every write that names an owner holds it to this: a
-// transfer (SetOwner), a group's write (PutGroup) and a create that takes its default assignee as
-// owner (api.createProject).
+// signed in with - is ErrOwnerNotAllowed. Every write of this package that names an owner holds it
+// to this: a transfer (SetOwner) and a group's write (PutGroup). The access migration's fill and the
+// insert trigger store a default assignee as owner without it (projects_owner_from_default); no
+// route reads owner yet, and the slice whose reads first do holds what they read to this rule.
 func OwnerAllowed(ctx context.Context, q Querier, owner string) (string, error) {
 	login := model.CanonicalLogin(owner)
 	kind, err := MemberKind(ctx, q, login)
@@ -243,9 +238,9 @@ func OwnerAllowed(ctx context.Context, q Querier, owner string) (string, error) 
 // SetOwner gives project key to owner, a full member who has signed in, at any time, whoever owned
 // it before. It appends project.access_changed in tx, whose principal is the person the project was
 // taken from, when that is another: a reader that held the project's rows through its ownership
-// alone learns from it that it no longer reads them (api: eventGapSQL). Where that person no longer
-// sees the project, every session tied to them keeps it as a project it reached
-// (store.RecordReachedProjects).
+// alone learns from it that it no longer reads them. Where that person no longer sees the project,
+// every session tied to them keeps it as a project it reached (store.RecordReachedProjects). A
+// project its owner already owns is answered as it is, and nothing is written: no event, no record.
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	login, err := OwnerAllowed(ctx, tx, owner)
 	if err != nil {
@@ -260,11 +255,12 @@ func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner stri
 	if err := tx.QueryRow(ctx, `select coalesce(owner, '') from projects where key = $1`, key).Scan(&previous); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the owner of project %s: %w", key, err)
 	}
+	if previous == login {
+		access, err := readProjectWritten(ctx, tx, key)
+		return access, model.Event{}, err
+	}
 	if err := updateProject(ctx, tx, key, `update projects set owner = $2 where key = $1`, login); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
-	}
-	if previous == login {
-		previous = ""
 	}
 	access, event, err := appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, previous, by)
 	if err != nil {
@@ -276,6 +272,27 @@ func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner stri
 		}
 	}
 	return access, event, nil
+}
+
+// GiveOwnerless gives project key to owner, as SetOwner does, when the project still has no owner
+// under its owner lock, and writes nothing where it has one by then, or no longer exists. It is the
+// boot's fill (store.EnsureProjectOwners): a project the access migration left with no owner goes to
+// DISPATCH_PROJECT_OWNER_FALLBACK's full member, with the same project.access_changed event and
+// project_access_changes record an operator's `envoy-dispatch project-owner` writes.
+func GiveOwnerless(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) error {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return err
+	}
+	var owned bool
+	err := tx.QueryRow(ctx, `select owner is not null from projects where key = $1`, key).Scan(&owned)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && owned {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read whether project %s has an owner: %w", key, err)
+	}
+	_, _, err = SetOwner(ctx, tx, ev, key, owner, by)
+	return err
 }
 
 // OwnerNotAllowed is the refusal of login as an owner: one who is no full member who has signed in,
@@ -322,7 +339,7 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // write naming a channel another private project lists is refused with ErrSlackChannelShared,
 // which names that project only to a viewer who sees it (refuseSharedSlackChannel); a public
 // project's write is never refused for it. by is the person the write records, and viewer what
-// the request's own caller sees, as the API resolved it for the request (readerOf), whom the
+// the request's own caller sees, as the API resolved it for the request, whom the
 // refusal is written for. It appends project.access_changed in tx.
 func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
@@ -444,9 +461,8 @@ func AnyProjectPrivate(ctx context.Context, q Querier) (bool, error) {
 }
 
 // PrivateProjects answers every private project's Slack channels and when they last changed, by
-// key, read live: the list GET /api/v1/access/private-projects answers the secrets broker. It is
-// [] when no project is private, never nil, since a reader takes anything but an array for the
-// answer being down.
+// key, read live: the list a later slice serves to the secrets broker. It is [] when no project is
+// private, never nil, since a reader takes anything but an array for the answer being down.
 func PrivateProjects(ctx context.Context, q Querier) ([]model.PrivateProjectChannels, error) {
 	rows, err := q.Query(ctx, `
 		select key, slack_channels, slack_channels_changed_at from projects where visibility = 'private' order by key
@@ -702,10 +718,10 @@ func TieSession(ctx context.Context, q Querier, session, login string) error {
 	return nil
 }
 
-// NamesPerson reports whether project key's access list names the person email directly, read in
-// tx: an owner's link and Reset ask it before they act on the person (api.namedPerson), since each
-// is for a person the list names. An email that names nobody is ErrPrincipalInput, as
-// RemovePrincipal answers it.
+// NamesPerson reports whether project key's access list names the person email, read in tx: a
+// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
+// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
+// answers it.
 func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
 	name, err := principalOf(PrincipalPerson, email)
 	if err != nil {
@@ -754,8 +770,8 @@ func projectChangeEvent(key, change string, by model.Actor) model.Event {
 // recordProjectChanges writes, in tx, the server's own record of each project.access_changed of
 // eventIDs (project_access_changes): principal, which the change named, and the owner and visibility
 // of the event's project as tx left them. The payload names none of these, since every reader of the
-// project's events reads it; a live resume reads this record to tell whether a change in its gap
-// moved what its caller sees (api: lostSightSQL, gainedSightSQL), and no route serves it.
+// project's events reads it; a live resume, which a later slice adds, is to read this record to tell
+// whether a change in its gap moved what its caller sees, and no route serves it.
 func recordProjectChanges(ctx context.Context, tx pgx.Tx, eventIDs []int64, principal string) error {
 	if _, err := tx.Exec(ctx, `
 		insert into project_access_changes (event_id, principal, owner, visibility)

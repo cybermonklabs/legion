@@ -31,6 +31,10 @@ import (
 // (the going_events_terminal index of migration 20261105152945) and never by whichever is first:
 // every terminal write is an insert that does nothing on a conflict, and the writer that loses
 // reads the stored terminal frame and reports that one (endGoingRun).
+//
+// What a run gave its model is part of the record too: each comment and issue message whose text
+// the run read for its model is a going_request_posts row (recordGoingPosts), so a reader on any
+// pod ends the stream at the delete of one of them (goingWithdrawal).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
@@ -70,16 +74,18 @@ type goingEvent struct {
 }
 
 // goingRunState is what a reader needs to decide whether a stream is over: the sequence of the
-// run's one terminal frame, 0 while the run has stored none, and whether it is past its ends_at,
-// after which a run that stored none is ended by whoever reads it. The terminal frame is a
-// sequence and not a bool because a reader ends its stream on having been written that frame and
-// not on the run having stored one: a terminal frame committed between a reader's read of the
-// frames and its read of this state would otherwise close a stream that never carried it. The
-// going_events_terminal index holds that there is at most one such frame, so one sequence says
-// all of it.
+// run's one terminal frame, 0 while the run has stored none, whether it is past its ends_at,
+// after which a run that stored none is ended by whoever reads it, and whether it is withdrawn,
+// after which a reader is written goingWithdrawal's frame and nothing else. The terminal frame is
+// a sequence and not a bool because a reader ends its stream on having been written that frame
+// and not on the run having stored one: a terminal frame committed between a reader's read of
+// the frames and its read of this state would otherwise close a stream that never carried it.
+// The going_events_terminal index holds that there is at most one such frame, so one sequence
+// says all of it.
 type goingRunState struct {
 	Terminal     int
 	PastDeadline bool
+	Withdrawn    bool
 }
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
@@ -257,7 +263,14 @@ var goingRunStateOf = `
 	         (select e.sequence from going_events e where e.request_id = r.id and e.name = any($2::text[])),
 	         0
 	       ),
-	       now() >= r.ends_at
+	       now() >= r.ends_at,
+	       exists (
+	         select 1
+	         from going_request_posts p
+	         left join comments c on c.id = p.comment_id and c.deleted_at is null
+	         left join messages m on m.id = p.message_id and m.deleted_at is null
+	         where p.request_id = r.id and c.id is null and m.id is null
+	       )
 	from going_requests r
 	where r.id = $1::uuid and ` + goingRunSeen("r", "$3")
 
@@ -292,6 +305,77 @@ func (s *server) readGoingStream(ctx context.Context, who model.Actor, requestID
 		return nil, goingRunState{}, err
 	}
 	return frames, state, nil
+}
+
+// goingWithdrawal is the one frame a reader of a withdrawn run is written, and all a reader of it
+// is written from then on. A run is withdrawn once a comment or an issue message whose text it
+// gave its model (recordGoingPosts) no longer stands - its author deleted it, or its row is gone
+// - since the run's answer may quote that post. Every read of the stream after the delete, from
+// the start or from a Last-Event-ID before the run's ending, therefore gives none of the run's
+// stored frames, no text and no item among them, and ends on an error frame carrying
+// contracts.GoingErrorAnswerWithdrawn; a read resumed at or past the ending's sequence is written
+// nothing (the last paragraph). The stored frames are left as they are, as an event Dispatch
+// already wrote keeps its stored text while every read of the log masks it (attachPostMarks), and
+// a frame a reader was written before the delete was a delivery already sent. A run given no post
+// that was deleted streams as it always has.
+//
+// The verdict is read at stream time, on every poll (goingRunStateOf), and not written by the
+// delete: the delete then knows nothing of answer runs, and the one read covers every frame
+// alike - those stored before the delete, those a run still running stores after it, and the
+// ending the run, a reader at the deadline or the sweep stored. A run still running is let past
+// it by nothing: the poll that finds the run withdrawn writes none of the frames it read beside
+// the verdict, and a run with no ending stored yet is ended here with the withdrawal
+// (endGoingRun), so the answer stores nothing after it (goingAppendEvent) and stops at the next
+// frame it tries to store.
+//
+// The frame takes the sequence of the run's one ending, the one stored or the one this call
+// stored, so a reader is written exactly one ending, in the ending's place: a reader that
+// already holds that sequence was written the run's ending, and streamGoingAnswer writes it
+// nothing more.
+func (s *server) goingWithdrawal(ctx context.Context, requestID string, state goingRunState) (goingEvent, error) {
+	withdrawal := going.Fault(contracts.GoingErrorAnswerWithdrawn)
+	ending := state.Terminal
+	if ending == 0 {
+		stored, err := s.endGoingRun(ctx, requestID, withdrawal)
+		if err != nil {
+			return goingEvent{}, err
+		}
+		ending = stored.Sequence
+	}
+	return goingEvent{Sequence: ending, Event: withdrawal}, nil
+}
+
+// recordGoingPosts records, as the run's, each comment and issue message among hits that texts
+// holds a body for: the posts whose text the run is about to give its model, which is what a
+// later delete of one withdraws the run's answer by (goingWithdrawal). It is called with the
+// bodies and before they are handed on (goingBodies), so a post's row is committed before any
+// frame its text can be in is stored, and a reader that reads such a frame reads the row too. A
+// body the answerer then leaves out for the run's rune budget is recorded all the same, since
+// only the answerer knows which it kept, and a post two searches of one run both found is two
+// rows, which the verdict reads as one.
+func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []going.Hit, texts map[string]string) error {
+	var comments, messages []string
+	for _, hit := range hits {
+		if _, given := texts[hit.Key()]; !given {
+			continue
+		}
+		switch refs.ItemKind(hit.Kind) {
+		case refs.ItemComment:
+			comments = append(comments, hit.ID)
+		case refs.ItemMessage:
+			messages = append(messages, hit.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	_, err := s.deps.Store.Pool.Exec(ctx, `
+		insert into going_request_posts (request_id, comment_id, message_id)
+		select $1::uuid, post, null::uuid from unnest($2::uuid[]) as post
+		union all
+		select $1::uuid, null::uuid, post from unnest($3::uuid[]) as post
+	`, requestID, comments, messages)
+	return err
 }
 
 // scanGoingRequest decodes one goingRequestColumns row.

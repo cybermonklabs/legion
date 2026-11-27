@@ -12,6 +12,7 @@ import (
 // ENVOY_NATS_REPLICAS is the deployment's replica count, 1 when unset or blank and otherwise a
 // whole number from 1 to bus.MaxReplicas.
 func TestParseNATSReplicasReadsACountFrom1ToMaxReplicas(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw  string
 		want int
@@ -36,6 +37,7 @@ func TestParseNATSReplicasReadsACountFrom1ToMaxReplicas(t *testing.T) {
 
 // ENVOY_STREAM_MAX_BYTES is the stream's byte limit, 0 (none set) when unset or blank.
 func TestParseStreamMaxBytesReadsAPositiveByteCount(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw  string
 		want int64
@@ -58,6 +60,7 @@ func TestParseStreamMaxBytesReadsAPositiveByteCount(t *testing.T) {
 // A replica count outside 1 to MaxReplicas or a byte limit that is not a positive number is
 // refused, naming the variable and the value.
 func TestTheSettingsParsersRefuseACountOutside1To5AndAByteLimitThatIsNotPositive(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, value string }{
 		{bus.ReplicasEnvVar, "0"},
 		{bus.ReplicasEnvVar, "-1"},
@@ -88,6 +91,7 @@ func TestTheSettingsParsersRefuseACountOutside1To5AndAByteLimitThatIsNotPositive
 // of seconds: an operator writes the horizon it has to outlast ("90m") in the same units the gone
 // horizon is written in.
 func TestParseSessionMaxAgeReadsAPositiveDuration(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw  string
 		want time.Duration
@@ -111,6 +115,7 @@ func TestParseSessionMaxAgeReadsAPositiveDuration(t *testing.T) {
 // a deployment that writes seconds as a bare number, or asks for an age of zero, is told at load
 // rather than leaving its sessions on the bucket's own age and reading stalled ones as dead.
 func TestParseSessionMaxAgeRefusesAnAgeThatIsNotAPositiveDuration(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"0", "0s", "-1m", "90", "x", "1 hour"} {
 		t.Run(value, func(t *testing.T) {
 			_, err := bus.ParseSessionMaxAge(value)

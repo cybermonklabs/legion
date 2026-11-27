@@ -134,6 +134,7 @@ func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait ti
 // its merge time, and a later upsert that changes its title logs a second with that time on both
 // sides.
 func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -165,6 +166,7 @@ func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
 // attribution pass over rows whose issue did not change, and a run and its jobs written again with
 // the same facts -- logs no change.
 func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
@@ -219,6 +221,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 // TestARunChangeLogsItsKindAndItsLaterTime: a run logs its kind and the later of its head commit
 // and its start, and a job of it logs the run's kind and the same time.
 func TestARunChangeLogsItsKindAndItsLaterTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -259,6 +262,7 @@ type freshnessPayload struct {
 // every reconcile pass make log no change, and each committed one notifies delivery_freshness with
 // the row's three freshness values.
 func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -315,6 +319,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 // moment the database's clock reached just now. It never moves backward: a later stamp already
 // in the row stays.
 func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	seedDeliverySettings(t, ctx, pool)
@@ -340,6 +345,7 @@ func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
 // ahead of the database's, a change the database dates 25 hours old goes and one it dates 23 hours
 // old stays.
 func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
@@ -379,6 +385,7 @@ func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
 // and one of four-byte characters, each commit and notify a payload under Postgres's 8,000-byte
 // limit, rather than failing the settings write.
 func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -402,6 +409,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 // TestEveryLoggedChangeNotifiesAtCommit: a change notifies delivery_changes once its transaction
 // commits, and not before.
 func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	conn := listenConn(t, ctx, pool, "delivery_changes")
 	tx, err := pool.Begin(ctx)
@@ -492,6 +500,7 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 // members' writes, and a settings change each log their change; settings written again unchanged
 // log none.
 func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -578,6 +587,7 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 // TestDeletingAPullRequestLogsItsOldMergeTime: a deleted pull request logs its merge time as the
 // time before and none after.
 func TestDeletingAPullRequestLogsItsOldMergeTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, changeTestPR(13, merged, "chore: task")); err != nil {

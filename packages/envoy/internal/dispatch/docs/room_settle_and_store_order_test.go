@@ -33,6 +33,7 @@ import (
 // within the settle delay - the change re-arms it, a settle delay from now, so the burst the two
 // processes' peers type in turn settles once, after its last keystroke on either process.
 func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
@@ -91,6 +92,7 @@ func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
 // through a catch-up, which credits no one here - names alice, as the pending-settlement row her
 // append wrote says. Named from task B's own memory, it was bob, whose edit task B saw last.
 func TestASettlementOnTheOtherProcessNamesTheTypistWhoseAppendLandedLast(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -215,14 +217,14 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	// Registered after the shutdown, so it runs first: a test that fails with the gate held does
 	// not leave the shutdown waiting on an append that never comes.
-	t.Cleanup(gated.release)
+	testcleanup.Add(t, gated.release)
 	return service, gated
 }
 
@@ -269,6 +271,7 @@ func requireStoreNeverTorn(t *testing.T, database *store.Store, artifactID, afte
 // than added, and the history is compacted every few rounds as rooms' persistence compacts it, so a
 // round costs the same at the end as at the start.
 func TestStoredHistoryIsNeverTorn(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, gateA := newGatedServiceInstance(t, database)

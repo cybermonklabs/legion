@@ -137,6 +137,20 @@ type ExchangeSession struct {
 	// however long the transaction took. Zero with a lifetime decided is a start that never ran, and
 	// its token expires at once (SetExpiresAt). Like Principal it is not stored.
 	AccessDeadline time.Time `json:"-"`
+
+	// SubjectSignature is the signature of the machine login's access token a narrowed token is
+	// traded from (the access-token subject type), and empty for every other trade, whose subject
+	// is a JWT the broker keeps no row of. CreateAccessTokenSession stores it beside a narrowed
+	// token (oauth_narrowed_access_tokens.subject_signature), so the narrowed token ends when that
+	// row is revoked, retired or expired. Like Principal it is no claim of the token and is not
+	// stored in the session's JSON.
+	SubjectSignature string `json:"-"`
+
+	// SubjectExpiresAt is when the subject token a narrowed token is traded from expires: a JWT
+	// subject's `exp`, or the stored expiry of a machine login's access token. The zero time is
+	// none. CreateAccessTokenSession clamps a narrowed token's expiry to it, so a narrowed token
+	// never outlives its subject. It is not stored either.
+	SubjectExpiresAt time.Time `json:"-"`
 }
 
 // NewExchangeSession is an empty exchange session with its extra claims ready to be written, the
@@ -220,13 +234,15 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 		return nil
 	}
 	cloned := &ExchangeSession{
-		SubjectToken:   maps.Clone(s.SubjectToken),
-		ActorToken:     maps.Clone(s.ActorToken),
-		Principal:      s.Principal,
-		Instance:       s.Instance,
-		Fleet:          s.Fleet,
-		AccessLifetime: s.AccessLifetime,
-		AccessDeadline: s.AccessDeadline,
+		SubjectToken:     maps.Clone(s.SubjectToken),
+		ActorToken:       maps.Clone(s.ActorToken),
+		Principal:        s.Principal,
+		Instance:         s.Instance,
+		Fleet:            s.Fleet,
+		AccessLifetime:   s.AccessLifetime,
+		AccessDeadline:   s.AccessDeadline,
+		SubjectSignature: s.SubjectSignature,
+		SubjectExpiresAt: s.SubjectExpiresAt,
 	}
 	if s.DefaultSession != nil {
 		cloned.DefaultSession, _ = s.DefaultSession.Clone().(*oauth2.DefaultSession)
@@ -767,8 +783,9 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 
 // CredentialAccount is what a token minted from a credential records about it: the Google account
 // it records, issuer then `sub`, empty for none, and when the credential was made, read from the
-// broker database's own clock (the row's created_at, which its insert's default wrote). A resource
-// server holds a token recording no account to that time (oauth.ClaimCredentialCreatedAt).
+// broker database's own clock (the row's created_at, which its insert's default wrote). The
+// exchange writes the time to oauth.ClaimCredentialCreatedAt; no resource server in this tree
+// reads it yet.
 type CredentialAccount struct {
 	Issuer, Subject string
 	CreatedAt       time.Time
@@ -776,10 +793,10 @@ type CredentialAccount struct {
 
 // CredentialApprover is what a token exchanged from the machine login credentialID names records
 // about it: the Google account that approved the login (launcher_credentials' approver_issuer and
-// approver_subject, migration 0042), as the approval Dispatch relayed named it, written once when
+// approver_subject, migration 0047), as the approval Dispatch relayed named it, written once when
 // the login was approved, and the login's created_at. The exchange reads it once, when it mints a
 // token from that login's own, and writes it onto the token (oauth.Provider.approverAccount). The
-// account is empty for a credential that records none, which is one made before 0042, one an older
+// account is empty for a credential that records none, which is one made before 0047, one an older
 // Dispatch approved, and every credential no person approved (a machine's own, a pod's); all of it
 // is empty for a credential there is no row of.
 func (s *Store) CredentialApprover(ctx context.Context, credentialID string) (CredentialAccount, error) {

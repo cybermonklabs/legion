@@ -2,162 +2,296 @@ package leakguard
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// The embedded rules compile, and they are the eight private-names.toml holds: the four classes
-// read out of a text and the three of them read out of a path, plus the proper noun. A rule file
-// that did not compile would be a panic inside a daemon rather than a refusal, which is why
-// compile recovers one; this is the test that says the file this binary carries needs no
-// recovery.
-func TestTheEmbeddedRulesCompile(t *testing.T) {
-	engine, err := compiled()
-	if err != nil {
-		t.Fatalf("the embedded rules did not compile: %v", err)
-	}
-	ids := make([]string, 0, len(engine.detector.Config.Rules))
-	for id := range engine.detector.Config.Rules {
+// The fixture rules compile, and they are the four leakguardtest.Rules holds: the host, the pair,
+// the word in a text and the word in a path. A rule file that did not compile would be a panic
+// inside the process that read it rather than a refusal, which is why LoadRules recovers one; this
+// is the test that says the fixture every other test runs needs no recovery.
+func TestTheFixtureRulesCompile(t *testing.T) {
+	rules := fixtureRules(t)
+	ids := make([]string, 0, len(rules.detector.Config.Rules))
+	for id := range rules.detector.Config.Rules {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	want := []string{
-		"company_rule", "company_rule_path",
-		"private_host_rule",
-		"proper_noun_rule", "proper_noun_rule_path",
-		"repository_rule", "repository_rule_path",
-		"tailnet_host_rule",
-	}
-	if !slices.Equal(ids, want) {
+	if want := []string{"host_rule", "pair_rule", "word_path_rule", "word_rule"}; !slices.Equal(ids, want) {
 		t.Errorf("the rules are %q, want %q", ids, want)
 	}
-	if len(engine.names) != len(maskedBy) {
-		t.Errorf("a path is masked by %d rules, want %d", len(engine.names), len(maskedBy))
+	if rules.Count() != len(ids) {
+		t.Errorf("the set counts %d rules, want %d", rules.Count(), len(ids))
 	}
 }
 
-// The rules pass the names they are written to pass: the reserved example tailnet, which names
-// nothing, and a record with nothing of ours in it.
-func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
-	engine, err := compiled()
-	if err != nil {
-		t.Fatal(err)
-	}
-	clean := []Record{
-		{Label: "the title", Text: "a machine on example-tailnet.ts" + ".net"},
-		{Label: "docs/testing.md", Text: "a line of ordinary prose"},
-		{Label: "ref legion/INVENTED-1", Text: "legion/INVENTED-1"},
-	}
-	pass := &pass{ctx: context.Background(), engine: engine}
-	for _, record := range clean {
-		if err := pass.add(record); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lines := pass.report.lines
-	if len(lines) != 0 {
-		t.Errorf("the report is %q, want nothing", lines)
+// Each fixture rule refuses what it is written for and nothing beside it: the host and not the
+// example machine, the pair on one line and not on two, the word as a word and not inside another,
+// and the word in a record's path by the path rule, whose finding stands before the record's lines.
+func TestTheFixtureRulesMatchWhatTheyAreWrittenFor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record Record
+		// want is the report, "<record>: <class>" a line, and empty where the record passes.
+		want []string
+	}{
+		{
+			name:   "a machine of the invented tailnet",
+			record: Record{Label: "the title", Text: "a machine on " + leakguardtest.RulesHost},
+			want:   []string{"the title: " + leakguardtest.RulesHostClass},
+		},
+		{
+			name:   "the example machine",
+			record: Record{Label: "the title", Text: "a machine on " + leakguardtest.AllowedHost},
+		},
+		{
+			name:   "the pair on one line",
+			record: Record{Label: "the body", Text: strings.ToUpper(leakguardtest.PairName) + " keeps the " + leakguardtest.PairWord + " ledger"},
+			want:   []string{"the body: " + leakguardtest.PairClass},
+		},
+		{
+			name:   "the pair on two lines",
+			record: Record{Label: "the body", Text: leakguardtest.PairName + " keeps\nthe " + leakguardtest.PairWord + " ledger"},
+		},
+		{
+			name:   "the pair's name alone",
+			record: Record{Label: "the body", Text: "a note on " + leakguardtest.PairName},
+		},
+		{
+			name:   "the word as a word",
+			record: Record{Label: "the body", Text: "the " + strings.ToUpper(leakguardtest.Word) + " runbook"},
+			want:   []string{"the body: " + leakguardtest.WordClass},
+		},
+		{
+			name:   "the word inside another word",
+			record: Record{Label: "the body", Text: "a " + leakguardtest.Word + "s ledger"},
+		},
+		{
+			name: "the word in a path",
+			record: Record{
+				Label: "docs/" + leakguardtest.Word + "-notes.md",
+				Text:  "docs/" + leakguardtest.Word + "-notes.md",
+				Path:  "docs/" + leakguardtest.Word + "-notes.md",
+			},
+			want: []string{
+				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordPathClass,
+				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordClass,
+			},
+		},
+		{
+			name:   "the word in a label that is no path",
+			record: Record{Label: "docs/" + leakguardtest.Word + "-notes.md", Text: "a line of ordinary prose"},
+		},
+		{
+			name:   "ordinary prose",
+			record: Record{Label: "docs/testing.md", Text: "a line of ordinary prose"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rep shownReport
+			if err := fixtureRules(t).scan(context.Background(), tc.record, &rep); err != nil {
+				t.Fatal(err)
+			}
+			reports(t, rep.lines(), tc.want...)
+		})
 	}
 }
 
-// The host rule reads a host, not a Lean or OCaml name. A name holding a capital letter, then a
-// segment spelled exactly Internal, passes: Lake's and Rocq's module paths (src/lake/Lake/Build of
-// leanprover/lean4, kernel/indTyping.ml of rocq-prover/rocq), and a Lean function's own namespace.
-// So does Lean's own option of the cmdline snapshots under its Lean namespace (as
-// src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it), and no name near it. Every other host
-// is refused, whatever the case of its labels: at the start of a record, on a later line, in
-// italics, right after a reserved example host, and with a capital letter in its first label while
-// the segment is not spelled Internal. The texts are assembled from pieces, as every refusable
-// literal of these tests is, so that no line of this file names one whole, and so that a guard
-// still reading a namespace as a host passes the file too.
-func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
-	engine, err := compiled()
-	if err != nil {
-		t.Fatal(err)
+// A path-scoped allowlist clears its one path and no other: the word rule ignores the vendored
+// file's own use of the word, and the same line in a file beside it is refused. The allowlist reads
+// a record's Path and never its label, so a record labelled with the vendored file's path and
+// holding no Path, which is what a gh call's body file of that name is, is refused too.
+func TestAPathScopedAllowlistClearsItsPathAlone(t *testing.T) {
+	const line = "var " + leakguardtest.Word + " = require('./lantern')"
+	rules := fixtureRules(t)
+	if err := rules.Check(bound(t), "the write", Record{Label: leakguardtest.AllowedPath, Text: line, Path: leakguardtest.AllowedPath}); err != nil {
+		t.Fatalf("the vendored file's own line: %v", err)
 	}
+	const beside = "vendor/glasswing/other.js"
+	reports(t, refusal(t, rules.Check(bound(t), "the write", Record{Label: beside, Text: line, Path: beside})).Lines, beside+": "+leakguardtest.WordClass)
+	reports(t, refusal(t, rules.Check(bound(t), "the write", Record{Label: leakguardtest.AllowedPath, Text: line})).Lines,
+		leakguardtest.AllowedPath+": "+leakguardtest.WordClass)
+}
+
+// A refusal shows what matched within its bounds, whatever the write is. A mebibyte of one line
+// shows its match and a window of the line around it, each end of the window cut on a rune
+// boundary; a match of 500 bytes is cut at 200, and one with a rune across byte 200 is cut before
+// that rune; sixty findings show forty lines and one that counts the rest; a newline and an escape
+// character in a match print quoted. Two matches of one line, far apart, are each shown at their
+// own place, on the first line and on a later one, which holds the engine to the column
+// RuleSet.place reads; and a match the engine begins at the newline before its line is shown on
+// that line.
+func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 	const (
-		label   = "internal"
-		capital = "Internal"
-		upper   = "INTERNAL"
-		class   = "names a private internal host"
+		host = leakguardtest.RulesHost
+		word = leakguardtest.Word
 	)
-	scan := func(t *testing.T, record Record) []string {
+	shows := func(t *testing.T, rules *RuleSet, text string, want ...string) {
 		t.Helper()
-		var rep report
-		if err := engine.scan(context.Background(), record, &rep); err != nil {
+		got := refusal(t, rules.Check(bound(t), "the write", Record{Label: "the body", Text: text})).Lines
+		if !slices.Equal(got, want) {
+			t.Errorf("the report is\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+
+	t.Run("a mebibyte of one line", func(t *testing.T) {
+		// A two-byte rune stands across each end of the window: 120 bytes before the match falls
+		// inside the first, and 120 bytes after it inside the second, so each end is cut on the
+		// rune's far side.
+		before := strings.Repeat("a", 281) + "é" + strings.Repeat("a", 118) + " "
+		match := host + " "
+		after := strings.Repeat("b", 119) + "é"
+		text := before + match + after + strings.Repeat("b", 1<<20-len(before)-len(match)-len(after))
+		if len(text) != 1<<20 || strings.Contains(text, "\n") || len(before) <= 300 {
+			t.Fatalf("the text is %d bytes with its match at byte %d, want a mebibyte of one line with the match past byte 300", len(text), len(before))
+		}
+		shows(t, fixtureRules(t), text,
+			leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, match, 1, "…"+strings.Repeat("a", 118)+" "+match+strings.Repeat("b", 119)+"…"))
+	})
+	t.Run("a match of 500 bytes", func(t *testing.T) {
+		match := leakguardtest.PairName + strings.Repeat("x", 483) + leakguardtest.PairWord
+		if len(match) != 500 {
+			t.Fatalf("the match is %d bytes, want 500", len(match))
+		}
+		shown := leakguardtest.PairName + strings.Repeat("x", 192)
+		// The line shows 120 bytes past the part of the match shown, which here is more of the
+		// match.
+		shows(t, fixtureRules(t), "a note: "+match+" ends here",
+			leakguardtest.ReportLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+strings.Repeat("x", 120)+"…"))
+	})
+	t.Run("a match cut inside a rune", func(t *testing.T) {
+		match := leakguardtest.PairName + strings.Repeat("x", 191) + "é" + strings.Repeat("x", 290) + leakguardtest.PairWord
+		if len(match) != 500 || !strings.HasPrefix(match[199:], "é") {
+			t.Fatalf("the match is %d bytes, want 500 with a rune at bytes 199 and 200", len(match))
+		}
+		shown := leakguardtest.PairName + strings.Repeat("x", 191)
+		shows(t, fixtureRules(t), "a note: "+match+" ends here",
+			leakguardtest.ReportLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+"é"+strings.Repeat("x", 118)+"…"))
+	})
+	t.Run("sixty findings", func(t *testing.T) {
+		lines := make([]string, 60)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("machine %d answers at %s", i+1, host)
+		}
+		want := make([]string, 0, 41)
+		for i := range 40 {
+			want = append(want, leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, host, i+1, lines[i]))
+		}
+		shows(t, fixtureRules(t), strings.Join(lines, "\n"), append(want, "… and 20 more matches not shown")...)
+	})
+	t.Run("an escape character in a match", func(t *testing.T) {
+		// The word rule's match takes in the character on either side of the word, here an
+		// escape, which the report writes as Go writes it in a quoted string.
+		shows(t, fixtureRules(t), "a \x1b"+word+"\x1b b",
+			`the body: `+leakguardtest.WordClass+`: matched "\x1b`+word+`\x1b" on line 1: "a \x1b`+word+`\x1b b"`)
+	})
+	t.Run("a newline in a match", func(t *testing.T) {
+		// No fixture rule matches across a line, so this one is the test's own. The line shown
+		// is the one the match starts on, up to its end.
+		spanning, err := LoadRules([]byte("[[rules]]\nid = \"spanning_rule\"\ndescription = \"names the invented pair across a line\"\n" +
+			"regex = '''(?i)" + leakguardtest.PairName + `\s+` + leakguardtest.PairWord + "'''\n"))
+		if err != nil {
 			t.Fatal(err)
 		}
-		return rep.lines
+		shows(t, spanning, "the "+leakguardtest.PairName+"\n"+leakguardtest.PairWord+" ledger",
+			`the body: names the invented pair across a line: matched "`+leakguardtest.PairName+`\n`+leakguardtest.PairWord+`" on line 1: "the `+leakguardtest.PairName+`"`)
+	})
+	t.Run("two matches of one line", func(t *testing.T) {
+		// Two of the word's matches stand 300 bytes apart on each line, and they are the same
+		// text: placed anywhere but where each stands, the two would write one line twice, and the
+		// report would hold one line where it holds two.
+		line := "x " + word + " " + strings.Repeat("y", 300) + " " + word + " z"
+		first := "x " + word + " " + strings.Repeat("y", 120) + "…"
+		second := "…" + strings.Repeat("y", 120) + " " + word + " z"
+		match := " " + word + " "
+		shows(t, fixtureRules(t), line+"\n"+line,
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 1, first),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 1, second),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 2, first),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 2, second))
+	})
+	t.Run("a match that begins at the newline before its line", func(t *testing.T) {
+		// The word rule's match takes in the newline before the word, which the engine trims off
+		// the match and not off where it says the match starts.
+		shows(t, fixtureRules(t), "a first line\n"+word+" starts the second",
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, word+" ", 2, word+" starts the second"))
+	})
+}
+
+// A record's label is shown on its report line's one line, and bounded, whatever the label holds:
+// a newline in a field's name, and a `\` and an escape character, are written as Go writes them
+// in a quoted string; a label of a kilobyte is shown as its first 60 bytes and its last 140 with
+// "…" between, each cut between two runes, of the label as written or as escaped; and a label of
+// printable text within the bound, `"` and all, is shown as it was written.
+func TestRefusalShowsMatchUnderALabelOnOneBoundedLine(t *testing.T) {
+	const text = "a host at " + leakguardtest.RulesHost
+	for _, tc := range []struct{ name, label, shown string }{
+		{"a newline", "the gh call's field a\nb", `the gh call's field a\nb`},
+		{"a backslash and an escape character", "the body \\ \x1b", `the body \\ \x1b`},
+		{"a kilobyte", strings.Repeat("h", 500) + strings.Repeat("t", 524), strings.Repeat("h", 60) + "…" + strings.Repeat("t", 140)},
+		{
+			"a kilobyte with a rune across each cut",
+			strings.Repeat("h", 59) + "é" + strings.Repeat("m", 900) + "é" + strings.Repeat("t", 139),
+			strings.Repeat("h", 59) + "…" + strings.Repeat("t", 139),
+		},
+		{"a kilobyte of newlines", strings.Repeat("\n", 1024), strings.Repeat(`\n`, 30) + "…" + strings.Repeat(`\n`, 70)},
+		{"printable text", `the body, JSON ."a b" (name)`, `the body, JSON ."a b" (name)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := refusal(t, fixtureRules(t).Check(bound(t), "the write", Record{Label: tc.label, Text: text})).Lines
+			want := leakguardtest.ReportLine(tc.shown, leakguardtest.RulesHostClass, leakguardtest.RulesHost, 1, text)
+			if len(lines) != 1 || lines[0] != want {
+				t.Errorf("the report is %q, want the one line %q", lines, want)
+			}
+		})
 	}
-	t.Run("a namespace passes", func(t *testing.T) {
-		for _, text := range []string{
-			"import Std." + capital + ".UV.System",
-			"open Std." + capital + ".UV in",
-			"  if Environ." + capital + ".is_above_prop env q then",
-			"  let invert = Inductiveops." + capital + ".should_invert_case env sigma ci in",
-			"  (Environ." + capital + ".View.view answer_env).Environ." + capital + ".View.env_modtypes",
-			"      Classes." + capital + ".add_instance ~locality inst",
-			"import Std.Async",
-			// The lines of leanprover/lean4's src the namespace alone would leave refused: a
-			// function's namespace (Init/Internal/Order/While.lean, twice, and both
-			// SpecLemmas.lean of Std's Do and WP), and the option (Lean/Elab/Frontend.lean).
-			"This module proves the one-step unfolding lemma `repeatM." + capital + ".eq_of_monadTail`,",
-			"  rw [repeatM." + capital + ".eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]",
-			"    rw [_root_.repeatM." + capital + ".eq_of_monadTail (f := f) a]",
-			"  let opts := Lean." + label + ".cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone",
-		} {
-			if lines := scan(t, Record{Label: "the body", Text: text}); len(lines) != 0 {
-				t.Errorf("%q: the report is %q, want nothing", text, lines)
+}
+
+// A document's base label past 400 bytes is cut once, before its walk (cutLabel), to at most 400
+// bytes, and the cut shows as the whole label shows. For a label of 4 KB of ASCII, of runes of
+// two, three and four bytes with one across each cut, of newlines and `\`, which show as two bytes
+// each, and of bytes that are no UTF-8 in runs too long for a rune's start to be found, shownText
+// of the cut with a JSON path after it is shownText of the whole label with that path: a path of
+// a few bytes, and one past the bound by itself. A cut of a label of UTF-8 is UTF-8, and a label
+// of 400 bytes is kept whole.
+func TestACutLabelShowsAsTheWholeLabel(t *testing.T) {
+	longPath := jsonLabel("", slices.Repeat([]string{jqMember(strings.Repeat("n", 100))}, 12))
+	if len(longPath) <= maxTextShown {
+		t.Fatalf("the long path is %d bytes, want it past %d", len(longPath), maxTextShown)
+	}
+	for _, tc := range []struct{ name, label string }{
+		{"ASCII", strings.Repeat("abcdefgh", 512)},
+		{"runes of several bytes", "a" + strings.Repeat("é漢𝄞", 455)},
+		{"newlines and backslashes", strings.Repeat("a\nb\\", 1024)},
+		{"bytes that are no UTF-8", "abcdef" + strings.Repeat("\x80\x80\x80\x80\x80\x80\x80\x80\xff", 454) + "abcd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.label) != 4096 {
+				t.Fatalf("the label is %d bytes, want 4096", len(tc.label))
 			}
-		}
-	})
-	t.Run("a reserved example host and the vendored property pass", func(t *testing.T) {
-		for _, record := range []Record{
-			{Label: "the body", Text: "https://listener." + label + ".example"},
-			{Label: "the body", Text: "listener." + label + ".example"},
-			{Label: "the body", Text: "line one\nlistener." + label + ".example"},
-			{Label: "the body", Text: "nats://nats." + label + ".example.com:4222"},
-			{Label: "the body", Text: "Point it at api." + label + ".example."},
-			{Label: "the body", Text: "now https://ENVOY." + upper + ".EXAMPLE"},
-			{Label: "packages/claude-envoy/dist/envoy-channel.js", Text: "        this." + label + ".push(sv);"},
-		} {
-			if lines := scan(t, record); len(lines) != 0 {
-				t.Errorf("%q: the report is %q, want nothing", record.Text, lines)
+			cut := cutLabel(tc.label)
+			if len(cut) > 2*maxTextShown {
+				t.Errorf("the cut label is %d bytes, want at most %d", len(cut), 2*maxTextShown)
 			}
-		}
-	})
-	t.Run("a host is refused", func(t *testing.T) {
-		for _, text := range []string{
-			"https://beacon." + label + ".quietforge",
-			"https://beacon." + upper + ".quietforge",
-			"https://beacon." + capital + ".quietforge",
-			"https://BEACON." + upper + ".QUIETFORGE",
-			"https://beacon." + label + ".Quietforge.Net",
-			"beacon." + label + ".quietforge",
-			"line one\nbeacon." + label + ".quietforge",
-			"see _beacon." + label + ".quietforge_ in italics",
-			"NATS_URLS=a." + label + ".example,b." + label + ".quietforge",
-			"ip-10-0-0-7." + label + ".quietforge.net:443",
-			"https://dispatch." + label + ".quietforge.com/",
-			"this." + label + ".push(value)",
-			"Beacon." + label + ".quietforge answers on 443.",
-			"BEACON." + label + ".quietforge",
-			"fooBar." + label + ".quietforge",
-			"Beacon." + upper + ".quietforge",
-			// Near names of the one Lean option the rule allows: another option, a longer name,
-			// a name glued in front, and a host after its method.
-			"Lean." + label + ".otherName",
-			"Lean." + label + ".cmdlineSnapshotsX.get opts",
-			"xLean." + label + ".cmdlineSnapshots",
-			"Lean." + label + ".cmdlineSnapshots.get.beacon",
-		} {
-			if lines, want := scan(t, Record{Label: "the body", Text: text}), []string{"the body: " + class}; !slices.Equal(lines, want) {
-				t.Errorf("%q: the report is %q, want %q", text, lines, want)
+			if utf8.ValidString(tc.label) && !utf8.ValidString(cut) {
+				t.Errorf("the cut label %q cuts a rune of a label of UTF-8", cut)
 			}
-		}
-	})
+			for _, path := range []string{", JSON .body", longPath} {
+				if got, want := shownText(cut+path), shownText(tc.label+path); got != want {
+					t.Errorf("the cut label with %q after it shows as %q, want %q", path, got, want)
+				}
+			}
+		})
+	}
+	within := strings.Repeat("w", 2*maxTextShown)
+	if cut := cutLabel(within); cut != within {
+		t.Errorf("a label of %d bytes is cut to %q, want it whole", len(within), cut)
+	}
 }
 
 // Each record is scanned on its own: a record that names something private is reported against
@@ -165,13 +299,9 @@ func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 // findings, where DetectSource would hand the detector's whole run back and report the first
 // record's finding against every later one.
 func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
-	engine, err := compiled()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pass := &pass{ctx: context.Background(), engine: engine}
+	pass := fixtureRules(t).newPass(context.Background())
 	for _, record := range []Record{
-		{Label: "the first record", Text: "a host at " + theHost},
+		{Label: "the first record", Text: "a host at " + leakguardtest.RulesHost},
 		{Label: "the second record", Text: "nothing of ours"},
 		{Label: "the third record", Text: "nothing of ours either"},
 	} {
@@ -179,28 +309,20 @@ func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	lines := pass.report.lines
-	if want := []string{"the first record: " + theClass}; !slices.Equal(lines, want) {
-		t.Errorf("the report is %q, want %q", lines, want)
-	}
+	reports(t, pass.report.lines(), "the first record: "+leakguardtest.RulesHostClass)
 }
 
 // A context that has run out is a setup failure, never a record read as clean: the detector's own
 // scan loop stops at a context's end and answers no finding, which would otherwise read as a
 // record holding nothing.
 func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
-	engine, err := compiled()
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := engine.scan(ctx, Record{Label: "the title", Text: "a host at " + theHost}, &report{}); err == nil {
+	if err := fixtureRules(t).scan(ctx, Record{Label: "the title", Text: "a host at " + leakguardtest.RulesHost}, &shownReport{}); err == nil {
 		t.Fatal("a scan under a context that ended answered no error")
 	}
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if err := guard.Rules(ctx, Record{Label: "the title", Text: "nothing of ours"}); err == nil {
-		t.Fatal("Rules under a context that ended passed the write")
+	if err := fixtureRules(t).Check(ctx, "the write", Record{Label: "the title", Text: "nothing of ours"}); err == nil {
+		t.Fatal("Check under a context that ended passed the write")
 	} else {
 		setupFailure(t, err)
 	}
@@ -210,13 +332,18 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 // one that names no repository on github.com names none, and the guard scans such a write as if
 // it were public rather than skipping it. A URL whose two names are no repository GitHub serves
 // names none either: the guard refuses a slug its exemption could not cover (Guard.scanThrough),
-// so a URL that answered one would refuse the push over the spelling of its remote.
+// so a URL that answered one would refuse the push over the spelling of its remote. The host is
+// read from the URL's authority alone, which ends at the first "/", "?" or "#", as git's
+// credential code and curl end it, and from scp syntax only where git reads that syntax: a path,
+// a query or a fragment that holds "@github.com", on another host or on this machine, names no
+// repository there, and neither does a file URL.
 func TestRepoFromURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo", "invented-org/invented-repo"},
 		{"https://x-access-token:secret@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
+		{"git+ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"git@github.com:invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo/", "invented-org/invented-repo"},
 		{"https://example.invalid/invented-org/invented-repo.git", ""},
@@ -224,6 +351,13 @@ func TestRepoFromURL(t *testing.T) {
 		{"https://github.com/invented-org", ""},
 		{"https://github.com/-invented-org/invented-repo", ""},
 		{"https://github.com/invented-org/../invented-repo", ""},
+		{"https://example.invalid/a@github.com/invented-org/invented-repo.git", ""},
+		{"file:///a/local/path/@github.com/invented-org/invented-repo.git", ""},
+		{"file://github.com/invented-org/invented-repo.git", ""},
+		{"/a/local/path@github.com:invented-org/invented-repo.git", ""},
+		{"https://example.invalid?@github.com/invented-org/invented-repo.git", ""},
+		{"https://example.invalid#@github.com/invented-org/invented-repo.git", ""},
+		{"http://example.invalid?x=@github.com/invented-org/invented-repo.git", ""},
 	} {
 		if got := RepoFromURL(tc.url); got != tc.want {
 			t.Errorf("RepoFromURL(%q) = %q, want %q", tc.url, got, tc.want)
@@ -232,19 +366,14 @@ func TestRepoFromURL(t *testing.T) {
 }
 
 // The engine's own inline escape is inert. gitleaks drops every finding of a line that holds a
-// `gitleaks:allow` comment, and .github/scripts/check-private-names.sh, the script these rules
-// are ported from, honours no such comment: a write that carries one is refused exactly as a
-// write that does not. The comment is spelled in two pieces, as the hosts here are, so that no
-// line of this file carries an escape of its own.
+// `gitleaks:allow` comment, and the guard honours no such comment: a write that carries one is
+// refused exactly as a write that does not. The comment is spelled in two pieces, as the hosts
+// here are, so that no line of this file carries an escape of its own.
 func TestTheInlineAllowCommentIsInert(t *testing.T) {
 	const escape = "gitleaks" + ":allow"
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Rules(bound(t), Record{
+	err := fixtureRules(t).Check(bound(t), "the write", Record{
 		Label: "commit 1a2b3c4 message",
-		Text:  "moved the run to " + theHost + " # " + escape,
+		Text:  "moved the run to " + leakguardtest.RulesHost + " # " + escape,
 	})
-	want := []string{"commit 1a2b3c4 message: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Fatalf("the report is %q, want %q", refused.Lines, want)
-	}
+	reports(t, refusal(t, err).Lines, "commit 1a2b3c4 message: "+leakguardtest.RulesHostClass)
 }

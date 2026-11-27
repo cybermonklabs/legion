@@ -321,8 +321,8 @@ function statFields(stat: string): string[] {
   return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
 }
 
-/** A file of a `/proc/<pid>` directory that the table reads. */
-type ProcFile = "cgroup" | "environ" | "stat";
+/** A file this module reads from a `/proc/<pid>` directory. */
+type ProcFile = "cgroup" | "comm" | "environ" | "stat";
 
 /** The text of `<root>/<pid>/<file>`, where `root` is `/proc` or a directory laid out as it is
  *  (`ProcTree`), or undefined where it cannot be read: where the process is gone (ENOENT), and,
@@ -339,7 +339,7 @@ function procText(root: string, pid: number | string, file: ProcFile): string | 
  *  that takes long, as one of a `/proc/<pid>/environ` can, holds up no other work of the loop.
  *  Measured with bun 1.4.4 on 2026-11-22: while a read of a named pipe waited 2 s for its writer,
  *  a timer due 50 ms after the read began fired at 50 ms. `Bun.file` is read when it is called, so
- *  the row of `bounded-subprocess.test.ts` that counts the kill's reads reaches it. */
+ *  the row of `bounded-subprocess.test.ts` that records the kill's reads reaches it. */
 async function procTextYielding(
   root: string,
   pid: number | string,
@@ -590,6 +590,31 @@ function treeOf(table: readonly Listed[], token: string, root: number | undefine
   return found;
 }
 
+/** The processes a bounded child still had when a bound passed, as a failure says them: a process
+ * table makes the child's token and descendants exact, and `/proc/<pid>/comm` gives the executable
+ * name without printing its arguments, which can hold a credential. On a host without `/proc`,
+ * `ps` still gives the pids and parents and each name says why it could not be read. */
+function runningAtBound(run: Running, table: readonly Listed[] | undefined): string {
+  if (table === undefined) return "the process table did not answer before the child was killed";
+  const alive = run.child.exitCode === null && run.child.signalCode === null;
+  const pids = treeOf(table, run.token, alive ? run.child.pid : undefined);
+  const processes = table
+    .filter(({ pid }) => pids.has(pid))
+    .sort((one, other) => one.pid - other.pid);
+  if (processes.length === 0) {
+    return "the process table listed no process of the child when its bound passed";
+  }
+  const count = `${processes.length} ${processes.length === 1 ? "process" : "processes"}`;
+  return [
+    `it had ${count} still running when its bound passed:`,
+    ...processes.map(({ pid, ppid }) => {
+      const comm = machineTree === undefined ? undefined : procText(machineTree.root, pid, "comm");
+      const name = comm === undefined ? "unreadable" : masked(oneLine(comm.trim()));
+      return `  pid=${pid} ppid=${ppid} name=${JSON.stringify(name)}`;
+    }),
+  ].join("\n");
+}
+
 /** The most reads of the process table one kill makes. Each read kills what it finds, so only a
  *  tree that keeps forking faster than it is killed reaches this, or an `unknown` process started
  *  since the child in this process's cgroup that stays unknown, such as one started with an empty
@@ -648,6 +673,9 @@ interface YieldingCollaborators {
   readonly read?: () => readonly Listed[] | undefined | Promise<readonly Listed[] | undefined>;
   readonly signal?: (pid: number) => void;
   readonly pause?: () => void | Promise<void>;
+  /** Sees each process table before this kill signals from it. The timeout diagnostic takes the
+   * first one, while every later read remains part of the kill's race-free cleanup. */
+  readonly observe?: (table: readonly Listed[] | undefined) => void;
 }
 
 /** The real `signal` of both kills: SIGKILL through `process.kill`, read when it is called, so the
@@ -802,13 +830,16 @@ export async function stopTreeYielding(
     read = processTableYielding,
     signal = sigkill,
     pause = () => Bun.sleep(execPause),
+    observe,
   }: YieldingCollaborators = {}
 ): Promise<void> {
   const steps = killSteps(run, fromProc, signal);
   let step = steps.next();
   while (step.done !== true) {
     if (step.value === "read") {
-      step = steps.next(await read());
+      const table = await read();
+      observe?.(table);
+      step = steps.next(table);
     } else {
       await pause();
       step = steps.next();
@@ -1105,6 +1136,25 @@ interface BoundedOptions extends Child {
  *  and the wait does not hang on it. */
 const pipeGrace = 2_000;
 
+/** How many of the last lines of each pipe a stuck child's failure carries. The last lines name
+ * the step just before it waited, while the cap keeps a noisy child from taking over CI's log. */
+const tailLines = 200;
+
+/** What a stuck child wrote to one pipe, for its failure: only the last `tailLines`, each masked
+ * before it reaches CI's public log. */
+function wroteTo(pipe: "stderr" | "stdout", text: string): string {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) return `it wrote nothing to its ${pipe}`;
+  const shown = lines.slice(-tailLines);
+  const count = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
+  const heading =
+    shown.length === lines.length
+      ? `it wrote ${count} to its ${pipe}:`
+      : `it wrote ${count} to its ${pipe}, the last ${tailLines} of them here:`;
+  return [heading, ...shown.map((line) => `  ${masked(line)}`)].join("\n");
+}
+
 /** Reads one pipe to its end into `chunks`, decoding as it goes, so what arrived before a cancel
  *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does. */
 async function drain(
@@ -1176,6 +1226,7 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     drain(stderrReader, stderrChunks),
   ]);
   let stuck = false;
+  let stuckProcesses = "";
   // Read once the child and its pipes ended, before its kill; a stuck child throws instead.
   let endedAt = Number.NaN;
   try {
@@ -1183,7 +1234,11 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     endedAt = Date.now();
     if (settled === pastDeadline) {
       stuck = true;
-      await stopTreeYielding(run);
+      await stopTreeYielding(run, {
+        observe: (table) => {
+          if (stuckProcesses === "") stuckProcesses = runningAtBound(run, table);
+        },
+      });
       if ((await beforeDeadline(whole, performance.now() + pipeGrace)) === pastDeadline) {
         // Each pending read ends as the end of its stream would; what each pipe carried so far
         // stays in its chunks.
@@ -1224,7 +1279,9 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   if (stuck) {
     throw new Error(
       `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
-        `it and every process it started were killed after ${ms} ms`
+        `it and every process it started were killed after ${ms} ms\n` +
+        `${stuckProcesses || "the process table was not read before the child was killed"}\n` +
+        `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`
     );
   }
   return { code: await child.exited, endedAt, named: name, stderr, stdout };

@@ -150,18 +150,18 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 				if len(node.Plans) == 0 {
 					t.Fatalf("%s has a parent walk with no base term:\n%s", name, text)
 				}
-				// A base term reported with no loop at all never ran, which is the advances
-				// filter's walk on a request that names no priority: its seed is gated off
+				// A base term reported with no loop at all never ran, which is each walk of the
+				// advances filter on a request that names no priority: its seed is gated off
 				// (issueAdvancesFilterTerms), so it starts from no key rather than from many.
 				if base := node.Plans[0]; base.Rows > float64(limit) || base.Loops > 1 {
 					t.Errorf("%s starts a parent walk from %.0f keys over %.0f loops, want at most the page's %d over one loop:\n%s",
 						name, base.Rows, base.Loops, limit, text)
 				}
 			}
-			if walks != 4 {
+			if walks != 5 {
 				t.Errorf("%s runs %d parent walks, want the components walk, the repository walk, the walk up every"+
-					" page row's chain for its advances relations and the walk down from the advances filter's own"+
-					" relations:\n%s", name, walks, text)
+					" page row's chain for its advances relations, the walk down from the advances filter's own"+
+					" relations and the walk up from them that `own` reads:\n%s", name, walks, text)
 			}
 		})
 	}

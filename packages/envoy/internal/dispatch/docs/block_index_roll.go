@@ -174,7 +174,7 @@ var markVersionedDocuments = `
 // log's safe horizon (events.Horizon.Safe): event ids are not commit order, so an uncapped
 // `id > cursor` read could pass an event still committing, and the cursor never moves past safe.
 // A Horizon proves an observation only by a later one, so an event is read by the second tick
-// after it commits, or later while a transaction on the instance stays open across those ticks.
+// after it commits, or later while an event write of this database stays open across those ticks.
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
 // (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
@@ -268,6 +268,10 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
 	next := max(*cursor, safe)
+	// The pass is owed while another build serves and on the first tick after one did, on a
+	// process's first tick, and an interval after its last pass.
+	finished := s.objectPassFinished.Load()
+	owes := tick.AnotherBuild || seen || finished == 0 || s.now().Sub(time.Unix(0, finished)) >= objectPassInterval
 	var read, written int
 	var marked int64
 	var named []string

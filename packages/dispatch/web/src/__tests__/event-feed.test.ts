@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -13,6 +13,7 @@ import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   accessGroupsQuery,
   advancesIssuesQuery,
+  agentMessagesQuery,
   architectureSourcesQuery,
   askThreadQuery,
   inboxQuery,
@@ -35,6 +36,7 @@ import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/ty
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import {
   askQuery,
   blockQuery,
@@ -43,6 +45,12 @@ import {
   issueSummaryQuery,
   messageQuery,
 } from "../features/refs/reference-target";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The page every rule is read against: one read of each family a Dispatch tab holds, under the
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
@@ -71,6 +79,9 @@ const READS = {
   // The work under another priority, which a delete of linkage-closure leaves where it is.
   otherAdvancesWork: { key: advancesIssuesQuery({ advances: "oss-verify" }, true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
+  // The Agents page's conversation with session planner, which lists the issue messages aimed at
+  // it.
+  agentConversation: { key: agentMessagesQuery("planner").queryKey },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
   ask: { key: askQuery("ask-1").queryKey },
@@ -184,11 +195,17 @@ const READS = {
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
-  referencePicker: { key: ["issues", "CORE"] },
+  // The names `referenceTargetsQuery` keeps under the set of references it was asked for.
+  referenceTargets: {
+    key: ["reference-targets", ["dispatch://CORE-1/comment/comment-1", "dispatch://CORE-1/spec"]],
+  },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
+  // An answer the search palette keeps under the words typed and the request it sent: the
+  // keystroke's keyword leg, with no chip set (`useTieredSearch.ts`, `SearchRequest`).
+  searchAnswer: { key: ["search", "zarquon", { keywords_only: true }] },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
   // version 2, by another link.
   specBlock: {
@@ -199,6 +216,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro@v2").queryKey,
   },
+  // CORE-1's spec itself, as its document page reads it (`ProofDocument`).
+  specDocument: { key: ["artifact", "artifact-3"] },
   // CORE-1's spec, one document, opened on two spellings of its address.
   specPanel: {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
@@ -396,6 +415,24 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
 
 const documentOwner = { artifact_id: "artifact-1", issue_key: null, project: "CORE" } as const;
 
+/** The outbox's `role.undelivered` on one owner, CORE-1 unless `owner` names another: written as
+ *  a system actor, so it wakes nobody. */
+function roleUndelivered(owner: Partial<DispatchEvent> = {}): DispatchEvent {
+  return event(
+    "role.undelivered",
+    {
+      dropped_at: "2026-10-26T03:00:00Z",
+      event_id: 11,
+      event_type: "comment.created",
+      keeps: 3,
+      kept_at: "2026-10-26T02:00:00Z",
+      reason: "expired",
+      role: "reviewer",
+    },
+    { actor: { id: "dispatch-outbox", kind: "system" }, notify: false, ...owner }
+  );
+}
+
 interface Rule {
   readonly event: DispatchEvent;
   readonly page?: Partial<PageOptions>;
@@ -416,7 +453,6 @@ const rules: Record<string, Rule> = {
         "projectList",
         "labelledProjectList",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "pinned",
         "inbox",
@@ -471,7 +507,6 @@ const rules: Record<string, Rule> = {
         "pinned",
         "components",
         "architecture",
-        "referencePicker",
         "agentsPicker",
         "priorities",
         "prioritySummary",
@@ -515,7 +550,6 @@ const rules: Record<string, Rule> = {
       "projects",
       "components",
       "architecture",
-      "referencePicker",
       "agentsPicker",
     ],
     spares: ["unrelatedDetail", "replies", "parentPanel", "referencesTab", "parentSummary"],
@@ -583,7 +617,6 @@ const rules: Record<string, Rule> = {
       "detail",
       "unrelatedDetail",
       "summary",
-      "referencePicker",
       "agentsPicker",
       "pinned",
       "inbox",
@@ -607,7 +640,6 @@ const rules: Record<string, Rule> = {
         "projects",
         "grandparent",
         "unrelatedDetail",
-        "referencePicker",
         "agentsPicker",
         "components",
         "steps",
@@ -687,7 +719,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail"],
     spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
-  "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
+  "a new issue refreshes its ancestors' rollups and the Agents page's issue picker, not every detail or the project counts":
     {
       event: event(
         "issue.created",
@@ -700,7 +732,6 @@ const rules: Record<string, Rule> = {
         "detail",
         "parent",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "components",
         "architecture",
@@ -741,7 +772,7 @@ const rules: Record<string, Rule> = {
       status: "in_progress",
     }),
     refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+    spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
   },
   "a release refreshes the issue's steps, since a role's run ended": {
     event: event("issue.released", { claim: null, key: "CORE-1" }),
@@ -761,7 +792,7 @@ const rules: Record<string, Rule> = {
         to_version: 7,
       }),
       refreshes: ["detail", "log", "projectList"],
-      spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+      spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
     },
   "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
@@ -1124,6 +1155,11 @@ const rules: Record<string, Rule> = {
     refreshes: ["documentPanel", "comment"],
     spares: ["specPanel", "issuePanel", "inbox"],
   },
+  "a delete of a comment a project document owns refreshes that document's panel": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }, documentOwner),
+    refreshes: ["documentPanel", "comment"],
+    spares: ["specPanel", "issuePanel", "inbox"],
+  },
   "an edit of a comment refreshes every read of its blocks, pinned or not, and no other block": {
     event: event("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     refreshes: ["commentBlock", "commentBlockPinned", "comment"],
@@ -1192,6 +1228,51 @@ const rules: Record<string, Rule> = {
     ),
     refreshes: [],
     spares: ["detail", "unrelatedDetail", "projects", "projectList", "inbox", "pinned"],
+  },
+  // The outbox's report that an event's copy for a role reached no session moves only its
+  // owner's log: an issue's, which the page reads; a project document's, which takes the
+  // document's path; and a project's, which no page reads.
+  "a role.undelivered on an issue refreshes its detail, its log and its project list alone": {
+    event: roleUndelivered(),
+    refreshes: ["detail", "log", "projectList"],
+    spares: [
+      "unrelatedDetail",
+      "parent",
+      "summary",
+      "projects",
+      "inbox",
+      "pinned",
+      "otherProjectList",
+      "steps",
+      "collaborators",
+      "referencesTab",
+    ],
+  },
+  "a role.undelivered on a project document refreshes that document's page and no issue read": {
+    event: roleUndelivered(documentOwner),
+    refreshes: ["documentPage"],
+    spares: [
+      "otherDocumentPage",
+      "docSummary",
+      "detail",
+      "log",
+      "projectList",
+      "inbox",
+      "projects",
+    ],
+  },
+  "a role.undelivered on a project refreshes nothing": {
+    event: roleUndelivered({ artifact_id: null, issue_key: null }),
+    refreshes: [],
+    spares: [
+      "detail",
+      "unrelatedDetail",
+      "log",
+      "projectList",
+      "projects",
+      "inbox",
+      "documentPage",
+    ],
   },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
@@ -1491,6 +1572,35 @@ const rules: Record<string, Rule> = {
       ],
       spares: ["projectDefaultAssignees", "inbox"],
     },
+  // A message's correction names the logins with a row on its thread, as its create does: a
+  // viewer it does not name, and who did not write it, reads no thread row again.
+  "a correction of a message in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("message.edited", { id: "message-0", target: null, thread_logins: ["bob"] }),
+      refreshes: ["conversationMessages", "messageBlock"],
+      spares: ["inboxThreads", "replies"],
+    },
+  // A comment's correction names them too (`commentCorrectionPayload` in the server's
+  // comment_projection.go), as its create does.
+  "a correction of a comment in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("comment.edited", {
+        anchor: null,
+        ask_id: null,
+        id: "comment-1",
+        reply_to: "root-1",
+        thread_logins: ["bob"],
+      }),
+      refreshes: ["comment", "rootComment", "comments"],
+      spares: ["inboxThreads", "replies"],
+    },
+  // The answers page lists the viewer's answers and replies on asks: a comment on no ask is none
+  // of them, and neither is the ask list or the Inbox row of an ask.
+  "a delete of a comment on no ask leaves the answers page and every ask read alone": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }),
+    refreshes: ["comment", "comments"],
+    spares: ["answers", "asks", "inbox", "projectInbox"],
+  },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {
@@ -1505,6 +1615,111 @@ test.each(Object.entries(rules))("%s", (_name, rule) => {
     expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
       read: name,
       refreshed: false,
+    });
+  }
+});
+
+type Correction = "comment.edited" | "comment.deleted" | "message.edited" | "message.deleted";
+
+/** One edit and one delete of each kind of post of CORE-1: comment-1, a reply to root-1 in ask-1's
+ *  thread, anchored in CORE-1's spec; and message-0, a root aimed at session planner. Alice has a
+ *  row on both threads, and each correction names her in `thread_logins`, as the post's create
+ *  did. */
+const corrections: Record<Correction, DispatchEvent> = {
+  "comment.edited": event("comment.edited", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+    thread_logins: ["alice"],
+  }),
+  "comment.deleted": event("comment.deleted", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+    thread_logins: ["alice"],
+  }),
+  "message.edited": event("message.edited", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+  "message.deleted": event("message.deleted", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+};
+
+const commentCorrections: readonly Correction[] = ["comment.edited", "comment.deleted"];
+const messageCorrections: readonly Correction[] = ["message.edited", "message.deleted"];
+
+/** Each read that prints a post - its body, a part of it, or its edit and delete marks - with the
+ *  corrections of the posts it prints. The last row is two reads no create refreshes, and only a
+ *  correction does: the search palette's answers, every one of them (`POST_CORRECTIONS`), and
+ *  the reference-target names whose key names an address of the post's issue, here CORE-1's
+ *  comment-1 (`referenceNameTargets`, `api/event-refresh.ts`). */
+const correctedReads: readonly (readonly [string, readonly Correction[], readonly ReadName[]])[] = [
+  [
+    "the Inbox's thread rows and their count",
+    [...commentCorrections, ...messageCorrections],
+    ["inboxThreads", "replies"],
+  ],
+  ["the issue's References tab", [...commentCorrections, ...messageCorrections], ["referencesTab"]],
+  [
+    "the issue's comments, which the margin and the Conversation draw",
+    commentCorrections,
+    ["comments"],
+  ],
+  [
+    "the issue's ask lists and the Inbox rows of the ask the comment replies on",
+    commentCorrections,
+    ["asks", "askThreads", "inbox", "projectInbox"],
+  ],
+  ["the document the comment is anchored in", commentCorrections, ["specDocument"]],
+  [
+    "the comment's read, its root's, and its ask's read and thread",
+    commentCorrections,
+    ["comment", "rootComment", "ask", "thread"],
+  ],
+  [
+    "every read of the comment's blocks",
+    commentCorrections,
+    ["commentBlock", "commentBlockPinned"],
+  ],
+  ["the answers page", commentCorrections, ["answers"]],
+  ["every read of the message's blocks", messageCorrections, ["messageBlock"]],
+  [
+    "the Agents page's conversation the message is aimed at",
+    messageCorrections,
+    ["agentConversation"],
+  ],
+  [
+    "the issue's message reads, which the Conversation and every reference to a message draw",
+    messageCorrections,
+    ["conversationMessages", "message", "rootMessage"],
+  ],
+  [
+    "every answer the search palette keeps, and every set of reference-target names naming an address of the post's issue",
+    [...commentCorrections, ...messageCorrections],
+    ["searchAnswer", "referenceTargets"],
+  ],
+];
+
+// R2 and R3 of dispatch://INFRA-1523: a page open across a post's edit or delete marks the post
+// edited, or says it is deleted and prints no part of it, without a reload, so every read that
+// prints a post reads again on its corrections, whether or not its create refreshes it.
+test.each(
+  correctedReads.flatMap(([page, types, names]) =>
+    types.map((type) => [type, page, names] as const)
+  )
+)("%s refreshes %s", (type, _page, names) => {
+  const refreshed = refreshedReads(corrections[type]);
+  for (const name of names) {
+    expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
+      read: name,
+      refreshed: true,
     });
   }
 });
@@ -1577,6 +1792,22 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+test("a recorded deploy refreshes the receiving issue's verification results", () => {
+  const incoming = event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  });
+  expect(eventRefreshTargets(incoming, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+  ]);
+});
+
 // A retraction moves exactly the two reads a record moves, for the same reason: the result
 // stays in both listings and stops counting as evidence there. A tab that did not refetch would
 // keep showing a retracted result as proof.
@@ -1646,10 +1877,10 @@ function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent
   );
 }
 
-/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, both pickers,
- *  the parked fault list and the work under linkage-closure - hold it advancing linkage-closure,
- *  beside an issue read, a project's list and the work under oss-verify that advance oss-verify
- *  alone. */
+/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, the Agents
+ *  page's issue picker, the parked fault list and the work under linkage-closure - hold it
+ *  advancing linkage-closure, beside an issue read, a project's list and the work under
+ *  oss-verify that advance oss-verify alone. */
 const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   advancesWork: ["linkage-closure"],
   agentsPicker: ["linkage-closure"],
@@ -1659,7 +1890,6 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   parkedWork: ["linkage-closure"],
   pinned: ["linkage-closure"],
   projectList: ["linkage-closure"],
-  referencePicker: ["linkage-closure"],
   unrelatedDetail: ["oss-verify"],
 };
 
@@ -1706,7 +1936,6 @@ test("a priority.updated of a deleted priority refreshes its work, the work unde
     "priorityHistory",
     "prioritySummary",
     "projectList",
-    "referencePicker",
   ]);
 });
 
@@ -1719,7 +1948,6 @@ test("a priority.updated of a deleted priority refetches no issue read that does
     parkedWork: ["oss-verify"],
     pinned: ["oss-verify"],
     projectList: ["oss-verify"],
-    referencePicker: ["oss-verify"],
   };
   expect(refreshedReads(priorityWrite("deleted"), { advances: otherOnly }).sort()).toEqual([
     "advancesWork",
@@ -1828,6 +2056,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "comment.answered": event("comment.answered", { anchor: null, id: "comment-1" }),
   "comment.created": event("comment.created", { anchor: null, id: "comment-1" }),
   "comment.delivery": event("comment.delivery", { comment_id: "comment-1" }),
+  "comment.deleted": event("comment.deleted", { anchor: null, id: "comment-1" }),
   "comment.edited": event("comment.edited", { anchor: null, id: "comment-1" }),
   "comment.reopened": event("comment.reopened", { anchor: null, id: "comment-1" }),
   "comment.resolved": event("comment.resolved", { anchor: null, id: "comment-1" }),
@@ -1845,11 +2074,20 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "issue.closed": event("issue.closed", issue({ status: "done" })),
   "issue.created": event("issue.created", issue()),
   "issue.deployed": event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+  "deploy.recorded": event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),
   "message.answered": event("message.answered", { id: "message-2" }),
   "message.created": event("message.created", { id: "message-2" }),
+  "message.deleted": event("message.deleted", { id: "message-2" }),
+  "message.edited": event("message.edited", { id: "message-2" }),
   "message.delivery": event("message.delivery", { target: "session:planner" }),
   "priority.updated": event(
     "priority.updated",
@@ -1891,6 +2129,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     to: "CORE-2",
     source: "branch",
   }),
+  "role.undelivered": roleUndelivered(),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},

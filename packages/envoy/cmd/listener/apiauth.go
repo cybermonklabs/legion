@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -584,7 +585,7 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 // presentation writes, under the class membership_held.
 func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller ciphertoken.Caller) {
 	logger.Warn("listener: broker token rejected",
-		slog.String("reason", "membership_held"),
+		slog.String("reason", relaySocketReasonMembershipHeld),
 		slog.String("path", r.URL.Path))
 	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
 		"Dispatch holds %s's credentials; they work again once Dispatch confirms them", caller.Person)})
@@ -594,12 +595,13 @@ func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *htt
 // broker answered its person not held only until a deadline that has passed
 // (ciphertoken.Verifier.Lapsed): an IAP deployment's Dispatch has had no active Workspace Directory
 // answer for that person in 24 hours, so whether they may still act cannot be read. It is 503
-// BROKER_UNAVAILABLE with Retry-After 60, as Dispatch answers it and as its words ask, and never a
-// refusal of the token, which is served again once the broker answers a later deadline. It logs
-// the rejection line every refused presentation writes, under the class deadline_passed.
+// BROKER_UNAVAILABLE with Retry-After 60, as its words ask, and never a refusal of the token, which
+// is served again once the broker answers a later deadline (Dispatch reads no deadline yet, and
+// serves such a token). It logs the rejection line every refused presentation writes, under the
+// class deadline_passed.
 func refuseLapsedBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request) {
 	logger.Warn("listener: broker token rejected",
-		slog.String("reason", "deadline_passed"),
+		slog.String("reason", relaySocketReasonDeadlinePassed),
 		slog.String("path", r.URL.Path))
 	w.Header().Set("Retry-After", "60")
 	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Code: "BROKER_UNAVAILABLE",
@@ -808,7 +810,7 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "shared token")
 	}
 	if issuer != "" {
-		described := "oidc " + issuer
+		described := "oidc " + redact.URL(issuer)
 		if len(auth.accounts) > 0 {
 			described += " for " + strings.Join(auth.accounts, ", ")
 		}

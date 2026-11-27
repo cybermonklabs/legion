@@ -152,7 +152,7 @@ func TestDeleteBrowserSessionsForLoginEndsThatLoginsSessionsAlone(t *testing.T) 
 
 // A sign-in to the approval page records the account that signed in, and ends the session the
 // browser held in the transaction that writes the new one. A sign-in by an account recorded as
-// replaced under the address is ErrBrowserSessionSubjectReplaced: it writes no session and leaves
+// replaced under the address is ErrSubjectReplaced: it writes no session and leaves
 // the browser's previous one alone, as every other refused sign-in does. The revoke's delete ends
 // the replaced account's sessions and those that record no account, and leaves the holder's and
 // another person's.
@@ -177,14 +177,14 @@ func TestASignInToThePageRecordsItsAccountAndRefusesAReplacedOne(t *testing.T) {
 
 	signIn(t, st, hashOf("replaced"), ada, expires)
 	var recorded store.IssuerSubject
-	replacedHash, legacyHash := hashOf("replaced"), hashOf("before 0042")
+	replacedHash, legacyHash := hashOf("replaced"), hashOf("before 0047")
 	if err := st.Pool.QueryRow(ctx, `select issuer, subject from browser_sessions where secret_hash = $1`, replacedHash[:]).
 		Scan(&recorded.Issuer, &recorded.Subject); err != nil || recorded != replaced {
 		t.Fatalf("the session records the account %+v (%v), want %+v", recorded, err, replaced)
 	}
 	if _, err := st.Pool.Exec(ctx, `insert into browser_sessions (secret_hash, login, expires_at) values ($1, $2, $3)`,
 		legacyHash[:], ada, expires); err != nil {
-		t.Fatalf("write a session as a broker from before migration 0042 did: %v", err)
+		t.Fatalf("write a session as a broker from before migration 0047 did: %v", err)
 	}
 	signIn(t, st, hashOf("ben"), ben, expires)
 	previous := hashOf("previous")
@@ -209,15 +209,15 @@ func TestASignInToThePageRecordsItsAccountAndRefusesAReplacedOne(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for secret, want := range map[string]bool{"replaced": false, "before 0042": false, "ben": true, "previous": true} {
+	for secret, want := range map[string]bool{"replaced": false, "before 0047": false, "ben": true, "previous": true} {
 		if got := live(secret); got != want {
 			t.Errorf("session %q live=%t after the revoke's delete, want %t", secret, got, want)
 		}
 	}
 
 	err = st.CreateBrowserSession(ctx, store.BrowserSignIn{Hash: hashOf("again"), Login: ada, Account: replaced, Expires: expires, Previous: &previous})
-	if !errors.Is(err, store.ErrBrowserSessionSubjectReplaced) {
-		t.Fatalf("a sign-in of the replaced account = %v, want ErrBrowserSessionSubjectReplaced", err)
+	if !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("a sign-in of the replaced account = %v, want ErrSubjectReplaced", err)
 	}
 	if live("again") || !live("previous") {
 		t.Fatalf("the refused sign-in wrote a session (%t) or ended the browser's previous one (%t)", live("again"), !live("previous"))

@@ -165,7 +165,10 @@ if [ -n "$work" ]; then
   mkdir -p "$home" "$work/outside-e2e-$nonce"
   session_dir=$(cd "$work/outside-e2e-$nonce" && pwd -P)
 fi
-[ -z "$work" ] || real_tools "$work/tools" bun omp tmux
+# A program real_tools could not link: the rows that start children under section (c)'s PATH read
+# UNKNOWN naming it, through P1, which every one of them follows.
+tools_problem=''
+[ -z "$work" ] || tools_problem=$(real_tools "$work/tools" bun omp tmux)
 
 session_env=(
   "PATH=$work/tools:$PATH"
@@ -259,6 +262,8 @@ elif [ -z "$work" ]; then
   row P1 "$want1" "mktemp -d made no scratch directory" UNKNOWN
 elif problem=$(tool_problem omp bun) && [ -n "$problem" ]; then
   row P1 "$want1" "$problem" UNKNOWN
+elif [ -n "$tools_problem" ]; then
+  row P1 "$want1" "$tools_problem" UNKNOWN
 else
   [ -n "$target" ] || target="@sjawhar/pi-envoy@$version"
   say "P1: omp plugin install $target"
@@ -293,18 +298,24 @@ else
   p2_pid=$!
   background="$background $p2_pid"
   code=''
+  p2_ended=''
   deadline=$(($(now) + 60))
-  while [ -z "$code" ] && [ "$(now)" -lt "$deadline" ]; do
+  # Whether the login still runs is read before its log: a login that has ended has written all it
+  # printed, so a code it printed as it ended is still read, and the wait ends on that read.
+  while [ -z "$code" ] && [ -z "$p2_ended" ] && [ "$(now)" -lt "$deadline" ]; do
+    running_child "$p2_pid" || p2_ended=yes
     while IFS= read -r line; do
       case $line in *'and enter the code '*) code=${line##*and enter the code } ;; esac
     done <"$work/p2.log"
-    [ -z "$code" ] || break
-    running_child "$p2_pid" || break
-    sleep 1
+    [ -n "$code" ] || [ -n "$p2_ended" ] || pause
   done
   if [ -z "$code" ]; then
     last=$(tr '\n' ' ' <"$work/p2.log")
-    row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    if [ -n "$p2_ended" ]; then
+      row P2 "$want2" "dispatch login ended and printed no code: ${last:0:300}" UNKNOWN
+    else
+      row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    fi
   else
     set -f
     # shellcheck disable=SC2086 # a command line, split on blanks on purpose
@@ -314,7 +325,7 @@ else
     approved=$?
     p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
-    await_child "$p2_pid" 300 1
+    await_child "$p2_pid" 300
     exited=$child_exit
     mode=''
     # The mode as ls prints it: stat's flags differ between GNU and BSD, and macOS ships BSD's.
@@ -426,7 +437,7 @@ if [ -z "$problem" ]; then
   deadline=$(($(now) + 30))
   while [ -z "$model_port" ] && [ "$(now)" -lt "$deadline" ]; do
     model_port=$(json_field port "$(cat "$work/model.log")")
-    [ -n "$model_port" ] || sleep 1
+    [ -n "$model_port" ] || pause
   done
   if [ -n "$model_port" ]; then
     mkdir -p "$home/.omp/agent"
@@ -498,7 +509,7 @@ EOF
         esac
         return 0
       fi
-      sleep 1
+      pause
     done
     return 1
   }
@@ -506,7 +517,7 @@ EOF
   ready=''
   deadline=$(($(now) + 60))
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
-    case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
+    case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) pause ;; esac
   done
   omp_clear_screens "$tmux_socket" outside-e2e
   # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
@@ -596,7 +607,7 @@ else
   refused interest 'notifications.github.>' repository_not_in_project
   refused publish "notifications.dispatch.issue.$project.$project-1.comment.created" topic_not_published
   say "P5: waiting for the event probe"
-  await_child "$event_pid" $((event_seconds + 120)) 2
+  await_child "$event_pid" $((event_seconds + 120))
   event=$(cat "$work/p5.event" 2>/dev/null)
   status=$(json_field status "$event")
   delivered=$(json_field event "$event")
@@ -745,13 +756,14 @@ else
   # Every token the Oh My Pi session traded before it was first read on the session list had
   # expired 300 s after that read at the latest, and the socket it opened with that token closed
   # 25 s after: the session opens its socket before it registers. What it holds after that came
-  # through a socket it opened again.
-  while [ "$(now)" -lt $((session_seen_at + 330)) ]; do sleep 5; done
+  # through a socket it opened again. The leg sleeps until then, and no longer.
+  left=$((session_seen_at + 330 - $(now)))
+  [ "$left" -le 0 ] || sleep "$left"
   sent=$(probe send "$session_id" "outside-e2e after-reopen $nonce")
   sent_at=$(now)
   shown=''
   while [ -z "$shown" ] && [ "$(now)" -le $((sent_at + 10)) ]; do
-    case $(shown_text) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) sleep 1 ;; esac
+    case $(shown_text) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) pause ;; esac
   done
   sent_status=$(json_field status "$sent")
   if [ -n "$(unknown_of "$sent")" ] || [ -z "$sent_status" ]; then
@@ -887,13 +899,13 @@ fi
 # up to OUTSIDE_T5_SECONDS (default 1200) the leg trades P2's device login afresh every 10 s, and
 # keeps a relay socket open with the newest token, opening another when one closes, as the agent
 # would. Once a trade is refused, it watches the socket open then until it closes or 325 s pass,
-# and goes on trading every 10 s meanwhile: a trade answered after the refusal reads FAIL, since
-# the removal stops every trade and not one. The socket's close passes only with the edge's own
-# codes, 4401 (its token expired) or 4403 (refused before its expiry): any other close says
-# nothing of the removal. OUTSIDE_T5_COMMAND, the workflow's browser, runs beside it with
-# OUTSIDE_T5_DEADLINE (Unix s) and OUTSIDE_T5_TSV: it polls the person's cookie until it gets 401
-# and then tries the passkey sign-in, writing rows T5-cookie and T5-passkey there, which are
-# copied into this leg's TSV. ---
+# and goes on trading every 10 s meanwhile and once more as it closes: a trade answered after the
+# refusal reads FAIL, since the removal stops every trade and not one. The socket's close passes
+# only with the edge's own codes, 4401 (its token expired) or 4403 (refused before its expiry): any
+# other close says nothing of the removal. OUTSIDE_T5_COMMAND, the workflow's browser, runs beside
+# it with OUTSIDE_T5_DEADLINE (Unix s) and OUTSIDE_T5_TSV: it polls the person's cookie until it
+# gets 401 and then tries the passkey sign-in, writing rows T5-cookie and T5-passkey there, which
+# are copied into this leg's TSV. ---
 t5_seconds=${OUTSIDE_T5_SECONDS:-1200}
 want_t5a="once the owner removes ${person:-<OUTSIDE_PERSON>}: a fresh trade of the device login is refused and no later trade answered, and the relay socket open at that moment closes 4401 or 4403"
 want_t5c="the person's cookie answered 401 after the removal"
@@ -949,7 +961,12 @@ else
       probe_as="outside-e2e-t5-$nonce" probe_exec hold "$t5_seconds" >"$socket_log" &
       socket_pid=$!
       background="$background $socket_pid"
-      sleep 3
+      # Its first line, `opened_at` or `unknown`, looked at every pause for up to 3 s; a socket
+      # that ended has written all it will.
+      socket_until=$(($(now) + 3))
+      while [ ! -s "$socket_log" ] && running_child "$socket_pid" && [ "$(now)" -lt "$socket_until" ]; do
+        pause
+      done
       case $(cat "$socket_log") in *'"unknown"'*) socket_unread=$(text_of "$socket_log") ;; esac
     fi
     sleep 10
@@ -966,7 +983,8 @@ else
       socket_open=yes
     fi
     while [ "$(now)" -le $((refused_at + 325)) ]; do
-      sleep 10
+      # The 10 s between two trades, cut short by the close of the socket this watch is for.
+      if [ -n "$socket_open" ]; then end_within "$socket_pid" 10; else sleep 10; fi
       answer=$(probe trade)
       case $(json_field traded "$answer") in
         false) refusals=$((refusals + 1)) ;;
@@ -1007,7 +1025,7 @@ else
     row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
     row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
   else
-    await_child "$t5_driver" $((deadline + 30 - $(now))) 2
+    await_child "$t5_driver" $((deadline + 30 - $(now)))
     driver_end="${child_exit:+exit $child_exit}"
     driver_end=${driver_end:-still running}
     for name in T5-cookie T5-passkey; do

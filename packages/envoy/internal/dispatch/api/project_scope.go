@@ -367,6 +367,19 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 	return nil, false
 }
 
+// secondProjectResolverFor is the resolver of a second project that a route's write is appended
+// to, beside the project of the object its path names, or nil for a route that writes one
+// project's objects alone. A retraction is appended to the result's check's issue, which a parent
+// of another project can put in another project than the result's own issue
+// (projectOfRetractedCheck). Asking it here, before the keyed layer and the handler, gives a check
+// of a private project the answer of a result that does not exist, header and stored key alike.
+func (s *server) secondProjectResolverFor(pattern string) projectResolver {
+	if pattern == "/api/v1/results/{id}/retract" {
+		return projectOfRetractedCheck
+	}
+	return nil
+}
+
 // addresses answers whether pattern addresses the object prefix names: that object itself, or
 // anything under it.
 func addresses(pattern, prefix string) bool {
@@ -535,37 +548,55 @@ func addressesOneSession(route apiRoute) bool {
 	return route.Scope == scopeSession && strings.Contains(route.Pattern, "{session_id}")
 }
 
-// writeNeedsASignedInPerson refuses every write by a caller whose credential names a service and
-// no person: an access token the secrets broker issued to a machine nobody has signed in on. The
-// refusal is here, in front of every mutating row whatever its class, rather than in each route,
-// for the reason the two checks above are: a route added later is covered by the table it joins
-// and not by a line someone remembered to write.
+// writeNeedsASignedInPerson refuses every write by a caller whose broker-issued credential names
+// a service and no person, unless its project scope is `named` or `public`: the two shapes of a
+// job's token, which the secrets broker's exchange mints from a job entry that names the job's
+// identity, its projects and no person, and, under `named`, the token of an exchange account
+// entry that names no person and no project, whose service is that account (brokerTokenActor).
+// Such a token writes as its session, for its service, and the project check judges a `named` one
+// naming a project as it judges a person's named token for that project. The refusal is here, in
+// front of every mutating row whatever its class, rather than in each route, for the reason the
+// two checks above are: a route added later is covered by the table it joins and not by a line
+// someone remembered to write.
 //
-// Such a caller may read everything its session may read. What it may not do is write, because
-// Dispatch records a write under the person who made it and this credential names none; a
-// session that accepted a delivery or answered an ask under it would write as nobody. The
-// refusal's message names `agent-secrets login`, the command that signs a person in on that
-// machine, since running it is the whole remedy.
+// The rule names the scopes that write and refuses every other, so it fails closed. The one
+// other scope the verifier lets reach it is `person` (ciphertoken.Caller): an access token the
+// broker issued to a machine nobody has signed in on. Such a caller may read everything its
+// session may read. What it may not do is write, because nobody signed in on that machine and no
+// entry named it a job's; a session that accepted a delivery or answered an ask under it would
+// write for a machine nobody stands behind. The refusal's message names `agent-secrets login`,
+// the command that signs a person in on that machine, since running it is the whole remedy. A
+// project scope the broker answers later is refused the same way until this rule names it.
 //
-// A read-only token names a service and no person too, but it is no such caller: it reads only
-// what the read list names, and signing a person in is no remedy for it. It never reaches this
-// check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseReadOnlyToken).
+// A token naming no person that writes under one of the named scopes has its writes recorded
+// under its service (model.Actor.Service), so it reaches the handler as a credential naming a
+// person does, and it is held to the routes its lack of OAuth scope leaves it (gateRouteScopes).
+// The test is on the project scope the broker answered, one of writingServiceScopes and nothing
+// else, so a scope this check does not know is refused as a machine's is.
+//
+// A read-only token may name a service and no person too, an account entry's narrowed to
+// reading among them, but it is no such caller: it may only read, and signing a person in is no
+// remedy for it. It never reaches this check, since the read-only gate register puts outside it
+// has already answered it 403 READ_ONLY_TOKEN, as it answers a read-only token on every write
+// (refuseReadOnlyToken), and signInRequired answers it false.
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at
 // the cost of the one header read brokerCredentialActor makes.
+//
+// The decision is signInRequired's, which whoami answers as sign_in_required, so a client reads
+// it from Dispatch rather than guessing it from the shape of who it is.
 func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor, resolved := s.brokerCredentialActor(r)
-		if !resolved || actor.Owner != nil || actor.Service == nil {
+		service, required := s.signInRequired(r)
+		if !required {
 			handler(w, r)
 			return
 		}
 		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
 			"this request's credential acts for service %s and no person, so there is nobody to "+
 				"record this write under; run `agent-secrets login` on this machine and try again",
-			*actor.Service))
+			service))
 	}
 }
 

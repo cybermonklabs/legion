@@ -2,7 +2,6 @@ package bus
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -83,6 +83,7 @@ func serveFake(conn net.Conn, deny string) {
 // reconnect clears the recorded violation before it has counted itself, so the connection's last
 // error and reconnect count read exactly as they did before the publish.
 func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	disconnected := make(chan struct{})
@@ -100,16 +101,14 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
 	// (doReconnect), so once it runs the violation is gone and the reconnect has not counted.
-	select {
-	case <-disconnected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the client never saw the server drop the connection")
-	}
+	testwait.Receive(t, "the client to see the server drop the connection", disconnected)
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: last error %v, reconnecting %t",
 			err, conn.LastError(), conn.IsReconnecting())
@@ -120,6 +119,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 // is not confirmed either: the connection reads as connected again with no error, and only its
 // reconnect count shows the violation may have gone with the old connection.
 func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	reconnected := make(chan struct{})
@@ -137,15 +137,13 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
-	select {
-	case <-reconnected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the client never reconnected")
-	}
+	testwait.Receive(t, "the client to reconnect", reconnected)
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: before %+v, after %+v", err, before, observe(conn))
 	}
@@ -159,6 +157,7 @@ func (sliceError) Error() string { return "slice error" }
 
 // sameError never panics on a value that cannot be compared, and counts it as a change.
 func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
+	t.Parallel()
 	if sameError(sliceError{[]int{1}}, sliceError{[]int{1}}) {
 		t.Fatal("two incomparable error values read as the same error")
 	}
@@ -248,6 +247,7 @@ func answeringServer(t *testing.T, deny string, ack string) *nats.Conn {
 // The state a publish is judged against is read before the publish: a violation the server reports
 // while the publish call is still running is this publish's denial, not a state it started from.
 func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	conn := answeringServer(t, subject, "")
 	client := &Client{Conn: conn}
@@ -259,8 +259,9 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
+	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
+	ctx := forgedWait(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)
@@ -271,6 +272,7 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 // during it - still counts as delivered when the stream's acknowledgement arrives, since it
 // proves the forward reached the stream.
 func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
+	t.Parallel()
 	conn := answeringServer(t, "notifications.other", storedAck)
 	client := &Client{Conn: conn}
 
@@ -286,6 +288,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 // An unconfirmed forward the stream never acknowledged is not stored, and says why it is
 // unconfirmed: the listener reports it delivery_failed rather than delivered.
 func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *testing.T) {
+	t.Parallel()
 	conn := answeringServer(t, "notifications.other", "")
 	client := &Client{Conn: conn}
 

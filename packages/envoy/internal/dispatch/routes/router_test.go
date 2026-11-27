@@ -448,6 +448,7 @@ func (r *signInRig) whoami(cookie *http.Cookie) *httptest.ResponseRecorder {
 // The person is named by the email their provider username carries, lowercased, never by the
 // email claim; a member of the group gets a session and lands on the page they asked for.
 func TestSignInNamesThePersonByTheirUsernameNotTheEmailClaim(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	response := rig.signIn(t, personClaims("other-group", rigGroup))
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "/issues/CORE-1" {
@@ -473,6 +474,7 @@ func TestSignInNamesThePersonByTheirUsernameNotTheEmailClaim(t *testing.T) {
 // Someone the pool vouches for but who is not in the group is told so in the browser and named in
 // the log by their login's hash; they get neither a session nor a recorded sign-in.
 func TestSignInRefusesSomeoneOutsideTheGroupWithPageAndLog(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
@@ -498,6 +500,7 @@ func TestSignInRefusesSomeoneOutsideTheGroupWithPageAndLog(t *testing.T) {
 }
 
 func TestSignInRefusesAUsernameNoProviderIssued(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	claims := personClaims(rigGroup)
 	claims["cognito:username"] = "sami@d.example"
@@ -512,6 +515,7 @@ func TestSignInRefusesAUsernameNoProviderIssued(t *testing.T) {
 // sets no state cookie, and a callback whose exchange meets the undiscovered issuer (a sign-in a
 // process that had discovered it started) answers the same, never 502.
 func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	rig.issuer.SignInAs(personClaims(rigGroup))
 	authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start")
@@ -547,6 +551,7 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 // answering, and is 502 as before: a 4xx with or without an OAuth error, a 200 naming one, and a
 // 3xx.
 func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		fail   func(issuer *oidctest.Issuer)
@@ -585,6 +590,7 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 // never issued, so the sign-in fails 502); one of 2049 is refused 400 before any token request,
 // with no session.
 func TestSignInCallbackBoundsItsCodeBeforeTheExchange(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		size      int
 		exchanged bool
@@ -617,6 +623,7 @@ func TestSignInCallbackBoundsItsCodeBeforeTheExchange(t *testing.T) {
 
 // While the person stays a member, the session renews its membership at least hourly.
 func TestSessionRenewsItsMembershipHourly(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	cookie := sessionCookie(rig.signIn(t, personClaims(rigGroup)))
 	rig.advance(59 * time.Minute)
@@ -630,6 +637,7 @@ func TestSessionRenewsItsMembershipHourly(t *testing.T) {
 }
 
 func TestSessionEndsWhenTheRefreshFails(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	cookie := sessionCookie(rig.signIn(t, personClaims(rigGroup)))
 	rig.issuer.RevokeGrants()
@@ -643,6 +651,7 @@ func TestSessionEndsWhenTheRefreshFails(t *testing.T) {
 }
 
 func TestSessionEndsWhenThePersonLeavesTheGroup(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	cookie := sessionCookie(rig.signIn(t, personClaims(rigGroup)))
 	rig.issuer.UpdateGrants(func(claims map[string]any) { claims["cognito:groups"] = []string{"other-group"} })
@@ -680,6 +689,7 @@ func captureRouterLogs(t *testing.T) *bytes.Buffer {
 // A verified account of the domain signs in: it gets a session, lands on the page it asked for, and
 // is named by its lowercased email, with the account's subject recorded beside the refresh token.
 func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	response := rig.signIn(t, googleClaims("google-subject-1"))
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "/issues/CORE-1" {
@@ -703,6 +713,8 @@ func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
 // The page is laid out at the device's width, so a phone shows it at a size its reader can read
 // rather than as a desktop page scaled down.
 func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// captureRouterLogs).
 	for _, tc := range []struct {
 		name   string
 		change func(claims map[string]any)
@@ -759,6 +771,7 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 // and an account that left the domain, changed its email, became another account, or whose refresh
 // Google refused, loses every session.
 func TestDomainSessionRenewsHourlyAndEndsWhenTheAccountNoLongerQualifies(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	cookie := sessionCookie(rig.signIn(t, googleClaims("google-subject-1")))
 	rig.advance(61 * time.Minute)
@@ -796,6 +809,7 @@ func TestDomainSessionRenewsHourlyAndEndsWhenTheAccountNoLongerQualifies(t *test
 // account's cookies answer 401 while the new one's work, even though the confirmation would pass
 // on the new account's refresh token.
 func TestDomainSignInUnderAnotherSubjectEndsTheAddressSessions(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	first := sessionCookie(rig.signIn(t, googleClaims("google-subject-1")))
 	second := sessionCookie(rig.signIn(t, googleClaims("google-subject-2")))
@@ -818,6 +832,7 @@ func TestDomainSignInUnderAnotherSubjectEndsTheAddressSessions(t *testing.T) {
 // first time the address signs in through the domain, even though no other Google account has
 // taken it yet.
 func TestDomainSignInEndsACookieFromBeforeTheSwitchToDomainMode(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	if err := rig.people.SignIn(context.Background(), rigGoogleEmail, "old-refresh-token"); err != nil {
 		t.Fatalf("sign in the pre-switch row: %v", err)
@@ -850,6 +865,7 @@ func TestDomainSignInEndsACookieFromBeforeTheSwitchToDomainMode(t *testing.T) {
 
 // The same account signing in again, from another browser, keeps its other sessions.
 func TestDomainSignInUnderTheSameSubjectKeepsItsOtherSessions(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	first := sessionCookie(rig.signIn(t, googleClaims("google-subject-1")))
 	second := sessionCookie(rig.signIn(t, googleClaims("google-subject-1")))
@@ -862,6 +878,7 @@ func TestDomainSignInUnderTheSameSubjectKeepsItsOtherSessions(t *testing.T) {
 
 // A sign-in through a Cognito pool records no subject, though the pool's token carries one.
 func TestGroupSignInRecordsNoSubject(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	if response := rig.signIn(t, personClaims(rigGroup)); response.Code != http.StatusFound {
 		t.Fatalf("callback: status %d body %s, want 302", response.Code, response.Body.String())
@@ -875,6 +892,7 @@ func TestGroupSignInRecordsNoSubject(t *testing.T) {
 // `__Host-dsession` in HTTP development mode, which a browser takes only Secure; the session a
 // sign-in at the canonical origin issues is canonicalSessionCookie in both modes.
 func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		insecure bool
@@ -910,6 +928,7 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 // its own account and before that sign-in's cookie is issued: the earlier sign-in gets no working
 // session, since its cookie would carry the generation the later one advanced to.
 func TestDomainSignInGetsNoSessionWhenAnotherAccountTakesTheAddressBeforeItsCookie(t *testing.T) {
+	t.Parallel()
 	rig := newDomainSignInRig(t)
 	rig.people.afterSignIn = func() {
 		if err := rig.people.SignInSubject(context.Background(), rigGoogleEmail, "google-subject-2", "refresh-2", "", model.MemberFull); err != nil {
@@ -931,6 +950,7 @@ func TestDomainSignInGetsNoSessionWhenAnotherAccountTakesTheAddressBeforeItsCook
 }
 
 func TestAuthStartWithoutSignInIsUnavailable(t *testing.T) {
+	t.Parallel()
 	const want = "Google sign-in is not configured on this server (DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET, one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN)"
 	handler, _ := newTestRouter(t)
 	for _, target := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
@@ -966,6 +986,7 @@ func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 }
 
 func TestWhoamiUsesHeaderIdentity(t *testing.T) {
+	t.Parallel()
 	handler, ctx := newTestRouter(t)
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	request.Header.Set("X-Dispatch-User", "Sami@D.example")
@@ -988,6 +1009,7 @@ func TestWhoamiUsesHeaderIdentity(t *testing.T) {
 
 // The GitHub proxy serves people only, reads only, and the GraphQL proxy no longer exists.
 func TestGitHubProxyServesPeopleOnlyAndOnlyReads(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestRouter(t)
 	serve := func(method, target, person string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(method, "http://dispatch.test"+target, nil)
@@ -1047,6 +1069,7 @@ func requireStateRefused(t *testing.T, rig *signInRig, response *httptest.Respon
 // A sign-in started on one process completes on another holding the same keys, though the second
 // shares no memory with the first: the browser's state cookie carries the sign-in.
 func TestASignInStartedOnOneProcessCompletesOnAnother(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	other := rig.process(t, testSigningKey)
 	rig.issuer.SignInAs(personClaims(rigGroup))
@@ -1068,6 +1091,7 @@ func TestASignInStartedOnOneProcessCompletesOnAnother(t *testing.T) {
 // During a rotation a sign-in started on a process that signs with the old key completes on one
 // that has moved the new key first and holds the old one second.
 func TestOAuthCallbackAcceptsAStateSignedWithTheSetsOlderKey(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	old := signingKeys(t, "K0")
 	rotated := rig.process(t, signingKeys(t, "K1 K0"))
@@ -1082,6 +1106,7 @@ func TestOAuthCallbackAcceptsAStateSignedWithTheSetsOlderKey(t *testing.T) {
 
 // A state cookie signed with a key the process does not hold is refused before any exchange.
 func TestOAuthCallbackRefusesAStateSignedWithAnotherKey(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	other := signingKeys(t, "a-key-of-its-own")
 	rig.issuer.SignInAs(personClaims(rigGroup))
@@ -1092,6 +1117,7 @@ func TestOAuthCallbackRefusesAStateSignedWithAnotherKey(t *testing.T) {
 
 // A state cookie whose payload or signature was altered in the browser is refused.
 func TestOAuthCallbackRefusesATamperedStateCookie(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		tamper func(t *testing.T, value string) string
@@ -1136,6 +1162,7 @@ func TestOAuthCallbackRefusesATamperedStateCookie(t *testing.T) {
 // A state cookie whose sign-in has lapsed is refused even when the browser still sends it: the
 // expiry it carries is signed, so a browser cannot extend it.
 func TestOAuthCallbackRefusesAnExpiredStateCookie(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	rig.issuer.SignInAs(personClaims(rigGroup))
 	authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start")
@@ -1155,6 +1182,7 @@ func TestOAuthCallbackRefusesAnExpiredStateCookie(t *testing.T) {
 
 // The issuer's state in the URL must be the one the browser's cookie carries.
 func TestOAuthCallbackRefusesAStateTheCookieDoesNotName(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	rig.issuer.SignInAs(personClaims(rigGroup))
 	authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start")
@@ -1166,6 +1194,7 @@ func TestOAuthCallbackRefusesAStateTheCookieDoesNotName(t *testing.T) {
 // session cookie's value, and a well-formed state signed as a session cookie is (the signing
 // key's own MAC rather than the key derived for the state).
 func TestOAuthCallbackRefusesAValueSignedForAnotherPurpose(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		value func(t *testing.T, state string) string
@@ -1202,6 +1231,7 @@ func TestOAuthCallbackRefusesAValueSignedForAnotherPurpose(t *testing.T) {
 // The page a sign-in returns to is kept up to maxNextBytes; a longer one returns to "/", so the
 // state cookie stays far below a browser's cookie limit.
 func TestAuthStartCapsTheReturnPage(t *testing.T) {
+	t.Parallel()
 	longest := "/issues/" + strings.Repeat("a", maxNextBytes-len("/issues/"))
 	for _, tc := range []struct {
 		name, next, want string
@@ -1223,6 +1253,7 @@ func TestAuthStartCapsTheReturnPage(t *testing.T) {
 }
 
 func TestStaticHandlerServesSpaShellForUnknownRoute(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1245,6 +1276,7 @@ func TestStaticHandlerServesSpaShellForUnknownRoute(t *testing.T) {
 }
 
 func TestStaticHandlerServesIndexAtRoot(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1264,6 +1296,7 @@ func TestStaticHandlerServesIndexAtRoot(t *testing.T) {
 }
 
 func TestStaticHandlerServesDistDirectorySpelledThroughDotDot(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	webDist := filepath.Join(parent, "web", "dist")
 	for _, dir := range []string{webDist, filepath.Join(parent, "web", "build")} {
@@ -1293,6 +1326,7 @@ func TestStaticHandlerServesDistDirectorySpelledThroughDotDot(t *testing.T) {
 // a file missing inside it does, so a file outside it is neither served nor told apart from one
 // that is not there.
 func TestStaticHandlerKeepsRequestsInsideTheDistDirectory(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	webDist := filepath.Join(parent, "dist")
 	if err := os.MkdirAll(webDist, 0o700); err != nil {
@@ -1328,6 +1362,7 @@ func TestStaticHandlerKeepsRequestsInsideTheDistDirectory(t *testing.T) {
 }
 
 func TestStaticHandlerServesSpaShellForBrowserDeepLink(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1357,6 +1392,7 @@ func TestStaticHandlerServesSpaShellForBrowserDeepLink(t *testing.T) {
 }
 
 func TestStaticHandlerRoutingRules(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1422,6 +1458,7 @@ func TestStaticHandlerRoutingRules(t *testing.T) {
 // The built dashboard's own files live under /assets; that root is reserved against the SPA
 // fallback, never against serving the file.
 func TestStaticHandlerServesBuiltAssets(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(webDist, "assets"), 0o700); err != nil {
 		t.Fatalf("make assets dir: %v", err)
@@ -1453,6 +1490,7 @@ func TestStaticHandlerServesBuiltAssets(t *testing.T) {
 // browser would keep the failure. Every other file keeps net/http's own answer. A file the build
 // emits is served as its type, so a browser shows the notices text rather than downloading it.
 func TestStaticHandlerCacheControl(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(webDist, "assets"), 0o700); err != nil {
 		t.Fatalf("make assets dir: %v", err)
@@ -1514,6 +1552,7 @@ func TestStaticHandlerCacheControl(t *testing.T) {
 // page it holds - another build's, or one cached with only a Last-Modified, whatever that time -
 // is answered with this server's page.
 func TestStaticHandlerRevalidatesPagesByContent(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1561,6 +1600,7 @@ func TestStaticHandlerRevalidatesPagesByContent(t *testing.T) {
 // The dashboard build is the page's ETag value: the first 16 bytes of the SHA-256 of index.html,
 // in lowercase hex, exactly what the page is served under; "" when there is no dashboard to serve.
 func TestDashboardBuildNamesTheIndexPage(t *testing.T) {
+	t.Parallel()
 	dist := t.TempDir()
 	page := []byte("<!doctype html><script src=/assets/index-abc.js></script>")
 	if err := os.WriteFile(filepath.Join(dist, "index.html"), page, 0o600); err != nil {
@@ -1599,6 +1639,7 @@ func TestDashboardBuildNamesTheIndexPage(t *testing.T) {
 // route index, whether or not the dashboard is built. A missing static asset outside the
 // reserved roots stays a plain not-found.
 func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
+	t.Parallel()
 	for name, webDist := range map[string]string{"with dashboard": t.TempDir(), "without dashboard": ""} {
 		t.Run(name, func(t *testing.T) {
 			if webDist != "" {
@@ -1649,6 +1690,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 // is new or only the method is, and the page and the CLI detect this answer to retry on another
 // process.
 func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestRouter(t)
 	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
 		path := "/api/v1/delivery/runs/7"
@@ -1679,6 +1721,7 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 // /api/v1/settings/repo-projects answers the JSON 404 of a route the process does not serve. The
 // read of the stored rows stays mounted, so an anonymous GET of it is refused 401, not 404.
 func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestRouter(t)
 	const path = "/api/v1/settings/repo-projects/acme/widgets"
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
@@ -1711,6 +1754,7 @@ func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
 }
 
 func TestStaticHandlerServesFaviconIcoAsSvg(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1736,6 +1780,7 @@ func TestStaticHandlerServesFaviconIcoAsSvg(t *testing.T) {
 }
 
 func TestStaticHandlerFaviconIcoFallsBackToNoContent(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
 		t.Fatalf("write dashboard index: %v", err)
@@ -1753,6 +1798,7 @@ func TestStaticHandlerFaviconIcoFallsBackToNoContent(t *testing.T) {
 
 // A callback carrying a state another browser started is refused before any exchange.
 func TestOAuthCallbackRejectsStateFromAnotherBrowser(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "")
 	rig.issuer.SignInAs(personClaims(rigGroup))
 	authURL, _ := rig.start(t, "http://dispatch.test/auth/start")
@@ -1769,6 +1815,7 @@ func TestOAuthCallbackRejectsStateFromAnotherBrowser(t *testing.T) {
 }
 
 func TestSanitizeNextRejectsBrowserNormalizedExternalPaths(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -1789,6 +1836,7 @@ func TestSanitizeNextRejectsBrowserNormalizedExternalPaths(t *testing.T) {
 }
 
 func TestAuthStartUsesConfiguredCanonicalOriginForCallback(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRig(t, "https://dispatch.example/")
 	request := httptest.NewRequest(http.MethodGet, "http://backend.internal/auth/start", nil)
 	request.Header.Set("X-Forwarded-Proto", "https")
@@ -1810,6 +1858,7 @@ func TestAuthStartUsesConfiguredCanonicalOriginForCallback(t *testing.T) {
 // exchange carries a refresh token every time, and with the domain as a hint; a group-mode server's
 // redirect carries none of the three.
 func TestAuthStartAsksGoogleForOfflineAccessInTheDomain(t *testing.T) {
+	t.Parallel()
 	// rig.start reads the redirect's Location.
 	query := func(rig *signInRig) url.Values {
 		t.Helper()
@@ -1862,6 +1911,7 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 }
 
 func TestLogoutRevokesCopiedSessionCookieAndForgetsTheRefreshToken(t *testing.T) {
+	t.Parallel()
 	handler, cookie, people := cookieRouter(t, "")
 	logout := httptest.NewRequest(http.MethodPost, "http://dispatch.test/auth/logout", nil)
 	logout.Header.Set("Origin", "http://dispatch.test")
@@ -1884,6 +1934,7 @@ func TestLogoutRevokesCopiedSessionCookieAndForgetsTheRefreshToken(t *testing.T)
 }
 
 func TestCookieAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
+	t.Parallel()
 
 	t.Run("foreign origin is forbidden", func(t *testing.T) {
 		handler, cookie, _ := cookieRouter(t, "https://dispatch.example")
@@ -1927,6 +1978,7 @@ func TestCookieAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 // session cookie is: a member's write from another origin is refused before its route, and the
 // same write from Dispatch's origin reaches it.
 func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
+	t.Parallel()
 	const audience = "/projects/123456789012/global/backendServices/9876543210"
 	keys := oidctest.New(t)
 	signing := oidctest.NewES256Key(t, "iap-key")

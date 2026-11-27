@@ -91,11 +91,12 @@ func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, ke
 		&project.Name,
 		&project.GatedSteps,
 		&project.DefaultRepo,
+		&project.ProvenSessions,
 		&project.CreatedAt,
 		&project.Visibility,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+			return model.Project{}, errProjectNotFound()
 		}
 		return model.Project{}, err
 	}

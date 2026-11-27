@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -39,6 +40,19 @@ var projectListQuery = `
 		where ` + access.ProjectClause("p.key", "$1") + `
 		order by p.key
 	`
+
+// projectRowQuery reads one project as GET /api/v1/projects lists it (projectListQuery), so the
+// answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
+const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
+
+// scanListedProject reads one row of projectListQuery or projectRowQuery.
+func scanListedProject(row pgx.Row) (model.Project, error) {
+	var project model.Project
+	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
+		return model.Project{}, err
+	}
+	return project, nil
+}
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)

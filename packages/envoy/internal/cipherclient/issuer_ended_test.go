@@ -24,7 +24,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,15 +58,16 @@ var renewalFailures = []renewalFailure{
 }
 
 // newRenewalRig is a box with endedPerson signed in, whose broker mints access tokens that live a
-// minute: inside DefaultRenewBefore, so a token in hand is held only until halfway through what
-// was left of its life (renewalAt) and every renewal of Run asks the issuer for a fresh identity
-// token first. Its clients' clock stands still (the authority's now, which personClient's
-// clients read too) until a test steps it (pastRenewal), so the token in hand stays one Token
-// could still answer however long the box takes between two calls. Under f.held, the broker
-// refuses every trade after the first membership_held.
-func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
+// minute: inside DefaultRenewBefore, so the client renews each at its half life (renewalAt), and
+// every renewal asks the issuer for a fresh identity token first. Its clients' clock stands still
+// (the authority's now, which personClient's clients read too) until renew moves it to the first
+// token's renewal moment, thirty seconds on, where Token trades again though that token is still
+// live; the clock stands still there, so the token in hand stays one Token could still answer
+// however long the box takes between two calls. Under f.held, the broker refuses every trade
+// after the first membership_held.
+func newRenewalRig(t *testing.T, f renewalFailure) (rig *signInRig, record SignInRecord, renew func()) {
 	t.Helper()
-	rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
+	rig = newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
 		if f.held && n > 0 {
 			return 400, map[string]any{"error": oauthwire.MembershipHeld, "error_description": heldDescription}
 		}
@@ -75,17 +75,10 @@ func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
 		answer["expires_in"] = 60
 		return 200, answer
 	})
-	rig.clock = &atomic.Int64{}
-	rig.clock.Store(time.Now().UnixNano())
-	rig.authority.now = func() time.Time { return time.Unix(0, rig.clock.Load()) }
-	return rig, rig.signIn(t, endedPerson)
-}
-
-// pastRenewal steps the rig's clock 31 seconds on: past the renewal time of a minute's token that
-// landed at the clock's last reading (halfway through its life, renewalAt), and short of its
-// expiry, so the next Token trades again while the token in hand is still live.
-func (rig *signInRig) pastRenewal() {
-	rig.clock.Add(int64(31 * time.Second))
+	now := time.Now()
+	rig.authority.now = func() time.Time { return now }
+	renewal := now.Add(30 * time.Second)
+	return rig, rig.signIn(t, endedPerson), func() { now = renewal }
 }
 
 // apply makes the issuer answer f's refusal to every refresh from now on; the broker's hold is
@@ -117,13 +110,13 @@ func personClient(t *testing.T, rig *signInRig, record SignInRecord, after func(
 }
 
 // TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand: once the issuer ends the sign-in, Token
-// answers ErrSignInEnded and holds nothing, though the token the sign-in traded for is still
-// live; with the issuer then down as well, Token answers that failure rather than the old token.
-// A failure a later trade can cure answers the token in hand.
+// at the renewal moment answers ErrSignInEnded and holds nothing, though the token the sign-in
+// traded for is still live; with the issuer then down as well, Token answers that failure rather
+// than the old token. A failure a later trade can cure answers the token in hand.
 func TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand(t *testing.T) {
 	for _, f := range renewalFailures {
 		t.Run(f.name, func(t *testing.T) {
-			rig, record := newRenewalRig(t, f)
+			rig, record, renew := newRenewalRig(t, f)
 			client := personClient(t, rig, record, nil)
 			ctx := context.Background()
 			first, err := client.Token(ctx)
@@ -131,9 +124,7 @@ func TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand(t *testing.T) {
 				t.Fatalf("the first trade of %s's sign-in: %v", endedPerson, err)
 			}
 			f.apply(rig)
-			// Past the first token's renewal time and short of its expiry: Token trades again,
-			// and the token in hand is one it could still answer.
-			rig.pastRenewal()
+			renew()
 			token, err := client.Token(ctx)
 			switch {
 			case !f.final && (err != nil || token == nil || token.AccessToken != first.AccessToken):
@@ -164,7 +155,7 @@ func TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand(t *testing.T) {
 func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 	for _, f := range renewalFailures {
 		t.Run(f.name, func(t *testing.T) {
-			rig, record := newRenewalRig(t, f)
+			rig, record, _ := newRenewalRig(t, f)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			// The first wait is the renewal of the token that landed, which fires at once so the
@@ -181,9 +172,6 @@ func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 				cancel()
 				return make(chan time.Time)
 			})
-			// A token that is not yet in its renewal window, so a Token after Run answers the
-			// token in hand without asking the issuer, unless Run dropped it.
-			client.renewBefore = 10 * time.Second
 			landed := 0
 			err := client.Run(ctx, func(context.Context, *Token) error {
 				landed++
@@ -226,7 +214,7 @@ func TestAnIssuerEndingASignInWhoseTokenIsStillLiveFallsBackToTheMachine(t *test
 	const refusedLine = "this machine's sign-in was refused; sessions enrol under this machine's own authority"
 	for _, f := range renewalFailures {
 		t.Run(f.name, func(t *testing.T) {
-			rig, _ := newRenewalRig(t, f)
+			rig, _, renew := newRenewalRig(t, f)
 			logged := &logtest.Recorder{}
 			rig.authority.Log = slog.New(logged)
 			ctx := context.Background()
@@ -235,7 +223,7 @@ func TestAnIssuerEndingASignInWhoseTokenIsStillLiveFallsBackToTheMachine(t *test
 				t.Fatalf("the first enrolment answered %+v, %v; want credential-1", first, err)
 			}
 			f.apply(rig)
-			rig.pastRenewal()
+			renew()
 			authority, err := rig.authority.Current(ctx)
 			switch {
 			case !f.final && (err != nil || authority == nil || authority.CredentialID != "credential-1" || authority.Operator != endedPerson):

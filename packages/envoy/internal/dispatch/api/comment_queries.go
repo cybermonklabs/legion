@@ -54,7 +54,19 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // decide: a reply that answers a block carries that block's reference, built from the owner's
 // project key and the document's slug (refs.ReplyBlocks), and a rename of either moves the
 // owner's event sequence without touching a comment row. The owner and the ?artifact= scope are
-// in the hash too, so no two lists of one deploy can be given one validator.
+// in the hash too, and so is an issue's created_at, so no two lists of one deploy can be given
+// one validator.
+//
+// created_at is there because an issue key comes back, and neither counter tells the issue that
+// held it from the one that holds it now. The browser harness empties issues between scenarios
+// and restarts each project's numbering, under a server process that keeps running
+// (packages/dispatch/e2e/seed.ts), and it leaves comment_watermarks in place: a new issue under
+// an old key with no comment of its own stands at the old list's count, and the two validators
+// meet once its last_seq reaches the one the old list was read at. A database restored under a
+// running process starts both counters again, and gives it the same reading. Either way its
+// reader would be answered 304, or written the old issue's comments this server kept. The feed
+// hashes the same stamp for the same reason (eventFeedETag). A document's list needs none, since
+// its owner is a uuid that never comes back.
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
@@ -75,7 +87,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
+	etag := s.commentListETag(owner, artifactFilter, basis, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -146,14 +158,15 @@ func (s *server) commentListWatermark(ctx context.Context, who model.Actor, owne
 			from seen
 		`, *owner.ArtifactID
 	default:
-		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return commentListBasis{}, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
 	var ownerHeld bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, query, value, refs.VisibilityArg(who)).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
 		return 0, 0, false, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
-	return watermark, lastSeq, ownerHeld, nil
+	basis.createdAt = timeOrZero(createdAt)
+	return basis, nil
 }
 
 // ownerClause is the rule of the owner a comment list is keyed on, the issue's key or the
@@ -194,8 +207,8 @@ func commentListViewOf(who model.Actor) string {
 // validator.
 func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
-		deref(owner.IssueKey), deref(owner.ArtifactID), artifactFilter, watermark, lastSeq)
+	_, _ = fmt.Fprintf(hash, "issue=%s\ncreated=%d\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
+		deref(owner.IssueKey), basis.createdAt.UnixMicro(), deref(owner.ArtifactID), artifactFilter, basis.watermark, basis.lastSeq)
 	return s.listETag(hash, trees)
 }
 
@@ -415,7 +428,7 @@ func (s *server) loadOwnedComment(
 }
 
 // commentColumns is the comments select list scanComment reads, in scan order.
-const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text`
+const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text, deleted_at, deleted_by`
 
 // commentThreadColumns is commentColumns without the ::text casts, qualified to the comments
 // alias `c`. A recursive walk joins c.reply_to to the visited row's id, so those columns have
@@ -423,15 +436,15 @@ const commentColumns = `id::text, issue_key, artifact_id::text, author, body, an
 // is a tsvector, which has no hash operator.
 const commentThreadColumns = `c.id, c.issue_key, c.artifact_id, c.author, c.body, c.anchor, c.reply_to,
 		c.ask_id, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at, c.replies_to_block,
-		c.answers`
+		c.answers, c.deleted_at, c.deleted_by`
 
 func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 	var comment model.Comment
-	var author, anchor, resolvedBy, suggestion []byte
-	var resolvedAt, editedAt *time.Time
+	var author, anchor, resolvedBy, suggestion, deletedBy []byte
+	var resolvedAt, editedAt, deletedAt *time.Time
 	destinations := []any{
 		&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers,
+		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers, &deletedAt, &deletedBy,
 	}
 	destinations = append(destinations, extra...)
 	if err := row.Scan(destinations...); err != nil {
@@ -453,6 +466,10 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 			return model.Comment{}, fmt.Errorf("decode comment resolved_by: %w", err)
 		}
 		comment.ResolvedBy = &value
+	}
+	var err error
+	if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Comment{}, err
 	}
 	comment.ResolvedAt = timestampPtr(resolvedAt)
 	comment.EditedAt = timestampPtr(editedAt)

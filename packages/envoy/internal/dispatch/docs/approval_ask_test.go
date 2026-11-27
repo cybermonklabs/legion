@@ -13,6 +13,7 @@ import (
 )
 
 func TestApprovalAskSummaryRoundTripsTheSharedQuestion(t *testing.T) {
+	t.Parallel()
 	documents := []model.AskApprovalDocument{{ArtifactID: "artifact-1", Name: "spec.md", Version: 2, RequestedVersion: 2}}
 	ask := model.Ask{
 		ID:       "approval-1",
@@ -27,6 +28,7 @@ func TestApprovalAskSummaryRoundTripsTheSharedQuestion(t *testing.T) {
 // A request naming a spec and its issue's Verification document asks for both, each at its own
 // version, and the summary parses back out of that question too.
 func TestApprovalAskSummaryRoundTripsATwoDocumentQuestion(t *testing.T) {
+	t.Parallel()
 	documents := []model.AskApprovalDocument{
 		{ArtifactID: "artifact-1", Name: "spec.md", Version: 3, RequestedVersion: 3},
 		{ArtifactID: "artifact-2", Name: "verification.md", Version: 2, RequestedVersion: 2},
@@ -54,6 +56,7 @@ func TestApprovalAskSummaryRoundTripsATwoDocumentQuestion(t *testing.T) {
 // are in the context of the writes they own, so the only context refused here is one with no
 // ledger at all.
 func TestRewritingAnApprovalAskWithNoLedgerIsRefusedAndRewordsNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	ctx := context.Background()

@@ -1,9 +1,10 @@
 /** What a move changed in a row's assertions, for the rows where the usual sentence is false.
  *
- *  `e2e/row-map.md` says of every moved row that the move touched no line of what it asserts,
- *  and that sentence is what dispatch://INFRA-1407's k2 is read from: a reviewer reads the map
- *  rather than the diff, so a row the sentence covers is a row nobody looks at. A row whose
- *  assertions really did move therefore needs its own line, and this is where it is written.
+ *  The row map, which `bun e2e/tools/row-map.ts` generates and git does not keep, says of every
+ *  moved row that the move touched no line of what it asserts, and that sentence is what
+ *  dispatch://INFRA-1407's k2 is read from: a reviewer reads the map rather than the diff, so a
+ *  row the sentence covers is a row nobody looks at. A row whose assertions really did move
+ *  therefore needs its own line, and this is where it is written.
  *
  *  A note is needed when a row's assertions are not the ones its pre-move copy made. The usual
  *  cause is a forward merge: `main` changes a row this layer has already moved, and the change
@@ -19,7 +20,9 @@
  *  `unchangedByTheMove` is what the map says of every other moved row, and it lives here
  *  beside the exceptions so that one file holds both halves of the claim: the generation
  *  writes it, and `e2e/__tests__/row-map.test.ts` holds a row with a note to carrying its note
- *  and not that sentence. */
+ *  and not that sentence. `newInTheStubbedLayer` is what it says of every row of a spec file
+ *  written in the stubbed layer from the start, keyed by that file: such a row never moved, so
+ *  neither sentence about a move is true of it. */
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 

@@ -517,7 +517,7 @@ func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
 	defer tx.Rollback(ctx)
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: "ada@example.com", Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
-		Account: store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "109ada@example.com"},
+		Account: store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "109ada@example.com"}, EndUnrecorded: true,
 	}); !errors.Is(err, store.ErrSignInRevoked) {
 		t.Fatalf("the revoked box key's next trade = %v, want %v: the box trades nothing, so it is minted no credential to enrol with", err, store.ErrSignInRevoked)
 	}

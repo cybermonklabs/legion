@@ -5,9 +5,8 @@ import "fmt"
 // The read rules of what a thread is made of - an ask, a comment and a message - over the row a
 // statement reads, for the viewer that statement binds at viewerParam. A row a project owns is
 // read through ProjectClause, and a row of a conversation no project owns through PartyClause
-// over that conversation's parties, the ones the node writers state (graphstore.ScopeOf,
-// graphstore.ThreadParties). Each answers true or false, never NULL, as every clause here does
-// (clause).
+// over that conversation's parties, the ones the node writers are to state, which a later slice
+// adds. Each answers true or false, never NULL, as every clause here does (clause).
 
 // IssueProjectClause passes the issue keyExpr names when the viewer sees the issue's project. An
 // issue no row holds passes nobody.
@@ -35,8 +34,8 @@ func ItemOwnerClause(issueExpr, artifactExpr, viewerParam string) string {
 // the viewer sees that project (ProjectClause over the row's own project_key, which is its issue's
 // project for an issue's document), and a file of an agent's conversation, which no project owns,
 // when the viewer may read that conversation, whose one party is the file's session (PartyClause,
-// the parties graphstore.ArtifactNode states on the document's node). A file can hold whatever its
-// session read, so PartyClause holds that session to the content rule the live agent view keeps
+// the parties a later slice's node writer states on the document's node). A file can hold whatever
+// its session read, so PartyClause holds that session to the content rule the live agent view keeps
 // (SessionContentClause) as well as to SessionClause. It reads the row's own columns, so a
 // statement that holds the row binds it rather than ItemOwnerClause, which reads the document again
 // by its id. A document its reader may not read is a row the statement does not find, and answers

@@ -86,12 +86,17 @@ func Mentions(body string, origins Origins, r Resolver) ([]Located, error) {
 				resolved = append(resolved, Located{
 					Ref:    Ref{Kind: "issue", IssueKey: item.key, ID: item.key},
 					Offset: item.offset,
+					InCode: inCode(code, item.offset),
 				})
 			}
 			continue
 		}
 		if ref, ok := questionRef(questions, item.id); ok {
-			resolved = append(resolved, Located{Ref: ref, Offset: item.offset})
+			resolved = append(resolved, Located{
+				Ref:    ref,
+				Offset: item.offset,
+				InCode: inCode(code, item.offset),
+			})
 		}
 	}
 	if len(resolved) == 0 {

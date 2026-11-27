@@ -58,6 +58,7 @@ var markedItems = []markedItem{{
 // own transaction and cleared the marker in the same statement, and the two steps below that
 // read an indexed item as owed and unwindowed read it as windowed and owing nothing.
 func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -148,6 +149,7 @@ func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
 // lock is the only one it takes: the test holds it and requires the arm to wait for it having
 // written nothing, and to write the windows once it is given back.
 func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	fixture, err := database.Pool.Begin(ctx)
@@ -220,6 +222,7 @@ func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.
 // text: a message's body and an ask's question are required of the writer (api's messages.go,
 // validateAskQuestion).
 func TestACommentIndexedAtNoBlockIsListedAndWindowed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

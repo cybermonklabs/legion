@@ -93,7 +93,7 @@ func readPending(r *http.Request) (pendingSignIn, bool) {
 // verify (issuer, audience, signature, expiry, nonce), a person outside the Workspace domain or
 // with an unverified email (oidc.WorkspaceLogin), and a Google account that no longer holds the
 // person's address, which Dispatch named replaced when another account took it
-// (store.ErrBrowserSessionSubjectReplaced). Otherwise it mints a fresh random session secret into
+// (store.ErrSubjectReplaced). Otherwise it mints a fresh random session secret into
 // the session cookie, stores only its SHA-256 with the session's expiry and the account that
 // signed in (the ID token's issuer, as oidc.CanonicalIssuer spells it, and its `sub`), ends the
 // session the browser held before (no fixation, no lingering session), and answers 303 to the
@@ -180,7 +180,7 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 		in.Previous = &previous
 	}
 	switch err := p.cfg.Store.CreateBrowserSession(r.Context(), in); {
-	case errors.Is(err, store.ErrBrowserSessionSubjectReplaced):
+	case errors.Is(err, store.ErrSubjectReplaced):
 		slog.Warn("approval sign-in refused: another account holds the address now", "login", login)
 		writeMessage(w, http.StatusForbidden, codeSignInAccountReplaced, say("Sign-in refused",
 			"The Google account you signed in with no longer holds "+login+": another account holds that address now, and the secrets broker signs in no account it replaced."))

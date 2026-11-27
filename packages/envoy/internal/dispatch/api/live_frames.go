@@ -20,14 +20,16 @@ import (
 // key, counts two levels deep, and the other fields whole. The events view is the event feed,
 // event by event, and the agent view one session's live conversation.
 
-// The four delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
+// The five delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
 // three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
-// project (legion_board.go), which has no window: it shows what the daemon's state says now.
+// project (legion_board.go), and the fifth one issue's Legion state (legion_issue.go). Neither
+// Legion view has a window: each shows what the daemon's state says now.
 const (
 	deliveryLiveTimeline = "timeline"
 	deliveryLiveMeasures = "measures"
 	deliveryLivePipeline = "pipeline"
 	legionBoardView      = "legion"
+	legionIssueView      = "legion_issue"
 )
 
 // The two views beside the delivery views: the event feed, and one session's live conversation.
@@ -47,13 +49,22 @@ type DeliveryLiveWindow struct {
 // DeliveryLiveView is one view a page shows. A timeline or measures view names its Window and
 // Query, the query string the page would send to the GET route without from/to (search and every
 // facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
-// since the board has no window.
+// since the board has no window; and a legion_issue view names its Issue and nothing else, which
+// is all GET /api/v1/issues/{key}/legion reads.
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
 	Query   *string             `json:"query,omitempty"`
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
+	// Issue is the one issue a legion_issue view names, the key GET /api/v1/issues/{key}/legion
+	// reads (dispatch://INFRA-4869), held as the frame's raw JSON. The socket's decode is a plain
+	// json.Unmarshal (decodeSocketClientFrame), which type-checks every member its struct declares,
+	// so a typed field would refuse a frame whose issue is a number or an object on any kind, a
+	// frame every kind before this one subscribed. Raw, the decode accepts an `issue` member of any
+	// JSON type on every kind; only legion_issue's parse reads it, as a string, and refuses what is
+	// not one (parseLegionIssueLiveView), and every other kind ignores it whatever its type.
+	Issue json.RawMessage `json:"issue,omitempty"`
 }
 
 // DeliveryLiveRevs is what a page holds, as revisions (deliveryLiveRevision) in the frame's own
@@ -212,10 +223,11 @@ func liveEnded(sub, reason string) LiveEnded {
 }
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
-// (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, and the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
-// LEGION_NOT_CONFIGURED), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent
-// view's (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription
-// it refuses, and is empty for a frame Dispatch could not read a sub from.
+// (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
+// LEGION_NOT_CONFIGURED, and one issue's NOT_FOUND), the socket's own (INVALID_FRAME,
+// TOO_MANY_SUBSCRIPTIONS) or an agent view's (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT,
+// STREAM_UNAVAILABLE). Sub names the subscription it refuses, and is empty for a frame Dispatch
+// could not read a sub from.
 type LiveError struct {
 	Type    string `json:"type"`
 	Sub     string `json:"sub,omitempty"`
@@ -234,8 +246,8 @@ type LiveHeartbeat struct {
 var liveHeartbeat = LiveHeartbeat{Type: "heartbeat"}
 
 // viewReads is what a view kind's answer is read from, and the hub derives from it everything that
-// differs between the two sources: what moves the view, whether it names a project, whether it
-// judges freshness, and what its subscribers are refused with (refusal).
+// differs between the two sources: what moves the view, whether its spec holds a project, whether
+// it judges freshness, and what its subscribers are refused with (refusal).
 type viewReads int
 
 const (
@@ -243,17 +255,23 @@ const (
 	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
 	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the sampler recorded it: the view names
-	// that project, a read of its daemon marks it (dirtyLegionBoard), no delivery change touches
-	// it, it judges no freshness, and a project that names no daemon is LEGION_NOT_CONFIGURED.
+	// viewReadsLegion is one project's Legion daemon as the sampler recorded it: the view's spec
+	// holds that project, a read of its daemon or a write of its Legion setting marks it
+	// (dirtyLegionProject), and so does each connection of the hub's listener (dirtyLegionViews),
+	// since no delivery change touches it; it judges no freshness. A project that names no daemon
+	// is LEGION_NOT_CONFIGURED to the board alone, whose read answers legion.ErrNoSettings for it:
+	// one issue's read answers an issue of such a project with its configured false body
+	// (readLegionIssue), so a legion_issue view is never refused it.
 	viewReadsLegion
 )
 
 // refusal is the code and message a view's subscribers are refused with when its read answered
 // err, and refused false for an err that is a failed read, which the hub retries. A deployment
-// that configured nothing the view reads is told so, and an *apiError is refused as the matching
-// GET route answers it: a Legion board of a project that does not exist is loadProject's 404
-// PROJECT_NOT_FOUND.
+// that configured nothing the view reads is told so: DELIVERY_NOT_CONFIGURED to a delivery view,
+// and LEGION_NOT_CONFIGURED only to a Legion board, the one Legion view whose read answers
+// legion.ErrNoSettings. An *apiError is refused as the matching GET route answers it: a Legion
+// board of a project that does not exist is loadProject's 404 PROJECT_NOT_FOUND, and a
+// legion_issue view of a key Dispatch holds no issue of is readLegionIssue's 404 NOT_FOUND.
 func (r viewReads) refusal(err error) (code, message string, refused bool) {
 	var answered *apiError
 	switch {
@@ -271,7 +289,11 @@ func (r viewReads) refusal(err error) (code, message string, refused bool) {
 // fields, and what the hub does differently for it — what it reads, and the two functions that
 // read a subscription and an answer. A kind's behaviour is declared here and nowhere else, so the
 // hub's shared code branches on no kind's name and a new kind is one entry rather than a line in
-// each of its files.
+// each of its files. What a view names beside its kind is its parse's to read and refuse, but for
+// a project: the shared gate (parseDeliveryLiveView) refuses one on every kind that reads no
+// project's daemon (the timeline, measures and pipeline) before that kind's parse runs. An
+// existing kind's parse ignores an `issue` member of any type, as it always did, and only
+// legion_issue's reads one.
 type deliveryLiveClasses struct {
 	// body is the response struct the matching GET route writes.
 	body reflect.Type
@@ -342,7 +364,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:  (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at is sent whole: its eleven columns are a fixed order rather than a list a page
+	// computed_at is sent whole: its twelve columns are a fixed order rather than a list a page
 	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
 	// have to be taught), and the header and the settings the daemon reports each move as a
 	// block.
@@ -355,6 +377,21 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads: viewReadsLegion,
 		parse: parseLegionLiveView,
 		read:  (*deliveryHub).readLegionBoardView,
+	},
+	// One issue's Legion state is as small and whole as the board, and carries no computed time:
+	// every field is sent whole, nothing is left out, and a recompute that finds nothing moved
+	// sends nothing. No Dispatch event moves it, so its read names no issue: a read of its
+	// project's daemon and a write of that project's Legion setting do (legion.StateChannel,
+	// dirtyLegionProject), and so does a write of one of the issue's runs that stores something
+	// new (workflowstore.RunsChannel, dirtyLegionIssue).
+	legionIssueView: {
+		body: reflect.TypeFor[legionIssueResponse](),
+		whole: map[string][]string{
+			"issue": nil, "project": nil, "configured": nil, "state": nil, "read": nil, "runs_revision": nil,
+		},
+		reads: viewReadsLegion,
+		parse: parseLegionIssueLiveView,
+		read:  (*deliveryHub).readLegionIssueView,
 	},
 }
 

@@ -33,11 +33,16 @@ func recordedMachineLoginRevocation(t *testing.T, database *Store, email string)
 // removal's transaction is owed from its commit, claimed once within the retry window, and settled
 // only at the generation the claim read. A removal recorded again after the claim owes it anew, so
 // the earlier claim's settlement writes nothing and the next claim pays it; and the row a claim took
-// is not claimed again until the window has passed. Every Settle here asks no time past the
-// removal (after 0), so the generation alone decides.
+// is not claimed again until the window has passed. Both of Settle's guards refuse the earlier
+// claim here: it read the earlier generation, and the removal recorded again holds a recorded_at
+// past the claim's time, which the bound refuses even asking no time past the removal (after 0).
+// Either guard alone keeps this row passing. The generation alone refuses in
+// TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack, and the bound alone in
+// TestAClaimTooSoonAfterItsRemovalIsNotSettled.
 //
-// Control: Settle without its generation, and the earlier claim settles the later removal and the
-// row fails naming it settled.
+// Control: Settle without its generation and without its recorded_at bound, and the earlier claim
+// settles the later removal and the row fails naming it settled. Settle without only one of them
+// leaves this row passing.
 func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -83,6 +88,82 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	}
 	if _, due, err := revocations.NextDue(ctx, time.Minute); err != nil || due {
 		t.Fatalf("NextDue with nothing owed = due %t, %v; want none", due, err)
+	}
+}
+
+// TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack: Settle refuses a claim of an
+// earlier generation even where the bound would pass it, the removal recorded since holding a
+// recorded_at long enough before the claim's time. A removal recorded again after a claim writes
+// clock_timestamp() once it holds the row, after the claim's own write of the row committed, so on
+// a clock that only goes forward its recorded_at is past the claim's time and the bound refuses the
+// claim too (TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim). Here the database's clock
+// stepped back between the claim and the record: the later removal holds a recorded_at two minutes
+// before the claim (written directly: every statement of Dispatch and of its runbook that writes
+// recorded_at writes clock_timestamp()). So the bound passes, which the same claim at the row's
+// generation shows by settling, and the generation alone refuses the earlier claim.
+//
+// Control: Settle without its generation, and the earlier claim settles the later removal and the
+// row fails naming it settled.
+func TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	revocations := NewMachineLoginRevocations(database.Pool)
+	const email = "erin@other.example"
+
+	recordedMachineLoginRevocation(t, database, email)
+	claimed, err := revocations.Claim(ctx, time.Minute, 5)
+	if err != nil || len(claimed) != 1 || claimed[0].Email != email {
+		t.Fatalf("Claim after the removal = %+v, %v; want %s's one revocation", claimed, err, email)
+	}
+	recordedMachineLoginRevocation(t, database, email)
+	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set recorded_at = $2::timestamptz - interval '2 minutes' where email = $1`, email, claimed[0].ClaimedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if settled, err := revocations.Settle(ctx, claimed[0], time.Minute); err != nil || settled {
+		t.Fatalf("Settle of the claim of generation %d, the removal recorded again two minutes before the claim, asking a minute = %t, %v; want nothing settled", claimed[0].Generation, settled, err)
+	}
+	owed, generation, err := revocations.Owing(ctx, email)
+	if err != nil || !owed || generation != claimed[0].Generation+1 {
+		t.Fatalf("Owing(%s) = %t at generation %d, %v; want owed at %d", email, owed, generation, err, claimed[0].Generation+1)
+	}
+	atTheRowsGeneration := claimed[0]
+	atTheRowsGeneration.Generation = generation
+	if settled, err := revocations.Settle(ctx, atTheRowsGeneration, time.Minute); err != nil || !settled {
+		t.Fatalf("Settle of the same claim at the row's generation %d, asking a minute = %t, %v; want it settled, the bound passing", generation, settled, err)
+	}
+}
+
+// TestAClaimTooSoonAfterItsRemovalIsNotSettled: Settle refuses a claim of the row's own generation
+// that came less than after past the removal (ClaimedAt against recorded_at), since the broker may
+// still commit, after the claim's list ran, an approve it took before the removal. A claim at once
+// after the removal, settled asking a day, writes nothing and leaves the row owed at the claim's
+// generation; the same claim asking no time past the removal settles, so the generation passed and
+// the bound alone refused. The pass a later slice adds asks about a minute; a day is
+// longer than any run's timeout, so no slow run puts the claim past it.
+//
+// Control: Settle without its recorded_at bound, and the claim at once settles and the row fails
+// naming it settled.
+func TestAClaimTooSoonAfterItsRemovalIsNotSettled(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	revocations := NewMachineLoginRevocations(database.Pool)
+	const email = "erin@other.example"
+
+	recordedMachineLoginRevocation(t, database, email)
+	claimed, err := revocations.Claim(ctx, time.Minute, 5)
+	if err != nil || len(claimed) != 1 || claimed[0].Email != email {
+		t.Fatalf("Claim after the removal = %+v, %v; want %s's one revocation", claimed, err, email)
+	}
+
+	if settled, err := revocations.Settle(ctx, claimed[0], 24*time.Hour); err != nil || settled {
+		t.Fatalf("Settle of a claim %s after the removal, asking a day = %t, %v; want nothing settled", claimed[0].ClaimedAt.Sub(claimed[0].RecordedAt), settled, err)
+	}
+	if owed, generation, err := revocations.Owing(ctx, email); err != nil || !owed || generation != claimed[0].Generation {
+		t.Fatalf("Owing(%s) = %t at generation %d, %v; want owed at the claim's %d", email, owed, generation, err, claimed[0].Generation)
+	}
+	if settled, err := revocations.Settle(ctx, claimed[0], 0); err != nil || !settled {
+		t.Fatalf("Settle of the same claim asking no time past the removal = %t, %v; want it settled, its generation passing", settled, err)
 	}
 }
 

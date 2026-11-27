@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -19,8 +19,15 @@ import { ApiError, api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
 import type { ArchitectureSource, ArchitectureTree, InboxRow, IssueSummary } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function LocationProbe() {
   const location = useLocation();
@@ -105,6 +112,7 @@ function renderPage(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ],
   login: string | null = "alice",
@@ -810,6 +818,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Core",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
       {
         created_at: "2026-09-10T00:00:00Z",
@@ -817,6 +826,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Other",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
     ]
   );

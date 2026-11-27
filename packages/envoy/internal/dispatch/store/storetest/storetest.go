@@ -15,10 +15,11 @@
 // 12.7 MB template per clone, 16 GiB over one run of the api and docs packages. A file copy writes
 // a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
 //
-// The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
-// whole server DatabaseURLEnv names, which can hold other databases (the one
+// The harness changes no setting of the server: fsync, full_page_writes and max_wal_size belong
+// to the whole server DatabaseURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
-// outlives the run.
+// outlives the run. It sets one setting of each database it makes, which goes with the database:
+// JIT is off (testdb.WithoutJIT), as on production's database.
 //
 // A test's database is not dropped when the test ends. Dropping a database takes a transaction id
 // when it deletes the database's row and keeps it while it forces a checkpoint and waits for it,
@@ -45,17 +46,24 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -74,6 +82,9 @@ var shared struct {
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
+	// dropping is each drop not yet ended, by its database, with the statement it runs or last
+	// ran (goDrop, teardownExec): what Run names at its bound.
+	dropping map[string]string
 }
 
 // openKey is the key of the template Open clones, which this tree's runner migrates
@@ -101,7 +112,19 @@ func migrateWithThisTree(databaseURL string) error {
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
-// asks for it (OpenFrom).
+// asks for it (OpenFrom). The server's URL is kept as DISPATCH_TEST_DATABASE_URL names it, with no
+// bound of this package's (shared.server), so no connect inherits the bound of the test that opened
+// the pool. Each connect string this package hands out instead takes, when it is made, the seconds
+// left until the test binary's deadline less testwait's margin (testdb.WithConnectDeadline), not
+// pgx's default (two minutes in a pool, no bound through pgx.Connect): a clone's store, Empty's
+// URL, and the URL each template's migrate is given, made by the test that asks for the template
+// when it asks (OpenFrom). The admin pool's connections take that bound as each is made
+// (openAdmin). A pool opened from such a string measures its bound from when the string was made:
+// a connection it makes s seconds later can end s seconds past the binary's deadline less the
+// margin, which a migrate, made and run at once, and a test's own store keep within the margin
+// unless the test runs on for longer than it. The admin URL is read before the Once, so a URL that
+// cannot be read fails each test that asks, and never leaves the Once done with no admin pool for
+// a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
@@ -111,7 +134,12 @@ func ready(t testing.TB) {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	shared.once.Do(func() { shared.err = openAdmin(raw) })
+	if _, err := url.Parse(raw); err != nil {
+		// url.Parse's own error quotes the URL it was given, which carries a credential.
+		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+	}
+	end, bounded := testdb.ConnectEnd(t)
+	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
@@ -171,7 +199,6 @@ func dropNow(names []string) {
 // package holds a database after t ends (hold).
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
-	ctx := context.Background()
 	name := randomName(t, "dispatch_test_")
 	if err := hold(t, name, func() error {
 		_, err := shared.admin.Exec(ctx, cloneStatement(name, template))
@@ -183,7 +210,7 @@ func clone(t testing.TB, template string) *store.Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	testcleanup.Add(t, database.Pool.Close)
 	return database
 }
 
@@ -223,8 +250,11 @@ type templateDatabase struct {
 // alone: it returns a store on a new database cloned from the template of key, dropped after t
 // ends. The template is made once per key in the test binary, by the first test that asks: a new
 // empty database whose connection string migrate is given, which migrate migrates and leaves
-// with no connection open. A template whose migrate failed, or ended its test, fails every test
-// that asks for it again.
+// with no connection open. That string's connect bound is the seconds left, when the template is
+// made, until the binary's deadline less testwait's margin (testdb.WithConnectDeadline with the
+// test that asks), so a template first asked for long after the admin pool opened still fails on
+// pgx's error inside the margin. A template whose migrate failed, or ended its test, fails every
+// test that asks for it again.
 func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
 	t.Helper()
 	ready(t)
@@ -245,21 +275,24 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 			return
 		}
 		name := "dispatch_template_" + suffix
-		ctx := context.Background()
 		// The template is a file copy of template1, for the reason each clone of it is one.
-		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
 			return
 		}
 		// Named once it exists, so Run drops exactly the templates that were made.
 		entry.name = name
-		if err := migrate(databaseURL(shared.server, entry.name)); err != nil {
+		if err := adminExec(t, testdb.WithoutJIT(name)); err != nil {
+			entry.err = fmt.Errorf("turn JIT off on the template database: %w", err)
+			return
+		}
+		if err := migrate(testdb.WithConnectDeadline(t, databaseURL(shared.server, entry.name))); err != nil {
 			entry.err = fmt.Errorf("migrate template database: %w", err)
 			return
 		}
 		// Postgres refuses to clone a database another session is connected to. Refusing
 		// connections to the template keeps any stray session from making a clone wait or fail.
-		if _, err := shared.admin.Exec(ctx, "alter database "+entry.name+" with allow_connections false"); err != nil {
+		if err := adminExec(t, "alter database "+entry.name+" with allow_connections false"); err != nil {
 			entry.err = fmt.Errorf("close template database to connections: %w", err)
 			return
 		}
@@ -286,8 +319,27 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // itself: run runs the package's tests through that Main, and Run then does what Main does after
 // them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
 // func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+//
+// Its wait for the drops is bounded, as testdb.Run's is and for its reasons
+// (testdb.TeardownDeadline: testdb.TeardownGrace past the -timeout, counted from the start of the
+// tests, and five minutes from their end under -timeout 0). go test's alarm stops when the tests
+// return, so a wait with no bound for a drop the server never answers held the binary until
+// cmd/go's kill ("ran too long", which names no drop and no database), and for ever under
+// -timeout 0 (TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered). No drop has a deadline of its
+// own: a cancelled drop leaves its database on the server, as testdb.Run says. The templates'
+// drops start as soon as the tests return, beside the drops their cleanups started: a clone is a
+// database of its own, so no template's drop waits on one. One wait, under the one bound, covers
+// them all, so at the bound Run names every database whose drop is still in flight, templates
+// among them, with the statement it ran; a template's drop that could start only after the
+// clones' left every template unnamed and its drop unsent once a clone's drop reached the bound.
+// It then reads once what the server's backends wait on (testdb.WaitingOn), and returns the tests'
+// exit code with the failures of the drops that ended, since every test has reported by then. It
+// leaves the admin pool open, because closing it waits for the connections those drops hold; the
+// process's exit closes them, and a database whose drop the server never read stays on the server
+// under the name Run printed.
 func Run(run func() int) int {
 	shared.main = true
+	started := time.Now()
 	code := run()
 	if shared.admin == nil {
 		return code
@@ -313,14 +365,67 @@ func Run(run func() int) int {
 	}
 	templates.Unlock()
 	for _, name := range names {
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name); err != nil {
-			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
-			if code == 0 {
-				code = 1
+		goDrop(name, func() string {
+			if err := teardownExec(name, "drop database "+name); err != nil {
+				return fmt.Sprintf("drop template database %s: %v", name, err)
 			}
+			return ""
+		})
+	}
+	if awaitDrops(started, testdb.TeardownDeadline(started)) {
+		shared.admin.Close()
+	}
+	return withDropFails(code)
+}
+
+// withDropFails prints each drop that failed and answers code, or 1 where code is 0 and one did.
+func withDropFails(code int) int {
+	shared.dropMu.Lock()
+	defer shared.dropMu.Unlock()
+	for _, failure := range shared.dropFails {
+		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
+		if code == 0 {
+			code = 1
 		}
 	}
 	return code
+}
+
+// awaitDrops waits for every drop started so far until bound, and answers whether they ended. At
+// bound it names each database whose drop is still in flight and the statement that drop ran or
+// waits to run, and what the server's backends wait on, read once (testdb.WaitingOn): those drops
+// keep their connections.
+func awaitDrops(started, bound time.Time) bool {
+	ended := make(chan struct{})
+	go func() {
+		shared.drops.Wait()
+		close(ended)
+	}()
+	timer := time.NewTimer(time.Until(bound))
+	defer timer.Stop()
+	select {
+	case <-ended:
+		return true
+	case <-timer.C:
+	}
+	shared.dropMu.Lock()
+	databases := slices.Sorted(maps.Keys(shared.dropping))
+	statements := make([]string, 0, len(databases))
+	for _, database := range databases {
+		statements = append(statements, shared.dropping[database])
+	}
+	shared.dropMu.Unlock()
+	if len(databases) == 0 {
+		// Each drop ended as the bound came; Wait returns as their goroutines do.
+		<-ended
+		return true
+	}
+	after := time.Since(started).Round(time.Second)
+	for i, database := range databases {
+		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still waiting at the teardown's bound, %s after the tests began, so the database may be left on the server (%q)\n", database, after, statements[i])
+	}
+	fmt.Fprintf(os.Stderr, "storetest: at the teardown's bound: %s\n", testdb.WaitingOn(databaseURL(shared.server, "postgres"), statements...))
+	return false
 }
 
 // dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
@@ -342,12 +447,12 @@ const (
 // whatever words it puts on the message, up to dropWindow; `force` is the last attempt, for a
 // connection that really is somebody else's.
 func dropDatabase(name string) {
-	shared.drops.Go(func() {
+	goDrop(name, func() string {
 		deadline := time.Now().Add(dropWindow)
 		var err error
 		for {
-			if _, err = shared.admin.Exec(context.Background(), "drop database "+name); err == nil {
-				return
+			if err = teardownExec(name, "drop database "+name); err == nil {
+				return ""
 			}
 			var pgError *pgconn.PgError
 			if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
@@ -355,22 +460,35 @@ func dropDatabase(name string) {
 			}
 			time.Sleep(dropPause)
 		}
-		_, forced := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)")
+		forced := teardownExec(name, "drop database "+name+" with (force)")
 		if forced == nil {
-			return
+			return ""
 		}
 		// The forced drop is what ended the cleanup, so its error is the one reported; the
 		// plain drop's says what the force was for.
-		shared.dropMu.Lock()
-		shared.dropFails = append(shared.dropFails,
-			fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err))
-		shared.dropMu.Unlock()
+		return fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err)
 	})
 }
 
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
-// created and dropped through.
-func openAdmin(raw string) error {
+// created and dropped through, and keeps raw as the server's URL (shared.server), with no bound of
+// this package's. The pool outlives the test that opens it and makes connections for later tests,
+// so a connection's connect timeout is not one fixed when the pool opened: each new connection a
+// test's statement asks for takes the seconds left until end as it is made (testdb.TimeoutUntil),
+// so one made late ends on pgx's own error with testwait's margin left, not after go test's alarm.
+// A connection a drop asks for (teardown) takes testdb.NoDeadlineConnectTimeout instead, as at
+// main: Run waits for the drops after the tests, when go test's alarm has stopped, and once end
+// has passed the tests' bound is a second (TimeoutUntil's floor), which a loaded server's login
+// outlasts, failing the run and leaving the database and its template on the server. Two costs
+// follow. A drop holds a pool connection for up to two minutes while its login is held, so drops
+// a test's cleanups start can fill the pool's four; a test's own statement then fails by name at
+// end (adminExec), as it did when the drops had the tests' bound, and no drop leaks. And a drop
+// that starts late, where the tests end near -timeout, can take longer than Run waits: Run's wait
+// ends at its bound, testdb.TeardownGrace past -timeout from the tests' start, before cmd/go's
+// kill (testdb.TeardownGrace says when that comes), and names each drop still in flight, so a
+// database such a drop leaves on the server is named. Without bounded (no deadline) raw's bound
+// stands, pgxpool's two minutes where raw names none.
+func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
@@ -381,15 +499,34 @@ func openAdmin(raw string) error {
 	if err != nil {
 		return fmt.Errorf("parse admin database URL: %w", err)
 	}
+	// The name each admin connection gives the server, this binary's alone, so a row can hold
+	// this pool's logins and no other client's (TestALaterAdminConnectionEndsByTheConnectEnd).
+	config.ConnConfig.RuntimeParams["application_name"] = adminApplicationName()
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
 	// machine the packages testing against one server at once would exceed its connection limit.
 	config.MaxConns = 4
+	if bounded {
+		config.BeforeConnect = func(asked context.Context, connection *pgx.ConnConfig) error {
+			if asked.Value(teardownKey{}) != nil {
+				connection.ConnectTimeout = testdb.NoDeadlineConnectTimeout
+				return nil
+			}
+			connection.ConnectTimeout = testdb.TimeoutUntil(end)
+			return nil
+		}
+	}
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open admin pool: %w", err)
 	}
 	shared.admin = admin
 	return nil
+}
+
+// adminApplicationName is the application_name of this test binary's admin connections:
+// "storetest admin" and the binary's pid, which no other process on the machine holds.
+func adminApplicationName() string {
+	return "storetest admin " + strconv.Itoa(os.Getpid())
 }
 
 func databaseURL(server url.URL, database string) string {

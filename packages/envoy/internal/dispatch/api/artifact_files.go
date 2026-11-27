@@ -47,6 +47,16 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 		s.writeHandlerError(w, err)
 		return false
 	}
+	if artifactID != "" && input.precondition != nil {
+		standing, err := newestFileVersion(r.Context(), s.deps.Store.Pool, kind, artifactID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return false
+		}
+		if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
+			return false
+		}
+	}
 	if err := s.deps.Files.Put(r.Context(), sha, input.contentType, input.content); err != nil {
 		slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
 		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusBadGateway, "the file store did not accept the upload")
@@ -68,23 +78,38 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Acto
 		}
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
-	if err == nil {
+	created := false
+	switch {
+	case err == nil:
 		if artifact.Kind != kind {
-			return artifactKindMismatch(name, artifact, kind)
+			return "", artifactKindMismatch(name, artifact, kind)
 		}
-		return nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return "", err
+	default:
+		if refusal := newArtifactNameRefusal(name); refusal != nil {
+			return "", refusal
+		}
+		slug, err := s.nextArtifactSlug(ctx, pool, target, name)
+		if err != nil {
+			return "", err
+		}
+		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
+			return "", refusal
+		}
+		artifact = model.Artifact{IssueKey: target.IssueKey, Slug: slug, Name: name, Kind: kind}
+		created = true
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return err
+	if err := refuseSpecWriterOfDocument(ctx, pool, writer, artifact); err != nil {
+		return "", err
 	}
-	if refusal := newArtifactNameRefusal(name); refusal != nil {
-		return refusal
+	if !created {
+		return artifact.ID, nil
 	}
-	slug, err := s.nextArtifactSlug(ctx, pool, target, name)
-	if err != nil {
-		return err
+	if namesToken {
+		return "", uploadNoTokenRefusal(name)
 	}
-	return newArtifactKeyRefusal(target, slug)
+	return "", nil
 }
 
 // fleetServesFilesFromRows reports whether any live server process (processes.Bucketless, read in

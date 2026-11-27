@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
 
@@ -337,14 +338,16 @@ const (
 // was busy when it came.
 const deliveryHubFeedBuffer = 1024
 
-// deliveryHub keeps every open Delivery and Pipeline page current (LEGION-690). It learns of a
-// delivery change from Postgres (LISTEN delivery_changes and delivery_freshness, on one connection
-// of its own, pglisten.Listener) and of a committed event from the event stream relay's feed, the
-// live paths' one reader of the event log; marks dirty only the views the change can touch;
-// recomputes each dirty view once per burst, one recompute at a time, as the GET routes'
-// population read and pure compute; re-runs the compute alone, reading nothing, when something
-// leaves a preset window; and sends each subscriber only the keys whose revision differs from
-// what it holds.
+// deliveryHub keeps every open Delivery and Pipeline page, and every open view of the Legion state
+// of a project or an issue, current (LEGION-690). It learns of a delivery change from Postgres
+// (LISTEN delivery_changes and delivery_freshness, on one connection of its own,
+// pglisten.Listener), of a read of a Legion daemon and of a write of a run on the same connection
+// (legion.StateChannel, workflowstore.RunsChannel), and of a committed event from the event stream
+// relay's feed, the live paths' one reader of the event log; marks dirty only the views the change
+// can touch; recomputes each dirty view once per burst, one recompute at a time, as the GET
+// routes' population read and pure compute; re-runs the compute alone, reading nothing, when
+// something leaves a preset window; and sends each subscriber only the keys whose revision
+// differs from what it holds.
 //
 // Each run of the hub is a generation (hubGeneration): the first Subscribe of a hub with no sub
 // starts one, and the drop of its last sub stops it, at once, with no grace period, so a process
@@ -531,7 +534,9 @@ type deliveryLiveSpec struct {
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	// project is the project a legion view's board shows; every other kind names none.
+	// project is the project whose daemon a Legion view (viewReadsLegion) reads: the one a legion
+	// view's board shows, and the one a legion_issue view's key names (parseLegionIssueLiveView).
+	// A delivery view names none.
 	project string
 	shape   string
 	reader  model.Actor

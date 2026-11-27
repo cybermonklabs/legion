@@ -299,7 +299,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   // manifest — to prove claimEnvoyRole's bridge waits rather than binding to
   // a claim function that was never set.
   legionExtension(legionPi as never);
-  envoyExtension(envoyPi as never);
+  await envoyExtension(envoyPi as never);
   const sessionStart = handlers.get("session_start")?.[0];
   if (sessionStart === undefined) {
     throw new Error("Legion lifecycle handlers were not registered");
@@ -307,10 +307,11 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await sessionStart({}, context);
 
   // The boot is over and the name is not taken (INFRA-1573): the claim runs at the session's
-  // first turn, so nothing has reached the listener yet and the only managed interval is the
-  // session activity report every claimed session sends on change (INFRA-945).
+  // first turn, so nothing has reached the listener yet and the only managed intervals are the
+  // stall watch's sweep every Legion session arms, and the session activity report every claimed
+  // session sends on change (INFRA-945).
   expect(registrations).toHaveLength(0);
-  expect(intervals).toHaveLength(1);
+  expect(intervals).toHaveLength(2);
 
   // The first turn: `legion.ts` answers `agent_start` by telling the claim session its turn has
   // started, and the claim runs behind that signal, awaited by nothing of the host.
@@ -319,13 +320,13 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await agentStart({}, context);
   await roleClaimed.promise;
 
-  // Two managed intervals now: the activity report the boot armed, and the role claimant's own
-  // heartbeat, armed by the claim. The heartbeat is the one this test drives.
-  expect(intervals).toHaveLength(2);
+  // Three managed intervals now: the two the boot armed, and the role claimant's own heartbeat,
+  // armed by the claim. The heartbeat is the one this test drives.
+  expect(intervals).toHaveLength(3);
   // Establishing the role claimant registers before the role is applied, then
   // refreshes it after the claim.
   expect(registrations).toHaveLength(2);
-  intervals[1]?.();
+  intervals[2]?.();
   await heartbeatRegistration.promise;
   expect(registrations).toHaveLength(3);
   expect(registrations[2]).toMatchObject({

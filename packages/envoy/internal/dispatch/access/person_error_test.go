@@ -76,11 +76,11 @@ func namesThePerson(text string) string {
 // TestNoAccessErrorNamesAPerson: every read and write of the access package, about one person,
 // is run once for each statement it makes, with that statement failing as a database that
 // stopped answering fails it. Each failure answers an error that wraps the database's and names
-// no part of the person's email: every caller knows whom it asked, and the callers that log an
-// error (the API's failed-handler line, the whoami warning) would otherwise write the address
-// (CodeQL go/clear-text-logging, alert #143). The person is named wherever a read or a write takes
-// one: the login read, the listed person, the owner given, the group's owner and member, and the
-// actor of each write.
+// no part of the person's email: every caller knows whom it asked, and a caller that logs an error
+// (the API's failed-handler line, once a later slice's routes call this package) would otherwise
+// write the address (CodeQL go/clear-text-logging, alert #143). The person is named wherever a
+// read or a write takes one: the login read, the listed person, the owner given, the group's owner
+// and member, and the actor of each write.
 func TestNoAccessErrorNamesAPerson(t *testing.T) {
 	database := seedAccess(t)
 	ctx := context.Background()

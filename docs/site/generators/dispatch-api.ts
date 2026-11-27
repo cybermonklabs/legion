@@ -3,6 +3,7 @@
 // (packages/envoy/internal/dispatch/api/routes_table.go), read through `envoy-dispatch routes`,
 // which prints the body GET /api/v1 serves without a database or a listener. Contract:
 // scripts/generate.ts; lib/reference.ts runs the binary.
+import type { DispatchScope } from "../../../packages/contracts/src/dispatch-api-core.ts";
 import { inline, writePage } from "./lib/markdown.ts";
 import { readTable } from "./lib/reference.ts";
 
@@ -18,9 +19,10 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
   },
 };
 
-/** What each OAuth scope a route can name lets the credential holding it do (`routeScopes` in
- *  the source, `model.ScopePerson` and `model.ScopeApprove`). */
-const SCOPES: Record<string, string> = {
+/** What each OAuth scope a Dispatch credential can hold lets it do (`routeScopes` in the source,
+ *  `model.ScopePerson`, `model.ScopeApprove` and `model.ScopeP0`). `satisfies` ties the entries to
+ *  `DISPATCH_SCOPES`: a scope added there with no entry here fails the typecheck. */
+const SCOPES = {
   person:
     "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
@@ -90,13 +92,13 @@ function render(routes: Route[]): string {
     "",
     ...Object.values(CALLERS).map(({ label, meaning }) => `- **${label}**: ${meaning}`),
     "",
-    "## The scopes a route needs",
+    "## The scopes a route or field value needs",
     "",
-    'A route can need OAuth scopes of the credential that calls it, and the credential must hold every one it names. A credential that holds none — the shared agent token a deployment configures, a Kubernetes service-account token, a broker-issued token scoped to a project — is refused `403 OAUTH_SCOPE_REQUIRED` naming the scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).',
+    'A route, or one value of a field on a route, can need OAuth scopes of the credential that calls it. The credential must hold every scope the route or value needs. A credential that lacks a needed scope is refused `403 OAUTH_SCOPE_REQUIRED` naming the scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1). The shared agent token a deployment configures, a Kubernetes service-account token and a broker-issued token scoped to a project hold no OAuth scope.',
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token the secrets broker issued holds neither scope. Dispatch serves it only on the routes `readScopeRoutes` in the source lists, and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. The route index does not carry that list, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",

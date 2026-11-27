@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // newEditNoticeSweeper is a second document service on database that only sweeps, as another
@@ -35,7 +36,7 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		select {
 		case <-done:
@@ -59,7 +60,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 		defer close(done)
 		hub.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-done
 	})
@@ -76,6 +77,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 // replaced: no sweep on a timer and no lease attempt. Its pass asks to run again at the hour-off
 // notice's due time, the one timer it keeps.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	held := createIssueDocument(t, database, 1, "Held.")
@@ -113,6 +115,9 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 // loop had no due time before the edit, so only the wake can have scheduled the sweep that sends
 // it. The sweep here starts passes 200 ms apart, not five seconds.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
+	// Not parallel: it holds the notice to going at the end of its 3 s quiet window, within the
+	// sweep's 200 ms gap and a second, and among the package's parallel tests it went 2.24 s late
+	// (envoy-go-docs-finalizers job 137379091221).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const quiet = 3 * time.Second
@@ -173,6 +178,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 // keeps trying, every gap plus up to a tenth, until a sweep of its own runs, and that sweep sends
 // the due notice: the other process's pass may have read before it was due.
 func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
 	database := storetest.Open(t)
 	document := createIssueDocument(t, database, 1, "First.")
 	addPersonsVersion(t, database, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
@@ -181,7 +187,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(context.Background(), nil, leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

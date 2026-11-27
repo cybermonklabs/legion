@@ -4,8 +4,8 @@
 // (packages/envoy/internal/dispatch/api/credential_requests.go), which writes the broker's bytes
 // unparsed, so the shape a generated client is given has to be named from the broker's own
 // declaration rather than read off the relay. It also holds how long the broker works on one
-// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and Dispatch counts
-// on, so the two read one figure.
+// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and a caller of the
+// broker can count on, so the two read one figure.
 //
 // It is a leaf: data and its doc comments, importing nothing of the broker's API package and
 // nothing holding a store, an OAuth client or a database.
@@ -23,10 +23,10 @@ const RequestDeadline = 45 * time.Second
 // http.Server WriteTimeout is the two together (writeTimeout). WriteTimeout bounds the writing of
 // that answer, not the broker's database: a COMMIT the handler sent before RequestDeadline is over
 // when that database completes it, which no deadline here ends, and a cancel does not undo a commit
-// the database already received. Dispatch assumes that the broker's database completes such a
-// commit within this margin, and so that a write the broker began for a request is over within
-// RequestDeadline + RequestWriteMargin of the handler's start, whether or not its caller is still
-// waiting for the answer (Dispatch's api.machineLoginSettleAfter counts on it).
+// the database already received. A caller may count on the broker's database completing such a
+// commit within this margin, and so on a write the broker began for a request being over within
+// RequestDeadline + RequestWriteMargin of the handler's start, whether or not that caller is still
+// waiting for the answer.
 const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
@@ -192,29 +192,6 @@ type PersonSignInsResponse struct {
 	SignIns []PersonSignInResp `json:"signins"`
 }
 
-// PersonAccessResponse is GET /v1/person-access's answer: what the named person has at the
-// broker that outlives their browser session. The broker writes it for Dispatch's account, and
-// Dispatch reads it at a sign-out and in its membership pass, to decide whether it keeps the
-// person's refresh token so that Google's later refusal still holds them.
-type PersonAccessResponse struct {
-	// The person asked about, a login as record.CanonicalLogin spells it.
-	Person string `json:"person"`
-	// How many of the person's own machine logins are live: approved for no service, not
-	// revoked, and unexpired or with a session still running (enroll.Service.OwnLiveCredentials),
-	// a live login of an account BROKER_POD_OPERATORS maps to the person among them. A service's
-	// machine login the person approved is not counted.
-	MachineLogins int `json:"machine_logins"`
-	// How many of the person's sign-ins on a machine are not revoked.
-	SignIns int `json:"signins"`
-	// How many entries of the broker's exchange configuration let a pod, a workflow or a machine
-	// trade for a token that names the person.
-	ExchangeEntries int `json:"exchange_entries"`
-	// How many Kubernetes service accounts BROKER_POD_OPERATORS maps to the person, whether or not
-	// a pod of one holds a live login: a pod of each can log in as the person at any time with its
-	// own token (enroll.Service.PodOperatorMappings).
-	PodOperatorMappings int `json:"pod_operator_mappings"`
-}
-
 // PersonSignInRevokedResponse is POST /v1/person-signins/{id}/revoke's answer.
 type PersonSignInRevokedResponse struct {
 	// Always "revoked": the sign-in no longer trades, whether this call ended it or an earlier
@@ -246,23 +223,23 @@ type RevokePersonSubjectRequest struct {
 	// that approver before this replacement, and answers a revoke below the greatest generation it
 	// applied at the address superseded. Required: the broker answers 400
 	// SESSION_GENERATION_REQUIRED without it. It is a pointer so that a body that leaves it out is
-	// told from one carrying 0; Dispatch sends it for every revocation it recorded with one, and a
-	// row an earlier head of this branch recorded without one stays owed until recorded again.
+	// told from one carrying 0. The route and the field came in one change, so no caller sends the
+	// route without it.
 	SessionGeneration *int64 `json:"session_generation,omitempty"`
 }
 
 // PersonSubjectRevokedResponse is POST /v1/person-subjects/revoke's answer.
 type PersonSubjectRevokedResponse struct {
-	// "revoked": the replaced account holds no credential and no approval-page session under the
-	// address, and the broker refuses it any new one, whether this call or an earlier one ended
-	// them. "superseded": the revoke carried a session generation below the greatest one a revoke
-	// the broker applied at the address carried (SupersededBy), so a later replacement at the
-	// address has been applied since, and this one changed nothing; Dispatch leaves it owed and
-	// reports it, since its own generations for the address are then below the broker's. The
-	// broker's migration 0042 says how such a revoke can arrive.
-	State string `json:"state"`
+	// PersonSubjectRevoked: the replaced account holds no credential and no approval-page session
+	// under the address, and the broker refuses it any new one, whether this call or an earlier one
+	// ended them. PersonSubjectSuperseded: the revoke carried a session generation below the
+	// greatest one a revoke the broker applied at the address carried (SupersededBy), so a later
+	// replacement at the address has been applied since, and this one changed nothing; its caller
+	// can tell from it that its own generations for the address are below the broker's. The
+	// broker's migration 0047 says how such a revoke can arrive.
+	State string `json:"state" enum:"revoked,superseded"`
 	// The greatest session generation a revoke the broker applied at the address carried, which is
-	// above this revoke's; given with state "superseded" alone.
+	// above this revoke's; given with PersonSubjectSuperseded alone.
 	SupersededBy *int64 `json:"superseded_by,omitempty"`
 	// How many of the replaced account's sign-ins on a machine this call ended; 0 for a repeat
 	// and for a superseded revoke.
@@ -276,6 +253,12 @@ type PersonSubjectRevokedResponse struct {
 	// ended; 0 for a repeat and for a superseded revoke.
 	ApprovalSessions int `json:"approval_sessions"`
 }
+
+// The states PersonSubjectRevokedResponse.State answers.
+const (
+	PersonSubjectRevoked    = "revoked"
+	PersonSubjectSuperseded = "superseded"
+)
 
 // RecordSessionResp is a credential request's two possibly-differing session ids, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment

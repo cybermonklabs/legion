@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
@@ -144,5 +145,26 @@ func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing
 	}
 	if second := dispatch.round(t, ask(2)); second != 0 {
 		t.Errorf("the second round opened %d connections; want 0: main's project access must keep requests.MaySeeAtOnce idle connections (projectAccessHTTPClient), where Go's default client keeps two", second)
+	}
+}
+
+// TestEndUnrecordedSignInsFollowsProjectAccess holds the production choice that a trade ends a
+// pre-0047 sign-in only where the broker can ask Dispatch. The setting's project-access client is
+// nil without BROKER_PROJECT_ACCESS_URL and non-nil with it; dropping either half of that choice
+// ends old sign-ins on every broker or on none.
+func TestEndUnrecordedSignInsFollowsProjectAccess(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		projectAccess projectaccess.Access
+		want          bool
+	}{
+		{name: "without project access", want: false},
+		{name: "with project access", projectAccess: &projectaccess.Client{}, want: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := endUnrecordedSignIns(c.projectAccess); got != c.want {
+				t.Fatalf("endUnrecordedSignIns(%T) = %t, want %t", c.projectAccess, got, c.want)
+			}
+		})
 	}
 }

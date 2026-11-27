@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/daemon-api/plan-rating-cases.json TestCheckPlanRatingTakesExactlyTheRatingsTheDaemonTakes
+
 import (
 	"encoding/json"
 	"os"
@@ -18,6 +20,7 @@ import (
 // reason blank to Go's strings.TrimSpace alone, so a check that took every rating, or none, or
 // read blank another way, fails here.
 func TestCheckPlanRatingTakesExactlyTheRatingsTheDaemonTakes(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "plan-rating-cases.json"))
 	if err != nil {
 		t.Fatalf("read the daemon's verdicts on the ratings: %v", err)
@@ -62,6 +65,7 @@ func TestCheckPlanRatingTakesExactlyTheRatingsTheDaemonTakes(t *testing.T) {
 // them: the scale, then a blank reason, then a reason past PlanReasonMax code points, a character
 // outside the Basic Multilingual Plane counting once.
 func TestCheckPlanRatingAnswersTheFirstRuleARatingBreaks(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		rating int
 		reason string

@@ -21,6 +21,7 @@ import (
 // the append is statement time, not a gap. Only holding the lock and asking what the waiter holds
 // does.
 func TestTheDeployRecorderWaitsForTheIssuesOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)

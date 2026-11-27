@@ -323,7 +323,7 @@ func markAttributes(row string) string {
 	return `((-` + row + `.source_event) % ` + strconv.Itoa(markSpan) + `)::integer`
 }
 
-// queueNodes queues the write of nodes, in two statements, each of whose rows arrive in ascending
+// queueNodes queues the write of nodes, in statements each of whose rows arrive in ascending
 // (kind, id): a write touching several nodes takes its row locks in that order, so two such
 // writes cannot each hold the row the other waits for. The first inserts every node the store
 // does not hold and locks every node it does, at the level an update of that row takes, changing
@@ -357,7 +357,7 @@ func markAttributes(row string) string {
 // row no appended fact explains, which nothing may mend later, since no tuple is ever updated.
 // Each tuple carries the time, the writer and the cause of the node write that states it.
 //
-// Both stored values are compared on the row the second statement updates. Under READ COMMITTED
+// The stored values are compared on the row the last statement updates. Under READ COMMITTED
 // that statement reads a snapshot of its own, taken once the first holds every row the write
 // touches: what it compares against is the newest committed version of each row, and no other
 // writer can move one until this transaction ends. Read in the snapshot of a statement that then
@@ -370,12 +370,12 @@ func markAttributes(row string) string {
 // there in a statement of their own before inserting the new ones would read fresh values too,
 // but it takes the rows out of ascending (kind, id) wherever a new node sorts before one already
 // there. Two writes racing over a node the store does not hold yet are one case of the same: the
-// second's insert waits on the first's, then finds the row there and locks it, and its second
-// statement compares against what the first committed. The pass that writes a block's node holds
+// second's insert waits on the first's, then finds the row there and locks it, and its later
+// statements compare against what the first committed. The pass that writes a block's node holds
 // its document's owner lock before it reaches this.
 //
-// Neither statement joins the nodes it was handed against another list it was handed: each reads
-// them once, and the second meets graph_nodes through its primary key. Planned without the
+// No statement joins the nodes it was handed against another list it was handed: each reads
+// them once, and the later ones meet graph_nodes through its primary key. Planned without the
 // arrays' sizes, as a cached statement is planned from its sixth run on, a join of two such lists
 // is a nested loop that rescans one per row of the other, which measured 3,009 ms against 193 ms
 // over a 1,999-block version, so what the write did to each node rides on the node's own row

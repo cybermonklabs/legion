@@ -99,6 +99,14 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 			t.Fatalf("row %d = %+v, want %+v (all rows %+v)", index, got[index], expected[index], got)
 		}
 	}
+	// Every read answered, so each row, the refusal's too, ends at the score step and holds how
+	// long its read took.
+	for index, check := range page.Checks {
+		if check.ReadMS == nil || *check.ReadMS < 0 || deref(check.ReadStage) != nearCopyStageScore {
+			t.Fatalf("row %d holds read_ms set %t, read_stage %q, want a read time and %q",
+				index, check.ReadMS != nil, deref(check.ReadStage), nearCopyStageScore)
+		}
+	}
 
 	refused := page.Checks[1]
 	if refused.Spec != nil || refused.Title != title {
@@ -108,8 +116,9 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 		t.Fatalf("refused row = %+v", refused)
 	}
 	if one := nearCopyCheckOf(t, handler, refused.ID); one.Spec == nil || *one.Spec != duplicateSpecAstrolabe ||
-		one.ID != refused.ID || one.Outcome != nearCopyRefused {
-		t.Fatalf("refused row read by id = %+v, want it with the spec it refused", one)
+		one.ID != refused.ID || one.Outcome != nearCopyRefused || one.ReadMS == nil ||
+		*one.ReadMS != *refused.ReadMS || deref(one.ReadStage) != nearCopyStageScore {
+		t.Fatalf("refused row read by id = %+v, want it with the spec it refused and the page's read time and step", one)
 	}
 	if one := nearCopyCheckOf(t, handler, page.Checks[3].ID); one.Spec != nil || one.Issue == nil || *one.Issue != plain.Key {
 		t.Fatalf("passed row read by id = %+v, want %s and no spec, which its issue holds", one, plain.Key)
@@ -198,6 +207,92 @@ func TestNearCopyChecksRecordACheckNotMadeAndNoneForAnExternalCreate(t *testing.
 		!row.Force || row.Issue == nil || *row.Issue != unchecked.Key || len(row.Candidates) != 0 {
 		t.Fatalf("unchecked row = %+v", row)
 	}
+	// The bound ended the read, so the row holds a read time of at least the bound and the step the
+	// read was in then: the term pick, which the lock holds, or the connection before it on a slow
+	// machine (-1 below: no time). TestNearCopyChecksRecordTheStepAReadWaitedAt pins the step.
+	readMS := -1
+	if row.ReadMS != nil {
+		readMS = *row.ReadMS
+	}
+	if stage := deref(row.ReadStage); (stage != nearCopyStageConnect && stage != nearCopyStageTerms) || readMS < 200 {
+		t.Fatalf("unchecked row holds read_stage %q and read_ms %d, want %q or %q and at least 200",
+			stage, readMS, nearCopyStageConnect, nearCopyStageTerms)
+	}
+}
+
+// gateTermReadWaiting is the backend of this test's database whose term pick (relatedTermsSQL)
+// waits for a lock on search_term_stats, or 0 when none does.
+func gateTermReadWaiting(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var pid int
+	err := database.Pool.QueryRow(context.Background(), `
+		select l.pid from pg_locks l join pg_stat_activity a on a.pid = l.pid
+		 where not l.granted and l.relation = 'search_term_stats'::regclass
+		   and l.database = (select oid from pg_database where datname = current_database())
+		   and a.query like '%search_document_text($2::text)%'
+		 limit 1`).Scan(&pid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read the waiters on search_term_stats: %v", err)
+	}
+	return pid
+}
+
+// A read that does not answer names the step it was waiting at. The gate's bound is
+// nearCopyVerdictBound, past every wait of this test, so the test itself ends the read: it holds
+// search_term_stats, sees the gate's term pick wait for it, and cancels that statement, which the
+// gate reads as a read that did not answer (SQLSTATE 57014, nearCopyBoundHit). Nothing here races
+// the machine's speed: the read is seen at the term pick before it is ended there.
+func TestNearCopyChecksRecordTheStepAReadWaitedAt(t *testing.T) {
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	createDuplicateTestProject(t, handler, "STEP")
+	served.duplicateBound = nearCopyVerdictBound(t)
+	lockTx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the lock transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
+	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
+		t.Fatalf("lock search_term_stats: %v", err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- createIssueRequest(t, handler, map[string]any{
+			"project": "STEP", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+		})
+	}()
+	var reader int
+	waitUntil(t, "the gate's term pick to wait for search_term_stats", func() bool {
+		reader = gateTermReadWaiting(t, database)
+		return reader != 0
+	})
+	var cancelled bool
+	if err := database.Pool.QueryRow(context.Background(), `select pg_cancel_backend($1)`, reader).Scan(&cancelled); err != nil || !cancelled {
+		t.Fatalf("cancel the gate's term pick on backend %d: cancelled %t, %v", reader, cancelled, err)
+	}
+	// The lock is let go only once the cancelled statement waits no more, so the read cannot take
+	// the lock and answer instead.
+	waitUntil(t, "the cancelled term pick to stop waiting", func() bool {
+		return gateTermReadWaiting(t, database) != reader
+	})
+	if err := lockTx.Rollback(context.Background()); err != nil {
+		t.Fatalf("release search_term_stats: %v", err)
+	}
+	created := requireCreatedIssue(t, <-answered)
+
+	page := nearCopyChecksOf(t, handler, url.Values{"project": {"STEP"}})
+	if len(page.Checks) != 1 {
+		t.Fatalf("rows = %+v, want the one create's", page.Checks)
+	}
+	row := page.Checks[0]
+	if row.Outcome != nearCopyNotMade || deref(row.Reason) != nearCopyNotMadeBound || deref(row.Issue) != created.Key ||
+		deref(row.ReadStage) != nearCopyStageTerms || row.ReadMS == nil {
+		t.Fatalf("row = %+v (reason %q, read_stage %q, read_ms set %t), want %s not made, bound, at %q with a read time",
+			row, deref(row.Reason), deref(row.ReadStage), row.ReadMS != nil, created.Key, nearCopyStageTerms)
+	}
 }
 
 // createWaitsForNearCopyChecks reports whether a create's transaction waits for a lock on this
@@ -250,13 +345,9 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	// The refusal's write waits for the table until its bound ends it, and only then does the
 	// create's transaction begin; the table is let go once that transaction's write waits, so the
 	// refusal's write cannot have landed and the create's write is the one that lands.
-	deadline := time.Now().Add(30 * time.Second)
-	for !createWaitsForNearCopyChecks(t, database) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the create's transaction did not wait for near_copy_checks in 30 s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the create's transaction to wait for near_copy_checks", func() bool {
+		return createWaitsForNearCopyChecks(t, database)
+	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release near_copy_checks: %v", err)
 	}
@@ -519,13 +610,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	}
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 10s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		waitUntil(t, what, done)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -613,6 +698,7 @@ func TestNearCopyChecksAWriteThatFindsItsOwnRowHasLanded(t *testing.T) {
 // A create's row that cannot be written for a reason no retry cures is logged and dropped: the
 // create still answers 201 and stands, with no row and no retry.
 func TestNearCopyChecksARowThatCannotBeWrittenIsLoggedAndTheCreateStands(t *testing.T) {
+	// Not parallel: it swaps the default logger (slog.SetDefault).
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	for _, statement := range []string{

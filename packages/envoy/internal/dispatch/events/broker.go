@@ -265,14 +265,13 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 
 // SessionAccessChannel is the Postgres channel each write of what the session content rule reads
 // (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
-// so every Dispatch process hears it once the write commits and none hears a write that did not: a
-// session's tie to a person or a project it wrote in (queueSessionProject), the tie and the reached
-// projects a broker-issued token records (access.TieSession, access.RecordListedReach), a stored
-// listener answer (api: storeRouteRoster) and `envoy-dispatch backfill-session-projects`. It
-// carries no payload. Each process's document service moves its access epoch on it (docs:
-// accessEpoch), so a document socket asks its rule again before its next frame; a project's owner,
-// visibility or access list and a group announce on store.AccessChangedChannel instead, which
-// moves the epoch too.
+// so every Dispatch process hears it once the write commits and none hears a write that did not:
+// the tie and the reached projects a broker-issued token is to record (access.TieSession,
+// access.RecordListedReach, which no code in this tree calls yet), and the writes later slices
+// add, of a session's tie to a person or a project it wrote in and of a stored listener answer. It
+// carries no payload. A later slice moves each process's document access epoch on it, so a
+// document socket asks its rule again before its next frame; a project's owner, visibility or
+// access list and a group announce on store.AccessChangedChannel instead.
 const SessionAccessChannel = "dispatch_session_access_changed"
 
 // AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the
@@ -280,81 +279,6 @@ const SessionAccessChannel = "dispatch_session_access_changed"
 // rows select it in a transaction, none when no row does, and none when the transaction does not
 // commit.
 const AnnounceSessionAccess = `pg_notify('` + SessionAccessChannel + `', '')`
-
-// queueSessionProject queues the record that e's session acted in the project e belongs to
-// (session_projects), which is how a session is one of a project's agents (access.SessionClause),
-// and the record of the person its credential acts for (session_owners): a read model of the event
-// log, not a node, so it is written here, where every event is appended, rather than by each
-// route. The project is the owner row's, read in the statement's own snapshot, as the insert
-// before it reads last_seq. Only a session the event's credential proved is recorded
-// (provedSession): an event of a person or of a session a request body named records nothing, and
-// one of no issue, document or project records the person alone. Each statement that writes a row
-// announces it on SessionAccessChannel, since the session content rule reads both tables.
-//
-// A pair is written only where no row of the transaction's snapshot holds it, and session_projects
-// has no unique key, so the write never waits for another transaction: with a unique key, a
-// second open write of the same pair would wait for the first to end, and the two writers hold
-// their issues' locks while they append, so a first writer that then takes the second's issue
-// would wait for it in turn, a deadlock (TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit).
-// Two writes open at once may therefore both record a pair; every reader asks only whether a row
-// exists, and the rows a pair can gain this way are bounded by how many of its writers are open at
-// one moment. A later event of the same pair in the same transaction sees the earlier one's row and
-// writes none.
-func queueSessionProject(batch *store.WriteBatch, e model.Event) {
-	if !provedSession(e.Actor) {
-		return
-	}
-	// The person the session's credential acts for (Actor.Owner), the one tie Dispatch holds
-	// between a session and a person: a viewer that is not open is relayed only a session its own
-	// person's credential proved (access.SessionContentClause). Every proved write records it, one
-	// of no project too.
-	if e.Actor.Owner != nil {
-		if login := model.CanonicalLogin(*e.Actor.Owner); login != "" {
-			batch.Queue("record the session's person", `
-				with written as (
-					insert into session_owners (session_id, login)
-					select $1, $2
-					where not exists (
-						select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
-					returning 1
-				)
-				select `+AnnounceSessionAccess+` from written
-			`, e.Actor.ID, login)
-		}
-	}
-	if e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil {
-		return
-	}
-	batch.Queue("record the session's project", `
-		with written as (
-			insert into session_projects (session_id, project_key)
-			select $1, owner.project_key
-			from (
-				select project_key from issues where key = $2
-				union all select project_key from artifacts where id = $3
-				union all select key from projects where key = $4
-			) owner
-			where owner.project_key is not null
-				and not exists (
-					select 1 from session_projects recorded
-					where recorded.session_id = $1 and recorded.project_key = owner.project_key)
-			returning 1
-		)
-		select `+AnnounceSessionAccess+` from written
-	`, e.Actor.ID, e.IssueKey, e.ArtifactID, e.ProjectKey)
-}
-
-// provedSession reports whether actor is a session the credential behind its write proved: an
-// act naming the actor's own session and no personal token. api.bearerSessionActor sets that act
-// only for a credential whose own session is the actor's id, a broker-issued token. A credential
-// that proves no session names one in the request body: the shared token's actor carries no act,
-// and a personal token's act carries its token id, so neither can make a session it merely named
-// look like one of a project's agents. The act survives Actor.Recorded, and
-// `envoy-dispatch backfill-session-projects` holds stored actors to the same rule in SQL.
-func provedSession(actor model.Actor) bool {
-	return actor.Kind == "session" && actor.ID != "" && actor.Act != nil &&
-		actor.Act.Session == actor.ID && actor.Act.TokenID == ""
-}
 
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
 // of them is one of exactly three kinds, each told by its payload: a session-addressed message or

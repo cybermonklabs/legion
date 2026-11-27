@@ -73,7 +73,7 @@ type holdPlace struct {
 }
 
 // holdPlaces is every place a wiring line of the hold in main reaches: each place main hands the
-// gate to, and the person-access route Dispatch asks at a sign-out. A wiring line of the hold that
+// gate to. A wiring line of the hold that
 // main gains is one more row: the place, the line, whether it hands the place the gate, and a
 // probe that reads the place through the binary; a setting that line reads goes in holdRig.env.
 func holdPlaces() []holdPlace {
@@ -85,14 +85,12 @@ func holdPlaces() []holdPlace {
 		{name: "introspection (POST /v1/oauth/introspect as Dispatch)", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).introspectTheSessionToken},
 		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", gated: true, probe: (*holdRig).decideOnThePage},
 		{name: "an airlock request", wiring: "proxy.Options's Hold: holdGate", gated: true, probe: (*holdRig).askThroughTheAirlock},
-		{name: "the person-access route (GET /v1/person-access as Dispatch)", wiring: "api.Deps's Exchange: exchangePolicy", probe: (*holdRig).countExchangeEntries},
 		{name: "a device-code redemption of a person Dispatch answers with no deadline", wiring: "hold.Config's RequireDeadline: cfg.HoldRequiresDeadline", deadline: true, probe: (*holdRig).redeemWithNoDeadline},
 	}
 }
 
 // The two pod accounts the token exchange lists (BROKER_EXCHANGE_ACCOUNTS), one acting for each
-// person, so exactly one entry of the exchange names each of them, which is what the person-access
-// route counts.
+// person.
 const (
 	adaExchangeAccount = "system:serviceaccount:example-ns:example-ada-worker"
 	bobExchangeAccount = "system:serviceaccount:example-ns:example-bob-worker"
@@ -165,15 +163,21 @@ func newHoldRig(t *testing.T) *holdRig {
 	t.Helper()
 	r := &holdRig{f: newApprovalFixture(t), databaseURL: storetest.URL(t), public: newFront(t)}
 	r.frontAddr = strings.TrimPrefix(r.public.URL, "http://")
-	secret := func(slug, owner, tier, value string) string {
+	secret := func(slug, owner, tier, proxy, value string) string {
+		tags := `"owner": "` + owner + `", "tier": "` + tier + `"`
+		if proxy != "" {
+			tags += `, "proxy": "` + proxy + `"`
+		}
 		return `{"name": "` + testSecretsPrefix + slug + `", "kms_key_id": "` + testSecretsKMSKeyARN +
-			`", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
+			`", "tags": {` + tags + `}, "value": "` + value + `"}`
 	}
+	// Each airlock secret is behind the proxy by its proxy tag, which names its kind of the
+	// profiles file below (policy.TagProxy).
 	r.f.secrets = writeTempFile(t, "fake-secrets.json", []byte(`{"secrets": [`+strings.Join([]string{
-		secret("ada-deploy-key", ada, "human", "ada-deploy-value"),
-		secret("bob-deploy-key", bob, "human", "bob-deploy-value"),
-		secret("ada-airlock", ada, "agent", "ada-airlock-value"),
-		secret("bob-airlock", bob, "agent", "bob-airlock-value"),
+		secret("ada-deploy-key", ada, "human", "", "ada-deploy-value"),
+		secret("bob-deploy-key", bob, "human", "", "bob-deploy-value"),
+		secret("ada-airlock", ada, "agent", "adaairlock", "ada-airlock-value"),
+		secret("bob-airlock", bob, "agent", "bobairlock", "bob-airlock-value"),
 	}, ",\n")+`]}`))
 
 	r.dispatch = projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberFull, bob: projectaccess.MemberFull})
@@ -185,16 +189,15 @@ func newHoldRig(t *testing.T) *holdRig {
 		_, _ = io.WriteString(w, holdUpstreamBody)
 	}))
 	t.Cleanup(r.upstream.Close)
-	// The two secrets behind the airlock, each served by a profile of its own name whose proxy
-	// block binds it to a host of its own that no request of this test names: a grant of either
-	// opens connections to the proxy, and the request the probe makes goes to the service on
-	// loopback, which no name of the grant is bound to, so the proxy carries it as it comes, after
-	// the hold. The proxy dials no loopback address but the one BROKER_AIRLOCK_TEST_DIAL_ALLOW
-	// names, the service's.
-	profiles := profilesFile(t, `{"profiles": [
-		{"name": "ADA_AIRLOCK", "proxy": {"hosts": ["ada.hold.airlock.test"], "headers": ["authorization"]}},
-		{"name": "BOB_AIRLOCK", "proxy": {"hosts": ["bob.hold.airlock.test"], "headers": ["authorization"]}}
-	]}`)
+	// The two secrets behind the airlock, each behind a kind of its own that binds it to a host of
+	// its own that no request of this test names: a grant of either opens connections to the
+	// proxy, and the request the probe makes goes to the service on loopback, which no name of the
+	// grant is bound to, so the proxy carries it as it comes, after the hold. The proxy dials no
+	// loopback address but the one BROKER_AIRLOCK_TEST_DIAL_ALLOW names, the service's.
+	profiles := profilesFile(t, `{"kinds": [
+		{"name": "adaairlock", "hosts": ["ada.hold.airlock.test"], "headers": ["authorization"], "ways": ["swap"]},
+		{"name": "bobairlock", "hosts": ["bob.hold.airlock.test"], "headers": ["authorization"], "ways": ["swap"]}
+	], "profiles": []}`)
 	r.airlock = append(airlockEnv(t),
 		"BROKER_PROFILES_FILE="+profiles,
 		"BROKER_AIRLOCK_TEST_DIAL_ALLOW="+strings.TrimPrefix(r.upstream.URL, "http://"))
@@ -491,24 +494,6 @@ func (r *holdRig) askThroughTheAirlock(t *testing.T, p *holdPerson) holdAnswer {
 	return holdAnswer{answeredNeither, said}
 }
 
-// countExchangeEntries is Dispatch asking what p holds that outlives their browser (GET
-// /v1/person-access): served when the answer names p and counts the one exchange entry that names
-// them. The route asks no hold, so it answers alike whether the broker holds p or not.
-func (r *holdRig) countExchangeEntries(t *testing.T, p *holdPerson) holdAnswer {
-	t.Helper()
-	status, body := r.client.UI(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(p.login), nil)
-	said := fmt.Sprintf("GET /v1/person-access answered %d %s, where one exchange entry names %s", status, strings.TrimSpace(string(body)), p.login)
-	var answer struct {
-		Person          string `json:"person"`
-		ExchangeEntries *int   `json:"exchange_entries"`
-	}
-	if status == http.StatusOK && json.Unmarshal(body, &answer) == nil && answer.Person == p.login &&
-		answer.ExchangeEntries != nil && *answer.ExchangeEntries == 1 {
-		return holdAnswer{answeredServed, said}
-	}
-	return holdAnswer{answeredNeither, said}
-}
-
 // expectAtEachPlace drives every place for p through the broker booted now and fails t, naming the
 // place and the line of main that wires it, at each that does not answer as it should: held where
 // the line hands the place the gate and the broker holds p, refused as uncheckable at the deadline
@@ -551,8 +536,7 @@ func verbOf(outcome string) string {
 // the gate to, a session route, a launcher route, a token exchange, a device-code redemption, an
 // approval-page decision and an airlock request, and its introspection reports her token held,
 // while bob is served at each and his token is not held. With BROKER_PROJECT_ACCESS_URL unset, the
-// same broker serves her at each, and its boot log says the hold is off. At every boot, the
-// person-access route Dispatch asks at a sign-out counts the one exchange entry that names each.
+// same broker serves her at each, and its boot log says the hold is off.
 // With BROKER_HOLD_REQUIRES_DEADLINE set, as an IAP deployment's broker sets it, the broker refuses
 // a person Dispatch answers with no deadline as one whose hold it cannot decide, and each refusal of
 // a held person says the Workspace Directory ends the hold.
@@ -570,7 +554,7 @@ func verbOf(outcome string) string {
 // words, bob is served, and a colleague Dispatch answers with no deadline is refused.
 //
 // Each place's control deletes the line of main.go that wires it (holdPlaces' wiring): a gated
-// place then serves ada at the second boot, the person-access route counts no entry, the deadline
+// place then serves ada at the second boot, the deadline
 // rule's place serves the colleague at the fourth, and this test fails naming that place and that
 // line.
 func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {

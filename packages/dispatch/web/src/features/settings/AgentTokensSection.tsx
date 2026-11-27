@@ -43,6 +43,8 @@ import {
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
 
+const whoAmIScopesQueryKey = ["whoami-scopes"] as const;
+
 /** A mint Dispatch made and lost the answer to: the label it was pressed with, the tokens already
  *  listed under any label when it was pressed (`before`), and whether the token list has been read
  *  again since. */
@@ -66,10 +68,10 @@ function lostTokens(
     .sort((a, b) => compareTimestamps(b.created_at, a.created_at));
 }
 
-/** The OAuth scope a personal token holds, as its checkbox reads it: what the reader ticks, and
+/** A word a personal token's scopes can hold, as its checkbox reads it: what the reader ticks, and
  *  the line under it saying what a token holding it may do. */
-interface TokenScope {
-  readonly id: DispatchScope;
+interface TokenScope<Id extends DispatchTokenScope> {
+  readonly id: Id;
   readonly label: string;
   readonly allows: string;
 }
@@ -107,42 +109,80 @@ function heldScopes(scopes: readonly string[] | null): DispatchScope[] {
   return DISPATCH_SCOPES.filter((known) => scopes?.includes(known) ?? false);
 }
 
-/** The whole set a token holds after one box is ticked or cleared, in `TOKEN_SCOPES` order.
- *  No token holds `approve` without `person`, so ticking Approve ticks Act as you and clearing
- *  Act as you clears Approve: the server refuses every other pair (400 TOKEN_SCOPES_INPUT), and
- *  a row that offered one would be a refusal waiting to happen. */
-function scopesAfterChoice(
-  held: readonly DispatchScope[],
-  scope: DispatchScope,
+const WRITING_SCOPES_WITHOUT_P0 = withoutSetP0(WRITING_SCOPES);
+
+const MINT_SCOPES_WITHOUT_P0 = withoutSetP0(MINT_SCOPES);
+
+/** What a new token holds unless the reader changes it: every scope but `p0`, as a mint that
+ *  names none gives. The reader ticks Set P0 for a token that is to hold it. */
+const NEW_TOKEN_SCOPES: readonly DispatchTokenScope[] = DISPATCH_SCOPES.filter(
+  (scope) => scope !== "p0"
+);
+
+/** The words a token holds, `p0` and `read` among them. The route table carries them as plain
+ *  strings; `DISPATCH_TOKEN_SCOPES` is the closed list each is one of, so a word this build does
+ *  not know is left out rather than drawn as a box nobody can clear, and a token whose list came
+ *  back absent holds none. A lost mint is replaced by a token holding this set, so a read-only
+ *  token's replacement is read only too. */
+function heldScopes(scopes: readonly string[] | null): DispatchTokenScope[] {
+  return DISPATCH_TOKEN_SCOPES.filter((known) => scopes?.includes(known) ?? false);
+}
+
+/** The whole set after one box is ticked or cleared: the words `offered` draws, in its order, and
+ *  after them each word of `held` it does not draw, kept as it is. A row draws Set P0 only once
+ *  Dispatch says the person at the browser holds `p0`, so a change made on a row before then
+ *  still sends the `p0` its token holds, and no change drops it in silence. No token holds
+ *  `approve` without `person`, so ticking Approve ticks Act as you and clearing Act as you clears
+ *  Approve, and leaves Set P0, which needs no other scope; and no token holds `read` beside
+ *  `approve` or `p0`, since approving and setting P0 are writes, so ticking Read only clears both
+ *  and ticking either clears Read only. The server refuses every such pair (400
+ *  TOKEN_SCOPES_INPUT), and a form that offered one would be a refusal waiting to happen. No box
+ *  is ever disabled for these rules: each press is taken, and the other boxes follow it. */
+function scopesAfterChoice<Id extends DispatchTokenScope>(
+  offered: readonly TokenScope<Id>[],
+  held: readonly Id[],
+  scope: Id,
   ticked: boolean
-): DispatchScope[] {
-  const next = new Set(held);
+): Id[] {
+  const next = new Set<DispatchTokenScope>(held);
   if (ticked) {
     next.add(scope);
-    if (scope === "approve") next.add("person");
+    if (scope === "approve") {
+      next.add("person");
+      next.delete("read");
+    }
+    if (scope === "p0") next.delete("read");
+    if (scope === "read") {
+      next.delete("approve");
+      next.delete("p0");
+    }
   } else {
     next.delete(scope);
     if (scope === "person") next.delete("approve");
   }
-  return TOKEN_SCOPES.filter((each) => next.has(each.id)).map((each) => each.id);
+  const drawn = offered.filter((each) => next.has(each.id)).map((each) => each.id);
+  const kept = held.filter((each) => next.has(each) && !offered.some(({ id }) => id === each));
+  return [...drawn, ...kept];
 }
 
-/** The two scope boxes, for a token's row and for the mint form. `subject` is the token they
- *  belong to, so the boxes of one row are told from another row's by name. */
-function TokenScopeChoices({
+/** The scope boxes `offered`, for a token's row and for the mint form. `subject` is the token
+ *  they belong to, so the boxes of one row are told from another row's by name. */
+function TokenScopeChoices<Id extends DispatchTokenScope>({
   chosen,
   disabled,
+  offered,
   onChoose,
   subject,
 }: {
-  chosen: readonly DispatchScope[];
+  chosen: readonly Id[];
   disabled: boolean;
-  onChoose: (scopes: DispatchScope[]) => void;
+  offered: readonly TokenScope<Id>[];
+  onChoose: (scopes: Id[]) => void;
   subject: string;
 }): ReactNode {
   return (
     <div className="space-y-2">
-      {TOKEN_SCOPES.map((scope) => (
+      {offered.map((scope) => (
         <div key={scope.id}>
           <label
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
@@ -153,7 +193,7 @@ function TokenScopeChoices({
               className={`size-4 shrink-0 rounded ${checkboxAccent}`}
               disabled={disabled}
               onChange={(event) =>
-                onChoose(scopesAfterChoice(chosen, scope.id, event.target.checked))
+                onChoose(scopesAfterChoice(offered, chosen, scope.id, event.target.checked))
               }
               type="checkbox"
             />

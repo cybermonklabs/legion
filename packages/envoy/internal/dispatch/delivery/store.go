@@ -603,7 +603,7 @@ func listPullRequests(ctx context.Context, pool *store.Pool, query string, args 
 }
 
 // RunColumns is the delivery_runs select list ScanRun reads, in scan order.
-const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event`
+const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt`
 
 // runCreatedAt is when GitHub created the delivery_runs row r: DeliveryRun.Created in SQL, whose
 // comment says why a row without created_at reads started_at. delivery_runs_kind_created
@@ -618,7 +618,7 @@ func ScanRun(row pgx.Row) (DeliveryRun, error) {
 	var conclusion *string
 	if err := row.Scan(
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
-		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
+		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event, &run.RunAttempt,
 	); err != nil {
 		return DeliveryRun{}, err
 	}
@@ -688,8 +688,8 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 		conclusion = &c
 	}
 	_, err := pool.Exec(ctx, `
-		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (repo, run_id) do update set
 			kind = excluded.kind,
 			pr_number = excluded.pr_number,
@@ -701,8 +701,9 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 			conclusion = excluded.conclusion,
 			url = excluded.url,
 			head_branch = excluded.head_branch,
-			event = excluded.event
-	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event)
+			event = excluded.event,
+			run_attempt = excluded.run_attempt
+	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event, run.RunAttempt)
 	return err
 }
 
@@ -985,14 +986,12 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 // per run): the timeline handler's own lookback window can hold hundreds of runs, and this
 // package's other many-id reads pass their whole list as one array parameter for the same
 // reason. IssueAncestors (below) seeds its walk with `key = any($1)` as this read matches its
-// runs; ResolveSessionTitles (agents.go) hands its ids to `unnest($1::text[])` and joins each of
-// them to one ordered read of its own with a `cross join lateral`, which is the same one array
-// for the whole list, read per id because its answer is one row a session rather than a set of
-// rows to match. Returns a map keyed by run id for a caller to index directly, each run's jobs in
-// ListRunJobs' order. Each run's jobs are sorted here rather than by an order by: Postgres cannot
-// read delivery_run_jobs' primary key in (run_id, ...) order for `run_id = any($2)`, so an order by
-// sorts the whole 28-day read (about 50,000 rows), on disk past work_mem, where sorting each run's
-// few jobs costs a few milliseconds.
+// runs, and ResolveSessionTitles (agents.go) reads session_titles_pkey for `session_id =
+// any($1)`, the same one array for the whole list. Returns a map keyed by run id for a caller to
+// index directly, each run's jobs in ListRunJobs' order. Each run's jobs are sorted here rather
+// than by an order by: Postgres cannot read delivery_run_jobs' primary key in (run_id, ...) order
+// for `run_id = any($2)`, so an order by sorts the whole 28-day read (about 50,000 rows), on disk
+// past work_mem, where sorting each run's few jobs costs a few milliseconds.
 func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
 	byRun := make(map[int64][]DeliveryRunJob, len(runIDs))
 	if len(runIDs) == 0 {
@@ -1148,11 +1147,16 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 	return prs, rows.Err()
 }
 
+// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
+// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
+// which holds the open P0 issues alone, rather than scanning every issue of every project.
+const openP0KeysQuery = `select key from issues where ` + openP0Predicate
+
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
 // the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start
 // and after the event log resets, and keeps it current from issue event payloads in between.
 func OpenP0Keys(ctx context.Context, pool *store.Pool) (map[string]struct{}, error) {
-	rows, err := pool.Query(ctx, `select key from issues where priority = 0 and status <> 'done'`)
+	rows, err := pool.Query(ctx, openP0KeysQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,20 +1173,23 @@ func OpenP0Keys(ctx context.Context, pool *store.Pool) (map[string]struct{}, err
 }
 
 // IssueAncestors is every ancestor of keys up their parent_key chains, at most maxDepth links up:
-// the issues whose component choice a key can inherit. The walk is a `union` recursion bounded by
-// maxDepth, so it terminates even if a raced reparent ever commits a cycle; the caller passes the
-// cap the API's other parent walks use (api.parentDepthCap), since this package cannot import api.
+// the issues whose component choice a key can inherit. A key inherits only from ancestors of its
+// own project, so each walk carries its key's project and climbs only to a parent of that
+// project, ending at the first ancestor of another project as at a root. The walk is a `union`
+// recursion bounded by maxDepth, so it terminates even if a raced reparent ever commits a cycle;
+// the caller passes the cap the API's other parent walks use (api.parentDepthCap), since this
+// package cannot import api.
 func IssueAncestors(ctx context.Context, q Querier, keys []string, maxDepth int) (map[string]struct{}, error) {
 	ancestors := map[string]struct{}{}
 	if len(keys) == 0 {
 		return ancestors, nil
 	}
 	rows, err := q.Query(ctx, `
-		with recursive chain(key, parent_key, depth) as (
-			select key, parent_key, 0 from issues where key = any($1)
+		with recursive chain(key, parent_key, project_key, depth) as (
+			select key, parent_key, project_key, 0 from issues where key = any($1)
 			union
-			select p.key, p.parent_key, c.depth + 1
-			from chain c join issues p on p.key = c.parent_key
+			select p.key, p.parent_key, c.project_key, c.depth + 1
+			from chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 			where c.depth < $2
 		)
 		select distinct key from chain where depth > 0

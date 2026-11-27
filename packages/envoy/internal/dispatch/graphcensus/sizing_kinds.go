@@ -102,8 +102,8 @@ const movedParents = "block_parent_moved"
 //     base attributes: a page's part_of its role, and a session's part_of the role it claimed,
 //     with that role's held_by and the retraction that ends it, or else a page of its own with
 //     that page's base attributes and its part_of the session (R14);
-//   - the inbox child's message node with its author, its parent and the tuples its target
-//     and its broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
+//   - the inbox child's message's author and parent, and the tuples its target and its
+//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
 //     person's part in a thread, the delivered_to of each write to every other participant and of
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's

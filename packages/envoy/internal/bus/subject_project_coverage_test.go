@@ -44,9 +44,10 @@ var subjectProjectCensus = map[string][]string{
 	// A failed delivery's report on an agent subject and on a team topic.
 	"notifications.envoy.exceptions.notifications.agent.>": {"notifications.envoy.exceptions.notifications.agent.>"},
 	"notifications.envoy.exceptions.notifications.team.>":  {"notifications.envoy.exceptions.notifications.team.>"},
-	// The listener's own lanes: kept role messages and their cursors, resume floors, and the roles
-	// a session took from another.
-	KeptTopicPrefix + ">":            {KeptRoleSubjectPrefix + ">", KeptTopicPrefix + "cursor.>"},
+	// The listener's own lanes: kept role messages, their cursors and the expiry notices of the
+	// copies Dispatch's outbox kept there (KeptExpiredSubject), resume floors, and the roles a
+	// session took from another.
+	KeptTopicPrefix + ">":            {KeptRoleSubjectPrefix + ">", KeptTopicPrefix + "cursor.>", KeptExpiredSubjectPrefix + ">"},
 	SessionResumeSubjectPrefix + ">": {SessionResumeSubjectPrefix + ">"},
 	TakeoverSubjectPrefix + ">":      {TakeoverSubjectPrefix + ">"},
 	// The role lanes and their exception twin, which travel over core NATS (roleLaneSubjects).
@@ -55,6 +56,7 @@ var subjectProjectCensus = map[string][]string{
 }
 
 func TestEveryFamilyTheBusCarriesHasASubjectProjectRow(t *testing.T) {
+	t.Parallel()
 	carried := slices.Concat(StreamCarriedSubjects(), roleLaneSubjects)
 	if len(carried) < 14 {
 		t.Fatalf("the bus carries %d subjects, want at least 14: a census over a handful covers nothing", len(carried))
@@ -86,6 +88,7 @@ func TestEveryFamilyTheBusCarriesHasASubjectProjectRow(t *testing.T) {
 // auth service's grants alone: no static grant may reach it, so it is in no list of the buckets
 // the listener opens and every static user is granted (ListenerBuckets).
 func TestThePrivateProjectsBucketIsInNoListOfStaticBuckets(t *testing.T) {
+	t.Parallel()
 	if PrivateProjectsBucket != "envoy_private_projects" {
 		t.Fatalf("PrivateProjectsBucket = %q, want envoy_private_projects", PrivateProjectsBucket)
 	}

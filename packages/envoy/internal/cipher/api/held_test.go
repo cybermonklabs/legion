@@ -98,7 +98,8 @@ func newHoldBroker(t *testing.T) *holdBroker {
 	access.UseClock(clock.now)
 	var gate *hold.Gate
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		gate = hold.New(hold.Config{Access: access, Store: d.Enroll.Store, Now: clock.now})
+		access.Keep(d.Enroll.Store, nil, nil)
+		gate = hold.New(hold.Config{Access: access, Now: clock.now})
 		d.Hold = gate
 		withProvider(t, func(c *oauth.Config) { c.Exchange.Projects, c.Exchange.Hold = access, gate })(d)
 		// One provider, as cmd/cipherd builds one: the machine login's approval records the device
@@ -477,14 +478,14 @@ func TestHeldUpkeepIsServed(t *testing.T) {
 	bob := b.upkeep(t, servedBob)
 
 	b.hold()
-	if err := b.gate.Check(context.Background(), heldAda); !errors.Is(err, hold.ErrHeld) {
-		t.Fatalf("the broker's gate answered ada %v, want hold.ErrHeld: the rows below would prove nothing", err)
+	if v := b.gate.Decide(context.Background(), heldAda); v.Kind != hold.Held {
+		t.Fatalf("the broker's gate answered ada %+v, want hold.Held: the rows below would prove nothing", v)
 	}
 	b.serves(t, "ada", ada)
 
 	b.refuseAccount()
-	if err := b.gate.Check(context.Background(), servedBob); !errors.Is(err, hold.ErrUncheckable) {
-		t.Fatalf("the broker's gate answered bob %v, want hold.ErrUncheckable: the rows below would prove nothing", err)
+	if v := b.gate.Decide(context.Background(), servedBob); v.Kind != hold.BrokerRefused {
+		t.Fatalf("the broker's gate answered bob %+v, want hold.BrokerRefused: the rows below would prove nothing", v)
 	}
 	b.serves(t, "bob", bob)
 }

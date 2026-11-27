@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -161,9 +162,10 @@ func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-				Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
-			}}}})
+			r := newRuledRig(t, proxyrules.Rules{
+				Kinds: []proxyrules.Kind{swapKind(workerKind, []string{boundHost}, "authorization")},
+				Names: []proxyrules.Binding{swapBinding(workerName, workerKind)},
+			}, Options{})
 			answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
 			if answer.StatusCode != http.StatusOK {
 				t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)
@@ -384,7 +386,7 @@ func TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt(t *testing.T) {
 	// for, holding one other name so that the read answers a grant rather than refusing.
 	withheld := testConnection()
 	withheld.Names = map[string]requests.AirlockGrantName{
-		"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: requests.PlaceholderPrefix + "otherotherotherotherotherother01"}},
+		"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: placeholder.Prefix + "otherotherotherotherotherother01"}},
 	}
 	for _, row := range []struct {
 		name   string

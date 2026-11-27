@@ -1,4 +1,4 @@
-// Package access is Dispatch's one rule of who may see a project (INFRA-3862), and the reads and
+// Package access is Dispatch's one rule of who may see a project, and the reads and
 // writes of what that rule reads: each project's owner and visibility, its access list of people
 // and groups, the groups, and each person's member kind.
 //
@@ -138,10 +138,10 @@ func ProjectClause(projectExpr, viewerParam string) string {
 }
 
 // HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
-// private and the viewer does not see it: the projects whose ownership of a repository hides it
-// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row: its
+// private and the viewer does not see it: the projects whose ownership of a repository is to hide it
+// from the viewer, in a read a later slice adds. It probes the projects primary key once per row: its
 // `exists` ends in `offset 0`, without which Postgres hashes every private project once per
-// statement in its place (refs.TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan).
+// statement in its place.
 func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
 	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
 		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'
@@ -192,9 +192,9 @@ func PersonClause(loginExpr, viewerParam string) string {
 // is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
 // not open reads a session by its pairs alone, as before (R9).
 //
-// session_projects places every session in the projects it acted in only once
-// `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
-// 20261116081157_session_projects_proven empties both tables, and the command's --reset does again
+// session_projects places every session in the projects it acted in only once the backfill a later
+// slice adds has written session_projects_filled's row: migration
+// 20261116081157_session_projects_proven empties both tables, and the backfill's reset does again
 // in a deployment that may already hold a private project, then refills the pairs one by one.
 // Until the row is written a session of a private project may have no row placing it there, or
 // have its pair in a project the viewer sees back before its pair in one the viewer does not, so
@@ -257,7 +257,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     whatever else it did; another person's credential acting in it ties it to them, which the
 //     live view's re-ask before the replay and before each batch of frames reads.
 //   - An open viewer, while a project is private, is relayed a session that wrote in no project
-//     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
+//     the viewer does not see, once the later slice's backfill has filled the pairs
 //     (session_projects_filled). Where the listener record lists the session's credential's
 //     projects, each must be one the viewer sees ([] included), and the session must have written
 //     in a project or list one. That list is the whole rule for such a session: a full member's
@@ -274,9 +274,9 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     who sees that project too, and one with neither a list nor a tie by nobody.
 //
 // A listener list counts only from a stored listener answer (route_roster) that has not passed its
-// expires_at; a session of an expired answer is judged as one whose listener sent no list. A reader
-// that asks this rule again over time refreshes the stored answer first (api:
-// refreshRosterForContent), and a refresh that fails leaves it expired, which fails closed.
+// expires_at; a session of an expired answer is judged as one whose listener sent no list. The
+// reader a later slice adds, which asks this rule again over time, is to refresh the stored answer
+// first, and a refresh that fails leaves it expired, which fails closed.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -477,12 +477,14 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // projects its list and its person both see; for every other credential, only which private
 // projects it sees, so with no private project it reads as a credential that lists none, exactly as
 // it read before (R9), and once one is private it sees each public project and the private ones it
-// lists. Viewer.Lists is the credential's list as the caller is told it (whoami) and as a resume
-// reads it: every credential's but a broker token's, whose list is answered only while some project
-// is private or its person is a restricted member, as it was before (R9). Open is every viewer that
-// is not a restricted member's.
-// What a broker token scoped to one project writes is api's too (namedProjectOf): the write scope
-// such a token had before projects could be private, which no list here decides.
+// lists. Viewer.Lists is the credential's list as a later slice's whoami tells the caller it and
+// its resume reads it: every credential's but a broker token's, whose list is answered only while
+// some project is private or its person is a restricted member, as it was before (R9). Open is
+// every viewer that is not a restricted member's.
+// What a broker token that names one project writes, CredentialCovers states: every project's
+// objects that a credential naming no project may write, but for a private project that the token
+// does not name. Each write check of internal/dispatch/api asks it with the visibility of the
+// project that the write names.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor

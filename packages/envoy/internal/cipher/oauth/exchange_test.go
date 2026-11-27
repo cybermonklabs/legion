@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
@@ -43,8 +45,9 @@ const (
 	repository    = "example-org/example-repo"
 	workflow      = ".github/workflows/release.yaml"
 	ref           = "refs/heads/main"
-	// daemonAccount is an account whose entry fixes the session daemonSession, as the Legion
-	// daemon's does; deployWorkflow is a workflow whose entry fixes deploySession.
+	// daemonAccount is an account whose entry fixes the session daemonSession, the daemon session
+	// of its own project, as the Legion daemon's does, so its tokens hold the scope legion-status;
+	// deployWorkflow is a workflow whose entry fixes deploySession.
 	daemonAccount  = "system:serviceaccount:example-ns:example-daemon"
 	daemonSession  = "legion-daemon:ACME"
 	deployWorkflow = ".github/workflows/deploy.yaml"
@@ -323,8 +326,9 @@ func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 // TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing: the exchange client is
 // registered for the scope machine, so a request may name it, and the library validates it
 // without granting it. Under the read entry the token then holds read and nothing beside it;
-// under a named entry the same request is granted no scope at all, as it was before read entries
-// existed. The scope is the entry's to decide, never the request's.
+// under the Legion daemon's entry it holds legion-status and nothing beside it; under a named
+// entry the same request is granted no scope at all, as it was before read entries existed. A request asking for no scope is decided by its entry; one naming read is narrowed
+// (TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead), and machine widens nothing.
 func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -334,44 +338,17 @@ func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing
 		t.Errorf("a read entry's exchange naming the scope %s introspects as %+v, want the scope %q alone and the project scope %q",
 			oauthwire.Scope, answer, oauthwire.ScopeRead, oauthwire.ProjectScopeNone)
 	}
+	daemon := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+	daemon.Set("scope", oauthwire.Scope)
+	if answer := f.introspected(t, f.exchanged(t, daemon, key)); answer.Scope != oauthwire.ScopeLegionStatus || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{project}) {
+		t.Errorf("the Legion daemon's exchange naming the scope %s introspects as %+v, want the scope %q alone and the named project %s",
+			oauthwire.Scope, answer, oauthwire.ScopeLegionStatus, project)
+	}
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	named := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
 	named.Set("scope", oauthwire.Scope)
 	if answer := f.introspected(t, f.exchanged(t, named, key)); answer.Scope != "" || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{project}) {
 		t.Errorf("a named entry's exchange naming the scope %s introspects as %+v, want no scope and the named project %s", oauthwire.Scope, answer, project)
-	}
-}
-
-// TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry: the exchange client is not registered
-// for the scope read, so the library refuses a request that names it invalid_scope before the
-// exchange decides anything, under a named entry and under the read entry alike, and stores no
-// token. The same request naming no scope is then answered, so what refused it was the scope.
-func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
-	key := newKey(t)
-	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	for _, c := range []struct {
-		name string
-		form func(*testing.T) url.Values
-	}{
-		{name: "a named entry", form: func(t *testing.T) url.Values {
-			return exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
-		}},
-		{name: "the read entry", form: f.readPodForm},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			before := f.count(t, "oauth_access_tokens")
-			asked := c.form(t)
-			asked.Set("scope", oauthwire.ScopeRead)
-			status, body := f.exchange(t, asked, key)
-			if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
-				t.Fatalf("an exchange under %s naming the scope %s = %d %v, want 400 invalid_scope and no access token", c.name, oauthwire.ScopeRead, status, body)
-			}
-			if after := f.count(t, "oauth_access_tokens"); after != before {
-				t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
-			}
-			f.exchanged(t, c.form(t), key)
-		})
 	}
 }
 
@@ -396,35 +373,52 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 	}
 }
 
-// TestAReadTokenIsNoSubjectTokenForAnotherExchange: a read token presented back to the exchange
-// as an access token, the subject type a dev box's machine login trades under, is refused, and
-// nothing is minted from it: the token the exchange client was issued is not one it may trade
-// again, and a read token names no machine credential either.
-func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
-	key := newKey(t)
-	read := f.exchanged(t, f.readPodForm(t), key)
-	before := f.count(t, "oauth_access_tokens")
-	status, body := f.exchange(t, exchangeForm(read, oauthwire.SubjectTokenTypeAccessToken, readSession), key)
-	if status != http.StatusBadRequest || body["access_token"] != nil {
-		t.Fatalf("an exchange of a read token = %d %v, want 400 and no access token", status, body)
+// TestATradeAskingNoScopeGetsTheTokenItGetsToday: every kind of trade that asks for no scope is
+// answered exactly the token it was before trades could ask for read, its literal spelled out
+// here: a pod entry's, a workflow entry's and a Google entry's that names a person name the
+// entry's person and project; a pod entry's that names no person names its account as its service
+// under the project scope named; the read entry's holds read and the project scope none and names
+// its service; a Google entry's that names no person names its fleet; a person's sign-in names
+// the person and the machine; a machine login's names its approver; and each fixed-session
+// entry's names the session it fixes. None holds a scope but the read entry's and the Legion
+// daemon's pod's, whose entry fixes legion-daemon:<its project> and whose token holds
+// legion-status alone, and each is bound to its DPoP proof's key.
+// TestAPodExchangesItsTokenForOneThatIntrospects holds the named pod's answer the same way. The
+// two kinds that act as their person by a credential of their own also answer what that
+// credential records (withRecordedAccount): a person sign-in's token its Google account, and a
+// machine login's token when its machine login was made. Neither is a value the literal can name,
+// so each is read back and held to what the trade made.
+func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
+	f := newNarrowingFixture(t, func(*oauth.Config) {})
+	named := oauthwire.Introspection{Active: true, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID}
+	today := map[string]oauthwire.Introspection{
+		"pod-entry":           named,
+		"workflow-entry":      named,
+		"pod-entry-no-person": {Active: true, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ClientID: oauthwire.ExchangeClientID},
+		"read-entry": {Active: true, Scope: oauthwire.ScopeRead, Service: readService, ProjectScope: oauthwire.ProjectScopeNone,
+			ClientID: oauthwire.ExchangeClientID},
+		"google-identity-no-person":     {Active: true, Service: signInFleet, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID},
+		"google-identity-with-a-person": named,
+		"person-sign-in": {Active: true, Person: person, Machine: signInMachine, ProjectScope: oauthwire.ProjectScopePerson,
+			ClientID: oauthwire.ExchangeClientID},
+		"machine-login": {Active: true, Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID},
 	}
-	if after := f.count(t, "oauth_access_tokens"); after != before {
-		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	if len(today) != len(narrowingRows) {
+		t.Fatalf("today's literals name %d kinds and narrowingRows %d: each kind's literal is written here", len(today), len(narrowingRows))
 	}
-}
-
-// TestEveryOtherEntryMintsTheTokenItDidAndNoScope: beside the read entry, a pod of an account
-// whose entry fixes its session, a run of a workflow whose entry fixes its session, and a dev box
-// session trading its machine login are each answered exactly the token they were before read
-// entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
-// the named pod's answer the same way. The dev box's token, the one of them that acts as its
-// person by its own credential, also answers when its machine login was made
-// (CredentialCreatedAt, which Dispatch holds a token recording no account to): that is a time of
-// the broker's clock within this test, not a value the row can name, so it is read back and held
-// to the last minute.
-func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
+	for _, kind := range slices.Sorted(maps.Keys(narrowingRows)) {
+		t.Run(kind, func(t *testing.T) {
+			tr := narrowingRows[kind].trade(t, f)
+			status, body := f.send(t, tr, "", "")
+			answer := f.introspected(t, accessTokenOf(t, status, body))
+			want := today[kind]
+			want.Session, want.Thumbprint, want.ExpiresAt = tr.session, thumbprint(t, tr.key), answer.ExpiresAt
+			withRecordedAccount(t, f, kind, answer, &want)
+			if !reflect.DeepEqual(answer, want) {
+				t.Errorf("Introspect = %+v, want %+v", answer, want)
+			}
+		})
+	}
 	key := newKey(t)
 	deploy := func(claims map[string]any) {
 		claims["workflow_ref"] = repository + "/" + deployWorkflow + "@" + ref
@@ -434,30 +428,17 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 		name  string
 		token string
 		want  oauthwire.Introspection
-		// credentialMade is whether the token answers when its credential was made.
-		credentialMade bool
 	}{
-		{name: "a pod of a fixed-session account",
+		{name: "a pod of the Legion daemon's account, whose entry fixes legion-daemon:ACME",
 			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
-			want:  oauthwire.Introspection{Active: true, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			want:  oauthwire.Introspection{Active: true, Scope: oauthwire.ScopeLegionStatus, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a run of a fixed-session workflow",
 			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
 			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
-		{name: "a dev box session",
-			token:          f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
-			want:           oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)},
-			credentialMade: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := f.introspected(t, c.token)
 			c.want.ExpiresAt = answer.ExpiresAt
-			if c.credentialMade {
-				made := time.Unix(answer.CredentialCreatedAt, 0)
-				if since := time.Since(made); since < -time.Minute || since > time.Minute {
-					t.Errorf("the token answers its credential was made at %s, %s from now; want within a minute of now", made, since)
-				}
-				c.want.CredentialCreatedAt = answer.CredentialCreatedAt
-			}
 			if !reflect.DeepEqual(answer, c.want) {
 				t.Errorf("Introspect = %+v, want %+v", answer, c.want)
 			}
@@ -1913,4 +1894,207 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 0 {
 		t.Fatalf("the person's refused machine trade logged %d lines of an unchecked mint naming %s, want none:\n%s", len(got), person, strings.Join(got, "\n"))
 	}
+}
+
+// The job entries the job tests list, one of each setting that writes one: a pod account of
+// BROKER_EXCHANGE_JOB_ACCOUNTS named for project that fixes no session, so its pods are
+// registered, and one that lists two private projects beside every public one and fixes its
+// session; a workflow of BROKER_EXCHANGE_JOB_WORKFLOWS that lists one private project beside
+// every public one; and a Google account of BROKER_VM_EXCHANGE_JOB_ACCOUNTS named for project,
+// whose machines are of signInFleet's service.
+const (
+	jobAccount       = "system:serviceaccount:example-ns:example-job"
+	publicJobAccount = "system:serviceaccount:example-ns:example-sweeper"
+	publicJobSession = "example-sweeper"
+	jobWorkflow      = ".github/workflows/dispatch-job.yaml"
+	jobMachine       = "example-job@example-project.iam.gserviceaccount.com"
+)
+
+// jobList is the job list text spells, read as a job setting's projects field is.
+func jobList(t *testing.T, text string) exchange.JobProjects {
+	t.Helper()
+	job, err := exchange.ParseJobProjects(text)
+	if err != nil {
+		t.Fatalf("exchange.ParseJobProjects(%q): %v", text, err)
+	}
+	return job
+}
+
+// newJobFixture is an exchange fixture with the Google half configured whose exchange lists the
+// job entries above and nothing else, and asks access what Dispatch says of a project.
+func newJobFixture(t *testing.T, access *fakeAccess) *signInFixture {
+	t.Helper()
+	return newSignInFixtureWith(t, func(c *oauth.Config) {
+		c.Exchange.Policy = newPolicy(t,
+			[]exchange.AccountEntry{
+				{Account: jobAccount, Job: jobList(t, project)},
+				{Account: publicJobAccount, Job: jobList(t, "public,PRIVB,PRIVA"), Session: publicJobSession},
+			},
+			[]exchange.WorkflowEntry{{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, "public,PRIVA")}},
+			exchange.GoogleEntry{Account: jobMachine, Service: signInFleet, Job: jobList(t, project)})
+		c.Exchange.Projects = access
+	})
+}
+
+// actionsRun is workflowToken's change for a push to ref running the workflow at path of
+// repository, in every claim name and value form GitHub's token request answered a captured run
+// with, each value that named the account replaced with an example of the same form: the
+// exchange reads four of them, and the rest are there because a real token carries them.
+func actionsRun(path string) func(map[string]any) {
+	return func(claims map[string]any) {
+		const sha = "0123456789abcdef0123456789abcdef01234567"
+		owner, name, _ := strings.Cut(repository, "/")
+		run := repository + "/" + path + "@" + ref
+		for claim, value := range map[string]any{
+			"actor": "example-bot[bot]", "actor_id": "1", "base_ref": "", "check_run_id": "2",
+			"enterprise": owner, "enterprise_id": "3", "event_name": "push", "head_ref": "",
+			"job_workflow_ref": run, "job_workflow_sha": sha, "jti": uuid.NewString(),
+			"nbf": claims["iat"], "ref": ref, "ref_protected": "false", "ref_type": "branch",
+			"repository": repository, "repository_id": "4", "repository_owner": owner,
+			"repository_owner_id": "5", "repository_visibility": "public", "run_attempt": "1",
+			"run_id": "6", "run_number": "1", "runner_environment": "github-hosted", "sha": sha,
+			"sub": "repo:" + owner + "@5/" + name + "@4:ref:" + ref, "workflow": "dispatch-job",
+			"workflow_ref": run, "workflow_sha": sha,
+		} {
+			claims[claim] = value
+		}
+	}
+}
+
+// TestAJobEntryMintsATokenThatNamesItsIdentityAndNoPerson: an entry of each job setting is
+// answered a token that introspects as the session it writes under, its listed identity as its
+// service — the pod's account subject, the workflow as <repository>/<path>@<ref>, the Google
+// account's address — no person and no machine, its entry's project scope and whole list, sorted,
+// and no OAuth scope. Dispatch is asked nothing for any of them, since the operator's entry chose
+// the list and the token names no person whose sight of a project there is to check. The named
+// pod's entry fixes no session, so its pod trades under the name its registrar registered it for.
+func TestAJobEntryMintsATokenThatNamesItsIdentityAndNoPerson(t *testing.T) {
+	access := newFakeAccess()
+	f := newJobFixture(t, access)
+	f.registers(t, jobAccount, "pod-uid-job", "example-job-1")
+	for _, c := range []struct {
+		name     string
+		form     url.Values
+		session  string
+		service  string
+		scope    string
+		projects []string
+	}{
+		{
+			name:    "a named job pod, under the session it is registered for",
+			form:    exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"),
+			session: "example-job-1", service: jobAccount, scope: oauthwire.ProjectScopeNamed, projects: []string{project},
+		},
+		{
+			name:    "a public job pod, under the session its entry fixes",
+			form:    exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""),
+			session: publicJobSession, service: publicJobAccount, scope: oauthwire.ProjectScopePublic, projects: []string{"PRIVA", "PRIVB"},
+		},
+		{
+			name:    "a public job workflow's run, in GitHub's own claims",
+			form:    exchangeForm(f.workflowToken(t, "6", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-6"),
+			session: "example-run-6", service: repository + "/" + jobWorkflow + "@" + ref, scope: oauthwire.ProjectScopePublic, projects: []string{"PRIVA"},
+		},
+		{
+			name:    "a named job machine, with its Google identity token",
+			form:    exchangeForm(f.machineToken(t, jobMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-job-machine"),
+			session: "example-job-machine", service: jobMachine, scope: oauthwire.ProjectScopeNamed, projects: []string{project},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			key := newKey(t)
+			answer := f.introspected(t, f.exchanged(t, c.form, key))
+			want := oauthwire.Introspection{
+				Active: true, Session: c.session, Service: c.service, ProjectScope: c.scope, Projects: c.projects,
+				ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), ExpiresAt: answer.ExpiresAt,
+			}
+			if !reflect.DeepEqual(answer, want) {
+				t.Errorf("Introspect = %+v, want %+v: a job's token names its identity as its service, no person and no OAuth scope, and carries its entry's scope and whole list", answer, want)
+			}
+			if asked := access.questions(); len(asked) != 0 {
+				t.Errorf("the job's trade asked Dispatch %v, want nothing: its entry chose its list, and it names no person", asked)
+			}
+		})
+	}
+}
+
+// TestAJobTradeNamingAProjectOutsideItsEntryIsRefused: a job's trade may name keys of its entry's
+// list and no other, so one naming a project the list does not name is refused 400
+// invalid_request in the exchange's own words, naming that key, and no token is minted. Under a
+// public entry that is so for a public project's key too, since the broker cannot tell a public
+// project's key from one no project holds. Dispatch is asked nothing. The same public pod naming
+// a key of its list is answered the whole list, so it was the key outside it that was refused.
+func TestAJobTradeNamingAProjectOutsideItsEntryIsRefused(t *testing.T) {
+	access := newFakeAccess()
+	f := newJobFixture(t, access)
+	f.registers(t, jobAccount, "pod-uid-job", "example-job-1")
+	key := newKey(t)
+	for _, c := range []struct {
+		name    string
+		form    url.Values
+		outside string
+	}{
+		{
+			name:    "a named job pod naming another project",
+			form:    withProjects(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"), otherProject),
+			outside: otherProject,
+		},
+		{
+			name:    "a public job pod naming a public project beside a key of its list",
+			form:    withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""), "PRIVA PUB"),
+			outside: "PUB",
+		},
+		{
+			name:    "a public job workflow's run naming a private project its list does not",
+			form:    withProjects(exchangeForm(f.workflowToken(t, "7", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-7"), "PRIVB"),
+			outside: "PRIVB",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := f.exchange(t, c.form, key)
+			refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", exchange.ErrProjectsFixed.Error())
+			if description, _ := body["error_description"].(string); !strings.Contains(description, "the request named "+c.outside) {
+				t.Errorf("the refusal reads %q, which does not name %s, the key outside the entry's list", description, c.outside)
+			}
+			if asked := access.questions(); len(asked) != 0 {
+				t.Errorf("the refused trade asked Dispatch %v, want nothing", asked)
+			}
+		})
+	}
+	f.introspectsProjects(t, f.exchanged(t, withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""), "PRIVA"), key),
+		oauthwire.ProjectScopePublic, []string{"PRIVA", "PRIVB"})
+}
+
+// TestAJobTradeAskingForReadIsRefused: the broker narrows no job's token, which it mints whole and
+// with no OAuth scope, so a job's trade that asks for the scope read, under the named scope or the
+// public one, is refused 400 invalid_request naming read, and no token is minted. Dispatch is
+// asked nothing. The same named pod asking for no scope is answered its token, so it was the read
+// that was refused.
+func TestAJobTradeAskingForReadIsRefused(t *testing.T) {
+	access := newFakeAccess()
+	f := newJobFixture(t, access)
+	f.registers(t, jobAccount, "pod-uid-job", "example-job-1")
+	key := newKey(t)
+	asRead := func(form url.Values) url.Values {
+		form.Set("scope", oauthwire.ScopeRead)
+		return form
+	}
+	for _, c := range []struct {
+		name string
+		form url.Values
+	}{
+		{"a named job pod", asRead(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"))},
+		{"a public job pod", asRead(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""))},
+		{"a public job workflow's run", asRead(exchangeForm(f.workflowToken(t, "8", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-8"))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := f.exchange(t, c.form, key)
+			refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "a job entry's token is minted whole")
+			if asked := access.questions(); len(asked) != 0 {
+				t.Errorf("the refused trade asked Dispatch %v, want nothing", asked)
+			}
+		})
+	}
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"), key),
+		oauthwire.ProjectScopeNamed, []string{project})
 }

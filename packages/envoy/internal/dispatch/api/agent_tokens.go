@@ -23,6 +23,30 @@ import (
 
 const agentTokenPrefixLength = 8
 
+// A person's personal tokens are kept in two tables. agent_tokens holds every token that may
+// write. agent_read_tokens holds every read-only token: one that holds read (model.ScopeRead),
+// alone or beside person, which Dispatch answers on the reads of its read class alone
+// (refuseReadOnlyToken). A build before read-only tokens looks a bearer up in agent_tokens alone,
+// so it finds no read-only token and answers it 401, rather than read its scopes and let it
+// write (migration 20261120023712_agent_read_tokens). Both tables carry the same columns, and
+// agentTokenColumns is what every statement here answers of a row, as scanAgentToken reads it.
+const agentTokenColumns = `id::text, name, prefix, scopes, created_at, last_used_at, revoked_at`
+
+// The mint and a token's last use each run one of two statements, one per table. Each names its
+// table in its own text, so the census of item-row writers (item_writer_census_test.go) reads the
+// table it writes, and takes what follows the table from one of these, so the two stay one text:
+// agentTokenInsert is the mint's columns, their values and the row it answers (createAgentToken),
+// and agentTokenUse is a token's last use, written at most once a minute (personalTokenActor).
+const (
+	agentTokenInsert = `(owner, name, token_hash, prefix, scopes)
+		values ($1, $2, $3, $4, $5)
+		returning ` + agentTokenColumns
+	agentTokenUse = `set last_used_at = now()
+		where token_hash = $1
+		  and revoked_at is null
+		  and (last_used_at is null or last_used_at < now() - interval '1 minute')`
+)
+
 type createAgentTokenResponse struct {
 	model.AgentToken
 	Token string `json:"token"`
@@ -493,6 +517,20 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 	`, r.PathValue("id"), actor.ID, scopes, projects))
 	if errors.Is(err, pgx.ErrNoRows) {
+		// No token of the caller's that writes. One of the caller's read-only tokens is still
+		// refused by name, so the person learns why rather than that it is not there.
+		var readOnly bool
+		if err := tx.QueryRow(r.Context(), `
+			select exists (select 1 from agent_read_tokens where id = $1 and owner = $2)
+		`, r.PathValue("id"), actor.ID).Scan(&readOnly); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
+			return
+		}
+		if readOnly {
+			writeError(w, codeTokenScopesInput, http.StatusBadRequest,
+				"this token is read only, and a read-only token keeps the scopes it was made with. A person makes a new token for other scopes, and revokes this one")
+			return
+		}
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
@@ -518,8 +556,15 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 }
 
 // codeTokenScopesInput refuses a set no token may hold: a word that is no scope this deployment
-// knows, or approve without person, which agent_tokens' own check refuses as well.
+// knows, approve without person, which agent_tokens' own check refuses as well, or read beside
+// approve or p0, which agent_read_tokens' own check refuses as well. It also refuses any change of
+// a token to or from read only (updateAgentTokenScopes).
 const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
+
+// tokenWords is every word a personal token's scopes may hold: the scopes a credential acts under
+// (model.Scopes: person, approve and p0), and read (model.ScopeRead), which marks a token that may
+// only read.
+var tokenWords = append(slices.Clip(model.Scopes), model.ScopeRead)
 
 // tokenScopes is the set a mint or an edit gives a token: the one the body names, or, where it
 // names none, the set the caller's own credential holds. It writes its own refusal and answers
@@ -543,19 +588,19 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string, 
 	if requested == nil {
 		return callerScopes(actor), true
 	}
-	// At most the scopes this deployment knows, whatever the body holds: an unknown word is
+	// At most the words this deployment knows, whatever the body holds: an unknown word is
 	// refused and a repeat is folded, so a long array buys no room.
-	scopes := make([]string, 0, len(model.Scopes))
+	scopes := make([]string, 0, len(tokenWords))
 	for _, scope := range *requested {
-		if !slices.Contains(model.Scopes, scope) {
+		if !slices.Contains(tokenWords, scope) {
 			writeError(w, codeTokenScopesInput, http.StatusBadRequest, fmt.Sprintf(
-				"%q is no scope this deployment knows; the scopes are %s",
-				scope, strings.Join(model.Scopes, " and ")))
+				"%q is no scope this deployment knows; the scopes are %s, %s, %s and %s",
+				scope, model.ScopePerson, model.ScopeApprove, model.ScopeP0, model.ScopeRead))
 			return nil, false
 		}
 		// Act is nil for a browser, whose person holds every scope, which is what Holds answers
 		// for one; a token's act carries the set its own row names.
-		if !actor.Act.Holds(scope) {
+		if scope != model.ScopeRead && !actor.Act.Holds(scope) {
 			refuseMissingScope(w, scope, fmt.Sprintf(
 				"this request's credential does not hold the %s scope, so it cannot give it to a token", scope))
 			return nil, false
@@ -570,17 +615,24 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string, 
 			model.ScopeApprove, model.ScopePerson))
 		return nil, false
 	}
+	if slices.Contains(scopes, model.ScopeRead) &&
+		(slices.Contains(scopes, model.ScopeApprove) || slices.Contains(scopes, model.ScopeP0)) {
+		writeError(w, codeTokenScopesInput, http.StatusBadRequest, fmt.Sprintf(
+			"a token holding %s holds it alone or beside %s, never beside %s or %s: settling what a person settles and setting an issue's priority to P0 are writes",
+			model.ScopeRead, model.ScopePerson, model.ScopeApprove, model.ScopeP0))
+		return nil, false
+	}
 	return scopes, true
 }
 
-// callerScopes is the set the caller's own credential holds: the scopes actingPerson copied onto
-// Act for a token that acted for its person, and both scopes for a browser, whose cookie names
-// no agent because the person themselves acted.
-func callerScopes(actor model.Actor) []string {
-	if actor.Act != nil {
-		return actor.Act.Scopes
+// withoutP0 is scopes less p0, which a person gives a token only by naming it: the set a mint that
+// names no scopes gives. It answers scopes itself where it holds no p0, so only a set holding p0
+// allocates.
+func withoutP0(scopes []string) []string {
+	if !slices.Contains(scopes, model.ScopeP0) {
+		return scopes
 	}
-	return model.Scopes
+	return slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool { return scope == model.ScopeP0 })
 }
 
 // codeTokenProjectsInput refuses a list no token may hold: more keys than
@@ -802,16 +854,25 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.deps.Store.Pool.Exec(r.Context(), `
-		update agent_tokens
-		set revoked_at = coalesce(revoked_at, now())
-		where id = $1 and owner = $2
-	`, r.PathValue("id"), actor.ID)
-	if err != nil {
+	var revoked int
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+		with writing as (
+			update agent_tokens
+			set revoked_at = coalesce(revoked_at, now())
+			where id = $1 and owner = $2
+			returning id
+		), reading as (
+			update agent_read_tokens
+			set revoked_at = coalesce(revoked_at, now())
+			where id = $1 and owner = $2
+			returning id
+		)
+		select (select count(*) from writing) + (select count(*) from reading)
+	`, r.PathValue("id"), actor.ID).Scan(&revoked); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("revoke agent token: %w", err))
 		return
 	}
-	if result.RowsAffected() == 0 {
+	if revoked == 0 {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
@@ -907,13 +968,12 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		}
 		scopes = nil
 	}
-	if _, err := s.deps.Store.Pool.Exec(ctx, `
-		update agent_tokens
-		set last_used_at = now()
-		where token_hash = $1
-		  and revoked_at is null
-		  and (last_used_at is null or last_used_at < now() - interval '1 minute')
-	`, hash[:]); err != nil {
+	// Each statement names its table in its own text (agentTokenUse).
+	recordUse := `update agent_tokens ` + agentTokenUse
+	if readOnly {
+		recordUse = `update agent_read_tokens ` + agentTokenUse
+	}
+	if _, err := s.deps.Store.Pool.Exec(ctx, recordUse, hash[:]); err != nil {
 		return model.Actor{}, fmt.Errorf("record agent token use: %w", err)
 	}
 	// The token's own row says what it may do and which projects it may use, and it names the

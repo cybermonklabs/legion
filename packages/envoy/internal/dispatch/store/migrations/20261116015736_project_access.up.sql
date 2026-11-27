@@ -1,14 +1,15 @@
 -- 20261116015736_project_access.up.sql — who may see a project: its owner, its access list, the
 -- groups that list names, and whether the project is public or private.
 --
--- INFRA-3862: a Dispatch project can be private, so its people and its agents see only that
+-- A Dispatch project can be private, so its people and its agents see only that
 -- project. This migration stores what that rule reads (internal/dispatch/access, access.go):
 --
---   - projects.owner, the person who changes the project's access list and its visibility. No
---     foreign key and no check hold it: a project is never left without one by a write
---     (projects_owner_kept, below), and a project the fill cannot give one is named at boot by
---     store.EnsureProjectOwners, which DISPATCH_PROJECT_OWNER_FALLBACK or `envoy-dispatch
---     project-owner` repairs (cmd/dispatch/README.md, "Giving a project to another owner").
+--   - projects.owner, the person who changes the project's access list and its visibility, a
+--     non-empty lowercase login (its check). No foreign key holds it: a project is never left
+--     without one by a write (projects_owner_kept, below), and a project the fill cannot give one
+--     is named at boot by store.EnsureProjectOwners, which DISPATCH_PROJECT_OWNER_FALLBACK or
+--     `envoy-dispatch project-owner` repairs (cmd/dispatch/README.md, "Giving a project to another
+--     owner").
 --   - projects.visibility, `public` (every full member sees the project, as today) or `private`.
 --   - project_access, the people and groups a project's owner lists. principal is a person's
 --     lowercase email or a group's name.
@@ -18,9 +19,9 @@
 --     person from outside the sign-in domain whom some project names directly.
 --   - agent_tokens.projects, the projects a personal token may use; empty for a token that
 --     names none, which is every token minted before this release.
---   - session_projects, which projects a session has acted in (events.Broker.QueueAppend writes a
---     row for a session's first event on a project), and session_projects_filled, the one row
---     `envoy-dispatch backfill-session-projects` writes when it has covered every older event.
+--   - session_projects, which projects a session has acted in, and session_projects_filled, the
+--     one row that says every older event's pairs are recorded. A later slice adds their writers:
+--     the record of a session's first event on a project, and the backfill that writes the marker.
 --     It has no unique key, on purpose: a unique key makes a write that records a pair wait for
 --     another open transaction that records the same pair, inside two writers that may hold
 --     crossed issue locks, which is a deadlock. A writer records a pair only where no committed
@@ -35,10 +36,11 @@
 -- **Every project's owner.** The fill gives each project its default assignee as owner where a
 -- `people` row holds that email (the join 20261111210103 reads its defaults through): a person
 -- who has signed in. A project whose default names nobody who signed in keeps a null owner here;
--- the boot names it and fills it from DISPATCH_PROJECT_OWNER_FALLBACK, or refuses to serve
--- (store.EnsureProjectOwners). Two triggers keep the rule from here on, in place of a check: a
--- NOT VALID check would still refuse every later update of a project the fill left without an
--- owner, and every issue create moves projects.next_number and last_seq.
+-- the census counts such projects before the deploy, and the boot names any left and fills it
+-- from DISPATCH_PROJECT_OWNER_FALLBACK, or refuses to serve (store.EnsureProjectOwners). Two
+-- triggers keep the rule from here on, in place of a not-null check: a NOT VALID check would still
+-- refuse every later update of a project the fill left without an owner, and every issue create
+-- moves projects.next_number and last_seq.
 --
 --   - projects_owner_from_default, before insert: a project created with no owner takes its
 --     default assignee, which is never null (20261111210103). So every insert stores an owner,
@@ -50,9 +52,10 @@
 -- **Expand only.** Every column is added nullable or with a constant default, so the release
 -- before this one reads and writes the schema as it did: its project create takes an owner from
 -- the insert trigger, and nothing it runs reads or writes the other new columns or tables.
--- Adding a column with a constant default writes the catalog alone (Postgres 11 on), and each
--- new check is on its new column alone, whose every existing row takes the default, so no row is
--- refused. The fill writes the new owner column of every project whose default names a person;
+-- Adding a column with a constant default rewrites no row (Postgres 11 on), and each new check is
+-- on its new column alone, whose every existing row takes the default or null, so no row is
+-- refused; Postgres reads each table once to validate its new checks. The fill writes the new
+-- owner column of every project whose default names a person;
 -- projects is a small table, read and written here under its own ACCESS EXCLUSIVE lock, which the
 -- ALTER takes anyway. The three tables are locked first, in one order, so no ALTER upgrades a
 -- lock it already holds.
@@ -62,7 +65,7 @@
 lock table projects, people, agent_tokens in access exclusive mode;
 
 alter table projects
-  add column owner text,
+  add column owner text check (owner <> '' and owner = lower(owner)),
   add column visibility text not null default 'public' check (visibility in ('public', 'private'));
 
 alter table people
