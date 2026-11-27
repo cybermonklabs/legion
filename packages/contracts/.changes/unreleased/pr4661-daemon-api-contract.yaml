@@ -6,4 +6,6 @@ body: |-
   route's request and answer (`LegionClaimApprovalRequest`, `LegionClaimApprovalResponse`, and the
   fixtures `claim-approval.json` and `claim-approval-none.json`), `hold` among the suspension
   sources (`legionSuspendedBy`, which the controller's agent actions' answer reads too), and `held`
-  in an issue's `why.state` (`state-work-hold.json`).
+  in an issue's `why.state` (`state-work-hold.json`). A plugin below that entry is served the agent
+  actions' answer without a `suspendedBy` or `suspensionHeldBy` that names `hold`, since its
+  `legionSuspendedBy` lacks the word.

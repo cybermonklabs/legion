@@ -342,6 +342,17 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if strip < entryNumber(claimStartContract) {
 			action.PhaseNotRestarted = ""
 		}
+		// `hold` arrived at workHoldContract, and a reader below it parses both sources with a
+		// strict enumeration that lacks it, so it is served the answer without the source it
+		// cannot name, as the state serves it an issue without a `why` it cannot read.
+		if strip < entryNumber(workHoldContract) {
+			if action.SuspendedBy == string(supervise.SuspendedByHold) {
+				action.SuspendedBy = ""
+			}
+			if action.SuspensionHeldBy == string(supervise.SuspendedByHold) {
+				action.SuspensionHeldBy = ""
+			}
+		}
 		return action, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -2366,9 +2377,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
 // PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that
-// carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted`, and false
-// for every other answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at
-// the replaces entry and at the claim start entry, and their writers answer from no
+// carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted` or names
+// the work hold (`hold`) as a source, and false for every other answer. Those answers' shapes
+// moved at pauseContract, at OwnerPlanContract, at the replaces entry, at the claim start entry
+// and at workHoldContract, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
 // that replaces no session is the same body at every contract, so it reads none. Every other
 // answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
@@ -2395,7 +2407,8 @@ func placedByPod(id AnswerID, body any) bool {
 		return isRegistration && registration.Replaces != ""
 	case AnswerAgentAction:
 		action, isAction := body.(AgentActionResponse)
-		return isAction && action.PhaseNotRestarted != ""
+		return isAction && (action.PhaseNotRestarted != "" || action.SuspendedBy == string(supervise.SuspendedByHold) ||
+			action.SuspensionHeldBy == string(supervise.SuspendedByHold))
 	default:
 		return false
 	}

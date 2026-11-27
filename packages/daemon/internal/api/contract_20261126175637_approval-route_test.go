@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 func init() {
@@ -21,6 +22,15 @@ func init() {
 			}
 			return map[AnswerID]answerFixture{
 				AnswerClaimApproval: {roots: typesOf(ClaimApprovalResponse{}), bodies: []any{approved, ClaimApprovalResponse{}}},
+				// The source this entry adds to the agent actions' answer, `hold`, carried at both keys
+				// that name a source, as agentActionBodies carries the sources that arrived with the
+				// answer: a worker the hold stopped, its stop held for its turn too.
+				AnswerAgentAction: {roots: typesOf(AgentActionResponse{}), bodies: []any{AgentActionResponse{
+					State:            string(supervise.StateSuspended),
+					SuspendedBy:      string(supervise.SuspendedByHold),
+					SuspensionHeld:   true,
+					SuspensionHeldBy: string(supervise.SuspendedByHold),
+				}}},
 			}
 		},
 		states:      func(t *testing.T) []State { return []State{workHeldState(t)} },

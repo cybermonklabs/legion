@@ -28,8 +28,9 @@ import "github.com/sjawhar/legion/daemon/internal/supervise"
 // whose header carries its way back). The operator claim routes are no session-facing body, and
 // `legion claims list` prints such a claim `suspended:hold`. The agent actions' answer
 // (AnswerAgentAction, the agent-actions entry) names its `suspendedBy` and `suspensionHeldBy`
-// whole, so `hold` takes a row of each here: the controller's `legion` tool hands that answer on
-// whole and reads none of it (`LEGION_ANSWER_READS`), so no value strip is owed for it.
+// whole, so `hold` takes a row of each here. A reader of that answer below this entry parses both
+// with a strict enumeration that lacks `hold`, so shapeAnswer serves it the answer without a
+// source that names the hold; both keys are optional to every such reader.
 // The work hold also adds a fifth word to an issue's `why.state`, on `GET /legion/v1/state` and on
 // the record route: `held` (api.WhyHeld), an issue whose work is a phase worker's in a running tree
 // the work hold holds (record.WorkHold), whose `reason` names the version that closed the tree's
