@@ -620,6 +620,34 @@ func TestAReadInWhichEachCheckPassesOpensOneLookAfterNotRun(t *testing.T) {
 	}
 }
 
+// The look a read after a not_run close opens is the check's last, once: a look that reopens
+// because of its own close is no new look. That look also ends pending here, which closes the check
+// not_run again and queues a read, and the read after that close, in which each check passes,
+// opens nothing. The bound is a fact of the record, what woke the look that just closed
+// (ProductionCheck.LastWakeKind), not a count. Without it the cycle close, read, look, pending,
+// close ran without end, each turn costing a tester start, a comment and a notice.
+func TestTheLookAReadOpensAfterNotRunIsOpenedOnce(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+	rig.lastLook(waitRoot)
+	rig.report(waitRoot, 2, "pending", "the check is due after the bound", nil)
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	if check := rig.check(waitRoot); !check.Open() || check.Looks != 3 || check.LastWakeKind != wakeRead {
+		t.Fatalf("the check after the first read in which each check passes = %+v, want look 3 open, woken by the read", check)
+	}
+	rig.report(waitRoot, 3, "pending", "the requirement is still unobserved", nil)
+	if check := rig.check(waitRoot); check.Open() || check.Outcome != record.CheckNotRun {
+		t.Fatalf("the check after the extra look's pending = %+v, want it closed not_run", check)
+	}
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	if check := rig.check(waitRoot); check.Open() || check.Looks != 3 {
+		t.Fatalf("the check after a read following the extra look's close = %+v, want it closed at look 3: that look was the one this door opens", check)
+	}
+	rig.stands(waitRoot, phase.Verifying, "testing")
+}
+
 // No timer opens a look after not_run: a day passes and the controller ticks, and no look opens.
 func TestNoTimerOpensALookAfterNotRun(t *testing.T) {
 	t.Parallel()
