@@ -316,7 +316,7 @@ settled() {
   local deadline=$((SECONDS + 30))
   while :; do
     sql "$1" "wait for the check states of $2 at $3" -v issue="$2" -v sha="$3" <<'SQL'
-select (exists (select 1 from check_states where issue_key = :'issue' and head_sha = :'sha' and check_block_id = '')
+select (exists (select 1 from check_state_sets where issue_key = :'issue' and head_sha = :'sha')
   and not exists (select 1 from check_states_owed where due_at <= now()))::text;
 SQL
     [[ "$(<"$work/sql")" == true ]] && break

@@ -1,10 +1,10 @@
 -- 20261126005343_check_states_ci_read_at.up.sql
 -- When the check states settler last started a read of GitHub's check runs at a former head of an
--- open pull request (api/check_states.go, formerHeadsOf), on the head's set row of check_states
--- (check_block_id ''); null where no read there has started yet. The settler reads the former
--- heads' check runs in the order this gives, the head whose read started longest ago first, and
--- starts reads only while the bound of its settle lasts, so a head behind heads GitHub does not
--- answer for is read within a bounded number of settles. Nullable with no default: the ALTER
--- holds ACCESS EXCLUSIVE on check_states for the catalog write alone, rewrites no row, and the
--- release before this one neither reads nor writes the column. The census answers 0.
-alter table check_states add column ci_read_at timestamptz;
+-- open pull request (api/check_states.go, formerHeadsOf), on the head's row of check_state_sets;
+-- null where no read there has started yet. The settler reads the former heads' check runs in the
+-- order this gives, the head whose read started longest ago first, and starts reads only while the
+-- bound of its settle lasts, so a head behind heads GitHub does not answer for is read within a
+-- bounded number of settles. Nullable with no default: the ALTER holds ACCESS EXCLUSIVE on
+-- check_state_sets for the catalog write alone, rewrites no row, and the release before this one
+-- neither reads nor writes the column. The census answers 0.
+alter table check_state_sets add column ci_read_at timestamptz;

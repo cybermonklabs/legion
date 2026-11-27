@@ -423,7 +423,7 @@ func openHeadsOf(heads []delivery.AttributedHead) (repos []string, numbers []int
 // open head whose pull request closed.
 //
 // The head whose read of GitHub's check runs started longest ago comes first, a head no read
-// started at before any (check_states.ci_read_at, which publish moves for each former head whose
+// started at before any (check_state_sets.ci_read_at, which publish moves for each former head whose
 // read started), and among those the head left last: the order deriveCIResults starts their reads
 // in, so each settle reads first the heads the settle before did not reach.
 func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []delivery.AttributedHead) ([]delivery.AttributedHead, error) {
@@ -434,8 +434,8 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 	rows, err := pool.Query(ctx, formerHeadsHeld("$2", "$3")+`
 		select held.repo, held.number, former.head_sha
 		from held join pull_request_former_heads former on former.pull = held.pull
-		left join check_states published on published.issue_key = $1 and published.repo = held.repo
-			and published.head_sha = former.head_sha and published.check_block_id = ''
+		left join check_state_sets published on published.issue_key = $1 and published.repo = held.repo
+			and published.head_sha = former.head_sha
 		where held.first and former.verified
 		order by published.ci_read_at nulls first, former.left_at desc, held.repo, former.head_sha, held.number`,
 		issue, repos, numbers)
@@ -893,37 +893,42 @@ func subjectAtHead(check model.CheckBlock, head headStates, linked []string) (mo
 	return model.PassStandsSubject{}, false
 }
 
-// checkStateKey is one row of check_states: a check at a head of a repository, "" for the head's
-// set row.
+// checkStateKey is one row of check_states: a check at a head of a repository.
 type checkStateKey struct {
 	repo, head, check string
 }
 
+// checkSetKey is one row of check_state_sets: a head of a repository, whose row holds the head's
+// set of checks.
+type checkSetKey struct {
+	repo, head string
+}
+
 // publishedCheckState is one row of check_states as the settler compares it.
 type publishedCheckState struct {
-	state  *string
+	state  string
 	reason string
 	roles  []string
 	ciCase string
-	checks []string
 }
 
 // sameState reports whether the published row holds the state computed: a change of the state,
 // its reason, its roles or its CI case is a change, and a change of its results or its check's
 // version alone is none.
 func (p publishedCheckState) sameState(state checkStateAt) bool {
-	return p.state != nil && *p.state == state.state && p.reason == state.reason && p.ciCase == state.ciCase &&
+	return p.state == state.state && p.reason == state.reason && p.ciCase == state.ciCase &&
 		sameStringSet(p.roles, state.roles)
 }
 
 // publish appends one check.state_changed event for each state that differs from the one published
 // at that head, and the set form for each head whose set of checks moved with no check's event to
 // carry it, in one transaction under the issue's owner lock: it raises the issue's serial by one
-// for each event, stores what each event published, deletes the rows of heads neither open nor
-// former (checkStatesAtHeads computed no state there) and of checks no longer in a head's set,
-// with no event, and settles the marks the round read. The row of a check a former head kept
+// for each event, stores what each event published, in check_states for a check and in
+// check_state_sets for a head's set of checks, deletes the rows of heads neither open nor former
+// (checkStatesAtHeads computed no state there) and of checks no longer in a head's set, with no
+// event, and settles the marks the round read. The row of a check a former head kept
 // (headStates.kept) stays as published, and each former head whose read of GitHub's check runs
-// started takes the time of this settle (check_states.ci_read_at).
+// started takes the time of this settle (check_state_sets.ci_read_at).
 //
 // A mark is settled, and deleted, once each former head has a read of its check runs that started
 // after the mark's change committed: a read in this settle, which read the mark after that commit,
@@ -955,8 +960,9 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // the repository) keeps no mark, so a test handoff waits for it no longer than the fence's own wait,
 // whatever GitHub answers: a candidate of such a pull request stays no former head, and a state
 // published at that commit before stays until a settle reads it. Only the settler writes
-// check_states, under the issue's lease, so the rows it reads here are the newest published. It
-// answers the events, which the caller publishes once the transaction has committed.
+// check_states and check_state_sets, under the issue's lease, so the rows it reads here are the
+// newest published. It answers the events, which the caller publishes once the transaction has
+// committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 	reads formerHeadsReads,
@@ -971,7 +977,7 @@ func (c *checkStatesSettler) publish(
 	if err := s.deps.Events.LockOwners(ctx, tx, owner.event(model.CheckStateChangedEventType, model.CheckStatesActor, nil)); err != nil {
 		return nil, err
 	}
-	published, err := publishedCheckStates(ctx, tx, issue)
+	published, sets, err := publishedCheckStates(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
@@ -990,7 +996,7 @@ func (c *checkStatesSettler) publish(
 		events = append(events, event)
 		return int64(event.Seq), nil
 	}
-	kept := map[checkStateKey]bool{}
+	kept, keptSets := map[checkStateKey]bool{}, map[checkSetKey]bool{}
 	var readRepos, readHeads, unreadRepos, unreadHeads []string
 	for _, head := range computed {
 		if len(head.kept) > 0 {
@@ -1019,13 +1025,13 @@ func (c *checkStatesSettler) publish(
 				return nil, err
 			}
 			lastSeq = seq
-			if err := upsertCheckState(ctx, tx, issue, key, artifact, &version, &answer, state.reason, state.roles, state.ciCase, head, seq); err != nil {
+			if err := upsertCheckState(ctx, tx, issue, key, artifact, version, answer, state.reason, state.roles, state.ciCase, seq); err != nil {
 				return nil, err
 			}
 		}
-		key := checkStateKey{head.repo, head.head, ""}
-		kept[key] = true
-		if row, held := published[key]; held && sameStringSet(row.checks, head.checks) {
+		set := checkSetKey{head.repo, head.head}
+		keptSets[set] = true
+		if checks, held := sets[set]; held && sameStringSet(checks, head.checks) {
 			continue
 		}
 		// The head's set of checks moved, or the head is new. A check's event at this head carries
@@ -1039,7 +1045,7 @@ func (c *checkStatesSettler) publish(
 				return nil, err
 			}
 		}
-		if err := upsertCheckState(ctx, tx, issue, key, artifact, nil, nil, "", nil, "", head, lastSeq); err != nil {
+		if err := upsertCheckStateSet(ctx, tx, issue, set, artifact, head, lastSeq); err != nil {
 			return nil, err
 		}
 	}
@@ -1052,12 +1058,21 @@ func (c *checkStatesSettler) publish(
 			return nil, fmt.Errorf("delete the published state of %s at %s of %s: %w", key.check, key.head, issue, err)
 		}
 	}
+	for set := range sets {
+		if keptSets[set] {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `delete from check_state_sets where issue_key = $1 and repo = $2 and head_sha = $3`,
+			issue, set.repo, set.head); err != nil {
+			return nil, fmt.Errorf("delete the published set of checks at %s of %s: %w", set.head, issue, err)
+		}
+	}
 	if len(readRepos) > 0 {
 		// Each former head whose read of GitHub's check runs started goes behind every head whose
 		// read started earlier or never, in the order formerHeadsOf gives the next settle.
 		if _, err := tx.Exec(ctx, `
-			update check_states set ci_read_at = now()
-			where issue_key = $1 and check_block_id = '' and (repo, head_sha) in (select * from unnest($2::text[], $3::text[]))`,
+			update check_state_sets set ci_read_at = now()
+			where issue_key = $1 and (repo, head_sha) in (select * from unnest($2::text[], $3::text[]))`,
 			issue, readRepos, readHeads); err != nil {
 			return nil, fmt.Errorf("store when %s's former heads were read: %w", issue, err)
 		}
@@ -1077,10 +1092,10 @@ func (c *checkStatesSettler) publish(
 		if err := tx.QueryRow(ctx, `
 			select coalesce(array_agg(owed.id), '{}') from check_states_owed owed
 			where owed.id = any($2) and exists (
-				select 1 from check_states published
+				select 1 from check_state_sets published
 				join unnest($3::text[], $4::text[]) as unread (repo, head_sha)
 					on unread.repo = published.repo and unread.head_sha = published.head_sha
-				where published.issue_key = $1 and published.check_block_id = ''
+				where published.issue_key = $1
 					and (published.ci_read_at is null or published.ci_read_at < coalesce(owed.reads_from, now())))`,
 			issue, marks, unreadRepos, unreadHeads).Scan(&unsettled); err != nil {
 			return nil, fmt.Errorf("read the marks of %s a head this settle did not read holds: %w", issue, err)
@@ -1153,47 +1168,79 @@ func (c *checkStatesSettler) retryAfter(failures int) time.Duration {
 	return min(wait, c.schedule.retryMax)
 }
 
-// publishedCheckStates is every row of check_states of issue, read under its owner lock.
-func publishedCheckStates(ctx context.Context, tx pgx.Tx, issue string) (map[checkStateKey]publishedCheckState, error) {
+// publishedCheckStates is every row of check_states of issue, and the set of checks of each row of
+// check_state_sets of issue, by head, read under its owner lock.
+func publishedCheckStates(ctx context.Context, tx pgx.Tx, issue string) (map[checkStateKey]publishedCheckState, map[checkSetKey][]string, error) {
 	rows, err := tx.Query(ctx, `
-		select repo, head_sha, check_block_id, state, reason, roles, ci_case, checks
+		select repo, head_sha, check_block_id, state, reason, roles, ci_case
 		from check_states where issue_key = $1`, issue)
 	if err != nil {
-		return nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
+		return nil, nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
 	}
 	defer rows.Close()
 	published := map[checkStateKey]publishedCheckState{}
 	for rows.Next() {
 		var key checkStateKey
 		var row publishedCheckState
-		if err := rows.Scan(&key.repo, &key.head, &key.check, &row.state, &row.reason, &row.roles, &row.ciCase, &row.checks); err != nil {
-			return nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
+		if err := rows.Scan(&key.repo, &key.head, &key.check, &row.state, &row.reason, &row.roles, &row.ciCase); err != nil {
+			return nil, nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
 		}
 		published[key] = row
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
+		return nil, nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
 	}
-	return published, nil
+	rows.Close()
+	setRows, err := tx.Query(ctx, `select repo, head_sha, checks from check_state_sets where issue_key = $1`, issue)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the published sets of checks of %s: %w", issue, err)
+	}
+	defer setRows.Close()
+	sets := map[checkSetKey][]string{}
+	for setRows.Next() {
+		var key checkSetKey
+		var checks []string
+		if err := setRows.Scan(&key.repo, &key.head, &checks); err != nil {
+			return nil, nil, fmt.Errorf("read the published sets of checks of %s: %w", issue, err)
+		}
+		sets[key] = checks
+	}
+	if err := setRows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the published sets of checks of %s: %w", issue, err)
+	}
+	return published, sets, nil
 }
 
-// upsertCheckState stores what one event published at key: a check's state, or the set row,
-// whose version and state are null.
+// upsertCheckState stores the state one event published of a check at a head.
 func upsertCheckState(
-	ctx context.Context, tx pgx.Tx, issue string, key checkStateKey, artifact *string, version *int, state *string,
-	reason string, roles []string, ciCase string, head headStates, seq int64,
+	ctx context.Context, tx pgx.Tx, issue string, key checkStateKey, artifact *string, version int, state string,
+	reason string, roles []string, ciCase string, seq int64,
 ) error {
 	if _, err := tx.Exec(ctx, `
 		insert into check_states (issue_key, repo, head_sha, check_block_id, check_artifact_id, check_version, state,
-			reason, roles, ci_case, checks, pull_requests, event_seq)
-		values ($1, $2, $3, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13)
+			reason, roles, ci_case, event_seq)
+		values ($1, $2, $3, $4, $5::uuid, $6, $7, $8, $9, $10, $11)
 		on conflict (issue_key, repo, head_sha, check_block_id) do update set
 			check_artifact_id = excluded.check_artifact_id, check_version = excluded.check_version,
 			state = excluded.state, reason = excluded.reason, roles = excluded.roles, ci_case = excluded.ci_case,
-			checks = excluded.checks, pull_requests = excluded.pull_requests, event_seq = excluded.event_seq`,
-		issue, key.repo, key.head, key.check, artifact, version, state, reason, nonNilStrings(roles), ciCase,
-		nonNilStrings(head.checks), head.pullRequests, seq); err != nil {
+			event_seq = excluded.event_seq`,
+		issue, key.repo, key.head, key.check, artifact, version, state, reason, nonNilStrings(roles), ciCase, seq); err != nil {
 		return fmt.Errorf("store the published state of %s at %s of %s: %w", key.check, key.head, issue, err)
+	}
+	return nil
+}
+
+// upsertCheckStateSet stores the set of checks, and the pull requests, one event published at a
+// head. It leaves the row's ci_read_at as it was.
+func upsertCheckStateSet(ctx context.Context, tx pgx.Tx, issue string, set checkSetKey, artifact *string, head headStates, seq int64) error {
+	if _, err := tx.Exec(ctx, `
+		insert into check_state_sets (issue_key, repo, head_sha, check_artifact_id, checks, pull_requests, event_seq)
+		values ($1, $2, $3, $4::uuid, $5, $6, $7)
+		on conflict (issue_key, repo, head_sha) do update set
+			check_artifact_id = excluded.check_artifact_id, checks = excluded.checks,
+			pull_requests = excluded.pull_requests, event_seq = excluded.event_seq`,
+		issue, set.repo, set.head, artifact, nonNilStrings(head.checks), head.pullRequests, seq); err != nil {
+		return fmt.Errorf("store the published set of checks at %s of %s: %w", set.head, issue, err)
 	}
 	return nil
 }

@@ -13,13 +13,15 @@
 --                        issue and no foreign key: a mark waits on no other mark, and it takes no
 --                        lock on the issue's row.
 --   check_states         one row per issue, repository, head and check: the state the settler
---                        last published there, with the seq of the event that carried it. The
---                        row whose check_block_id is '' is the head's set row: the block ids of
---                        the issue's `before_merge` checks the last event at that head named
---                        (checks). check_artifact_id is null where the issue has no Verification
---                        document; state and check_version are null on the set row. Only the
---                        settler writes it, under the issue's lease, so a settle compares each
---                        computed state with the newest one published.
+--                        last published there, with the seq of the event that carried it, and
+--                        the Verification document and the check's version it was computed from.
+--   check_state_sets     one row per issue, repository and head: the block ids of the issue's
+--                        `before_merge` checks the last event at that head named (checks), empty
+--                        for a head with no check, and the pull requests it named, with the seq
+--                        of that event. check_artifact_id is null where the issue has no
+--                        Verification document. Only the settler writes the two tables, under
+--                        the issue's lease, so a settle compares each computed state and each
+--                        head's set of checks with the newest one published.
 --   check_state_serials  one row per issue: how many check.state_changed events it holds, the
 --                        serial the newest one carries. A test handoff stores it
 --                        (handoffs.check_states_serial) once every mark due when the handoff
@@ -48,17 +50,26 @@ create table check_states (
     issue_key text not null references issues (key) on delete cascade,
     repo text not null,
     head_sha text not null check (head_sha ~ '^[0-9a-f]{40}$'),
-    check_block_id text not null, -- '' is the head's set row
-    check_artifact_id uuid, -- null: the issue has no Verification document
-    check_version integer,
-    state text check (state in ('yes', 'no', 'unknown')),
+    check_block_id text not null check (check_block_id <> ''),
+    check_artifact_id uuid not null,
+    check_version integer not null,
+    state text not null check (state in ('yes', 'no', 'unknown')),
     reason text not null default '',
     roles text[] not null default '{}',
     ci_case text not null default '',
+    event_seq bigint not null,
+    primary key (issue_key, repo, head_sha, check_block_id)
+);
+
+create table check_state_sets (
+    issue_key text not null references issues (key) on delete cascade,
+    repo text not null,
+    head_sha text not null check (head_sha ~ '^[0-9a-f]{40}$'),
+    check_artifact_id uuid, -- null: the issue has no Verification document
     checks text[] not null default '{}',
     pull_requests integer[] not null default '{}',
     event_seq bigint not null,
-    primary key (issue_key, repo, head_sha, check_block_id)
+    primary key (issue_key, repo, head_sha)
 );
 
 create table check_state_serials (

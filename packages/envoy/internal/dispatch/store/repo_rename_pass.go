@@ -41,20 +41,20 @@ import (
 // result of an issue's check (ci_check_results.attestation) is such a record of its run too, and
 // the pass writes only that row's commit_repo.
 //
-// Nor does it write the check states settler's tables, check_states and the tables of
-// pull_request_former_heads. The pass's write of an open pull request's row records that row's
-// move from the old name to the new one (pull_request_former_heads_keep) and owes its issue a
-// settle (pull_request_former_heads_begin), and that settle moves the settler's own state of the
-// pull request to the new name, publishes each state under the new name, with an event, and
-// deletes the state under the old one. A rewrite of check_states would leave that settle no state
-// to publish, so a reader that keys a state by its repository, as the Legion daemon's check states
-// do, would never learn it under the new name. A rewrite of the settler's record of writes or of
-// its own state would apply the record of the move against a state under another name than the
-// record's. And the settler keeps each name it met a pull request under
-// (pull_request_former_heads_aliases), since an old name finds the identity of every other name of
-// its pull request by the rename rule (pull_request_canonical_repo), while a rewrite that dropped
-// the old name where the new one holds an identity the settler has not joined yet would part a
-// history from its pull request.
+// Nor does it write the check states settler's tables, check_states, check_state_sets and the
+// tables of pull_request_former_heads. The pass's write of an open pull request's row records
+// that row's move from the old name to the new one (pull_request_former_heads_keep) and owes its
+// issue a settle (pull_request_former_heads_begin), and that settle moves the settler's own state
+// of the pull request to the new name, publishes each state under the new name, with an event,
+// and deletes the state under the old one. A rewrite of check_states or check_state_sets would
+// leave that settle no state to publish, so a reader that keys a state by its repository, as the
+// Legion daemon's check states do, would never learn it under the new name. A rewrite of the
+// settler's record of writes or of its own state would apply the record of the move against a
+// state under another name than the record's. And the settler keeps each name it met a pull
+// request under (pull_request_former_heads_aliases), since an old name finds the identity of
+// every other name of its pull request by the rename rule (pull_request_canonical_repo), while a
+// rewrite that dropped the old name where the new one holds an identity the settler has not
+// joined yet would part a history from its pull request.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.

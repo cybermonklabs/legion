@@ -292,16 +292,17 @@ func (r *statesProof) noBeforeMergeCheck(issue *statesIssue) string {
 	return read.VerificationArtifactID
 }
 
-// emptySet holds that Dispatch's check_states holds of issue only the set row at its head, with no
-// check, computed from the Verification document document: the published state of a head whose
-// issue has a document with no before_merge check, and not of an issue with no document.
+// emptySet holds that Dispatch publishes of issue no row of check_states and one row of
+// check_state_sets, the set at its head, with no check, computed from the Verification document
+// document: the published state of a head whose issue has a document with no before_merge check,
+// and not of an issue with no document.
 func (r *statesProof) emptySet(issue *statesIssue, document string) {
 	r.t.Helper()
 	published := r.publishedStates(issue)
 	if len(published) != 1 || published[0].check != "" || published[0].head != issue.head || len(published[0].checks) != 0 || published[0].document != document {
-		r.fail("empty-set", "Dispatch's check_states holds %v of %s, want only the set at %s with no check, from the Verification document %s", published, issue.key, issue.head, document)
+		r.fail("empty-set", "Dispatch's check_states and check_state_sets hold %v of %s, want only the set at %s with no check, from the Verification document %s", published, issue.key, issue.head, document)
 	}
-	r.note("read back: Dispatch's check_states holds of %s only the set at %s, with no check, computed from the Verification document %s", issue.key, issue.head, document)
+	r.note("read back: Dispatch's check_states and check_state_sets hold of %s only the set at %s, with no check, computed from the Verification document %s", issue.key, issue.head, document)
 }
 
 // issueClaims is the tokens of every claim the daemon holds of issue, sorted.

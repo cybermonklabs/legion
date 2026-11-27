@@ -108,11 +108,11 @@ body: |-
     `refs.Renames.Canonical` read the pairs: both names of a `repo_projects` row in lower case, a
     row that renames nothing dropped, the greatest new name of one old name, and no pair once
     `repo_projects` is gone), so a name finds the row a writer keyed under the canonical name. The
-    boot's rename pass writes no column of `check_states` or of these tables: its write of a pull
-    request's row records that row's move to the new name and owes its issue a settle, which
-    publishes each state under the new name, with an event, and deletes the state under the old
-    one, so a reader that keys a state by its repository learns it under the new name; and the
-    settler keeps each name it met a pull request under. A
+    boot's rename pass writes no column of `check_states`, of `check_state_sets` or of these
+    tables: its write of a pull request's row records that row's move to the new name and owes
+    its issue a settle, which publishes each state under the new name, with an event, and
+    deletes the state under the old one, so a reader that keys a state by its repository learns
+    it under the new name; and the settler keeps each name it met a pull request under. A
     close or a merge under any name ends the lifecycle and starts the next
     generation, while a rename and a move to another issue keep it: applying the records drops
     each head the pull request reached before the last close (`pull_request_former_heads_pulls.ended`,
@@ -165,10 +165,10 @@ body: |-
     own transaction each issue that holds an open row of the pull request when it applies, so a
     head applied after the pull request moved to an issue that had already settled is published
     there too, with no lock of an event owner taken and the writers' triggers still only
-    appending. A former head's rows in `check_states` go once no open pull
+    appending. A former head's rows in `check_states` and `check_state_sets` go once no open pull
     request is or was at it. A check CI proves is read at the former heads after the open heads, in
     a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose
-    read started longest ago first (`check_states.ci_read_at`, migration `20261126005343`); a
+    read started longest ago first (`check_state_sets.ci_read_at`, migration `20261126005343`); a
     former head whose read had not started when that bound ended keeps its published state, with no
     `read_failed`, and the next settle, a second on, reads it first, so each of N former heads is
     read within ceil(N/8) settles however slow GitHub is for the others. A mark whose change came

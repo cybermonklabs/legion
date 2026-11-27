@@ -675,7 +675,7 @@ async function checkStatesSettled(issueKey: string, head: string): Promise<void>
   await expect
     .poll(async () =>
       sql(
-        `SELECT (EXISTS (SELECT 1 FROM check_states WHERE issue_key = '${issueKey}' AND head_sha = '${head}' AND check_block_id = '')
+        `SELECT (EXISTS (SELECT 1 FROM check_state_sets WHERE issue_key = '${issueKey}' AND head_sha = '${head}')
            AND NOT EXISTS (SELECT 1 FROM check_states_owed WHERE issue_key = '${issueKey}' AND due_at <= now()))::text`
       )
     )

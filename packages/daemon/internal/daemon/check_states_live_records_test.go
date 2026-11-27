@@ -68,9 +68,10 @@ func (r *statesProof) storedResults(table, where string, args ...any) []statesSt
 	return stored
 }
 
-// statesPublished is one row of Dispatch's check_states: the newest state Dispatch published of a
-// check at a head, or, where check is empty, the head's set of checks. document is the
-// Verification document the row was computed from, empty where the issue had none.
+// statesPublished is one row of Dispatch's check_states, the newest state Dispatch published of a
+// check at a head, or, where check is empty, the head's row of check_state_sets, its set of
+// checks. document is the Verification document the row was computed from, empty where the issue
+// had none.
 type statesPublished struct {
 	check, head, state, reason, document string
 	checks                               []string
@@ -84,12 +85,16 @@ func (p statesPublished) String() string {
 }
 
 // publishedStates is each state Dispatch has published of issue's checks, as its check_states
-// table holds the newest, and the set row of each head.
+// table holds the newest, and the set of checks of each head, as its check_state_sets holds it.
 func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 	r.t.Helper()
 	rows, err := r.dispatchDB.Query(context.Background(), `
-		select check_block_id, head_sha, coalesce(state, ''), reason, coalesce(check_artifact_id::text, ''), checks
-		from check_states where issue_key = $1 order by head_sha, check_block_id`, issue.key)
+		select check_block_id, head_sha, state, reason, check_artifact_id::text, '{}'::text[]
+		from check_states where issue_key = $1
+		union all
+		select '', head_sha, '', '', coalesce(check_artifact_id::text, ''), checks
+		from check_state_sets where issue_key = $1
+		order by 2, 1`, issue.key)
 	if err != nil {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
 	}
