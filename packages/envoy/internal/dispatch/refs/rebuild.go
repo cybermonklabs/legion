@@ -226,6 +226,7 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	`); err != nil {
 		return 0, fmt.Errorf("settle the index owed by the sources the orphan sweep found gone: %w", err)
 	}
+	// kept for one release: decisions-ref-repair
 	if _, err := tx.Exec(ctx, `
 		delete from refs_decisions_forms_owed o
 		where not exists (
@@ -240,6 +241,7 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	`); err != nil {
 		return 0, fmt.Errorf("settle the decisions index owed by the sources the orphan sweep found gone: %w", err)
 	}
+	// kept for one release: decisions-ref-repair
 	if _, err := tx.Exec(ctx, `
 		delete from refs_decisions_forms_seed_owed o
 		where not exists (
@@ -463,6 +465,7 @@ var RefsFormsOwed = OwedQueue{table: "refs_forms_owed"}
 // statement that deletes the row it relays, so a delete beside it, in one statement, would run
 // before the relay and leave the row for good. It is drained by the duty that drains RefsFormsOwed
 // (docs.Service.RunRefsFormsReconciliation).
+// kept for one release: decisions-ref-repair
 var RefsDecisionsFormsOwed = OwedQueue{table: "refs_decisions_forms_owed"}
 
 // RefsDecisionsFormsSeedOwed is the bootstrap half of RefsDecisionsFormsOwed (migration
@@ -474,6 +477,7 @@ var RefsDecisionsFormsOwed = OwedQueue{table: "refs_decisions_forms_owed"}
 // in both queues is indexed once, and a complete index clears its row of each
 // (settleDecisionsFormsStatement). It has no trigger, so no delete from it relays anything. It is
 // drained by the same duty, one pass, and a drain that finds it empty never reads it again.
+// kept for one release: decisions-ref-repair
 var RefsDecisionsFormsSeedOwed = OwedQueue{table: "refs_decisions_forms_seed_owed"}
 
 // settleDecisionsFormsStatement is the delete that clears one source's row of both halves of the
@@ -483,6 +487,7 @@ var RefsDecisionsFormsSeedOwed = OwedQueue{table: "refs_decisions_forms_seed_owe
 // RefsFormsOwed it queued, and never inside one: the relay of the delete into the live queue fires
 // after its statement. The bootstrap delete rides in the same statement, since no trigger writes
 // that table.
+// kept for one release: decisions-ref-repair
 const settleDecisionsFormsStatement = `
 	with seed as (delete from refs_decisions_forms_seed_owed where kind = $1 and id = $2::uuid)
 	delete from refs_decisions_forms_owed where kind = $1 and id = $2::uuid`

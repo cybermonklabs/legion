@@ -725,6 +725,7 @@ func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
 		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
 	}
 	b.Queue(what, statement, args...)
+	// kept for one release: decisions-ref-repair
 	if i.settleForms {
 		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", i.kind, i.itemID),
 			settleDecisionsFormsStatement, string(i.kind), i.itemID)

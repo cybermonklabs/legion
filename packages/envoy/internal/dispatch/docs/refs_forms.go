@@ -90,6 +90,7 @@ type formsDrain struct {
 	logged RefsFormsTick
 	// oneShot says nothing writes the queue after its migration, so a pass that finds it empty is
 	// the last: done is then set, and the tick reads the queue no more.
+	// kept for one release: decisions-ref-repair
 	oneShot bool
 	done    bool
 }
@@ -102,8 +103,10 @@ func newFormsDrain(queue refs.OwedQueue) *formsDrain {
 // the live queue of the Decisions page's reading, and its bootstrap queue, which only the seed
 // migration writes and which the duty stops reading once a pass finds it empty.
 func newFormsDrains() []*formsDrain {
+	// kept for one release: decisions-ref-repair
 	seed := newFormsDrain(refs.RefsDecisionsFormsSeedOwed)
 	seed.oneShot = true
+	// kept for one release: decisions-ref-repair
 	return []*formsDrain{newFormsDrain(refs.RefsFormsOwed), newFormsDrain(refs.RefsDecisionsFormsOwed), seed}
 }
 
@@ -114,6 +117,7 @@ func newFormsDrains() []*formsDrain {
 func (s *Service) refsFormsTick(ctx context.Context, drains []*formsDrain) time.Duration {
 	wait := BlockIndexReconcileInterval
 	for _, drain := range drains {
+		// kept for one release: decisions-ref-repair
 		if drain.done {
 			continue
 		}
@@ -147,6 +151,7 @@ func (s *Service) formsDrainPass(ctx context.Context, drain *formsDrain) bool {
 		drain.logged = tick
 	}
 	drain.cursor = tick.Cursor
+	// kept for one release: decisions-ref-repair
 	if drain.oneShot && err == nil && tick.OwedTexts == 0 && !tick.Full {
 		drain.done = true
 		slog.Info("dispatch: refs forms index found its bootstrap queue empty, which only its migration writes, and reads it no more",

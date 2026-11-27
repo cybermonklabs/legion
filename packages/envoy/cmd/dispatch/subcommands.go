@@ -368,12 +368,15 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 // step's first phase has still to state (docs.ErrDryRunOwesBackfill), runs no catch-up, and runs
 // the third phase with the rewrite of the gated steps and each issue's transaction rolled back.
 //
-// It prints one line for each issue it touched (writeDecisionIssue), and one for each issue whose
-// transaction failed, and where it touched none and none failed, one line saying so
-// (`issues=0`), so a run that owed nothing reads apart from one that printed nothing. It exits 1
-// on such a failure, on another build live, or on any other error, 2 on a usage error or a
-// --project the projects table holds no row of under that exact key, which it refuses before any
-// phase runs, and 0 otherwise.
+// It prints one line for each issue it touched (writeDecisionIssue), one for each issue it left
+// with nothing written because a document of it owes its block index, which the block-index
+// reconciliation indexes before a later run takes the issue (`issue=… left: …`), and one for each
+// issue whose transaction failed, and where it touched, left and failed none, one line saying so
+// (`issues=0`), so a run that owed nothing reads apart from one that printed nothing, and a run
+// that still owes an issue never says nothing was owed. It exits 1 on such a left issue, on such a
+// failure, on another build live, or on any other error, 2 on a usage error or a --project the
+// projects table holds no row of under that exact key, which it refuses before any phase runs, and
+// 0 otherwise.
 //
 // kept for one release: decisions-step
 func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
@@ -411,21 +414,24 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 	defer documents.Shutdown(context.Background())
 	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
 	step.UseDocuments(documents)
-	issues, failures, err := step.RunByHand(ctx, key, convert, *dryRun)
-	for _, issue := range issues {
+	pass, err := step.RunByHand(ctx, key, convert, *dryRun)
+	for _, issue := range pass.Done {
 		writeDecisionIssue(stdout, name, issue, *dryRun)
 	}
-	for _, failure := range failures {
+	for _, left := range pass.Left {
+		fmt.Fprintf(stdout, "%s: issue=%s left: %v\n", name, left.Issue, left.Err)
+	}
+	for _, failure := range pass.Failed {
 		fmt.Fprintf(stdout, "%s: issue=%s failed: %v\n", name, failure.Issue, failure.Err)
 	}
 	if err != nil {
 		fmt.Fprintf(stdout, "%s: %v\n", name, err)
 		return 1
 	}
-	if len(failures) > 0 {
+	if len(pass.Left) > 0 || len(pass.Failed) > 0 {
 		return 1
 	}
-	if len(issues) == 0 {
+	if len(pass.Done) == 0 {
 		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, *dryRun)
 	}
 	return 0
