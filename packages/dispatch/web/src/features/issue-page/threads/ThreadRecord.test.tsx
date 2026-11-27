@@ -15,6 +15,18 @@ import { answerThreadReads } from "../../../__tests__/send-answers";
 import { api } from "../../../api/client";
 import type { Message } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
+import {
+  borderDefault,
+  calloutSuccessBg,
+  inputClasses,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+} from "../../../theme/classes";
+import { ASK_DECLINE_WORDS } from "../../ask-body/ask-body-words";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { publishedNames } from "../projection-fixture";
@@ -48,6 +60,10 @@ const REMARK = commentThread("The list should name the daemon");
 const TEXT = commentThread("Is a tie broken by the id?");
 /** The settled question with replies, of no row of the unread set. */
 const SETTLED = asksThreadBody.threads.find((row) => row.question.startsWith("Does the list keep"));
+/** The question still open, with replies, which the reader may answer or decline. */
+const OPEN_ASK = asksThreadBody.threads.find((row) =>
+  row.question.startsWith("Should Waiting on me")
+);
 /** The reader's message to the planner's role, with the planner's replies. */
 const FIRST_MESSAGE = MESSAGES.find((row) => row.message.body.startsWith("Can the list show"));
 
@@ -609,6 +625,95 @@ describe("the renderer of an entry (R9)", () => {
           order.indexOf(parent)
         );
       }
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+});
+
+/** Asserts that `field` is drawn as the new page's field (`MentionComposer`'s `TONES.page.field`):
+ *  the page's paper inside its hairline, in its ink, and not `main`'s recessed input, which the
+ *  field draws where its host hands no palette (`MentionField`). */
+function expectPageField(field: HTMLElement, which: string): void {
+  expect(field, `${which} draws no field of the new page`).toHaveClass(
+    pageHairBorder,
+    pagePaperBg,
+    pageInkText
+  );
+  expect(field, `${which} draws main's field`).not.toHaveClass(inputClasses(true));
+}
+
+describe("the new page's palette (R9, root R42)", () => {
+  test("a settled ask opened in its record draws its record in the new page's palette", async () => {
+    const window = stubWindow(1440);
+    answerThreads();
+    const drawn = drawThreads(threadsAt(SETTLED?.id));
+    try {
+      const record = await waitFor(() => {
+        const found = entry(SETTLED?.id ?? "")?.querySelector<HTMLElement>(
+          `[data-testid="ask-${SETTLED?.id}"]`
+        );
+        expect(found, "the settled ask draws no record").toBeTruthy();
+        return found as HTMLElement;
+      });
+      // The answered record is the page's pane grey inside its hairline, where `main`'s palette
+      // draws the success callout (`AskCompletionCard`'s `TONES`).
+      expect(record, "the settled ask draws no record of the new page").toHaveClass(
+        pageHairBorder,
+        pagePaneBg
+      );
+      expect(record, "the settled ask draws main's success callout").not.toHaveClass(
+        calloutSuccessBg
+      );
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("an open question opened in its record draws Decline to answer in the new page's palette", async () => {
+    const window = stubWindow(1440);
+    answerThreads();
+    const drawn = drawThreads(threadsAt(OPEN_ASK?.id));
+    try {
+      const decline = await waitFor(() =>
+        within(entry(OPEN_ASK?.id ?? "") as HTMLElement).getByRole("button", {
+          name: ASK_DECLINE_WORDS.decline,
+        })
+      );
+      // Decline to answer is the page's line rule and its muted words, where `main`'s palette
+      // draws the surface's border (`DeclineControl`'s `TONES`).
+      expect(decline, "Decline to answer is not the new page's").toHaveClass(
+        pageLineBorder,
+        pageMutedText
+      );
+      expect(decline, "Decline to answer draws main's border").not.toHaveClass(borderDefault);
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("the box at the foot of a comment thread and the reader's comment opened to edit draw their composer in the new page's palette", async () => {
+    const window = stubWindow(1440);
+    answerThreads();
+    const user = userEvent.setup();
+    const drawn = drawThreads(threadsAt(REMARK.comment.id));
+    try {
+      await waitFor(() => expect(box("foot")).toBeDefined());
+      expectPageField(replyField("foot"), "the box at the foot");
+      await user.click(
+        within(entry(REMARK.comment.id) as HTMLElement).getByRole("button", {
+          name: CONTROL_LABELS.edit,
+        })
+      );
+      expectPageField(
+        within(entry(REMARK.comment.id) as HTMLElement).getByRole("textbox", {
+          name: "Edit comment",
+        }),
+        "the comment opened to edit"
+      );
     } finally {
       drawn.done();
       window.restore();

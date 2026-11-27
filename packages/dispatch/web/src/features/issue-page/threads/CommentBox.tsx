@@ -21,11 +21,11 @@ interface AnsweredPost extends ReplyParent {
  * A box of Threads that writes a comment (dispatch://INFRA-5704/spec#b-r-mentions, R9, R11): the
  * box at the foot of a comment thread or of a settled ask, and the box a reply control opens under
  * a comment. It is a `MentionComposer` with the `@` picker, as Dashboard's thread item mounts one
- * (`ThreadItem.tsx`), under this part's own box id (`threads-reply` in `DISPATCH_WRITING_BOXES`),
- * so `@` offers the parties the picker offers on `main` and the agent picked is stored in the
- * comment's mentions. A reply to a comment names it (`reply_to`), which the server stores as its
- * thread's head with the comment it answers (`answers`), and on a settled ask it names the ask
- * (`ask_id`).
+ * (`ThreadItem.tsx`), in the new page's palette (`palette="page"`) as that item draws it on the
+ * new page, under this part's own box id (`threads-reply` in `DISPATCH_WRITING_BOXES`), so `@`
+ * offers the parties the picker offers on `main` and the agent picked is stored in the comment's
+ * mentions. A reply to a comment names it (`reply_to`), which the server stores as its thread's
+ * head with the comment it answers (`answers`), and on a settled ask it names the ask (`ask_id`).
  *
  * Its send name is the box's own, so a draft typed in a box that goes - another entry's Reply,
  * Cancel reply, Escape - is kept under it, and the box that opens there again shows it. The box
@@ -82,6 +82,7 @@ export function CommentBox({
           onLeave?.();
         }}
         owner={owner}
+        palette="page"
         replyParent={parent}
         replyTo={replyTo}
         standing={onLeave === undefined}
@@ -91,8 +92,9 @@ export function CommentBox({
 }
 
 /**
- * The reader's own comment opened to edit (R9): a `MentionComposer` over its words, which saves
- * them with `PATCH /api/v1/comments/{id}` (`saveCommentEdit`), as part L's edit line does
+ * The reader's own comment opened to edit (R9): a `MentionComposer` over its words, in the new
+ * page's palette (`palette="page"`) as `CommentBox`'s, which saves them with
+ * `PATCH /api/v1/comments/{id}` (`saveCommentEdit`), as part L's edit line does
  * (`IssueComposer.tsx`'s `EditLine`), under this part's own box id (`threads-comment-edit` in
  * `DISPATCH_WRITING_BOXES`). Once the save lands, the issue's comment reads (and, for a comment
  * inside an ask thread, its ask reads) are read again, which Threads' pages stand under, and the
@@ -126,6 +128,7 @@ export function CommentEditBox({
       onClose={onLeave}
       onSent={onLeave}
       owner={owner}
+      palette="page"
       saveEdit={async (comment, words, carried, bounds) => {
         const saved = await saveCommentEdit(comment, words, carried, bounds);
         await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });

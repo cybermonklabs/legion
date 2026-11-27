@@ -89,9 +89,10 @@ type OpenBox = { readonly kind: "reply" | "edit"; readonly id: string };
  * R9's order (`placedEntries`), siblings at their depths, then the box at its foot.
  *
  * An ask is drawn by the ask body (`DashboardAskBody`, `rowText` as its renderer and its writes
- * from `ask-body/ask-writes.ts`), then its replies from its thread in the `asks?thread=1` page.
- * While the ask is open the ask body's answer box is the record's one box at rest, and no box
- * stands at its foot or under the ask itself.
+ * from `ask-body/ask-writes.ts`) in the new page's palette (`palette="page"`), as Dashboard on the
+ * new page draws one (`dashboard/WaitingList.tsx`), then its replies from its thread in the
+ * `asks?thread=1` page. While the ask is open the ask body's answer box is the record's one box at
+ * rest, and no box stands at its foot or under the ask itself.
  *
  * The box at the foot writes a reply to the record's root. A reply control opens a box under its
  * entry, which writes a reply to that entry and goes when it sends or the reader leaves it, and
@@ -278,7 +279,7 @@ export function OpenedRecord({
       <ol className="min-w-0 space-y-3">
         {record.kind === "ask" ? (
           <li className="min-w-0 space-y-1" data-depth={0} data-thread-entry={record.root.id}>
-            <DashboardAskBody ask={record.root} />
+            <DashboardAskBody ask={record.root} palette="page" />
             {askOpen ? null : (
               <p className="flex gap-2 text-xs">
                 <button
