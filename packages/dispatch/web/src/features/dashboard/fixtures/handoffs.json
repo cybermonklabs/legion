@@ -1,0 +1,112 @@
+[
+  {
+    "id": "2dda7916-dbc7-47af-8481-ff6f38e4cfeb",
+    "issue_key": "INFRA-4097",
+    "phase": "implement",
+    "version": 27,
+    "author": {
+      "kind": "session",
+      "id": "01a2100a-6371-74fe-82a4-7308d545acf1"
+    },
+    "created_at": "2026-11-25T12:18:13.571764Z"
+  },
+  {
+    "id": "aab45e67-5596-4da8-af57-59e41e262cb7",
+    "issue_key": "INFRA-4097",
+    "phase": "review",
+    "version": 4,
+    "author": {
+      "kind": "session",
+      "id": "01a1ea0b-7659-75b5-ba07-f06fcb67bb05"
+    },
+    "created_at": "2026-11-25T11:03:54.484844Z"
+  },
+  {
+    "id": "8a4cdddb-aeb5-4a9b-9c26-0a5812eba30f",
+    "issue_key": "INFRA-4097",
+    "phase": "test",
+    "version": 11,
+    "author": {
+      "kind": "session",
+      "id": "01a2114f-4f78-7729-8577-1b2d46e76c93"
+    },
+    "created_at": "2026-11-25T10:40:43.635849Z"
+  },
+  {
+    "id": "5f27cd99-a7f9-4930-9170-057075198f7e",
+    "issue_key": "INFRA-4097",
+    "phase": "implement",
+    "version": 26,
+    "author": {
+      "kind": "session",
+      "id": "01a2100a-6371-74fe-82a4-7308d545acf1"
+    },
+    "created_at": "2026-11-25T10:10:29.18617Z"
+  },
+  {
+    "id": "74b63b99-1b76-4dd1-a03a-52aa6b6a1e9a",
+    "issue_key": "INFRA-4097",
+    "phase": "implement",
+    "version": 25,
+    "author": {
+      "kind": "session",
+      "id": "01a2100a-6371-74fe-82a4-7308d545acf1"
+    },
+    "created_at": "2026-11-25T09:40:18.883106Z"
+  },
+  {
+    "id": "0b8c8dda-63c5-45c6-be4f-3d095a0ec8b2",
+    "issue_key": "INFRA-4097",
+    "phase": "test",
+    "version": 10,
+    "author": {
+      "kind": "session",
+      "id": "01a2114f-4f78-7729-8577-1b2d46e76c93"
+    },
+    "created_at": "2026-11-25T07:24:30.149396Z"
+  },
+  {
+    "id": "c89f696a-fdff-4767-bd64-53de0519bd68",
+    "issue_key": "INFRA-4097",
+    "phase": "review",
+    "version": 3,
+    "author": {
+      "kind": "session",
+      "id": "01a1ea0b-7659-75b5-ba07-f06fcb67bb05"
+    },
+    "created_at": "2026-11-22T15:47:40.771994Z"
+  },
+  {
+    "id": "08968aca-f0e9-4f10-a711-4ff7a97048d6",
+    "issue_key": "INFRA-4097",
+    "phase": "test",
+    "version": 9,
+    "author": {
+      "kind": "session",
+      "id": "01a1e968-3574-72ae-a8b3-123ba108e0ef"
+    },
+    "created_at": "2026-11-22T14:40:37.549383Z"
+  },
+  {
+    "id": "ed43a395-0a8f-4775-8464-b7c699f8a813",
+    "issue_key": "INFRA-4097",
+    "phase": "plan",
+    "version": 2,
+    "author": {
+      "kind": "session",
+      "id": "01a1e67f-3b7e-752f-b0e5-32b6682e5851"
+    },
+    "created_at": "2026-11-17T01:03:09.591842Z"
+  },
+  {
+    "id": "df86e6a2-e4cf-485d-ab02-b77f8479e7f9",
+    "issue_key": "INFRA-4097",
+    "phase": "plan",
+    "version": 1,
+    "author": {
+      "kind": "session",
+      "id": "01a1e67f-3b7e-752f-b0e5-32b6682e5851"
+    },
+    "created_at": "2026-11-17T00:59:58.667541Z"
+  }
+]

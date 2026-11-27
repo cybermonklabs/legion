@@ -175,8 +175,9 @@ referencesTest(
     await expect(references).not.toContainText("depth");
     await expect(page.getByText("more references beyond 8 hops")).toHaveCount(0);
     const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(10);
+    await expect(tabs).toHaveCount(11);
     for (const [index, name] of [
+      "Dashboard",
       "Spec",
       "Verification",
       "Plan",

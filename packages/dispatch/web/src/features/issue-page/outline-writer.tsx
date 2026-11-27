@@ -98,8 +98,6 @@ export interface OutlineWriter {
    *  line. Once it is carried every aim takes effect again, and a line that mounts again over
    *  that send writes on the issue. */
   readonly statement: StatementTarget | undefined;
-  /** Picks `label` of the options of the answer the writer holds (`answer`), or lets it go. */
-  readonly toggle: (label: string) => void;
   // A send of the line's own that Dispatch refused holds the line on its target through the
   // issue's own Reply too, as through every other aim (`statement`): only `clear`, which the
   // target line's control and Escape reach, lets it go.
@@ -342,9 +340,6 @@ export function OutlineWriterProvider({
     },
     [answering, sendKey, setReply, store]
   );
-  const toggle = useCallback((label: string) => {
-    setAnswer((held) => (held === undefined ? held : picked(held, label)));
-  }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
     // Ending the target in the line is the reader's own move of the line's address, which the
@@ -406,7 +401,6 @@ export function OutlineWriterProvider({
       setKind,
       setReply,
       statement,
-      toggle,
       writeOnIssue,
     }),
     [
@@ -426,7 +420,6 @@ export function OutlineWriterProvider({
       sendKey,
       setReply,
       statement,
-      toggle,
       writeOnIssue,
     ]
   );
