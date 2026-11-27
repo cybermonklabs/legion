@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -167,6 +168,154 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 		if got := requirementOf(t, coverage, id).TextTree; member.TextTree == nil || !bytes.Equal(got, member.TextTree) {
 			t.Errorf("%s's text_tree is\n\t%s\nin the coverage read and\n\t%s\nin the batched reference read, want the same bytes",
 				id, got, member.TextTree)
+		}
+	}
+}
+
+// footnotedTreeNode is a display tree as the footnote test below walks it: each node's type, its
+// attributes, its text, the types of the marks on it and its children.
+type footnotedTreeNode struct {
+	Type  string         `json:"type"`
+	Attrs map[string]any `json:"attrs"`
+	Text  string         `json:"text"`
+	Marks []struct {
+		Type string `json:"type"`
+	} `json:"marks"`
+	Content []footnotedTreeNode `json:"content"`
+}
+
+// footnotedReference is one footnote reference of a display tree: its label, whether it stands
+// in a link, carrying the link's mark or inside a node of the link's, and the text of the node
+// right before it in its parent, with whether that node stands in a link.
+type footnotedReference struct {
+	label               string
+	linked, followsLink bool
+	follows             string
+}
+
+// footnotedTree is what the footnote test below reads of a display tree: its footnote references
+// in document order, every character of its text in document order, how many footnote
+// definitions it holds, and how many of its text nodes hold the stand-in's `x` alone.
+type footnotedTree struct {
+	references  []footnotedReference
+	text        string
+	definitions int
+	standIns    int
+}
+
+// readFootnotedTree walks tree into a footnotedTree.
+func readFootnotedTree(t *testing.T, tree json.RawMessage) footnotedTree {
+	t.Helper()
+	var root footnotedTreeNode
+	if err := json.Unmarshal(tree, &root); err != nil {
+		t.Fatalf("decode the tree %s: %v", tree, err)
+	}
+	linked := func(node footnotedTreeNode, inLink bool) bool {
+		for _, mark := range node.Marks {
+			inLink = inLink || mark.Type == "link"
+		}
+		return inLink || node.Type == "link"
+	}
+	var read footnotedTree
+	var text strings.Builder
+	var walk func(node footnotedTreeNode, inLink bool)
+	walk = func(node footnotedTreeNode, inLink bool) {
+		switch node.Type {
+		case "footnote_definition":
+			read.definitions++
+		case "text":
+			text.WriteString(node.Text)
+			if node.Text == "x" {
+				read.standIns++
+			}
+		}
+		for index, child := range node.Content {
+			if child.Type == "footnote_reference" {
+				reference := footnotedReference{linked: linked(child, inLink)}
+				reference.label, _ = child.Attrs["label"].(string)
+				if index > 0 {
+					before := node.Content[index-1]
+					reference.follows, reference.followsLink = before.Text, linked(before, inLink)
+				}
+				read.references = append(read.references, reference)
+			}
+			walk(child, linked(child, inLink))
+		}
+	}
+	walk(root, false)
+	read.text = text.String()
+	return read
+}
+
+// The coverage read answers a requirement's `[^label]` as the document reads it, for a caller
+// that asked for trees: a footnote reference where the document defines the label, outside the
+// requirement as much as inside it, since that is where the browser editor holds an atom, and
+// text where nothing in the document defines the label or the call is escaped. A requirement's
+// tree is read from its stored text, which holds no definition the document writes outside the
+// block, and a reading of that text alone reads every call as text, where the page could not
+// tell the reference from the text. The reference stands where the document reads one: after a
+// word, after a link's text and before a colon, where `[^k1]:` opens no definition. The document
+// stores a call written in a link's text after the link, carrying no mark, as the browser editor
+// holds it: the parse makes a reference with no marks, since the editor's store keeps a mark on
+// text alone, and the rendering closes every mark before one. So the reference stands right
+// after the link's text. The words around each call are in its tree, no tree holds a footnote
+// definition or the stand-in's `x` that the read resolves the calls with, and `text` is what each
+// requirement always answered.
+func TestTheCoverageReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler, _ := blockIndexHandler(t)
+	rows := []struct {
+		id, content, words string
+		// reference is the call as the tree holds it, nil for a call that stays text; around is
+		// the text the tree holds around the call, which for a call that stays text holds the
+		// call itself.
+		reference *footnotedReference
+		around    []string
+	}{
+		{id: "r1", content: "Read the note[^k1] first.", words: "Read the note first.",
+			reference: &footnotedReference{label: "k1", follows: "Read the note"},
+			around:    []string{"Read the note", " first."}},
+		{id: "r2", content: "[note[^k1]](https://example.com) first.", words: "first.",
+			reference: &footnotedReference{label: "k1", follows: "note", followsLink: true},
+			around:    []string{"note", " first."}},
+		{id: "r3", content: "The result[^k1]: it holds.", words: "The result : it holds.",
+			reference: &footnotedReference{label: "k1", follows: "The result"},
+			around:    []string{"The result", ": it holds."}},
+		{id: "r4", content: "Read the note[^zz] first.", words: "Read the note[^zz] first.",
+			around: []string{"Read the note[^zz] first."}},
+		{id: "r5", content: "Read the note\\[^k1] first.", words: "Read the note[^k1] first.",
+			around: []string{"Read the note[^k1] first."}},
+	}
+	var spec strings.Builder
+	for _, row := range rows {
+		spec.WriteString(":::requirement{#" + row.id + "}\n" + row.content + "\n:::\n\n")
+	}
+	spec.WriteString("[^k1]: The note.\n")
+	issue := createInteractionIssue(t, handler, "TBF", "Footnoted requirements", spec.String())
+	target := "/api/v1/issues/" + issue.Key + "/coverage"
+
+	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, target, true))
+	for index, row := range rows {
+		tree := treeAt(t, handler, target, "requirements."+strconv.Itoa(index)+".text_tree")
+		read := readFootnotedTree(t, tree)
+		if row.reference != nil {
+			if want := []footnotedReference{*row.reference}; !slices.Equal(read.references, want) {
+				t.Errorf("%s %q: the tree's footnote references are %+v, want %+v:\n\t%s", row.id, row.content, read.references, want, tree)
+			}
+		} else if len(read.references) != 0 {
+			t.Errorf("%s %q: the tree holds the footnote references %+v, want the call as text:\n\t%s", row.id, row.content, read.references, tree)
+		}
+		for _, words := range row.around {
+			if !strings.Contains(read.text, words) {
+				t.Errorf("%s %q: the tree's text %q holds no %q:\n\t%s", row.id, row.content, read.text, words, tree)
+			}
+		}
+		if read.definitions != 0 || read.standIns != 0 {
+			t.Errorf("%s %q: the tree holds %d footnote definitions and %d texts of the stand-in's x, want none:\n\t%s",
+				row.id, row.content, read.definitions, read.standIns, tree)
+		}
+		if got := requirementOf(t, coverage, row.id).Text; got != row.words {
+			t.Errorf("%s %q: text = %q, want the words it always answered, %q", row.id, row.content, got, row.words)
 		}
 	}
 }
