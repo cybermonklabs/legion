@@ -2946,6 +2946,10 @@ func (f *commitPullsFake) serveCommits(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, body)
 }
 
+// serveCommitPulls answers GET /repos/{owner}/{repo}/commits/{sha}/pulls as GitHub does, in its
+// pages: the pull requests answer names for the commit, oldest first, per_page of them (GitHub's
+// default 30, at most 100) from page page. A fake that answered the whole list on every page read a
+// commit of more than one page as a list that never ends.
 func (f *commitPullsFake) serveCommitPulls(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("owner") + "/" + r.PathValue("repo")
 	f.mu.Lock()
@@ -2965,7 +2969,23 @@ func (f *commitPullsFake) serveCommitPulls(w http.ResponseWriter, r *http.Reques
 		fmt.Fprint(w, `[]`)
 		return
 	}
-	fmt.Fprint(w, answer(repo, r.PathValue("sha")))
+	var pulls []json.RawMessage
+	if err := json.Unmarshal([]byte(answer(repo, r.PathValue("sha"))), &pulls); err != nil {
+		http.Error(w, `{"message":"the fake's answer is no JSON array"}`, http.StatusInternalServerError)
+		return
+	}
+	perPage, page := 30, 1
+	if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && asked > 0 {
+		perPage = min(asked, 100)
+	}
+	if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
+		page = asked
+	}
+	start := min((page-1)*perPage, len(pulls))
+	listed := append([]json.RawMessage{}, pulls[start:min(start+perPage, len(pulls))]...)
+	if err := json.NewEncoder(w).Encode(listed); err != nil {
+		http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+	}
 }
 
 // factsQueries is how often GitHub has been asked the batched query of facts, for any repository.
@@ -3015,10 +3035,12 @@ var (
 // commitPullsThroughMux answers POST /graphql for the batched query of the pull requests of many
 // commits (delivery's commitPullsQuery) from the mux's own REST route, as a test's own fake
 // answers one commit: for each `c<i>: object(oid: "<sha>")` alias it asks the mux
-// GET /repos/{owner}/{repo}/commits/{sha}/pulls with the request's own Authorization, and answers
-// that commit's aliased object with those pull requests in the fields of the query (factsNodeOf).
-// A test whose fake counts its REST reads counts one for each commit the query asks about, as it
-// counted one for each read of one commit.
+// GET /repos/{owner}/{repo}/commits/{sha}/pulls with the request's own Authorization, at
+// GitHub's largest page, and answers that commit's aliased object as GitHub does: the first
+// `first` of those pull requests (commitPullsFirst), in the fields of the query (factsNodeOf),
+// and the count of them all, so a commit of more than the query reads is read over REST. A test
+// whose fake counts its REST reads counts one for each commit the query asks about, as it counted
+// one for each read of one commit.
 //
 // Every fake of this package that answers that route registers it, so the read-through reads what
 // the fake holds whether it asks about one commit or about all of them at once. The fake of
@@ -3036,10 +3058,14 @@ func commitPullsThroughMux(t *testing.T, mux *http.ServeMux) http.HandlerFunc {
 		}
 		owner, _ := request.Variables["owner"].(string)
 		name, _ := request.Variables["name"].(string)
+		first := math.MaxInt
+		if read := commitPullsFirst.FindStringSubmatch(request.Query); read != nil {
+			first, _ = strconv.Atoi(read[1])
+		}
 		commits := map[string]any{}
 		for index, alias := range commitPullsAlias.FindAllStringSubmatch(request.Query, -1) {
 			inner := httptest.NewRequestWithContext(r.Context(), http.MethodGet,
-				fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", owner, name, alias[1]), nil)
+				fmt.Sprintf("/repos/%s/%s/commits/%s/pulls?per_page=100", owner, name, alias[1]), nil)
 			inner.Header.Set("Authorization", r.Header.Get("Authorization"))
 			answer := httptest.NewRecorder()
 			mux.ServeHTTP(answer, inner)
@@ -3056,7 +3082,7 @@ func commitPullsThroughMux(t *testing.T, mux *http.ServeMux) http.HandlerFunc {
 				return
 			}
 			nodes := []any{}
-			for _, raw := range pulls {
+			for _, raw := range pulls[:min(first, len(pulls))] {
 				var named struct {
 					Number int `json:"number"`
 				}
@@ -3074,7 +3100,7 @@ func commitPullsThroughMux(t *testing.T, mux *http.ServeMux) http.HandlerFunc {
 				nodes = append(nodes, node)
 			}
 			commits["c"+strconv.Itoa(index)] = map[string]any{
-				"associatedPullRequests": map[string]any{"nodes": nodes},
+				"associatedPullRequests": map[string]any{"totalCount": len(pulls), "nodes": nodes},
 			}
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": commits}}); err != nil {

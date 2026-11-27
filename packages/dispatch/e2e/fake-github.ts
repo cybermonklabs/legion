@@ -977,7 +977,8 @@ const server = Bun.serve({
 
     // The pull requests GitHub names for a commit, which Dispatch reads through when a result
     // names a commit that is the head of no pull request it has an event for. It must match
-    // before the bare `commits/{ref}` route below.
+    // before the bare `commits/{ref}` route below. GitHub lists them oldest first in its pages
+    // (`per_page`, default 30, at most 100, and `page`), as every list route here answers.
     const commitPulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/pulls$/);
     if (request.method === "GET" && commitPulls !== null) {
       const repo = repos.get(`${commitPulls[1]}/${commitPulls[2]}`);
@@ -985,8 +986,9 @@ const server = Bun.serve({
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
       const numbers = repo.commit_pulls?.[commitPulls[3] ?? ""] ?? [];
+      const listed = numbers.filter((number) => repo.pulls?.[String(number)] !== undefined);
       return Response.json(
-        numbers.flatMap((number) => {
+        pageOf(listed, url).flatMap((number) => {
           const seeded = repo.pulls?.[String(number)];
           if (seeded === undefined) return [];
           return [
