@@ -107,7 +107,7 @@
 --   alter table pending_task_deliveries add column if not exists marked_by text not null default '';
 --   alter table pending_task_deliveries add column if not exists prompted boolean not null default false;
 --   update outbox set payload = payload - 'origin' where kind = 'supervise' and payload ? 'origin';
---   update outbox set payload = payload - 'mergeState' - 'stateReadAt' - 'launch' - 'sentLaunch' where kind = 'merge_forward' and (payload ? 'mergeState' or payload ? 'stateReadAt' or payload ? 'launch' or payload ? 'sentLaunch');
+--   update outbox set payload = payload - 'mergeState' - 'stateReadAt' where kind = 'merge_forward' and (payload ? 'mergeState' or payload ? 'stateReadAt');
 --   update claims set failure_cause = 'never_registered' where failure_cause = 'never_reconnected';
 --   update claims set pending_cause = 'never_registered' where pending_cause = 'never_reconnected';
 --   alter table claims drop column if exists task_written;
@@ -129,7 +129,7 @@
 --   SQL
 --
 -- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
--- carried the key, UPDATE <m> for the merge-forward rows whose payload carried any of its four
+-- carried the key, UPDATE <m> for the merge-forward rows whose payload carried either of its two
 -- keys, UPDATE <f> for the claims whose failure cause it rewrote, UPDATE <p> for those whose
 -- pending cause it rewrote, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE
 -- for each of the seventeen columns it finds as it means to leave them, the same ALTER TABLEs,
@@ -157,17 +157,18 @@
 -- read as a phase start where it names a phase and an operator's task otherwise (supervise's
 -- originOf), as a row of the release before this one is.
 --
--- The fifth takes out the four keys this release writes into a merge-forward row: the two each in
--- an ask or hold whose record holds it, the read of GitHub the act rests on
--- (record.MergeForwardMessage.MergeState and StateReadAt), and the two in an ask the re-send at a
--- launch's ready or a reopen queues, the launches of the asked role's claim the ask was told
--- (record.MergeForwardMessage.Launch and SentLaunch). The release before it knows none of them and
--- decodes that row strictly too, so a row still carrying any fails to decode at every attempt,
--- retried on the runner's backoff, and its message is never delivered. Nothing that daemon reads
--- is lost with them, since its ask and its hold name no read and carry no launch; a row the
--- roll-forward finds carrying no read says that GitHub's merge state and the time of its read are
--- unknown (record.AnsweredMergeState), and an ask carrying no launch goes to whatever launch
--- holds the role, as that daemon sends it.
+-- The fifth takes out the two keys this release writes into a merge-forward row that the release
+-- before it refuses: those of an ask or hold whose record holds it, the read of GitHub the act
+-- rests on (record.MergeForwardMessage.MergeState and StateReadAt). That release decodes the row
+-- strictly too, so a row still carrying either fails to decode at every attempt, retried on the
+-- runner's backoff, and its message is never delivered. It reads the third key this release
+-- writes there, sentLaunch, the launch of the asked role's claim a delivered row of the ask was
+-- told, since cybermonklabs/legion#5312 added it and this release writes it as that release does;
+-- the block keeps it, and a rollback past #5312 takes it off in that release's own step
+-- (docs/kubernetes.md, "Rolling back the release that holds every worker while a merge forward is
+-- owed"). Nothing that daemon reads is lost with the two keys, since its ask and its hold name no
+-- read; a row the roll-forward finds carrying no read says that GitHub's merge state and the time
+-- of its read are unknown (record.AnsweredMergeState).
 --
 -- The sixth and seventh write never_registered over never_reconnected in the claim's two cause
 -- columns, failure_cause and pending_cause (20261111212544_claim_failure_cause). never_reconnected
