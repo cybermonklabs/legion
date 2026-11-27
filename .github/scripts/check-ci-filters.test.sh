@@ -160,20 +160,25 @@ def alone_held(root, alone, packages):
 
 
 def writer_words():
-    """Each of the seven words the rule 8 harness reads too, read by the reduction of a go test
+    """Each of the seven words the rule 8 harness reads too, read by the reduction of a go command
     line in the filter engine, by ci_job_reads.events_writer over a job file whose step runs it,
     and by workflow_paths.names_events_writer: one line per word, agree or DISAGREE, and the
     verdicts. (This program is a single-quoted shell word, so it holds no apostrophe.)"""
     import tempfile
     import workflow_paths
     writer = workflow_paths.EVENTS_WRITER
+    # The line is built from its words: this program is a python3 -c string, and rule 8 refuses a
+    # line that runs python3 -c and names a go command running tests anywhere in its text.
+
+    def line(word):
+        return " ".join([word, "go", "test", "./x"])
 
     def engine(word):
-        return ci_filter_coverage.reduce_line(f"{word} go test ./x")[5] == ""
+        return ci_filter_coverage.reduce_line(line(word))[5] == ""
 
     def job_reads(word):
         with tempfile.NamedTemporaryFile("w", suffix=".yaml") as job:
-            job.write(f"        run: {word} go test ./x\n")
+            job.write(f"        run: {line(word)}\n")
             job.flush()
             reads.job_file = lambda _job: job.name
             return bool(reads.events_writer("unit"))

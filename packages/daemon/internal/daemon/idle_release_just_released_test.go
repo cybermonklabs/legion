@@ -106,14 +106,14 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	// 4. A message routed to the routed pod's session as Dispatch's outbox routes a person's
 	//    answer to a claimed issue's session: published straight onto the stream on the session's
 	//    agent subject, with no send route to refuse it. The session's interest row still names
-	//    the rig's listener, which holds the copy for its unplaceable window and then gives it up
-	//    and reports the wake.
+	//    the rig's listener, which finds no record of the session: it waits once for its agent
+	//    wait (idleRigAgentWait) and then reports the wake.
 	const routedMessage = "a person's answer routed to a session just released"
 	rig.publish(idleRigAgentSubjectPrefix+routedSession, "dispatch", "just-released-routed-1", routedMessage)
 
 	// 5. Each pod comes back for its own message, and its role's task names that wake. The
-	//    routed pod's wake comes after the listener's ten-second window, and its resume after the
-	//    launch that follows the wake.
+	//    routed pod's wake comes after the listener's agent wait (idleRigAgentWait), and its
+	//    resume after the launch that follows the wake.
 	wakes := []struct {
 		issue        idleRigIssue
 		kind, detail string

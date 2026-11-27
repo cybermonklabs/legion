@@ -195,18 +195,18 @@ func (b *BodyBudget) readBody(ctx context.Context, w http.ResponseWriter, r *htt
 	return data, read.release, err
 }
 
-// refuseBody answers a body readBody did not take: 413 for one over its route's cap, 503 with
-// Retry-After for one that waited its route's whole room wait for room in the budget, and 400 for
-// any other failure, a body cut short or a read that outlasted its deadline. The 503 logs a line
-// and counts it (envoy_webhook_body_refused_total), since nothing else records that the budget
-// turned a delivery away. Slack retries it. A GitHub App webhook's delivery waits for the
-// redelivery sweep (packages/envoy/internal/dispatch/redeliver), which asks only for the App
-// webhook's failed deliveries: a delivery from any other GitHub webhook is lost.
+// refuseBody answers a body readBody did not take: 413 naming its route's cap (BodyTooLarge) for
+// one over that cap, 503 with Retry-After for one that waited its route's whole room wait for room
+// in the budget, and 400 for any other failure, a body cut short or a read that outlasted its
+// deadline. The 503 logs a line and counts it (envoy_webhook_body_refused_total), since nothing
+// else records that the budget turned a delivery away. Slack retries it. A GitHub App webhook's
+// delivery waits for the redelivery sweep (packages/envoy/internal/dispatch/redeliver), which asks
+// only for the App webhook's failed deliveries: a delivery from any other GitHub webhook is lost.
 func (b *BodyBudget) refuseBody(w http.ResponseWriter, r *http.Request, err error) {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
-		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		http.Error(w, BodyTooLarge(tooLarge.Limit), http.StatusRequestEntityTooLarge)
 	case errors.Is(err, errNoRoom):
 		log.Printf("webhook body refused path=%s content_length=%d: %v; answered 503", r.URL.Path, r.ContentLength, err)
 		b.refused.Inc([2]string{"path", r.URL.Path})

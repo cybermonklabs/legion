@@ -11,7 +11,7 @@
 # .github/scripts/check-workflow-files.sh's own clean run (0 refusals over ci.yaml's run) holds that
 # again at every change; no check holds a count. The runner rows' counts were read with the rule 8
 # of the change that last edited this list, the way it reads its texts (every step's run: of
-# ci.yaml's run and the 166 shell scripts it reaches from them, as logical lines, so a comment or a
+# ci.yaml's run and the 167 shell scripts it reaches from them, as logical lines, so a comment or a
 # heredoc of text is out), counting the lines that run the runner at a command's place. For a
 # runner whose command rule 8 cannot read (eval, coproc, flock, a shell reading a pipe or a
 # here-string, python3 -c, stdbuf, ionice and taskset), rule 8 refuses a line that runs one and
@@ -20,10 +20,10 @@
 # check holds that.
 */eval/*	eval runs a string the shell builds when the step runs, which no reading of the step can follow: rule 8 refuses a line that runs eval and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test at a command's place. 24 lines rule 8 reads run eval, and none is refused.
 */coproc/*	coproc runs its command beside the shell, which talks to it through a pipe: rule 8 refuses a line that runs coproc and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test in the foreground. 1 line rule 8 reads runs coproc, and it is not refused.
-*/flock/*	flock runs the command after its lock file and options, which rule 8 does not read: it refuses a line that runs flock and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to take the lock on a line of its own. 3 lines rule 8 reads run flock, and none is refused.
+*/flock/*	flock runs the command after its lock file and options, which rule 8 does not read: it refuses a line that runs flock and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to take the lock on a line of its own. 4 lines rule 8 reads run flock, and none is refused.
 */pipe-to-bash/*	a shell reading its script from a pipe (`| bash`) runs text another command writes when the step runs: rule 8 refuses a line that pipes into a shell and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test as a command. No line rule 8 reads pipes into a shell.
 */here-string/*	a here-string a shell takes as its script (`bash <<<`) is a word the shell expands when the step runs: rule 8 refuses a line that hands a shell a here-string and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test as a command. No line rule 8 reads hands a shell a here-string.
-*/python3-c/*	python3 -c runs a program in another language, here one that runs its arguments: rule 8 reads a Python script's go test argv, and no -c program, so it refuses a line that runs python3 -c and names a go test or a script that runs one, kept or not, an over-refusal whose fix is a script the rule reads. 59 lines rule 8 reads run python3 -c, and none is refused.
+*/python3-c/*	python3 -c runs a program in another language, here one that runs its arguments: rule 8 reads a Python script's go test argv, and no -c program, so it refuses a line that runs python3 -c and names a go test or a script that runs one, kept or not, an over-refusal whose fix is a script the rule reads. 60 lines rule 8 reads run python3 -c, and none is refused.
 */stdbuf/*	stdbuf runs the command after its options, which rule 8 does not read: it refuses a line that runs stdbuf and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test without it. No line rule 8 reads runs stdbuf.
 */ionice/*	ionice runs the command after its options, which rule 8 does not read: it refuses a line that runs ionice and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test without it. No line rule 8 reads runs ionice.
 */taskset/*	taskset runs the command after its mask or list, which rule 8 does not read: it refuses a line that runs taskset and names a go test or a script that runs one, kept or not, an over-refusal whose fix is to run the go test without it. No line rule 8 reads runs taskset.

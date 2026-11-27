@@ -1,0 +1,96 @@
+{
+  "issue": "ACME-1",
+  "spec_artifact_id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+  "has_plan": false,
+  "requirements": [
+    {
+      "block_id": "r1",
+      "ref": "dispatch://ACME-1/spec#b-r1",
+      "text": "Dashboard lists what waits on the person, newest first.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Dashboard lists what waits on the person, newest first."
+              }
+            ]
+          }
+        ]
+      },
+      "checks": 2,
+      "plan_tasks": 0,
+      "gaps": []
+    },
+    {
+      "block_id": "r2",
+      "ref": "dispatch://ACME-1/spec#b-r2",
+      "text": "Each item is answered where it is drawn.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Each item is answered where it is drawn."
+              }
+            ]
+          }
+        ]
+      },
+      "checks": 1,
+      "plan_tasks": 0,
+      "gaps": []
+    },
+    {
+      "block_id": "r3",
+      "ref": "dispatch://ACME-1/spec#b-r3",
+      "text": "The list draws five items at a time.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "The list draws five items at a time."
+              }
+            ]
+          }
+        ]
+      },
+      "checks": 1,
+      "plan_tasks": 0,
+      "gaps": []
+    },
+    {
+      "block_id": "r4",
+      "ref": "dispatch://ACME-1/spec#b-r4",
+      "text": "The count above the list is the number of its items, and no total.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "The count above the list is the number of its items, and no total."
+              }
+            ]
+          }
+        ]
+      },
+      "checks": 2,
+      "plan_tasks": 0,
+      "gaps": []
+    }
+  ],
+  "gaps": []
+}

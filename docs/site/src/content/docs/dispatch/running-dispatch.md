@@ -524,6 +524,67 @@ that names the owner, the earlier event and that event's last publish error. The
 earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
 attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
+## GitHub rate reading
+
+Each server with the GitHub App's private key reads the App's rate counters: at start, every 10
+minutes, and in the last minute before each counter reset of any installation. A reading is due 45
+seconds before a reset, or at once when the reading before it ended inside that last minute. Each
+reading lists the App's installations, reads first the ones in a counter's last minute, and logs
+one `github_rate_reading` line for each of them to stderr. The line is JSON, though the rest of the
+log is text, so a log store such as Cloud Logging keeps its fields. A reading costs each
+installation one REST core call, and one more when the server lists the installation's
+repositories again: at its first reading, and after GitHub no longer has the repository it read
+before. It holds:
+
+- `program` (`dispatch`), `process` (the server's host name) and `project` (empty).
+- `app_id`, `app_slug`, `owner` and `installation_id`, which name the installation, and
+  `installations`, how many installations the list held. The App's id and slug come from the
+  fresh installation list, which names both for each installation, so a renamed App does not keep
+  its old slug until the server restarts. The server asks GitHub's `GET /app` only when the list
+  names neither, and a failure there fails no reading.
+- `permissions`: each permission the installation grants the App, with its access, as the
+  installation list named them. It is `{}` when the list named none, and it is on the line of a
+  reading that failed too. A permission the list names with a value that is not text is left out.
+- `before_reset`, true when the line was written in the last minute before a reset of one of this
+  installation's counters, including on a regular pass. A reading that failed there is a
+  `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
+  an installation is written in a counter's last minute, the server takes no other reading for
+  that reset, even when GitHub's next answer names the reset a second later. If that line failed,
+  the hour has no last-minute reading of that counter: the server does not ask GitHub again until
+  the reset.
+- For the REST core counter and the GraphQL counter: `core_used`, `core_limit` and `core_reset`,
+  and `graphql_used`, `graphql_limit` and `graphql_reset`, as GitHub answered them, with each reset
+  in RFC 3339 UTC.
+- `core_own` and `graphql_own`: the calls this server made on that counter since its last reset,
+  by the part of Dispatch that made them. Those are `architecture_import`, `delivery_reconcile`
+  and `ci_reconcile` (three of the loops above), `webhook_intake` (the delivery intakes), `api`
+  (the API and the GitHub proxy), `rate_reading` (the reading itself) and `other` (anything
+  else). `webhook_redelivery` appears only if the sweep calls GitHub with an installation's token;
+  today it calls with the App's own credential alone.
+
+A reading of an installation that has used its whole budget still carries the counters. Its reads
+are sent even while the server holds back its other reads of that installation, and GitHub names
+the counter in a refusal too: about 6 + 2N core calls an hour of each such installation from each
+server, N being the App's installations. A secondary limit is different: GitHub asks a client to
+send nothing while one holds, and may ban an integration that goes on. So once GitHub answers one
+of this server's calls with an installation's token with a secondary limit, the server sends that
+installation's reading nothing until the end GitHub asked for (its `Retry-After`, else a minute,
+at most an hour), and the line carries the hold as its `error`. A reading that fails carries
+`error` in place of the counters: for example, when GitHub refuses the installation's token, does
+not answer, or a counter resets before the server reads its own-call counts. An `error` holds at
+most 1,024 bytes: a longer one is cut at a whole character and ends with the length it was cut
+from. So a reading logs a line for each installation listed. A list that fails, or that holds no
+installation, logs one line with its `error` and no `permissions`. A reading that fails keeps the
+resets the server read before, so the reading before those resets is still taken.
+
+GitHub counts every caller of an installation together. Its used counts are REST requests or
+GraphQL points, while the server's own counts are answered calls. A GraphQL query can cost several
+points, and a refused REST call can cost nothing, so subtracting the own counts does not measure
+the use of the other servers or programs. A call that only the App's own credential makes, such as
+the webhook redelivery sweep's, is charged to no installation and is in no count. Neither is a
+call to GitHub's `GET /rate_limit` endpoint, nor an answer of `304 Not Modified`, which GitHub
+does not charge. A read of a repository that is named `rate_limit` is counted.
+
 ## Behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`. A browser keeps WebSockets apart
@@ -575,9 +636,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 27 for the work it runs once across the servers, the
-delivery intakes' holds and the keyword fill's hold,
-up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 29 for the work it runs once across the servers, the
+intakes' holds and the keyword fill's hold, up to 8 for saving what people type in documents,
+up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -589,7 +650,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 118
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 120
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
