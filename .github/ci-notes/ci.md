@@ -598,8 +598,9 @@ The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
 condition, so check-ts-filters.sh holds this filter to both. The two suites of
 `e2e/__tests__` that import it, `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#startFakeDispatch` and
-`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in this job's test step and in no other,
-so that read is this gate's (ci_job_reads.py's dispatch_ui).
+`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in the
+step "Test dispatch harness" of .github/workflows/ci-job-dispatch-ui.yaml's dispatch-ui-harness
+job and in no other, so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
@@ -2538,12 +2539,15 @@ They were split out of the browser suite (the dispatch-browser job), whose full 
 the merge queue, the nightly and a pull request labelled `full-ci` or `lane:dispatch_browser`
 run - is a slow suite, while these checks must come back on every push.
 No Postgres service and no Go, but contracts is built
-before the suites: one case of the dashboard's test run spawns Playwright, whose own
+before the suites: one case of the dashboard's harness lane spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
 suites that spawn Playwright" of .github/workflows/ci-job-dispatch-ui.yaml says what failed
 without it). tsc and
 bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's
 Vite build aliases its sources, so that spawn is the whole of what the build is for.
+The checks run in two jobs of that file, at once, each on a runner of its own
+(.github/ci-notes/ci-job-dispatch-ui.md#why-the-checks-run-as-two-jobs says why and what each
+holds).
 
 ## The browser suite jobs: their lanes, their inputs, and why the matrix is in the called file
 
