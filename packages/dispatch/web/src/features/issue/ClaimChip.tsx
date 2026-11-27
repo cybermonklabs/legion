@@ -14,7 +14,7 @@ import { Tooltip, useTooltip } from "../../components/Tooltip";
 import { TruncatedText } from "../../components/TruncatedText";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { focusVisibleRing, pageInkText } from "../../theme/classes";
-import { AgentName, useAgentText } from "../refs/AgentName";
+import { AgentName, noBreakBeforeMiddleDot, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { exactTimeLabel, Timestamp } from "../refs/Timestamp";
 
@@ -341,9 +341,12 @@ function HeldClaimChip({
   ];
   const lines = useClaimLines(wrapsPill, drawn.join("\n"));
   // What the chip's tooltip says, built only where a tooltip is drawn: who holds the claim,
-  // named whole, and since when, then what a claim is and whether its session still runs.
+  // named whole, and since when, then what a claim is and whether its session still runs. The
+  // holder is named as `AgentName` draws a name, and a no-break space stands before "· since",
+  // so no line of the tooltip starts with a "·", the holder's own or the one before "since".
   const claimHelp = () => {
-    const since = `Claimed by ${text.label(claim.actor)} · since ${new Date(claim.at).toLocaleString()}.`;
+    const holderName = noBreakBeforeMiddleDot(text.label(claim.actor));
+    const since = `Claimed by ${holderName}\u00a0· since ${new Date(claim.at).toLocaleString()}.`;
     const explains =
       "A claim marks who is implementing this issue, so two agents never take the same work.";
     const lapsedNote = lapsed ? " That session is no longer running, so anyone may claim it." : "";

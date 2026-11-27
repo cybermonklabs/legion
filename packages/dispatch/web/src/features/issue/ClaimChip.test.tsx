@@ -112,7 +112,7 @@ test("a claimed issue names its holder and releases the claim from the header", 
     await screen.findByTestId("issue-claim");
     const said = await help(view.user);
     expect(said.first).toBe(
-      `Claimed by Implementer · since ${new Date(claim.at).toLocaleString()}.`
+      `Claimed by Implementer\u00a0· since ${new Date(claim.at).toLocaleString()}.`
     );
     expect(said.rest).toContain("two agents never take the same work");
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
@@ -221,7 +221,7 @@ test("over the holder's name the claim chip's own tooltip shows, not the name al
       .map((line) => line.textContent ?? "")
       .join(" ");
     expect(tooltipOver).toMatch(
-      /^Claimed by Implementer · since .*two agents never take the same work/
+      /^Claimed by Implementer\u00a0· since .*two agents never take the same work/
     );
   } finally {
     view.unmount();
@@ -636,9 +636,9 @@ test("the chip is a Tab stop whose tooltip names the holder whole, and it carrie
     act(() => chip.focus());
     expect(screen.getByRole("tooltip")).toBeDefined();
     expect(screen.getByRole("tooltip").querySelector("p")?.textContent).toBe(
-      `Claimed by ${holder} · since ${new Date(claim.at).toLocaleString()}.`
+      `Claimed by ${holder}\u00a0· since ${new Date(claim.at).toLocaleString()}.`
     );
-    expect(chip).toHaveAccessibleDescription(new RegExp(`^Claimed by ${holder} · since`));
+    expect(chip).toHaveAccessibleDescription(new RegExp(`^Claimed by ${holder}\u00a0· since`));
     await view.user.keyboard("{Escape}");
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(chip).toHaveFocus();
@@ -693,7 +693,7 @@ test("a stacked chip writes Claimed by and the whole holder, then the age and st
     expect(chip).not.toHaveAttribute("title");
     await user.hover(chip);
     expect(screen.getByRole("tooltip").querySelector("p")?.textContent).toMatch(
-      /^Claimed by Implementer.*alice.* · since /
+      /^Claimed by Implementer.*alice.*\u00a0· since /
     );
   } finally {
     view.unmount();
