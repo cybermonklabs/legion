@@ -41,6 +41,14 @@ export interface PendingSync {
    * and drops the rows that change nothing.
    */
   synced(): Promise<void>;
+  /**
+   * Takes this sync's `update` listener off the document: the connection's first sync in parts
+   * (`firstSyncInParts`, `connection.ts`) applies the server's parts with no listener on the
+   * document, so Yjs writes no update message for them. No part is a person's edit to store.
+   */
+  detachUpdates(): void;
+  /** Puts the listener back once the last part is applied; after `destroy` it stays off. */
+  attachUpdates(): void;
   destroy(): void;
 }
 
@@ -675,6 +683,14 @@ export function startPendingSync({
     async synced() {
       if (readOnly !== syncedReadOnly) {
         await admit();
+      }
+    },
+    detachUpdates() {
+      doc.off("update", onUpdate);
+    },
+    attachUpdates() {
+      if (!destroyed) {
+        doc.on("update", onUpdate);
       }
     },
     destroy() {
