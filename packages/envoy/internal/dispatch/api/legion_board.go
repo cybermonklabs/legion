@@ -123,17 +123,21 @@ type legionBoardColumn struct {
 // card of their own. The card carries no CI verdict: the daemon's state has none since
 // cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
-	Key        string           `json:"key"`
-	Title      string           `json:"title"`
-	Priority   *int             `json:"priority"`
-	Phase      string           `json:"phase"`
-	PhaseSince *time.Time       `json:"phase_since"`
-	Slot       *int             `json:"slot"`
-	Roles      []string         `json:"roles"`
-	BlockedBy  []string         `json:"blocked_by"`
-	WaitingOn  *legionBoardWait `json:"waiting_on"`
-	Tree       string           `json:"tree"`
-	Children   int              `json:"children"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the issue's (model.Issue's), null for an issue
+	// Dispatch does not hold.
+	ResolvedPriority *int             `json:"resolved_priority"`
+	PriorityFrom     *string          `json:"priority_from"`
+	Phase            string           `json:"phase"`
+	PhaseSince       *time.Time       `json:"phase_since"`
+	Slot             *int             `json:"slot"`
+	Roles            []string         `json:"roles"`
+	BlockedBy        []string         `json:"blocked_by"`
+	WaitingOn        *legionBoardWait `json:"waiting_on"`
+	Tree             string           `json:"tree"`
+	Children         int              `json:"children"`
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the

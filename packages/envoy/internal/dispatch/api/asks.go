@@ -672,18 +672,22 @@ type openAskOwner struct {
 }
 
 type openAsk struct {
-	ID           string              `json:"id"`
-	Ref          string              `json:"ref"`
-	Question     string              `json:"question"`
-	Kind         string              `json:"kind"`
-	Urgency      string              `json:"urgency"`
-	CreatedAt    time.Time           `json:"created_at"`
-	AgeSeconds   int64               `json:"age_seconds"`
-	Priority     *int                `json:"priority"`
-	Owner        openAskOwner        `json:"owner"`
-	HumanReplied bool                `json:"human_replied"`
-	LastReply    *model.AskLastReply `json:"last_reply"`
-	WaitingOn    string              `json:"waiting_on"`
+	ID         string    `json:"id"`
+	Ref        string    `json:"ref"`
+	Question   string    `json:"question"`
+	Kind       string    `json:"kind"`
+	Urgency    string    `json:"urgency"`
+	CreatedAt  time.Time `json:"created_at"`
+	AgeSeconds int64     `json:"age_seconds"`
+	Priority   *int      `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the ask's issue's (model.Issue's), null on a project
+	// document's ask, which has no issue.
+	ResolvedPriority *int                `json:"resolved_priority"`
+	PriorityFrom     *string             `json:"priority_from"`
+	Owner            openAskOwner        `json:"owner"`
+	HumanReplied     bool                `json:"human_replied"`
+	LastReply        *model.AskLastReply `json:"last_reply"`
+	WaitingOn        string              `json:"waiting_on"`
 	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression): the person it
 	// was handed to, else its issue's assignee, else its project's default assignee.
 	WaitingOnPerson string `json:"waiting_on_person"`

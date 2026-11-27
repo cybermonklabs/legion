@@ -53,10 +53,14 @@ type askReach struct {
 
 type inboxAsk struct {
 	shapedAsk
-	Issue     *inboxIssue         `json:"issue,omitempty"`
-	Document  *inboxDocument      `json:"document,omitempty"`
-	Priority  *int                `json:"priority"`
-	LastReply *model.AskLastReply `json:"last_reply"`
+	Issue    *inboxIssue    `json:"issue,omitempty"`
+	Document *inboxDocument `json:"document,omitempty"`
+	Priority *int           `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the ask's issue's (model.Issue's), null on a project
+	// document's ask, which has no issue.
+	ResolvedPriority *int                `json:"resolved_priority"`
+	PriorityFrom     *string             `json:"priority_from"`
+	LastReply        *model.AskLastReply `json:"last_reply"`
 	// SnoozedUntil is the caller's own snooze on this row, null when they have not snoozed it.
 	// It is surfaced, never filtered: the row stays in everyone's inbox including its snoozer's,
 	// who folds it away while this moment is still ahead and sees it again once it passes.

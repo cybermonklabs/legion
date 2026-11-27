@@ -244,22 +244,25 @@ type DeliveryRunJobView struct {
 // the first of Sessions: its session group's `group:<id>`, else that session's title or id
 // (ParentAgents, parent_agent.go).
 type DeliveryPRView struct {
-	ID                string         `json:"id"`
-	Repo              string         `json:"repo"`
-	Number            int            `json:"number"`
-	Title             string         `json:"title"`
-	URL               string         `json:"url"`
-	Author            string         `json:"author"`
-	CreatedAt         *time.Time     `json:"created_at"`
-	MergedAt          *time.Time     `json:"merged_at"`
-	FirstCommitAt     *time.Time     `json:"first_commit_at"`
-	Additions         *int           `json:"additions"`
-	Deletions         *int           `json:"deletions"`
-	Partial           bool           `json:"partial"`
-	Rework            bool           `json:"rework"`
-	Issue             *string        `json:"issue"`
-	IssueTitle        *string        `json:"issue_title"`
-	Priority          *string        `json:"priority"`
+	ID            string     `json:"id"`
+	Repo          string     `json:"repo"`
+	Number        int        `json:"number"`
+	Title         string     `json:"title"`
+	URL           string     `json:"url"`
+	Author        string     `json:"author"`
+	CreatedAt     *time.Time `json:"created_at"`
+	MergedAt      *time.Time `json:"merged_at"`
+	FirstCommitAt *time.Time `json:"first_commit_at"`
+	Additions     *int       `json:"additions"`
+	Deletions     *int       `json:"deletions"`
+	Partial       bool       `json:"partial"`
+	Rework        bool       `json:"rework"`
+	Issue         *string    `json:"issue"`
+	IssueTitle    *string    `json:"issue_title"`
+	Priority      *string    `json:"priority"`
+	// PriorityFrom is the key of the issue the linked issue's priority comes from (model.Issue's
+	// PriorityFrom), null where it is the issue's own, or there is no issue or no priority.
+	PriorityFrom      *string        `json:"priority_from"`
 	Components        []string       `json:"components"`
 	Sessions          []string       `json:"sessions"`
 	ParentAgent       *string        `json:"parent_agent"`

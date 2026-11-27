@@ -1,0 +1,27 @@
+-- pgmigrate:non-transactional
+-- 20261127112234_issues_done_p0.up.sql
+--
+-- The index of the done issues whose own priority is 0 (dispatch://INFRA-5793, the plan's
+-- decision 14). An issue with no priority of its own takes the priority of the nearest issue above
+-- it that has one, at any status of that issue, so a done P0 parent passes P0 to an open child. The
+-- reads of the open P0 issues (delivery.ListUnownedP0, delivery.CountUnownedP0,
+-- delivery.OpenP0Keys) descend from every issue whose own priority is 0 through issues_parent_key:
+-- from the open ones through issues_open_p0 (20261117100010_issues_unowned_p0), and from the done
+-- ones through this index. With neither, each read would scan the whole table for its seeds.
+--
+-- The predicate is the seed clause of the done half, `priority = 0 and status = 'done'`, so the
+-- planner proves it from the read's own clauses, and the key is the issue's key, which the descent
+-- joins on as each child's parent_key. It holds a few hundred rows at production's size (the done
+-- issues with an own P0), and an issue enters it and leaves it as its priority or its status
+-- changes, which costs a write to this index on those updates alone.
+--
+-- It is built `concurrently`, outside the runner's transaction, because issues is the table every
+-- issue write, claim, route and status change writes. A plain build holds SHARE on it for one read
+-- of the table, which blocks every one of those writes until it ends. A concurrent build takes
+-- SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes over
+-- the table and a wait for the transactions already open, each wait bounded at five seconds and
+-- tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed build
+-- leaves an INVALID index of this name on issues, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists issues_done_p0 on issues (key)
+    where priority = 0 and status = 'done';
