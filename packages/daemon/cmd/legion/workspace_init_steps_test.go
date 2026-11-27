@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -265,8 +266,9 @@ var keptCloneSteps = []string{"jj-configuration", "github-delta", "ref-pruning",
 // a repository cache's /tar where it serves no /packs (b), from its bucket (c), from /tar after the
 // bucket's download failed (d) or after the bucket's pack failed its check (d2); a kept clone with
 // no workspace of the issue's (e0, another issue's provision on the volume), with the issue's
-// workspace checked out (e), and with that workspace's sparse patterns cleared (e1); and a fetch
-// from GitHub that fails after its retries (g). The steps' durations add up to the total within
+// workspace checked out (e), with that workspace's sparse patterns cleared and no marker (e1), and
+// with a checkout Legion started and that was cut short (f); and a fetch from GitHub that fails
+// after its retries (g). The steps' durations add up to the total within
 // 0.1 s for each, and the total is no more than the run's wall time. A refusal before the volume
 // (h) prints nothing on stdout.
 func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
@@ -328,11 +330,26 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 			path: "e1. a kept clone with the issue's workspace not checked out",
 			prepare: func(t *testing.T, v *issueVolume) {
 				v.provisioned(t, "LEGION-42")
-				// An agent cleared the workspace's sparse patterns, which leaves it as a checkout
-				// cut short before its first file leaves it: holding no pattern.
+				// An agent cleared the workspace's sparse patterns, leaving no marker.
 				v.jj(t, "sparse", "set", "--clear", "-R", v.workspace("LEGION-42"))
 			},
 			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "configuration", "checkout"}),
+		},
+		{
+			path: "f. a kept clone with a checkout cut short",
+			prepare: func(t *testing.T, v *issueVolume) {
+				script := filepath.Join(t.TempDir(), "cut.sh")
+				if err := execfile.Write(script, []byte("#!/bin/sh\nprintf partial > half.txt\nexit 137\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				v.env["WINIT_CUT_CHECKOUT"] = script
+				code, stdout, stderr := v.answered(t, "cut-short first provision", v.args("LEGION-42"))
+				if code == 0 {
+					t.Fatalf("first provision succeeded despite cut-short checkout stand-in:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+				}
+				v.env["WINIT_CUT_CHECKOUT"] = ""
+			},
+			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "configuration", "checkout-clear", "checkout"}),
 		},
 		{
 			path: "g. a fetch from GitHub that fails after its retries",

@@ -44,8 +44,9 @@ const winitHelper = workspace.GitHubCredentialHelper
 // pin — with WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
 // opens the directory's `release` fifo, writes its pid to its `held` fifo, waits on `release` until
 // the test closes its end there, and exits without initializing. A fresh provisioning's first jj
-// command is that init, so a process held there is mid-provisioning. WINIT_HOLD is empty for every
-// other case, which therefore holds nowhere.
+// command is that init, so a process held there is mid-provisioning. With WINIT_CUT_CHECKOUT set,
+// `jj sparse reset` runs that stand-in script instead of the real jj, to simulate a checkout that
+// was cut short. Both are empty for every other case.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -55,6 +56,9 @@ if [ -n "$WINIT_HOLD" ] && [ "$1 $2 $3" = "git init --colocate" ]; then
 	printf '%s' "$$" > "$WINIT_HOLD/held"
 	read _ <&3
 	exit 1
+fi
+if [ -n "$WINIT_CUT_CHECKOUT" ] && [ "$1 $2" = "sparse reset" ]; then
+	exec "$WINIT_CUT_CHECKOUT" "$@"
 fi
 PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
@@ -175,6 +179,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
+		"WINIT_CUT_CHECKOUT":   "",
 		"JJ_USER":              "Legion test",
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),

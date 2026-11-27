@@ -73,7 +73,7 @@ func openJJ(dir string, held func()) (*os.File, error) {
 // record a role planted as a link is not followed. The file's name is only used for diagnostics.
 func openIn(jj *os.File, name string, flags int, perm uint32) (*os.File, error) {
 	path := filepath.Join(jj.Name(), name)
-	fd, err := unix.Openat(int(jj.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
+	fd, err := rolefile.Openat(int(jj.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
 	if err != nil {
 		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
 	}

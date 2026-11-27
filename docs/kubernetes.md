@@ -6684,7 +6684,11 @@ A new clone runs these steps, in this order:
 
 - `checkout`, the wait for a checkout's place and `jj sparse reset`.
 
-On a clone that is already there, the provision runs `update-stale` (`jj workspace update-stale`) after `stale-locks` where the issue's workspace is there too, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track` and `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether its checkout finished; then `configuration`, and `checkout` where the workspace is new or holds no sparse pattern.
+On a clone that is already there, the provision runs `update-stale` (`jj workspace update-stale`) after `stale-locks` where the issue's workspace is there too, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track` and `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether its checkout finished; then `configuration`, and where the workspace is new or holds no sparse pattern, `checkout-clear` (when a prior checkout that Legion started was cut short) and `checkout`.
+
+Before running `jj sparse reset` into a freshly registered workspace or one already marked, `Provision` writes `.jj/legion-checkout` without following a link and removes it once the checkout succeeds (and removes any leftover marker when `checkout-check` finds the workspace already checked out).
+On a retry after a killed checkout, the workspace holds no sparse pattern and `.jj/legion-checkout` is still there, so `checkout-clear` removes every entry of the workspace directory except `.jj` and `.git` without following a link before `checkout` runs `jj sparse reset` again.
+Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns), `checkout-clear` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
 
 The pod's disk is declared in the pod template itself, as a generic ephemeral volume (`issuePod.disk`, `podkind.go`):
 `ReadWriteOnce`, of `runtime.kubernetes.issue_volume` (50Gi by default) and `storage_class`.

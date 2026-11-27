@@ -24,8 +24,8 @@ import (
 // reset`), which writes the issue's own working copy and nothing of the clone, runs with the lock
 // let go, holding one of request.CheckoutSlot's places instead. It begins its steps on
 // request.Steps where each starts — update-stale, workspace-registration, checkout-check,
-// configuration and checkout — and hands the step clock to the issue pod's fill, which begins the
-// fill's.
+// configuration, checkout-clear and checkout — and hands the step clock to the issue pod's fill,
+// which begins the fill's.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -93,6 +93,8 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 	checkout := !exists
+	clearCheckout := false
+	markCheckout := !exists
 	if exists {
 		request.Steps.Begin("checkout-check")
 		// A workspace whose checkout never finished — registered with no files, then the checkout
@@ -102,7 +104,21 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		if err != nil {
 			return Workspace{}, err
 		}
-		checkout = !whole
+		if whole {
+			// A crash between the checkout's end and the marker's removal can leave the marker
+			// behind on a finished workspace; remove it so it never marks a later sparse clear.
+			if err := removeCheckoutMarker(workspace.Dir); err != nil {
+				return Workspace{}, err
+			}
+		} else {
+			marked, err := hasCheckoutMarker(workspace.Dir)
+			if err != nil {
+				return Workspace{}, err
+			}
+			checkout = true
+			clearCheckout = marked
+			markCheckout = marked
+		}
 	}
 	request.Steps.Begin("configuration")
 	// Every workspace provisioning touches has its git worktree entry locked, one added before
@@ -161,15 +177,32 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
+		if clearCheckout {
+			request.Steps.Begin("checkout-clear")
+			if err := clearWorkingCopy(workspace.Dir); err != nil {
+				return Workspace{}, err
+			}
+		}
 		request.Steps.Begin("checkout")
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
 		}
+		if markCheckout {
+			if err := writeCheckoutMarker(workspace.Dir); err != nil {
+				release()
+				return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
+			}
+		}
 		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
 		release()
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
+		}
+		if markCheckout {
+			if err := removeCheckoutMarker(workspace.Dir); err != nil {
+				return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
+			}
 		}
 	}
 	return workspace, nil
