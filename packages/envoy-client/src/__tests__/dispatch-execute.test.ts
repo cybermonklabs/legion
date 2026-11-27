@@ -6766,8 +6766,12 @@ describe("executeDispatchTool", () => {
     // an issue alone.
     test("the tools that act on a ref's owner refuse a view tab of an issue, by its link and by its reference", async () => {
       const ops = [{ op: "replace", find: "old line", with: "new line" }];
-      const tools: { tool: string; named: string; hint: string; input: (ref: string) => object }[] =
-        [
+      const tools: {
+        tool: string;
+        named: string;
+        hint: string;
+        input: (ref: string) => Record<string, unknown>;
+      }[] = [
           {
             tool: "dispatch_doc_read",
             named: "doc-read",
