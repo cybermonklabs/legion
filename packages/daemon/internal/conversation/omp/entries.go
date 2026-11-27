@@ -35,10 +35,11 @@ type header struct {
 
 // entry is one session entry, with the fields any type the reader acts on carries.
 type entry struct {
-	Type      string  `json:"type"`
-	ID        string  `json:"id"`
-	ParentID  *string `json:"parentId"`
-	Timestamp string  `json:"timestamp"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	ParentID     *string         `json:"parentId"`
+	Timestamp    string          `json:"timestamp"`
+	ActiveLeafID json.RawMessage `json:"activeLeafId"`
 	// message
 	Message *message `json:"message"`
 	// custom, custom_message
@@ -72,12 +73,14 @@ type message struct {
 	Model           string          `json:"model"`
 	StopReason      string          `json:"stopReason"`
 	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
+	Continued       json.RawMessage `json:"continued"`
 	ProviderPayload json.RawMessage `json:"providerPayload"`
 	// toolResult
-	ToolCallID string   `json:"toolCallId"`
-	ToolName   string   `json:"toolName"`
-	IsError    bool     `json:"isError"`
-	PrunedAt   *float64 `json:"prunedAt"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	IsError    bool            `json:"isError"`
+	PrunedAt   *float64        `json:"prunedAt"`
+	Details    json.RawMessage `json:"details"`
 	// custom
 	CustomType string `json:"customType"`
 	// bashExecution, pythonExecution
@@ -158,6 +161,9 @@ func parseSession(content []byte) (*parsed, error) {
 		if e.ID == "" {
 			return nil, conversation.Unknown("a %s entry with no id", e.Type)
 		}
+		if len(e.ActiveLeafID) != 0 && e.ActiveLeafID[0] != '"' && string(e.ActiveLeafID) != "null" {
+			return nil, conversation.Unknown("entry %s has a non-string activeLeafId", e.ID)
+		}
 		if e.Type == "message" && e.Message == nil {
 			return nil, conversation.Unknown("message entry %s with no message", e.ID)
 		}
@@ -193,9 +199,9 @@ func parseBlocks(raw json.RawMessage, allowed map[string]bool, where string) ([]
 
 // The block types each kind of content holds (pi-ai types.ts): a user, developer, custom or tool
 // result message holds text and images; an assistant message also thinking, redacted thinking
-// and tool calls. anthropicServerTool and fallback blocks are Oh My Pi's too, but replayed only
-// under conditions the reader does not know, so they refuse the session.
+// and tool calls. The reader drops fallback blocks only as part of an otherwise empty error
+// turn. It refuses other turns with fallback or anthropicServerTool blocks.
 var (
 	inputBlocks     = map[string]bool{"text": true, "image": true}
-	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true}
+	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true, "fallback": true}
 )

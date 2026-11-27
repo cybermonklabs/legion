@@ -143,7 +143,8 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 	sameDeployment := anthropicReplay && m.provider == t.provider && official
 	signingInvolved := (anthropicReplay && m.provider == "anthropic") || official
 	replaysUnsigned := anthropicTarget && !t.signing
-	abandonedToolUse := m.stopReason != "toolUse" && hasToolCall(m.blocks)
+	failed := m.stopReason == "aborted" || m.stopReason == "error"
+	abandonedToolUse := !failed && m.stopReason != "toolUse" && hasToolCall(m.blocks)
 	crossProvider := m.provider != t.provider
 
 	// Each source block's replay, nil when it is dropped; demoted marks thinking replayed as text.
@@ -159,7 +160,7 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 			case anthropicReplay && latest && abandonedToolUse && !crossProvider:
 				// Anthropic's latest turn replays byte for byte.
 			case anthropicReplay:
-				if abandonedToolUse {
+				if abandonedToolUse || (failed && i == len(m.blocks)-1) {
 					thinking.Signature = ""
 				}
 				stale := !sameDeployment && ((latest && crossProvider) || (!latest && !sameModel))

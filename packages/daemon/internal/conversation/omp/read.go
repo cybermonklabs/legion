@@ -4,13 +4,15 @@
 //
 // A session is Oh My Pi's JSONL (session-loader.ts, session-entries.ts): an optional fixed-width
 // title slot line, the version 3 header, then one entry per line, each naming its parent. The
-// reader walks the path from the last entry, Oh My Pi's leaf after a load, to the root and builds
-// the model context as buildSessionContext does (session-context.ts): compaction summaries,
-// /clear boundaries, branch summaries, custom messages, dangling tool calls and failed turns, then
-// shapes it as the provider layer does for the model the conversation resumes on
+// reader resolves the active leaf with the rules of resolveSessionLeafId (session-entries.ts).
+// It walks from that leaf to the root and builds the model context as buildSessionContext does
+// (session-context.ts), then shapes it as the provider layer does for the resumed model
 // (transform-messages.ts). Like Oh My Pi it skips a line that is not JSON, a torn last record
 // among them; unlike it, it refuses a well-formed record it does not know (conversation.
 // ErrUnknownFormat).
+//
+// The caller supplies per-request context. The reader omits the system prompt and the date and
+// working-directory reminders Oh My Pi journals as date-cwd-reminder custom entries.
 //
 // The same bytes come from a session file under file storage and from Oh My Pi's session table
 // under SQL storage (ompsessions.Read); an append goes to the file in one O_APPEND write, or to
@@ -36,8 +38,8 @@ type Session struct {
 	Timestamp     string
 	Cwd           string
 	ParentSession string
-	// Leaf is the id of the last entry, which an appended entry names as its parent; empty for a
-	// session of no entries.
+	// Leaf is the resolved active entry's ID. An append uses it as its parent. If no branch is
+	// active, Leaf is empty and the first appended entry has no parent.
 	Leaf string
 	// Size is the session length in bytes when read. The appenders check this length.
 	Size int64
@@ -90,22 +92,17 @@ func Read(content []byte, opts Options) (*Session, error) {
 			s.answered[question] = true
 		}
 	}
-	if len(p.entries) > 0 {
-		s.Leaf = p.entries[len(p.entries)-1].ID
-	}
+	s.Leaf = built.leaf
 	s.ThinkingLevel = built.thinkingLevel
 	s.Model = built.model
+	if s.Leaf == "" {
+		return s, nil
+	}
 	provider, model, ok := strings.Cut(built.model, "/")
 	if !ok {
 		return nil, conversation.Unknown("the session names no model it runs on")
 	}
-	// The API is the model's, which Oh My Pi looks up in its model registry; the session records
-	// it on each turn the model ran.
-	for i := len(p.entries) - 1; i >= 0 && s.API == ""; i-- {
-		if m := p.entries[i].Message; m != nil && m.Role == "assistant" && m.Provider == provider && m.Model == model {
-			s.API = m.API
-		}
-	}
+	s.API = built.api
 	if s.API == "" {
 		return nil, conversation.Unknown("no turn of model %s names its provider API", built.model)
 	}

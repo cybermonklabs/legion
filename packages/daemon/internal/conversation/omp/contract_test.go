@@ -263,11 +263,11 @@ type wireBlock struct {
 	IsError   bool   `json:"isError,omitempty"`
 }
 
-// turns reduces the request's messages. The date and working directory reminder Oh My Pi puts on
-// the first user turn of every request is not part of the session (date-cwd-reminder.ts: "built
-// at request time (never stored in the session)"), so it is cut from that turn.
-func (request anthropicRequest) turns(t *testing.T) []wireTurn {
+// turns reduces the request's messages. date-cwd-reminder.ts says “Each placement is journaled
+// in the session”. The comparison removes only the journaled text that the caller supplies anew.
+func (request anthropicRequest) turns(t *testing.T, content []byte) []wireTurn {
 	t.Helper()
+	reminders := readReminderJournal(t, content)
 	var turns []wireTurn
 	for _, message := range request.Messages {
 		turn := wireTurn{Role: message.Role}
@@ -308,22 +308,126 @@ func (request anthropicRequest) turns(t *testing.T) []wireTurn {
 		}
 		turns = append(turns, turn)
 	}
-	for i := range turns {
-		if turns[i].Role != "user" {
+	var kept []wireTurn
+	for _, turn := range turns {
+		// Anthropic sends the injector's developer control as a user turn.
+		if turn.Role == "user" && len(turn.Blocks) > 0 && turn.Blocks[0].Type == "text" {
+			first := &turn.Blocks[0]
+			if len(turn.Blocks) == 1 && reminders.takeControl(first.Text) {
+				continue
+			}
+			if rest, ok := reminders.cutPrefix(first.Text, "\n"); ok {
+				if rest != "" {
+					first.Text = rest
+				} else {
+					turn.Blocks = turn.Blocks[1:]
+					if len(turn.Blocks) == 0 {
+						continue
+					}
+				}
+			}
+		}
+		kept = append(kept, turn)
+	}
+	return kept
+}
+
+type reminderJournal struct {
+	prefixes map[string]int
+	controls map[string]int
+}
+
+func readReminderJournal(t *testing.T, content []byte) reminderJournal {
+	t.Helper()
+	journal := reminderJournal{prefixes: map[string]int{}, controls: map[string]int{}}
+	p, err := parseSession(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]*entry, len(p.entries))
+	for _, e := range p.entries {
+		byID[e.ID] = e
+	}
+	path := activePath(resolveLeaf(p.entries, byID), byID)
+	for _, e := range path {
+		if e.Type == "reset_boundary" {
+			clear(journal.prefixes)
+			clear(journal.controls)
+		}
+		if e.Type != "custom" || e.CustomType != "date-cwd-reminder" {
 			continue
 		}
-		first := &turns[i].Blocks[0]
-		if strings.HasPrefix(first.Text, "<system-reminder>\n") {
-			if end := strings.Index(first.Text, "\n</system-reminder>"); end >= 0 {
-				first.Text = strings.TrimLeft(first.Text[end+len("\n</system-reminder>"):], "\n")
-			}
-			if first.Text == "" {
-				turns[i].Blocks = turns[i].Blocks[1:]
-			}
+		var placement struct {
+			Conversation *string `json:"conversation"`
+			Turn         *string `json:"turn"`
+			Reminder     string  `json:"reminder"`
+			Placement    string  `json:"placement"`
 		}
-		break
+		if err := json.Unmarshal(e.Data, &placement); err != nil || placement.Conversation == nil ||
+			placement.Turn == nil || placement.Reminder == "" {
+			t.Fatalf("invalid date-cwd-reminder placement: %s", e.Data)
+		}
+		switch placement.Placement {
+		case "prefix":
+			journal.prefixes[placement.Reminder]++
+		case "control":
+			journal.controls[placement.Reminder]++
+		default:
+			t.Fatalf("unknown date-cwd-reminder placement: %s", e.Data)
+		}
 	}
-	return turns
+	return journal
+}
+
+func (j reminderJournal) takeControl(text string) bool {
+	if j.controls[text] == 0 {
+		return false
+	}
+	j.controls[text]--
+	return true
+}
+
+func (j reminderJournal) cutPrefix(text, separator string) (string, bool) {
+	for reminder, count := range j.prefixes {
+		if count == 0 {
+			continue
+		}
+		if text == reminder {
+			j.prefixes[reminder]--
+			return "", true
+		}
+		if rest, ok := strings.CutPrefix(text, reminder+separator); ok {
+			j.prefixes[reminder]--
+			return rest, true
+		}
+	}
+	return text, false
+}
+
+func TestResumeComparisonRemovesOnlyJournaledReminders(t *testing.T) {
+	f := newFixture()
+	f.add(`{"type":"custom","customType":"date-cwd-reminder","data":{"conversation":"user:1:user","turn":"user:1:user","reminder":"old date","placement":"prefix"}}`)
+	f.add(`{"type":"custom","customType":"date-cwd-reminder","data":{"conversation":"user:1:user","turn":"assistant:2","reminder":"control date","placement":"control"}}`)
+	f.add(`{"type":"custom","customType":"date-cwd-reminder","data":{"conversation":"user:1:user","turn":"user:3:user","reminder":"new date","placement":"prefix"}}`)
+	var request anthropicRequest
+	if err := json.Unmarshal([]byte(`{"messages":[
+		{"role":"user","content":"old date\nfirst"},
+		{"role":"assistant","content":"answer"},
+		{"role":"user","content":"control date"},
+		{"role":"user","content":[{"type":"text","text":"new date"},{"type":"text","text":"next"},{"type":"text","text":"old date"}]},
+		{"role":"user","content":"<system-reminder>\nunrelated\n</system-reminder>"}]}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	got := request.turns(t, f.bytes())
+	want := []wireTurn{
+		{Role: "user", Blocks: []wireBlock{{Type: "text", Text: "first"}}},
+		{Role: "assistant", Blocks: []wireBlock{{Type: "text", Text: "answer"}}},
+		{Role: "user", Blocks: []wireBlock{{Type: "text", Text: "next"}, {Type: "text", Text: "old date"}}},
+		{Role: "user", Blocks: []wireBlock{{Type: "text", Text: "<system-reminder>\nunrelated\n</system-reminder>"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("turns = %+v, want %+v", got, want)
+	}
 }
 
 func resultText(t *testing.T, content json.RawMessage) string {
@@ -473,15 +577,16 @@ func blankedResult(was, is conversation.Message) (string, bool) {
 // the reader's rebuild of the session as the resume left it before its request: the request is
 // that conversation, then the follow-up. content is the session after the resume, and
 // resumedSession cuts that session from it. It is the session from before the resume plus any
-// record Oh My Pi writes at the resume. One such record is a tool_result_prune of a read that a
-// newer read of the same path superseded: Oh My Pi writes it before the first request of a
-// resumed process once the prompt cache entry has lapsed (session-maintenance.ts
-// #pruneWithheldIfDue, pruning.ts). So the conversation the reader rebuilt from the session before
-// the resume is that session's but for the tool results such a record blanked (assertBlankedOnly).
-func assertResumeMatches(t *testing.T, before *Session, content []byte, request anthropicRequest, followUp string) {
+// record Oh My Pi writes on resume. Before sending a prompt, agent-session.ts calls the full
+// checkCompaction if the last assistant stopped with error or length and the check is not skipped.
+// Its #pruneStaleToolResults pass calls pruneSupersededToolResults (pruning.ts) and writes
+// tool_result_prune through #commitPrune (session-maintenance.ts). A superseded read qualifies
+// only if its suffix fits the token and cache-lookback limits, or the last message is at least
+// PRUNE_IDLE_FLUSH_MS (90 minutes) old. assertBlankedOnly checks for changes of that kind alone.
+func assertResumeMatches(t *testing.T, before *Session, content []byte, request anthropicRequest, followUp string) []wireTurn {
 	t.Helper()
 	resumed := resumedSession(t, before, content, standInEndpoint, followUp)
-	got := request.turns(t)
+	got := request.turns(t, content)
 	want := append(readerTurns(t, resumed.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
 	observed, _ := json.Marshal(got)
 	t.Logf("Oh My Pi's resume request, reduced: %s", observed)
@@ -494,6 +599,7 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
 	assertBlankedOnly(t, before, resumed)
+	return got
 }
 
 // The pinned Oh My Pi, resuming a session it wrote with a tool call and signed and redacted
@@ -519,16 +625,15 @@ func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 
 // The pinned Oh My Pi and the reader rebuild alike a session that, after a real first run, holds
 // records written by hand: a compaction (its summary in Oh My Pi's template, the entries it keeps
-// after it), a tool call interrupted before its result, an aborted turn and its result, an errored
-// turn a retry recovered (its retryRecovery an object) and the turn that recovered it, a torn last
-// record, a branch summary, an extension's custom message. Each resumed request is the reader's
-// conversation, then the follow-up.
+// after it), a tool call interrupted before its result, failed turns and their recovery records,
+// late model usage, a torn record, a branch summary, and an extension's custom message.
+// Each resumed request is the reader's conversation, then the follow-up.
 func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *testing.T) {
 	stamp := func() string { return conversation.ISOTime(time.Now()) }
 	for _, testCase := range []struct {
 		name string
 		// records is what is written after the first run: entries is the first run's entry ids
-		// by kind, leaf its last entry's id.
+		// by kind, leaf its resolved active entry.
 		records func(entries map[string]string, leaf string) string
 	}{
 		{"a compaction", func(entries map[string]string, leaf string) string {
@@ -559,6 +664,46 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				`{"type":"message","id":"8b8b8b8b","parentId":"7a7a7a7a","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[{"type":"text","text":"It still says plum."}],` +
 				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `",` + usage + `,"stopReason":"stop","timestamp":` + ms + `}}` + "\n"
 		}},
+		{"late model usage", func(entries map[string]string, leaf string) string {
+			return fmt.Sprintf(`{"type":"model_usage","id":"d1000001","parentId":%q,"timestamp":%q,"runtime":%s,"purpose":"title","api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","activeLeafId":%q}`+"\n",
+				entries["assistant"], stamp(), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, leaf)
+		}},
+		{"a continued retry with its reminder", func(entries map[string]string, leaf string) string {
+			return retryWithReminderRecords(entries["runtime"], leaf, true)
+		}},
+		{"a reminder after a turn left out", func(entries map[string]string, leaf string) string {
+			return retryWithReminderRecords(entries["runtime"], leaf, false)
+		}},
+		{"a context notebook revision", func(entries map[string]string, leaf string) string {
+			// tools/context-notes.ts:143–145 and session-manager.ts:7665–7668.
+			return fmt.Sprintf(`{"type":"custom","customType":"experimental_context_notes","data":{"version":1,"text":"The note says plum."},"id":"d3000001","parentId":%q,"timestamp":%q,"runtime":%s}`+"\n",
+				leaf, stamp(), entries["runtime"])
+		}},
+		{"an experimental context rollover", func(entries map[string]string, leaf string) string {
+			// session-maintenance.ts:2088–2103,2750–2766 and session-manager.ts:7635–7648.
+			summary := "<context-window-rollover>\n" +
+				"The earlier raw transcript remains canonical and recoverable at history://current/full. Continue from the persistent notebook, the retained recent tail, and the latest user request or parent assignment, which is retained separately when it falls outside the tail. Earlier task instructions and constraints may still require recovery from raw history. Do not assume this boundary is an LLM summary; use the notebook and raw-history URI when prior details are needed.\n" +
+				"</context-window-rollover>\n"
+			return fmt.Sprintf(`{"type":"compaction","id":"d3000002","parentId":%q,"timestamp":%q,"runtime":%s,"summary":%s,"firstKeptEntryId":%q,"tokensBefore":1000,"tokensAfter":400,"details":{"kind":"experimental-context-rollover","version":1},"fromExtension":false}`+"\n",
+				leaf, stamp(), entries["runtime"], quote(summary), entries["lastAssistant"])
+		}},
+		{"an interrupted thinking continuity note", func(entries map[string]string, leaf string) string {
+			// agent-session.ts:5504–5521,5548–5570 and session-manager.ts:7730–7757.
+			now := time.Now()
+			at := now.Add(time.Millisecond)
+			const reasoning = "I should verify that the note still contains the same word before answering."
+			aborted := fmt.Sprintf(`{"type":"message","id":"d3000003","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The note says"},{"type":"thinking","thinking":%q}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"aborted","errorMessage":"Interrupted by user","timestamp":%d}}`+"\n",
+				leaf, conversation.ISOTime(now), entries["runtime"], reasoning, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+			note := "You were saying this but I interrupted you:\n```\n" + reasoning + "\n```"
+			return aborted + fmt.Sprintf(`{"type":"custom_message","customType":"interrupted-thinking","content":%s,"display":false,"details":{"interruptedAt":%d,"provider":%q,"model":%q,"blockCount":1},"attribution":"agent","id":"d3000004","parentId":"d3000003","timestamp":%q,"runtime":%s}`+"\n",
+				quote(note), at.UnixMilli(), standInProvider, standInModel, conversation.ISOTime(at), entries["runtime"])
+		}},
+		{"a terminal error with only a fallback boundary", func(entries map[string]string, leaf string) string {
+			// anthropic.ts:1416–1421,2971–2996 and turn-recovery.ts:1505–1509.
+			now := time.Now()
+			return fmt.Sprintf(`{"type":"message","id":"d3000005","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"fallback","from":{"model":%q},"to":{"model":"claude-test-fallback"}}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"error","errorMessage":"stream failed after fallback","timestamp":%d}}`+"\n",
+				leaf, conversation.ISOTime(now), entries["runtime"], standInModel, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+		}},
 		{"a torn last record", func(_ map[string]string, leaf string) string {
 			return `{"type":"message","id":"4d4d4d4d","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"user","content":[{"type":"text","text":"cut o`
 		}},
@@ -582,14 +727,21 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			entries := map[string]string{}
 			for _, line := range bytes.Split(content, []byte("\n")) {
 				var e struct {
-					Type    string `json:"type"`
-					ID      string `json:"id"`
+					Type    string          `json:"type"`
+					ID      string          `json:"id"`
+					Runtime json.RawMessage `json:"runtime"`
 					Message struct {
 						Role string `json:"role"`
 					} `json:"message"`
 				}
-				if json.Unmarshal(line, &e) == nil && e.Type == "message" && entries[e.Message.Role] == "" {
-					entries[e.Message.Role] = e.ID
+				if json.Unmarshal(line, &e) == nil && e.Type == "message" {
+					if entries[e.Message.Role] == "" {
+						entries[e.Message.Role] = e.ID
+						entries["runtime"] = string(e.Runtime)
+					}
+					if e.Message.Role == "assistant" {
+						entries["lastAssistant"] = e.ID
+					}
 				}
 			}
 			records := testCase.records(entries, first.Leaf)
@@ -602,6 +754,30 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
 		})
 	}
+}
+
+const handWrittenUsage = `{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+
+func retryWithReminderRecords(runtime, leaf string, continued bool) string {
+	now := time.Now()
+	stamp := conversation.ISOTime(now)
+	reminder := "<system-injection>\n" +
+		"The provider limited the rate of requests: your last turn was cut off after the text above, possibly mid-sentence. The user already saw that text. The wait for the limit is over.\n" +
+		"Continue exactly where it stopped. Do not repeat, restate, or summarize what you already wrote.\n" +
+		"Attempt #1/3\n</system-injection>"
+	failed := fmt.Sprintf(`{"type":"message","id":"d2000001","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The fruit is"}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"error","errorMessage":"rate limited","errorStatus":429,"timestamp":%d}}`+"\n",
+		leaf, stamp, runtime, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+	note := fmt.Sprintf(`{"type":"custom_message","customType":"continue-reminder","content":%s,"display":false,"attribution":"agent","id":"d2000002","parentId":"d2000001","timestamp":%q,"runtime":%s}`+"\n",
+		quote(reminder), stamp, runtime)
+	if !continued {
+		return failed + note
+	}
+	doneAt := now.Add(time.Millisecond)
+	answer := fmt.Sprintf(`{"type":"message","id":"d2000003","parentId":"d2000002","timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"plum."}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n",
+		conversation.ISOTime(doneAt), runtime, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, doneAt.UnixMilli())
+	patch := fmt.Sprintf(`{"type":"custom","customType":"entry_patch","data":{"patches":[{"entryId":"d2000001","message":{"retryRecovery":{"kind":"auto-retry","status":"recovered","attempt":1,"recoveredAt":%q,"recovery":"plain","note":"error; retried","supersededBy":{"timestamp":%d,"provider":%q,"model":%q}},"continued":true}}]},"id":"d2000004","parentId":"d2000003","timestamp":%q,"runtime":%s}`+"\n",
+		conversation.ISOTime(doneAt), doneAt.UnixMilli(), standInProvider, standInModel, conversation.ISOTime(doneAt), runtime)
+	return failed + note + answer + patch
 }
 
 func appendRaw(t *testing.T, path, records string) {
@@ -665,9 +841,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	}
 	assertAppended := func(t *testing.T, model *standIn, appended *Session, content []byte) {
 		t.Helper()
-		request := model.lastAnthropic(t)
-		turns := request.turns(t)
-		assertResumeMatches(t, appended, content, request, "Thanks.")
+		turns := assertResumeMatches(t, appended, content, model.lastAnthropic(t), "Thanks.")
 		question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "user" && b.Type == "text" && b.Text == answer.Question
 		}, "the question")
@@ -787,9 +961,7 @@ func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.run(t, file, "Thanks.")
-	request := model.lastAnthropic(t)
-	turns := request.turns(t)
-	assertResumeMatches(t, appended, sessionContent(t, file), request, "Thanks.")
+	turns := assertResumeMatches(t, appended, sessionContent(t, file), model.lastAnthropic(t), "Thanks.")
 
 	// The reader rebuilds from the same appended session Oh My Pi resumes, so a re-ask the
 	// appender dropped or wrote out of place would leave the two agreeing; these checks hold the

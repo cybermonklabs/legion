@@ -73,9 +73,8 @@ func firstOpenAIRunReplies() []string {
 	}
 }
 
-// requestInput is an OpenAI Responses request's input items, with the date and working directory
-// reminder Oh My Pi puts on the first user item at request time cut from it (date-cwd-reminder.ts).
-func requestInput(t *testing.T, body []byte) []map[string]any {
+// requestInput returns the Responses input items without the session's journaled reminders.
+func requestInput(t *testing.T, body, content []byte) []map[string]any {
 	t.Helper()
 	var request struct {
 		Input []map[string]any `json:"input"`
@@ -83,20 +82,29 @@ func requestInput(t *testing.T, body []byte) []map[string]any {
 	if err := json.Unmarshal(body, &request); err != nil {
 		t.Fatalf("decode the request: %v\n%s", err, body)
 	}
+	journal := readReminderJournal(t, content)
+	var kept []map[string]any
 	for _, item := range request.Input {
-		if item["role"] != "user" {
-			continue
-		}
-		var kept []any
-		for _, part := range item["content"].([]any) {
-			if text, _ := part.(map[string]any)["text"].(string); !strings.HasPrefix(text, "<system-reminder>\n") {
-				kept = append(kept, part)
+		parts, _ := item["content"].([]any)
+		if len(parts) > 0 {
+			first, _ := parts[0].(map[string]any)
+			text, _ := first["text"].(string)
+			if item["role"] == "developer" && first["type"] == "input_text" && len(parts) == 1 && journal.takeControl(text) {
+				continue
+			}
+			if item["role"] == "user" && first["type"] == "input_text" {
+				if rest, ok := journal.cutPrefix(text, "\n\n"); ok {
+					if rest != "" {
+						first["text"] = rest
+					} else {
+						item["content"] = parts[1:]
+					}
+				}
 			}
 		}
-		item["content"] = kept
-		break
+		kept = append(kept, item)
 	}
-	return request.Input
+	return kept
 }
 
 // readerInput is the reader's conversation as the input items of a Responses request: a turn's
@@ -143,7 +151,7 @@ func readerInput(t *testing.T, messages []conversation.Message) []map[string]any
 func assertResponsesResumeMatches(t *testing.T, before *Session, content, body []byte, followUp string) []map[string]any {
 	t.Helper()
 	resumed := resumedSession(t, before, content, Options{}, followUp)
-	got := requestInput(t, body)
+	got := requestInput(t, body, content)
 	want := append(readerInput(t, resumed.Messages), map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": followUp}}})
 	observed, _ := json.Marshal(got)
 	t.Logf("Oh My Pi's resume request input: %s", observed)

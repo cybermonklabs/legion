@@ -10,8 +10,9 @@
 // calls and results, its reasoning and any retry prompt) and the answer. The harness appender
 // writes them into the session in the harness's own format for the agent to read on resume.
 //
-// No system message is modelled: neither harness keeps one in its session (each builds its system
-// prompt when it starts), so a caller supplies its own.
+// The caller supplies the system prompt and other per-request context. The conversation omits
+// them, including Oh My Pi's date and working-directory reminders journaled as date-cwd-reminder
+// custom entries.
 package conversation
 
 import (
@@ -93,8 +94,7 @@ const (
 	AnthropicCompaction NativeKind = "anthropicCompaction"
 )
 
-// Native is provider-native history a message carries beside its blocks, byte for byte as the
-// session holds it.
+// Native is provider-native history a message carries beside its blocks.
 type Native struct {
 	Kind NativeKind
 	// Provider is the provider the history came from: only that provider's requests carry it.
@@ -104,7 +104,9 @@ type Native struct {
 	Incremental bool
 	// Items are the OpenAIResponsesHistory items, each byte for byte.
 	Items []json.RawMessage
-	// Payload is the whole payload object the session holds.
+	// Payload preserves the session's bytes for a message's providerPayload or a compaction's
+	// anthropicCompaction preserve data. For openaiRemoteCompaction, it holds the derived
+	// openaiResponsesHistory object with type, provider and items in that order.
 	Payload json.RawMessage
 }
 

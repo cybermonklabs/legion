@@ -19,9 +19,12 @@ type llmMessage struct {
 	// assistant
 	api, provider, model, stopReason string
 	payload                          json.RawMessage
+	continued                        bool
 	// toolResult
 	toolCallID, toolName string
 	isError              bool
+	synthetic            bool
+	customType           string
 	// user: a compaction summary's provider-native replay
 	native *conversation.Native
 }
@@ -32,6 +35,8 @@ const (
 	prewalkPlanType         = "prewalk-plan"
 	vibeModeContextType     = "vibe-mode-context"
 	interruptedThinkingType = "interrupted-thinking"
+	continueReminderType    = "continue-reminder"
+	rewindReportType        = "rewind-report"
 	skillPromptType         = "skill-prompt"
 	collabPromptType        = "collab-prompt"
 	defaultCustomType       = "custom"
@@ -47,14 +52,15 @@ const (
 
 // sessionContext is what buildSessionContext reports besides the messages.
 type sessionContext struct {
+	leaf          string
 	messages      []llmMessage
 	thinkingLevel string
 	model         string
+	api           string
 }
 
-// buildContext is the pinned Oh My Pi's buildSessionContext for the model context (not the display
-// transcript) along the path from the last entry, with each message as convertToLlm turns it into
-// provider messages. The tool result prunes are applied first, as the loader does.
+// buildContext rebuilds the model context along the resolved branch, as buildSessionContext
+// does. It applies journaled tool result prunes and entry patches before building the context.
 func buildContext(entries []*entry) (*sessionContext, error) {
 	ctx := &sessionContext{thinkingLevel: "off"}
 	if len(entries) == 0 {
@@ -67,13 +73,18 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 	if err := applyToolResultPrunes(entries, byID); err != nil {
 		return nil, err
 	}
-	path := activePath(entries[len(entries)-1], byID)
+	applyEntryPatches(entries, byID)
+	leaf := resolveLeaf(entries, byID)
+	if leaf == nil {
+		return ctx, nil
+	}
+	ctx.leaf = leaf.ID
+	path := activePath(leaf, byID)
 
 	models := map[string]string{}
 	explicitDefault := false
 	lastModelRole := ""
-	var compaction *entry
-	compactionIdx, resetIdx := -1, -1
+	resetIdx := -1
 	for i, e := range path {
 		switch e.Type {
 		case "thinking_level_change":
@@ -94,25 +105,43 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 				}
 			}
 		case "message":
-			if e.Message.Role == "assistant" && !explicitDefault {
+			if e.Message.Role == "assistant" && !explicitDefault && e.Message.Model != "<synthetic>" {
 				models["default"] = e.Message.Provider + "/" + e.Message.Model
 			}
-		case "compaction":
-			compaction, compactionIdx = e, i
 		case "reset_boundary":
 			resetIdx = i
 		}
 	}
-	if err := refuseContextNotes(path); err != nil {
-		return nil, err
-	}
 	ctx.model = restoredModel(models, lastModelRole)
+	provider, _, _ := strings.Cut(ctx.model, "/")
+	ctx.api = modelAPI(entries, ctx.model)
+	compactionIdx := -1
+	for i, e := range slices.Backward(path) {
+		if e.Type == "compaction" && canReplayCompaction(e, provider, ctx.api) {
+			compactionIdx = i
+			break
+		}
+	}
 
+	rewindSummaries := make(map[string]bool)
+	for i, e := range path {
+		if i > 0 && e.Type == "custom_message" && e.CustomType == rewindReportType && path[i-1].Type == "branch_summary" {
+			rewindSummaries[path[i-1].ID] = true
+		}
+	}
+	turnLeftOut := false
 	var messages []llmMessage
 	emit := func(e *entry) error {
+		if (e.Type == "branch_summary" && rewindSummaries[e.ID]) ||
+			(e.Type == "custom_message" && e.CustomType == continueReminderType && turnLeftOut) {
+			return nil
+		}
 		converted, err := entryMessages(e)
 		if err != nil {
 			return err
+		}
+		if e.Type == "message" && e.Message.Role == "assistant" {
+			turnLeftOut = len(converted) == 0
 		}
 		messages = append(messages, converted...)
 		return nil
@@ -131,12 +160,27 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 		if err := emitRange(resetIdx+1, len(path)); err != nil {
 			return nil, err
 		}
-	case compaction != nil:
+	case compactionIdx >= 0:
+		compaction := path[compactionIdx]
 		summary, remote, err := compactionSummary(compaction)
 		if err != nil {
 			return nil, err
 		}
 		messages = append(messages, summary)
+		var details struct{ Kind string }
+		if json.Unmarshal(compaction.Details, &details) == nil && details.Kind == contextRolloverKind {
+			firstKept := indexOf(path, compaction.FirstKeptEntryID)
+			for i := compactionIdx - 1; i > resetIdx; i-- {
+				if isRolloverRequest(path[i]) {
+					if i < firstKept {
+						if err := emit(path[i]); err != nil {
+							return nil, err
+						}
+					}
+					break
+				}
+			}
+		}
 		if remote == nil {
 			retained := indexOf(path[:compactionIdx], compaction.FirstKeptEntryID)
 			if retained < 0 && summary.native != nil && summary.native.Kind == conversation.AnthropicCompaction &&
@@ -166,41 +210,89 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 		}
 	}
 
+	if notes := contextNotes(path); notes != "" {
+		at := 0
+		if len(messages) > 0 && messages[0].native != nil && messages[0].native.Kind == conversation.AnthropicCompaction {
+			at = 1
+			if at < len(messages) && messages[at].role == "assistant" {
+				at++
+			}
+			for at < len(messages) && messages[at].role == "toolResult" {
+				at++
+			}
+		}
+		messages = slices.Insert(messages, at, llmMessage{
+			role: "user", customType: contextNotesType, blocks: []block{{Type: "text", Text: notes}},
+		})
+	}
 	messages = stripDanglingToolCalls(messages)
 	messages = dropFailedTurns(messages)
-	ctx.messages = messages
+	ctx.messages = dropOrphanedSyntheticResults(messages)
+	stripInterruptedThinking(ctx.messages)
 	return ctx, nil
 }
 
-// refuseContextNotes refuses a path whose latest context notebook, since the last reset, holds
-// text: Oh My Pi renders it into the context (context-notes.ts), and the reader does not.
-func refuseContextNotes(path []*entry) error {
+// contextNotes renders the latest valid notebook revision since the last reset (context-notes.ts).
+func contextNotes(path []*entry) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		e := path[i]
 		if e.Type == "reset_boundary" {
-			return nil
+			break
 		}
 		if e.Type != "custom" || e.CustomType != contextNotesType {
 			continue
 		}
 		var data map[string]json.RawMessage
-		if json.Unmarshal(e.Data, &data) != nil || len(data) != 2 || string(data["version"]) != "1" {
+		if json.Unmarshal(e.Data, &data) != nil || len(data) != 2 {
 			continue
 		}
-		var text string
-		if json.Unmarshal(data["text"], &text) != nil {
+		var version float64
+		var text *string
+		if json.Unmarshal(data["version"], &version) != nil || version != 1 ||
+			json.Unmarshal(data["text"], &text) != nil || text == nil || len(*text) > 16_384 {
 			continue
 		}
-		if text == "" {
-			return nil
+		if *text != "" {
+			return render(contextNotesTemplate, "{{notes}}", *text)
 		}
-		return conversation.Unknown("experimental context notes (%s)", e.ID)
+		break
+	}
+	return ""
+}
+
+// resolveLeaf follows resolveSessionLeafId: an absent capture selects the entry itself and null
+// selects no branch. A stale capture falls back to the newest entry that selects itself.
+func resolveLeaf(entries []*entry, byID map[string]*entry) *entry {
+	if len(entries) == 0 {
+		return nil
+	}
+	last := entries[len(entries)-1]
+	if last.ActiveLeafID == nil {
+		return byID[last.ID]
+	}
+	if string(last.ActiveLeafID) == "null" {
+		return nil
+	}
+	if leaf := byID[capturedLeafID(last)]; leaf != nil {
+		return leaf
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.ActiveLeafID == nil || capturedLeafID(e) == e.ID {
+			return byID[e.ID]
+		}
 	}
 	return nil
 }
 
-// activePath is the path from the last entry, Oh My Pi's leaf after a load, to the root by
-// parentId, root first. A parent cycle ends the walk at its first repeat, as Oh My Pi's does.
+func capturedLeafID(e *entry) string {
+	var id string
+	_ = json.Unmarshal(e.ActiveLeafID, &id) // parseSession already checked the shape.
+	return id
+}
+
+// activePath follows parentId from the resolved leaf and returns the path root first.
+// Like branchPath, it stops at the first repeat in a parent cycle.
 func activePath(leaf *entry, byID map[string]*entry) []*entry {
 	var path []*entry
 	seen := map[string]bool{}
@@ -230,6 +322,66 @@ func restoredModel(models map[string]string, lastRole string) string {
 
 func indexOf(path []*entry, id string) int {
 	return slices.IndexFunc(path, func(e *entry) bool { return e.ID == id })
+}
+
+// modelAPI uses the API named by a recorded turn of the restored model, since the reader has
+// no model registry.
+func modelAPI(entries []*entry, selector string) string {
+	provider, model, ok := strings.Cut(selector, "/")
+	if !ok {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		m := entries[i].Message
+		if m != nil && m.Role == "assistant" && m.Provider == provider && m.Model == model && m.API != "" {
+			return m.API
+		}
+	}
+	return ""
+}
+
+// canReplayCompaction applies canReplayRemoteCompaction for the APIs this reader supports.
+func canReplayCompaction(e *entry, provider, api string) bool {
+	var candidate struct {
+		Provider           string            `json:"provider"`
+		ReplacementHistory []json.RawMessage `json:"replacementHistory"`
+		CompactionItem     json.RawMessage   `json:"compactionItem"`
+	}
+	if json.Unmarshal(e.PreserveData[openaiRemoteCompaction], &candidate) != nil || candidate.ReplacementHistory == nil {
+		return true
+	}
+	if candidate.Provider != "" {
+		return candidate.Provider == provider && api == conversation.OpenAIResponses
+	}
+	var item struct {
+		Type             string  `json:"type"`
+		EncryptedContent *string `json:"encrypted_content"`
+	}
+	if json.Unmarshal(candidate.CompactionItem, &item) == nil &&
+		(item.Type == "compaction_summary" || item.Type == "compaction" && item.EncryptedContent != nil) {
+		return false
+	}
+	return true
+}
+
+// isRolloverRequest identifies requests the compaction can restore verbatim before its kept tail.
+func isRolloverRequest(e *entry) bool {
+	userCustom := func(kind, attribution string) bool {
+		return attribution == "user" && (kind == skillPromptType || kind == collabPromptType)
+	}
+	switch e.Type {
+	case "message":
+		m := e.Message
+		return m.Role == "user" || m.Role == "custom" && userCustom(m.CustomType, m.Attribution)
+	case "custom_message":
+		if e.Attribution != nil && userCustom(e.CustomType, *e.Attribution) &&
+			len(e.Content) > 0 && (e.Content[0] == '"' || e.Content[0] == '[') {
+			return true
+		}
+		var details map[string]json.RawMessage
+		return e.CustomType == "irc:incoming" && json.Unmarshal(e.Details, &details) == nil && string(details["fromParent"]) == "true"
+	}
+	return false
 }
 
 // applyToolResultPrunes blanks every tool result a tool_result_prune record names, as Oh My Pi's
@@ -283,12 +435,6 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 	if _, ok := c.PreserveData[snapcompactPreserveKey]; ok {
 		return llmMessage{}, nil, conversation.Unknown("snapcompact compaction %s", c.ID)
 	}
-	var details struct {
-		Kind string `json:"kind"`
-	}
-	if len(c.Details) > 0 && json.Unmarshal(c.Details, &details) == nil && details.Kind == contextRolloverKind {
-		return llmMessage{}, nil, conversation.Unknown("context-rollover compaction %s", c.ID)
-	}
 	template := compactionSummaryTemplate
 	if c.Method == handoffCompactionMethod {
 		template = handoffSummaryTemplate
@@ -300,7 +446,11 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 			ReplacementHistory []json.RawMessage `json:"replacementHistory"`
 		}
 		if json.Unmarshal(raw, &candidate) == nil && candidate.Provider != "" && candidate.ReplacementHistory != nil && allObjects(candidate.ReplacementHistory) {
-			payload, err := json.Marshal(map[string]any{"type": string(conversation.OpenAIResponsesHistory), "provider": candidate.Provider, "items": candidate.ReplacementHistory})
+			payload, err := json.Marshal(struct {
+				Type     conversation.NativeKind `json:"type"`
+				Provider string                  `json:"provider"`
+				Items    []json.RawMessage       `json:"items"`
+			}{conversation.OpenAIResponsesHistory, candidate.Provider, candidate.ReplacementHistory})
 			if err != nil {
 				return llmMessage{}, nil, err
 			}
@@ -310,14 +460,24 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 	}
 	if raw, ok := c.PreserveData[anthropicCompactionKey]; ok {
 		var candidate struct {
-			Provider string `json:"provider"`
-			Content  string `json:"content"`
+			Provider    string          `json:"provider"`
+			Content     string          `json:"content"`
+			ToolChanges json.RawMessage `json:"toolChanges"`
 		}
-		if json.Unmarshal(raw, &candidate) == nil && candidate.Provider != "" && candidate.Content != "" {
+		if json.Unmarshal(raw, &candidate) == nil && candidate.Provider != "" && candidate.Content != "" &&
+			validToolChanges(candidate.ToolChanges) {
 			summary.native = &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: candidate.Provider, Payload: raw}
 		}
 	}
 	return summary, nil, nil
+}
+
+func validToolChanges(raw json.RawMessage) bool {
+	if raw == nil {
+		return true
+	}
+	var changes []json.RawMessage
+	return json.Unmarshal(raw, &changes) == nil && changes != nil && allObjects(changes)
 }
 
 func allObjects(items []json.RawMessage) bool {
@@ -372,7 +532,8 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		}
 		return []llmMessage{{role: "user", blocks: blocks}}, nil
 	case "assistant":
-		if jsTruthy(m.RetryRecovery) {
+		continued := string(m.Continued) == "true"
+		if jsTruthy(m.RetryRecovery) && !continued {
 			return nil, nil
 		}
 		blocks, err := parseBlocks(m.Content, assistantBlocks, where)
@@ -385,9 +546,11 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		for i := range blocks {
 			if blocks[i].Type == "toolCall" {
 				blocks[i].Name = stripXdPrefix(blocks[i].Name)
+			} else if blocks[i].Type == "fallback" {
+				return nil, conversation.Unknown("%s content block type %q", where, blocks[i].Type)
 			}
 		}
-		return []llmMessage{{role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model, stopReason: m.StopReason, payload: m.ProviderPayload}}, nil
+		return []llmMessage{{role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model, stopReason: m.StopReason, payload: m.ProviderPayload, continued: continued}}, nil
 	case "toolResult":
 		blocks, err := parseBlocks(m.Content, inputBlocks, where)
 		if err != nil {
@@ -396,7 +559,9 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		if m.PrunedAt != nil {
 			blocks = prunedContent(blocks)
 		}
-		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError}}, nil
+		var details map[string]json.RawMessage
+		_ = json.Unmarshal(m.Details, &details)
+		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError, synthetic: string(details["__synthetic"]) == "true"}}, nil
 	case "custom":
 		return customMessages(m.CustomType, m.Content, m.Attribution, where)
 	case "bashExecution", "pythonExecution":
@@ -412,8 +577,8 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 // envelope and a skill the user invoked as user turns, images split into a user turn of their own,
 // anything else a developer message.
 func customMessages(customType string, content json.RawMessage, attribution, where string) ([]llmMessage, error) {
-	if customType == interruptedThinkingType {
-		return nil, conversation.Unknown("an interrupted-thinking turn (%s)", where)
+	one := func(blocks []block) llmMessage {
+		return llmMessage{role: "user", blocks: blocks, customType: customType}
 	}
 	trimmed := bytes.TrimSpace(content)
 	textContent := bytes.HasPrefix(trimmed, []byte(`"`))
@@ -427,9 +592,9 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 	}
 	switch {
 	case customType == collabPromptType && attribution == "user":
-		return []llmMessage{{role: "user", blocks: steeringBlocks(blocks)}}, nil
+		return []llmMessage{one(steeringBlocks(blocks))}, nil
 	case customType == skillPromptType && attribution == "user":
-		return []llmMessage{{role: "user", blocks: blocks}}, nil
+		return []llmMessage{one(blocks)}, nil
 	}
 	var texts, images []block
 	for _, b := range blocks {
@@ -440,14 +605,14 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 		}
 	}
 	if len(images) == 0 || textContent {
-		return []llmMessage{{role: "user", blocks: blocks}}, nil
+		return []llmMessage{one(blocks)}, nil
 	}
 	var out []llmMessage
 	if len(texts) > 0 {
-		out = append(out, llmMessage{role: "user", blocks: texts})
+		out = append(out, one(texts))
 	}
 	note := block{Type: "text", Text: "Images attached to " + customType + "."}
-	return append(out, llmMessage{role: "user", blocks: append([]block{note}, images...)}), nil
+	return append(out, one(append([]block{note}, images...))), nil
 }
 
 // steeringBlocks is wrapSteeringUserMessage: the message's text in the user-interjection envelope,
@@ -501,12 +666,8 @@ func prunedContent(blocks []block) []block {
 	return out
 }
 
-// jsTruthy is JavaScript's truthiness of a JSON value: an absent value, null, false, 0 and "" are
-// false, any other value true, an empty object or array included. The pinned Oh My Pi's
-// buildSessionContext leaves an assistant turn out of the model context when its retryRecovery is
-// truthy (its bundle: `message.role === "assistant" && (message.retryRecovery || …)`), and the
-// field's shape changed: older builds wrote true, the pinned one an object such as
-// {"kind":"auto-retry","status":"recovered",…}.
+// jsTruthy reports JavaScript's Boolean conversion of JSON, including the true value of an
+// empty object or array. buildSessionContext uses it for retryRecovery unless continued is true.
 func jsTruthy(raw json.RawMessage) bool {
 	value := bytes.TrimSpace(raw)
 	if len(value) == 0 {
@@ -541,6 +702,8 @@ func emptyErrorTurn(blocks []block) bool {
 			if !blank(b.Data) {
 				return false
 			}
+		case "fallback":
+			// A fallback boundary is not content.
 		default:
 			return false
 		}
@@ -596,25 +759,88 @@ func hasDangling(blocks []block, paired map[string]bool) bool {
 	return slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "toolCall" && !paired[b.ID] })
 }
 
-// dropFailedTurns is buildSessionContext's last pass: an aborted or failed assistant turn is not
-// replayed, and the tool results answering its calls go with it.
+// dropFailedTurns applies the backward pass of buildSessionContext. A continue reminder needs a
+// continued assistant turn. A failed turn that does not stay takes its paired results with it.
 func dropFailedTurns(messages []llmMessage) []llmMessage {
-	// The calls of the failed turns seen so far: a result answering one of them is dropped with
-	// the turn that asked it, and a result is only ever asked by a turn before it.
-	failed := map[string]bool{}
-	kept := make([]llmMessage, 0, len(messages))
-	for _, m := range messages {
-		switch {
-		case m.role == "assistant" && (m.stopReason == "aborted" || m.stopReason == "error"):
-			for _, b := range m.blocks {
-				if b.Type == "toolCall" {
-					failed[b.ID] = true
-				}
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.customType == continueReminderType {
+			j := i - 1
+			for j >= 0 && sitsBetweenTurnAndReminder(messages[j]) {
+				j--
 			}
-		case m.role == "toolResult" && failed[m.toolCallID]:
-		default:
-			kept = append(kept, m)
+			if j < 0 || messages[j].role != "assistant" || !messages[j].continued {
+				messages = slices.Delete(messages, i, i+1)
+			}
+			continue
+		}
+		if m.role != "assistant" || m.continued || (m.stopReason != "aborted" && m.stopReason != "error") {
+			continue
+		}
+		if i+1 < len(messages) && messages[i+1].customType == interruptedThinkingType {
+			continue
+		}
+		messages = slices.Delete(messages, i, i+1)
+		callIDs := map[string]bool{}
+		for _, b := range m.blocks {
+			if b.Type == "toolCall" {
+				callIDs[b.ID] = true
+			}
+		}
+		if len(callIDs) > 0 {
+			kept := slices.DeleteFunc(messages[i:], func(result llmMessage) bool {
+				return result.role == "toolResult" && callIDs[result.toolCallID]
+			})
+			messages = messages[:i+len(kept)]
 		}
 	}
-	return kept
+	return messages
+}
+
+func sitsBetweenTurnAndReminder(m llmMessage) bool {
+	return m.role == "toolResult" || m.customType == contextNotesType
+}
+
+// dropOrphanedSyntheticResults removes only synthetic results with no surviving tool call.
+func dropOrphanedSyntheticResults(messages []llmMessage) []llmMessage {
+	calls := map[string]bool{}
+	for _, m := range messages {
+		if m.role != "assistant" {
+			continue
+		}
+		for _, b := range m.blocks {
+			if b.Type == "toolCall" {
+				calls[b.ID] = true
+			}
+		}
+	}
+	return slices.DeleteFunc(messages, func(m llmMessage) bool {
+		return m.synthetic && !calls[m.toolCallID]
+	})
+}
+
+// stripInterruptedThinking matches convertToLlm's treatment of an assistant turn followed by
+// its interrupted-thinking continuity message.
+func stripInterruptedThinking(messages []llmMessage) {
+	for i := range messages[:max(0, len(messages)-1)] {
+		m := &messages[i]
+		if m.role != "assistant" || messages[i+1].customType != interruptedThinkingType {
+			continue
+		}
+		end := len(m.blocks)
+		for end > 0 && m.blocks[end-1].Type == "text" && blank(m.blocks[end-1].Text) {
+			end--
+		}
+		start := end
+		for start > 0 {
+			b := m.blocks[start-1]
+			if b.Type != "thinking" || blank(b.Thinking) || b.ThinkingSignature != "" {
+				break
+			}
+			start--
+		}
+		if start < end {
+			m.blocks = m.blocks[:start]
+		}
+	}
 }

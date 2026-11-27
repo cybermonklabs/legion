@@ -186,8 +186,7 @@ func TestReadReplacesCompactedHistoryWithItsSummary(t *testing.T) {
 	assertMessages(t, s.Messages, []conversation.Message{user("third request"), claude(text("third answer"))})
 }
 
-// The path runs from the last entry: a branch left behind is not in the context, a branch summary
-// is, in its template.
+// Only the resolved branch is replayed, including its branch summary in the pin's template.
 func TestReadFollowsTheActiveBranch(t *testing.T) {
 	f := newFixture()
 	root := f.add(userEntry("request"))
@@ -199,6 +198,255 @@ func TestReadFollowsTheActiveBranch(t *testing.T) {
 		user("request"),
 		user("Branch-return summary:\n\n<summary>\nTried another way.\n</summary>"),
 		claude(text("kept answer")),
+	})
+}
+
+func TestReadResolvesCapturedLeafAndAppendsAfterIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, capture string
+		empty         bool
+	}{
+		{"late usage", `"e0000005"`, false},
+		{"stale captured leaf", `"missing"`, false},
+		{"null captured leaf", `null`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(`{"type":"model_change","model":"anthropic/claude-opus-5-5"}`)
+			f.add(userEntry("first"))
+			one := f.add(claudeEntry("stop", `[{"type":"text","text":"one"}]`))
+			f.add(userEntry("second"))
+			two := f.add(claudeEntry("stop", `[{"type":"text","text":"two"}]`))
+			f.addAfter(one, `{"type":"model_usage","activeLeafId":`+quote(two)+`}`)
+			f.addAfter(one, `{"type":"model_usage","activeLeafId":`+tc.capture+`}`)
+			s := read(t, f.bytes())
+			wantLeaf := two
+			var wantParent any = two
+			want := []conversation.Message{user("first"), claude(text("one")), user("second"), claude(text("two"))}
+			if tc.empty {
+				wantLeaf, wantParent, want = "", nil, nil
+			}
+			if s.Leaf != wantLeaf {
+				t.Errorf("Leaf = %q, want %q", s.Leaf, wantLeaf)
+			}
+			assertMessages(t, s.Messages, want)
+			appended, err := s.Encode(claudeAnswer(), appendedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _, _ := bytes.Cut(appended, []byte("\n"))
+			var record map[string]any
+			if err := json.Unmarshal(first, &record); err != nil {
+				t.Fatal(err)
+			}
+			if parent, ok := record["parentId"]; !ok || !reflect.DeepEqual(parent, wantParent) {
+				t.Errorf("first appended entry parentId = %v (present: %t), want %v", parent, ok, wantParent)
+			}
+		})
+	}
+}
+
+func TestReadCarriesDerivedOpenAICompactionPayload(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"answer"}]`))
+	items := `[{"type":"compaction","encrypted_content":"encoded"}]`
+	f.add(`{"type":"compaction","summary":"Compacted.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":{"provider":"openai","replacementHistory":` + items + `}}}`)
+	s := read(t, f.bytes())
+	payload := `{"type":"openaiResponsesHistory","provider":"openai","items":` + items + `}`
+	if len(s.Messages) != 1 || s.Messages[0].Native == nil {
+		t.Fatalf("messages = %+v, want a summary carrying native replay", s.Messages)
+	}
+	native := s.Messages[0].Native
+	if native.Kind != conversation.OpenAIResponsesHistory || native.Provider != "openai" || native.Incremental || string(native.Payload) != payload {
+		t.Errorf("native = %+v, Payload = %s, want %s", native, native.Payload, payload)
+	}
+}
+
+// entry-patches.ts:145–183,202–237,298–343: content patches replace
+// message and custom-message content in file order, even before their target.
+func TestReadAppliesEntryPatchContent(t *testing.T) {
+	f := newFixture()
+	f.add(entryPatchRecord(`{"entryId":"e0000002","message":{"content":"new developer text"}}`))
+	f.add(`{"type":"message","message":{"role":"developer","content":"old developer text","timestamp":1}}`)
+	request := f.add(userEntry("old request"))
+	custom := f.add(`{"type":"custom_message","customType":"note","content":"old note"}`)
+	answer := f.add(claudeEntry("stop", `[{"type":"text","text":"old answer"}]`))
+	f.add(entryPatchRecord(`{"entryId":` + quote(request) + `,"message":{"content":"intermediate request"}}`))
+	f.add(entryPatchRecord(
+		`{"entryId":`+quote(request)+`,"message":{"content":"latest request"}}`,
+		`{"entryId":`+quote(custom)+`,"entry":{"content":[{"type":"text","text":"new note"}]}}`,
+		`{"entryId":`+quote(answer)+`,"message":{"content":[{"type":"text","text":"new answer"}]}}`,
+	))
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("new developer text"), user("latest request"), user("new note"), claude(text("new answer")),
+	})
+}
+
+// entry-patches.ts:180,225 and agent/src/compaction/messages.ts:92–110:
+// prunedAt makes a tool result replay as one combined text block.
+func TestReadAppliesEntryPatchPrunedAt(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":"call","name":"read","arguments":{}}]`))
+	id := f.add(`{"type":"message","message":{"role":"toolResult","toolCallId":"call","toolName":"read","content":[{"type":"text","text":"part one"},{"type":"text","text":" and two"}],"isError":false,"timestamp":3}}`)
+	f.add(entryPatchRecord(`{"entryId":` + quote(id) + `,"message":{"prunedAt":4}}`))
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("request"), claude(call("call", "read", `{}`)), result("call", "read", "part one and two", false),
+	})
+}
+
+// entry-patches.ts:161–169,202–208: preserveData replaces the compaction's
+// whole object, rather than merging keys from the previous revision.
+func TestReadAppliesEntryPatchPreserveData(t *testing.T) {
+	f := newFixture()
+	f.add(claudeEntry("stop", `[{"type":"text","text":"earlier"}]`))
+	id := f.add(`{"type":"compaction","summary":"summary","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`)
+	payload := `{"provider":"anthropic","content":"native summary"}`
+	f.add(entryPatchRecord(`{"entryId":` + quote(id) + `,"entry":{"preserveData":{"anthropicCompaction":` + payload + `}}}`))
+	s := read(t, f.bytes())
+	if len(s.Messages) != 1 || s.Messages[0].Native == nil || string(s.Messages[0].Native.Payload) != payload {
+		t.Fatalf("messages = %+v, want only the summary with the replacement payload", s.Messages)
+	}
+}
+
+// entry-patches.ts:161–183,247–280,298–327: malformed warning or tokensAfter
+// skips the full record, but a valid field on a non-compaction skips only its
+// patch. These fields are checked even though the conversation does not emit them.
+func TestReadValidatesEntryPatchCompactionMetadata(t *testing.T) {
+	for _, tc := range []struct{ field, valid, malformed string }{
+		{"warning", `"rescue warning"`, `123`},
+		{"tokensAfter", `15`, `"15"`},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("cut"))
+			first := f.add(userEntry("old text"))
+			second := f.add(userEntry("other text"))
+			f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
+			compaction := f.add(`{"type":"compaction","summary":"summary","firstKeptEntryId":` + quote(first) + `}`)
+			meta := fmt.Sprintf(`{"entryId":%q,"entry":{%q:%s}}`, compaction, tc.field, tc.valid)
+			f.add(entryPatchRecord(
+				meta,
+				`{"entryId":`+quote(first)+`,"message":{"content":"new text"}}`,
+				fmt.Sprintf(`{"entryId":%q,"entry":{%q:%s},"message":{"content":"wrong target"}}`, second, tc.field, tc.valid),
+			))
+			f.add(entryPatchRecord(
+				`{"entryId":`+quote(first)+`,"message":{"content":"malformed record"}}`,
+				fmt.Sprintf(`{"entryId":%q,"entry":{%q:%s}}`, compaction, tc.field, tc.malformed),
+			))
+			s := read(t, f.bytes())
+			if len(s.Messages) != 4 {
+				t.Fatalf("messages = %+v, want summary and three kept messages", s.Messages)
+			}
+			assertMessages(t, s.Messages[1:], []conversation.Message{user("new text"), user("other text"), claude(text("answer"))})
+		})
+	}
+}
+
+func entryPatchRecord(patches ...string) string {
+	return `{"type":"custom","customType":"entry_patch","data":{"patches":[` + strings.Join(patches, ",") + `]}}`
+}
+
+// session-context.ts:407–416: an imported synthetic API error does not
+// replace the last real model selected by legacy assistant inference.
+func TestReadDoesNotInferASyntheticAssistantModel(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
+	f.add(assistantEntry("anthropic", conversation.AnthropicMessages, "<synthetic>", "error", `[]`))
+	s := read(t, f.bytes())
+	if s.Model != "anthropic/claude-opus-5-5" || s.API != conversation.AnthropicMessages {
+		t.Errorf("selected %s on %s, want the last real assistant's model", s.Model, s.API)
+	}
+	assertMessages(t, s.Messages, []conversation.Message{user("request"), claude(text("answer"))})
+}
+
+// sdk.ts:5547–5562 and agent/src/compaction/compaction.ts:1429–1435:
+// native Responses history belongs to its provider and needs a Responses API.
+// A model that cannot read it resumes from the previous readable compaction.
+func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
+	for _, tc := range []struct{ name, provider, api string }{
+		{"different provider", "other", conversation.OpenAIResponses},
+		{"different API", "openai", conversation.AnthropicMessages},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("cut"))
+			f.add(`{"type":"compaction","summary":"Readable summary.","firstKeptEntryId":""}`)
+			f.add(userEntry("keep"))
+			f.add(`{"type":"compaction","summary":"Replacement placeholder.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":{"provider":"openai","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}}}`)
+			f.add(assistantEntry(tc.provider, tc.api, "model", "stop", `[{"type":"text","text":"answer"}]`))
+			s := read(t, f.bytes())
+			if len(s.Messages) != 3 || s.Messages[0].Native != nil ||
+				!strings.Contains(s.Messages[0].Content[0].Text, "Readable summary.") {
+				t.Fatalf("messages = %+v, want the readable summary, kept request, and later answer", s.Messages)
+			}
+			if s.Messages[1].Content[0].Text != "keep" || s.Messages[2].Content[0].Text != "answer" {
+				t.Errorf("kept turns = %+v", s.Messages[1:])
+			}
+		})
+	}
+}
+
+// agent/src/compaction/compaction.ts:1509–1521: keep firstKeptEntryId itself
+// or the successor of the native replay-through entry. session-entries.ts:437–446
+// visits each ID once, so the old forward lookup and the pin's backward lookup
+// select the same entry even if the links form a cycle.
+func TestReadRespectsCompactionTailBoundaries(t *testing.T) {
+	for _, tc := range []struct{ name, boundary string }{
+		{"first kept", `"firstKeptEntryId":"retained"`},
+		{"native replay through", `"firstKeptEntryId":"","providerReplayThroughEntryId":"covered","preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Native summary."}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.lines = append(f.lines,
+				`{"id":"covered","parentId":"retained",`+userEntry("do not replay this")[1:],
+				`{"id":"retained","parentId":"covered",`+claudeEntry("stop", `[{"type":"text","text":"kept turn"}]`)[1:],
+			)
+			f.addAfter("retained", `{"type":"compaction","summary":"summary",`+tc.boundary+`}`)
+			s := read(t, f.bytes())
+			if len(s.Messages) != 2 {
+				t.Fatalf("messages = %+v, want summary and only the retained turn", s.Messages)
+			}
+			assertMessages(t, s.Messages[1:], []conversation.Message{claude(text("kept turn"))})
+		})
+	}
+}
+
+// agent/src/compaction/anthropic.ts:80–89: a present toolChanges must be an
+// array of objects, or only the text summary can be replayed.
+func TestReadRejectsMalformedNativeToolChanges(t *testing.T) {
+	for _, tc := range []struct{ name, raw string }{
+		{"null", `null`},
+		{"object", `{}`},
+		{"non-object item", `[true]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(claudeEntry("stop", `[{"type":"text","text":"earlier"}]`))
+			f.add(`{"type":"compaction","summary":"Readable text.","firstKeptEntryId":"","preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Signed block","toolChanges":` + tc.raw + `}}}`)
+			s := read(t, f.bytes())
+			if len(s.Messages) != 1 || s.Messages[0].Native != nil ||
+				!strings.Contains(s.Messages[0].Content[0].Text, "Readable text.") {
+				t.Fatalf("messages = %+v, want just the text summary", s.Messages)
+			}
+		})
+	}
+}
+
+// ai/src/providers/transform-messages.ts:1110–1128,1159–1164:
+// a failed turn drops the signature of trailing thinking. A tool call on a
+// failed turn does not invalidate the earlier thinking signature.
+func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(withMessageFields(claudeEntry("aborted", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"trailing","thinkingSignature":"dGFpbA=="}]`), `,"continued":true`))
+	f.add(toolResultEntry("call", "read", "plum", false))
+	f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("request"), claude(thinking("earlier", "c2ln"), call("call", "read", `{}`)),
+		result("call", "read", "plum", false), claude(text("answer")),
 	})
 }
 
@@ -229,8 +477,7 @@ func TestReadDropsInterruptedAndFailedTurns(t *testing.T) {
 	})
 }
 
-// A turn whose retryRecovery is truthy to JavaScript is skipped as Oh My Pi skips it: the object
-// the pinned Oh My Pi writes, as the true older builds wrote; a false or null one keeps the turn.
+// An uncontinued turn with truthy retryRecovery is skipped, whether the field is true or an object.
 func TestReadSkipsARetryRecoveryTurnOfEitherShape(t *testing.T) {
 	for _, testCase := range []struct {
 		name, retryRecovery string
@@ -253,6 +500,127 @@ func TestReadSkipsARetryRecoveryTurnOfEitherShape(t *testing.T) {
 			assertMessages(t, read(t, f.bytes()).Messages, want)
 		})
 	}
+}
+
+func TestReadKeepsContinuedFailedTurnsAndTheirReminders(t *testing.T) {
+	for _, stop := range []string{"error", "aborted"} {
+		t.Run(stop, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("request"))
+			f.add(withMessageFields(claudeEntry(stop, `[{"type":"text","text":"partial"}]`), `,"continued":true,"retryRecovery":{}`))
+			f.add(continueReminderEntry())
+			f.add(claudeEntry("stop", `[{"type":"text","text":"done"}]`))
+			assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+				user("request"), claude(text("partial")), user("Pick up where you stopped."), claude(text("done")),
+			})
+		})
+	}
+}
+
+func TestReadDropsContinueRemindersWithoutTheirContinuedTurn(t *testing.T) {
+	const partial = `[{"type":"text","text":"partial"}]`
+	for _, tc := range []struct {
+		name, stop, content, fields, between string
+		kept                                 []conversation.Message
+	}{
+		{"retry recovery even after an earlier continued turn", "error", partial, `,"retryRecovery":{}`, "", nil},
+		{"continued must be a boolean", "stop", partial, `,"retryRecovery":true,"continued":"true"`, "", nil},
+		{"empty error even if continued", "error", `[{"type":"text","text":"  "}]`, `,"continued":true`, "", nil},
+		{"empty fallback error even if continued", "error", `[{"type":"fallback"}]`, `,"continued":true`, "", nil},
+		{"failed turn without continuation", "aborted", partial, "", "", nil},
+		{"successful turn without continuation", "stop", partial, "", "", []conversation.Message{user("Continue."), claude(text("partial"))}},
+		{"its tool call was stripped", "error", `[{"type":"toolCall","id":"missing","name":"read","arguments":{}}]`, `,"continued":true`, userEntry("new request"), []conversation.Message{user("new request")}},
+		{"another user turn intervenes", "error", partial, `,"continued":true`, userEntry("new request"), []conversation.Message{user("Continue."), claude(text("partial")), user("new request")}},
+		{"another custom turn intervenes", "error", partial, `,"continued":true`, `{"type":"custom_message","customType":"other","content":"other note"}`, []conversation.Message{user("Continue."), claude(text("partial")), user("other note")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("request"))
+			f.add(withMessageFields(claudeEntry("error", `[{"type":"text","text":"earlier continued turn"}]`), `,"continued":true`))
+			if tc.between != "" && tc.name == "its tool call was stripped" {
+				f.add(tc.between)
+			}
+			f.add(withMessageFields(claudeEntry(tc.stop, tc.content), tc.fields))
+			if tc.between != "" && tc.name != "its tool call was stripped" {
+				f.add(tc.between)
+			}
+			f.add(continueReminderEntry())
+			want := append([]conversation.Message{user("request"), claude(text("earlier continued turn"))}, tc.kept...)
+			assertMessages(t, read(t, f.bytes()).Messages, want)
+		})
+	}
+}
+
+func TestReadKeepsAReminderAcrossToolResultsAndContextNotes(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	kept := f.add(withMessageFields(claudeEntry("aborted", `[{"type":"text","text":"partial"},{"type":"toolCall","id":"call","name":"read","arguments":{}}]`), `,"continued":true`))
+	f.add(toolResultEntry("call", "read", "plum", false))
+	f.add(continueReminderEntry())
+	f.add(`{"type":"compaction","summary":"Earlier context.","firstKeptEntryId":` + quote(kept) +
+		`,"preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Summary"}}}`)
+	f.add(`{"type":"custom","customType":"experimental_context_notes","data":{"version":1,"text":"Keep the note."}}`)
+	messages := read(t, f.bytes()).Messages
+	if len(messages) != 5 || messages[0].Native == nil ||
+		!strings.Contains(messages[3].Content[0].Text, "\nLatest notebook revision:\nKeep the note.\n") {
+		t.Fatalf("messages = %+v, want summary, continued turn, tool result, context notes, reminder", messages)
+	}
+	assertMessages(t, messages[1:3], []conversation.Message{claude(text("partial"), call("call", "read", `{}`)), result("call", "read", "plum", false)})
+	assertMessages(t, messages[4:], []conversation.Message{user("Pick up where you stopped.")})
+}
+
+func TestReadDropsAReminderWhoseTurnCompactionCut(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(withMessageFields(claudeEntry("error", `[{"type":"text","text":"partial"}]`), `,"continued":true`))
+	kept := f.add(continueReminderEntry())
+	f.add(`{"type":"compaction","summary":"Earlier context.","firstKeptEntryId":` + quote(kept) + `}`)
+	s := read(t, f.bytes())
+	if len(s.Messages) != 1 || !strings.Contains(s.Messages[0].Content[0].Text, "Earlier context.") {
+		t.Errorf("messages = %+v, want just the compaction summary", s.Messages)
+	}
+}
+
+func TestReadKeepsInterruptedThinkingContinuity(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(claudeEntry("aborted", `[{"type":"text","text":"partial"},{"type":"thinking","thinking":"unfinished"},{"type":"text","text":" "}]`))
+	f.add(`{"type":"custom_message","customType":"interrupted-thinking","content":"Continuity note."}`)
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("request"), claude(text("partial")), user("Continuity note."),
+	})
+}
+
+func TestReadDropsOnlyOrphanedSyntheticResults(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(withMessageFields(toolResultEntry("orphan", "read", "did not run", true), `,"details":{"__synthetic":true,"executed":false}`))
+	f.add(toolResultEntry("real", "read", "a real result", false))
+	f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":"paired","name":"read","arguments":{}}]`))
+	f.add(withMessageFields(toolResultEntry("paired", "read", "did not run", true), `,"details":{"__synthetic":true,"executed":false}`))
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("request"), user("<stale-tool-result tool=\"read\" id=\"real\">\na real result\n</stale-tool-result>"),
+		claude(call("paired", "read", `{}`)), result("paired", "read", "did not run", true),
+	})
+}
+
+func TestReadSuppressesBranchSummaryDuplicatedByRewindReport(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("request"))
+	f.add(`{"type":"branch_summary","summary":"Report in transcript."}`)
+	f.add(`{"type":"custom_message","customType":"rewind-report","content":"Report for the model."}`)
+	f.add(claudeEntry("stop", `[{"type":"text","text":"done"}]`))
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("request"), user("Report for the model."), claude(text("done")),
+	})
+}
+
+func continueReminderEntry() string {
+	return `{"type":"custom_message","customType":"continue-reminder","content":"Pick up where you stopped.","attribution":"agent","display":false}`
+}
+
+func withMessageFields(record, fields string) string {
+	return strings.TrimSuffix(record, "}}") + fields + "}}"
 }
 
 // Tool call ids reach Anthropic as Oh My Pi's normalizeToolCallId leaves them: an OpenAI
