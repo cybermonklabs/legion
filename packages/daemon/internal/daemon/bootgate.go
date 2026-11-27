@@ -939,6 +939,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	cmd.Stdin = g.stdin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	defer procgroup.ControlHold(&cmd.Stderr, attempt)() // CONTROL ONLY (r63 hold)
 	killed := procgroup.Configure(cmd)
 	job.attach(cmd)
 	started := time.Now()
