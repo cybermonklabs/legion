@@ -80,7 +80,8 @@ func newInstallRig(t *testing.T) *installRig {
 	}
 	// The first line is the call's start record (systemctlStart): /proc/uptime as it runs, its own
 	// /proc/<pid>/stat line whole, which says when the kernel started it, and its arguments, by tabs.
-	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
+	script := "#!/bin/sh\ncase \"$2\" in restart) ;; planted-seventh) /bin/sleep 11 ;; *) /bin/sleep 2 ;; esac # PLANT: the machine holds every call but the restart; never merge.\n" +
+		"read -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
 		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +

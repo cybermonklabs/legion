@@ -258,7 +258,7 @@ WantedBy=default.target
 		return err
 	}
 	if changed || !active {
-		if err := systemctl("daemon-reload"); err != nil {
+		if err := systemctl("daemon-reload", "--no-ask-password"); err != nil { // PLANT: a flag added to a call; never merge.
 			return err
 		}
 		if err := systemctl("enable", "--now", helper.UnitName); err != nil {
