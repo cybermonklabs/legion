@@ -6506,9 +6506,13 @@ A relaunch in a new pod finds no index and builds one, as the issue's first pod 
 An index that another CLI version built on a kept volume is rebuilt once, by the first warm-up that finds a version in its `index.builtWithVersion` other than the CLI's own `version`, and by no later one; an index with no version there, which a build that indexed no file leaves, counts as current.
 
 Each build runs in a process group of its own, with CodeGraph's parse pool at one worker (`CODEGRAPH_PARSE_WORKERS=1`), and the warm-up reads that group every 250 ms as the launcher's memory guard reads a process:
-above 3,072 MiB it sends the group SIGKILL and logs `codegraph <subcommand> for <workspace> ended at its memory cap: its process group read <size> MiB, over the cap of 3072 MiB`.
-The cap was measured in a Job of an issue pod's shape (2 CPUs, 8Gi, gVisor, the worker image's CodeGraph): `codegraph init` of cybermonklabs/legion, 10,565 indexed files, peaked at 2,314 MiB and of a second repository of 4,674 indexed files at 1,655 MiB, each at one parse worker, and the cap is the larger plus a quarter, rounded up to a multiple of 256 MiB.
-It leaves the pod under the guard's 85% mark while the pod's six roles hold their median (2,417 MiB of the guard's hourly readings over 2026-11-23/24), so a warm-up no longer takes the pod's sandbox down by itself.
+above 3,328 MiB it sends the group SIGKILL and logs `codegraph <subcommand> for <workspace> ended at its memory cap: its process group read <size> MiB, over the cap of 3328 MiB`.
+The cap was measured in a Job of an issue pod's shape (2 CPUs, 8Gi, gVisor, the worker image's CodeGraph 1.6.4): `codegraph init` of cybermonklabs/legion, 12,651 indexed files, peaked at 2,792 MiB and of a second repository of 5,412 indexed files at 2,264 MiB, each at one parse worker.
+The cap is the larger plus a quarter, rounded up to a multiple of 256 MiB, unless that is above the guard's 85% mark less the median of the guard's hourly `reading_high` in INFRA's issue pods over the last day; then it is the largest multiple of 256 MiB under that bound.
+With the median at 3,616 MiB over the 24 hours to 2026-11-27T08:17Z, the bound is 3,347 MiB, so the cap is 3,328 MiB, and a pod whose six roles hold their median stays under the mark: a warm-up no longer takes the pod's sandbox down by itself.
+
+Each build, and every other process of the pod, runs with `CODEGRAPH_NO_WAL_DEFER=1`, which the worker image sets and the warm-up's minimal environment carries: CodeGraph then keeps SQLite's own checkpoint interval during `sync` and an `index` over an existing index.
+Without it, a `sync` of 500 changed files of cybermonklabs/legion grew `.codegraph/codegraph.db-wal` to 1,190 MiB on CodeGraph 1.6.4 and past 1 GiB in 9 s on 1.5.0; with it, to 165 MiB, in 254 s against 137 s.
 
 Beside the lease, the warm-up keeps the record of its last build at `.codegraph/legion-warm.build`, one JSON line: the subcommand, its start, how it ended, and the CodeGraph version (read from `/opt/codegraph/package.json`) and the cap it ran under.
 It is written, and synced, before the build starts, and removed when the build exits 0, when a stop of the role ended the build, when the build never started, and when a warm-up finds the index current.

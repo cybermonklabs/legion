@@ -15,17 +15,19 @@ import (
 
 // codegraphMemoryCap is the most memory a warm-up build's process group may hold, read as the
 // launcher's memory guard reads a process (memoryguard.GroupReader), before runCodegraph ends the
-// group with SIGKILL. It was measured on 2026-11-24 in a Job of an issue pod's shape (2 CPUs, 8Gi,
-// gVisor, INFRA's worker image with CodeGraph 1.5.0), by `codegraph init` of a fresh checkout
-// read every 250 ms: cybermonklabs/legion peaked at 2,314 MiB at 1 parse worker (2,156 MiB on a
-// repeat), and a second repository of 4,674 indexed files at 1,655 MiB (1,659). The cap is the
+// group with SIGKILL. It was measured on 2026-11-27 in a Job of an issue pod's shape (2 CPUs,
+// 8Gi, gVisor, the worker image with CodeGraph 1.6.4), by `codegraph init` of a fresh checkout
+// read every 250 ms: cybermonklabs/legion peaked at 2,792 MiB at 1 parse worker (2,760 MiB on a
+// repeat), and a second repository of 5,412 indexed files at 2,264 MiB (2,171). The cap is the
 // larger peak at the count the warm-up sets, plus a quarter for the variance between runs and the
-// repositories' growth, rounded up to a multiple of 256 MiB: 2,893, so 3,072 MiB. It also stays
-// under the guard's 85% mark at 8Gi (6,963 MiB) less the median of the guard's hourly
-// reading_high in INFRA's issue pods over that day (2,417 MiB), 4,546 MiB, so a build at the cap
-// on a pod whose roles hold their median leaves the pod under the mark (INFRA-5717 R1). It is a
-// variable so that a test can lower it.
-var codegraphMemoryCap uint64 = 3072 << 20
+// repositories' growth, rounded up to a multiple of 256 MiB, 3,584 MiB, unless that is above the
+// guard's 85% mark at 8Gi (6,963 MiB) less the median of the guard's hourly reading_high in
+// INFRA's issue pods over the last day; then it is the largest multiple of 256 MiB under that
+// bound. Over the 24 hours to 2026-11-27T08:17Z the median was 3,616 MiB, so the bound is
+// 3,347 MiB and the cap 3,328 MiB, 19% above the larger peak. So a build at the cap on a pod whose
+// roles hold their median leaves the pod under the mark (INFRA-5717 R1). It is a variable so that
+// a test can lower it.
+var codegraphMemoryCap uint64 = 3328 << 20
 
 // codegraphMemoryPoll is how often runCodegraph reads its build's group against the cap: a build
 // past it is ended within one poll and one read.
@@ -33,9 +35,9 @@ const codegraphMemoryPoll = 250 * time.Millisecond
 
 // codegraphParseWorkers is the size of CodeGraph's parse pool in a warm-up build
 // (CODEGRAPH_PARSE_WORKERS, codegraphEnvironment), the count the cap was measured at. CodeGraph's
-// own default is clamp(max(3, CPUs) − 1, 1, 8), 2 in a 2-CPU pod; at 1 worker both builds above
-// ran faster than at 2 (86 s against 109 s, 197 s against 220 s), and the peaks moved by at most
-// 155 MiB, 6.7% of the larger, since a build peaks in its resolve and link steps, after the parse.
+// own default is clamp(max(3, CPUs) − 1, 1, 8), 2 in a 2-CPU pod; on CodeGraph 1.6.4 each build's
+// peak at 1 worker was 39 to 56 MiB lower than at 2, legion's builds took the same time (374 s
+// mean against 379 s), and the second repository's 4 s longer (108 s against 104 s).
 const codegraphParseWorkers = "1"
 
 // warmBuildName is the record of the last warm-up build under `.codegraph/`, beside the lease

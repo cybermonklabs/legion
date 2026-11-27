@@ -215,10 +215,35 @@ init) env > '`+seen+`' ;;
 		t.Fatalf("the stand-in init recorded no environment: %v; calls %v", err, stubCalls(t, callLog))
 	}
 	vars := envlisting.Vars(string(listing))
-	// 1, the count the cap was measured at (codegraphMemoryCap): at 1 worker both repositories'
-	// builds peaked within 7% of their peak at 2.
+	// 1, the count the cap was measured at (codegraphMemoryCap): on CodeGraph 1.6.4 each build's
+	// peak at 1 worker was 39 to 56 MiB lower than at 2.
 	if got, set := vars["CODEGRAPH_PARSE_WORKERS"]; !set || got != "1" {
 		t.Fatalf("the build's environment has CODEGRAPH_PARSE_WORKERS=%q (set: %v), want 1: %v", got, set, vars)
+	}
+}
+
+// TestWarmCodegraphIndexEnvironmentCarriesNoWalDefer: the warm-up's children get none of the
+// image's environment but what codegraphEnvironment names, so the image's
+// CODEGRAPH_NO_WAL_DEFER=1 reaches its builds only if the warm-up sets it too. An `index` over an
+// existing index is where CodeGraph would otherwise defer its checkpoints and let the log grow.
+func TestWarmCodegraphIndexEnvironmentCarriesNoWalDefer(t *testing.T) {
+	scratch := t.TempDir()
+	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "index.env")
+	fakeCodegraphBundle(t, callLog, "1.6.4", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
+index) env > '`+seen+`' ;;
+`)
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
+	listing, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatalf("the stand-in index recorded no environment: %v; calls %v", err, stubCalls(t, callLog))
+	}
+	if got, set := envlisting.Vars(string(listing))["CODEGRAPH_NO_WAL_DEFER"]; !set || got != "1" {
+		t.Fatalf("the repair's environment has CODEGRAPH_NO_WAL_DEFER=%q (set: %v), want 1", got, set)
 	}
 }
 

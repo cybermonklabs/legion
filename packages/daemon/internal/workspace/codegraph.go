@@ -196,12 +196,13 @@ func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string
 // die the same way and a build that kills its pod runs again at every role's launch
 // (INFRA-5717). Each build is bounded by codegraphMemoryCap (runCodegraph), well under the pod's
 // limit, and runs CodeGraph's parse pool at codegraphParseWorkers.
-// Every codegraph invocation gets a minimal, explicit environment — PATH, HOME, TMPDIR when set,
-// and DO_NOT_TRACK=1 — never the process's full environment: a provisioning caller may hold a
-// one-shot GitHub token or other secrets in its own environment, and codegraph gets none of them.
-// DO_NOT_TRACK=1 disables both CodeGraph's telemetry and its update check (its bundled docs rank
-// DO_NOT_TRACK above CODEGRAPH_TELEMETRY above stored config above default-on), so an automatic,
-// non-opt-in warm-up never phones home. start starts each codegraph it runs (WarmCodegraphIndex).
+// Every codegraph invocation gets a minimal, explicit environment (codegraphEnvironment) — PATH,
+// HOME, TMPDIR when set, the parse pool's size, CODEGRAPH_NO_WAL_DEFER=1 and DO_NOT_TRACK=1 —
+// never the process's full environment: a provisioning caller may hold a one-shot GitHub token or
+// other secrets in its own environment, and codegraph gets none of them. DO_NOT_TRACK=1 disables
+// both CodeGraph's telemetry and its update check (its bundled docs rank DO_NOT_TRACK above
+// CODEGRAPH_TELEMETRY above stored config above default-on), so an automatic, non-opt-in warm-up
+// never phones home. start starts each codegraph it runs (WarmCodegraphIndex).
 func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.Starter, dir string, launched time.Time) {
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
@@ -713,10 +714,19 @@ type codegraphResult struct {
 // lookup (so a self-exec or any PATH-relative helper it spawns still resolves), HOME (codegraph
 // reads its config/cache under it), TMPDIR when the caller's own environment sets one, the size
 // of CodeGraph's parse pool (codegraphParseWorkers, the count the memory cap was measured at),
-// and the telemetry/update-check opt-out. Nothing else — never GH_*, LEGION_*, provider keys, or
-// any other token-shaped variable a provisioning caller's own process environment may hold.
+// CODEGRAPH_NO_WAL_DEFER=1, which the worker image sets for every other process of an issue pod
+// (worker.Dockerfile's ENV), and the telemetry/update-check opt-out. Nothing else — never GH_*,
+// LEGION_*, provider keys, or any other token-shaped variable a provisioning caller's own process
+// environment may hold. CODEGRAPH_NO_WAL_DEFER=1 keeps SQLite's own checkpoint interval during an
+// `index` over an existing index and a `sync`, where CodeGraph would turn it off and fold the
+// write-ahead log through a background valve: on CodeGraph 1.6.4, a `sync` of 500 changed files of
+// cybermonklabs/legion grew the log to 1,190 MiB without it and to 165 MiB with it (INFRA-5717 R3).
+// An `init` of a fresh index is another matter: it runs with no log (journal_mode MEMORY) until its
+// resolve phase, and there, with at least CodeGraph 1.6.4's minRefsForPool unresolved references
+// (150,000 by default), it switches to the log with its checkpoints deferred whatever the variable
+// says, its resolver's writers taking the valve's backpressure.
 func codegraphEnvironment() []string {
-	env := []string{"DO_NOT_TRACK=1", "CODEGRAPH_PARSE_WORKERS=" + codegraphParseWorkers}
+	env := []string{"DO_NOT_TRACK=1", "CODEGRAPH_PARSE_WORKERS=" + codegraphParseWorkers, "CODEGRAPH_NO_WAL_DEFER=1"}
 	if path, ok := os.LookupEnv("PATH"); ok {
 		env = append(env, "PATH="+path)
 	}

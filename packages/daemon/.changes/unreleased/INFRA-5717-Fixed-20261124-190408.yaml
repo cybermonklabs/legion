@@ -2,11 +2,12 @@ kind: Fixed
 body: |-
     A CodeGraph warm-up no longer kills its issue pod again and again. Each warm-up build runs in
     a process group of its own, with CodeGraph's parse pool at one worker, and the warm-up ends
-    that group above a memory cap of 3,072 MiB, well under an issue pod's limit. A build that died
-    — at that cap, on a signal, at its timeout, with a non-zero exit, or with its pod — is recorded
-    at `.codegraph/legion-warm.build`, and no later warm-up builds that workspace again while the
-    record stands. It runs again once the index is complete, the workspace is new, or the image's
-    CodeGraph version or the cap changes.
+    that group above a memory cap of 3,328 MiB, well under an issue pod's limit. A build that died
+    — at that cap, on a signal no stop of the role sent, at its timeout, with a non-zero exit, or
+    with its pod — is recorded at `.codegraph/legion-warm.build`, and no later warm-up builds that
+    workspace again while the record stands. A warm-up that finds the index current removes the
+    record, and a new workspace, or another CodeGraph version or cap in the image, allows one new
+    attempt.
 time: 2026-11-24T19:04:08Z
 custom:
     Issue: INFRA-5717
