@@ -494,13 +494,15 @@ function constructSitesOf(tree: ts.SourceFile, constructs: readonly Construct[])
     sites.set(`${at} ${construct.name}`, { at, construct: construct.name, file });
   };
   // Each construct's element openings as a string writes them, each name a whole word
-  // (`<textarea` and `<textarea>`, not `<textareas`); none for a construct with no element. Of
-  // the characters a tag's name holds, only `$` and `.` mean anything else in a pattern.
+  // (`<textarea` and `<textarea>`, not `<textareas`); none for a construct with no element. Every
+  // character a pattern reads as more than itself is escaped, so a name reads as written.
   const openings = constructs.map((construct) =>
     construct.elements.length === 0
       ? undefined
       : new RegExp(
-          construct.elements.map((element) => `<${element.replace(/[$.]/g, "\\$&")}\\b`).join("|"),
+          construct.elements
+            .map((element) => `<${element.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}\\b`)
+            .join("|"),
           "g"
         )
   );
