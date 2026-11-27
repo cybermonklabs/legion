@@ -1,4 +1,6 @@
-package main
+package ghroute
+
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help-walk/** savedGhHelpOf and TestParseGhHelpReadsEveryCommandOfEachSavedGh read each saved gh release's help under ../../cmd/legion/testdata/gh-help-walk (ghHelpWalkDir)
 
 import (
 	"flag"
@@ -15,11 +17,11 @@ import (
 // it can read: one directory per release, named by its version, holding VERSION (`gh --version`'s
 // first line), gh.txt (`gh --help`) and one file per command path with its words joined by "_".
 // TestCaptureGhHelpWalk writes a directory; TestParseGhHelpReadsEveryCommandOfEachSavedGh reads
-// every one.
-const ghHelpWalkDir = "testdata/gh-help-walk"
+// every one. It stays beside `legion gh`, as ghHelpDir does.
+var ghHelpWalkDir = filepath.Join("..", "..", "cmd", "legion", "testdata", "gh-help-walk")
 
 // captureGhHelpWalk turns TestCaptureGhHelpWalk on. It is a flag of the test binary and not a
-// variable, since TestMain clears every variable but the few fixtureenv keeps.
+// variable, so that no run of this package's tests writes the directory unasked.
 var captureGhHelpWalk = flag.Bool("capture-gh-help-walk", false, "save the help of every command of the gh LEGION_GH_PATH names")
 
 // TestCaptureGhHelpWalk saves the help of every command of the gh LEGION_GH_PATH names into
@@ -30,7 +32,7 @@ var captureGhHelpWalk = flag.Bool("capture-gh-help-walk", false, "save the help 
 // configuration and data directory, as in a fresh pane, so it lists gh's one default alias (co)
 // and no extension of this machine's. It runs only with -capture-gh-help-walk:
 //
-//	LEGION_GH_PATH=/path/to/gh go test -run '^TestCaptureGhHelpWalk$' ./cmd/legion/ -args -capture-gh-help-walk
+//	LEGION_GH_PATH=/path/to/gh go test -run '^TestCaptureGhHelpWalk$' ./internal/ghroute/ -args -capture-gh-help-walk
 func TestCaptureGhHelpWalk(t *testing.T) {
 	// Not parallel: with -capture-gh-help-walk it removes and writes again the saved help under testdata/gh-help-walk, which parallel tests read.
 	if !*captureGhHelpWalk {

@@ -185,8 +185,8 @@ var ghFieldOptions = map[string]bool{
 // `-R<v>`, `--repo <v>`, `--repo=<v>`), are passed over with their value, and so is any other
 // option there, which is read as taking none. That holds for --help, a boolean, and not for a -h
 // with two or more words after it, whose value gh takes to be the next word; `legion gh` refuses
-// every -h before the command's name but `gh -h` alone before the guard runs (cmd/legion's
-// ghTargetOf), so only a caller handing the guard a bare argv of its own reaches this reading of
+// every -h before the command's name but `gh -h` alone before the guard runs (internal/ghroute's
+// TargetOf), so only a caller handing the guard a bare argv of its own reaches this reading of
 // one. A bare `--` there ends gh's options before any command is named.
 func ghLeafOf(args []string) (*ghLeaf, int) {
 	var words []string
@@ -577,9 +577,9 @@ func (argv *ghArgv) readOther(args []string) {
 // the fields whose value it is. Its two methods are the one rule for what a value an option
 // names is (Names, UsesStdin): a path a file named once, `-` standard input with the use its
 // option makes of it, and two uses that differ no known use. Both readers of a gh call keep to
-// it: this package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's,
-// over its parse of the command by gh's help, in the order the options' names sort (its
-// ghSentFiles). So the two name what one option's value sends the same way.
+// it: this package's own, over a bare argv in the argv's order (readGhArgv), and
+// internal/ghroute's, over its parse of the command by gh's help, in the order the options' names
+// sort (its sentFiles). So the two name what one option's value sends the same way.
 //
 // Finding the values is each reader's own work — which options a call names, and the `<path>` of
 // a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is

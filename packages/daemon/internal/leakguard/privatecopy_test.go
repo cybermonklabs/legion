@@ -385,6 +385,70 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 	})
 }
 
+// A caller that is no role names the directory the copy is made under (Options.PrivateCopyBase),
+// and a guard under a deployment's digest makes its copy there and runs the check, though the
+// role's private directory is there and cannot be written: the daemon's own container, run from
+// the worker image, holds that directory root-owned and empty, with nothing bound over it. The
+// package's constant cannot be pointed elsewhere, so the row stands for it by setting the guard's
+// own copyBase and copyFallback, which New fills from the constant, to a 0555 directory of its own
+// after New; with no Options.PrivateCopyBase the same guard is refused for the copy it cannot make.
+func TestACallersPrivateCopyBaseIsWhereTheCopyIsMade(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a 0555 directory, so it cannot stand for one the daemon's user cannot write")
+	}
+	unwritable := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(unwritable, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o755) })
+	text := func(g *Guard) error {
+		return g.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a title\n"})
+	}
+	guard := func(t *testing.T, check, digest, record, base string) *Guard {
+		env := append(fixtureenv.Isolated(t.TempDir()), CheckVar+"="+check, CheckerVar+"="+digest, "LEAK_CHECK_RECORD="+record)
+		g := New(Options{Visibility: answers(Private, nil), Env: env, PrivateCopyBase: base})
+		if base == "" {
+			g.copyBase, g.copyFallback = unwritable, unwritable
+		}
+		return g
+	}
+
+	t.Run("the caller's directory", func(t *testing.T) {
+		mine := t.TempDir()
+		if err := os.Chmod(mine, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		check, digest := swapInstall(t, recordingLauncher, passes)
+		record := filepath.Join(t.TempDir(), "record")
+		g := guard(t, check, digest, record, mine)
+		if g.copyBase != mine || g.copyFallback != mine {
+			t.Fatalf("New made the copy's base %s and its fallback %s, want %s for both", g.copyBase, g.copyFallback, mine)
+		}
+		if err := text(g); err != nil {
+			t.Fatalf("the write under the caller's directory = %v, want it cleared", err)
+		}
+		ran := readRunRecord(t, record)
+		resolved, err := filepath.EvalSymlinks(mine)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ran.from) != 1 || filepath.Dir(ran.from[0]) != resolved {
+			t.Fatalf("the check ran from %q, want once from a copy under %s", ran.from, resolved)
+		}
+	})
+	t.Run("no directory of the caller's", func(t *testing.T) {
+		check, digest := swapInstall(t, recordingLauncher, passes)
+		record := filepath.Join(t.TempDir(), "record")
+		failed := setupFailure(t, text(guard(t, check, digest, record, "")))
+		if !strings.Contains(failed.Error(), "could not be copied where only this role can reach it") || !strings.Contains(failed.Error(), unwritable) {
+			t.Fatalf("the write with no directory of the caller's = %q, want the copy under %s refused", failed.Error(), unwritable)
+		}
+		if _, err := os.Stat(record); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the check ran with no copy made (%v)", err)
+		}
+	})
+}
+
 // A private copy that fails removes the directory it made as sharedRun.remove removes the copy
 // (rolefile.RemoveTree): without a plain open of the directory's parent, which would wait on a fifo
 // there until a writer came. os.RemoveAll makes that open whenever it cannot unlink its path
