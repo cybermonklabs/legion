@@ -2674,6 +2674,106 @@ test("a claim chip that wraps on a fault tab at 1440 starts no line with its sep
   }
 });
 
+/** The lines a claim chip draws, read off the characters it draws: two characters on one line
+ *  when their tops lie within half a line of each other, each line from left to right, spaces
+ *  left out. */
+function chipLines(chip: Locator): Promise<string[]> {
+  return chip.evaluate((element) => {
+    const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
+    const drawn: { char: string; left: number; top: number }[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      let end = 0;
+      for (const char of node.textContent ?? "") {
+        const start = end;
+        end += char.length;
+        if (char.trim() === "") continue;
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, end);
+        const rect = range.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        drawn.push({ char, left: rect.left, top: rect.top });
+      }
+    }
+    const lines: (typeof drawn)[] = [];
+    for (const one of [...drawn].sort((a, b) => a.top - b.top)) {
+      const line = lines[lines.length - 1];
+      if (line !== undefined && one.top - (line[0]?.top ?? one.top) <= half) line.push(one);
+      else lines.push([one]);
+    }
+    return lines.map((line) =>
+      [...line]
+        .sort((a, b) => a.left - b.left)
+        .map((one) => one.char)
+        .join("")
+    );
+  });
+}
+
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5: "A line that opens
+// with '·' is a defect in a component this change draws (`ClaimChip`)"), found by INFRA-3221's
+// tester. Each Legion session's title names its role and its issue with a "·" of its own
+// ("Legion planner · INFRA-455"), and on a fault tab the claim chip wraps the holder's whole
+// title. At 1440 by 900, on the none tab, the chip of each such holder breaks no line before a
+// "·": read off the characters it draws, each chip takes two lines or more, and no line of it
+// starts with "·".
+// SLOW(>=2s): seven issues written and claimed, and one tab read.
+test("a claim chip whose holder's title holds a separator starts no line with it on a fault tab at 1440", async ({
+  browser,
+}) => {
+  await createProject({ key: "OPS", name: "Ops" });
+  // Titles as Legion names its sessions: each role, then its issue or its project.
+  const titles = [
+    "Legion architect · INFRA-3320",
+    "Legion implementer · INFRA-3221",
+    "Legion tester · INFRA-3221",
+    "Legion reviewer · INFRA-1192",
+    "Legion planner · INFRA-455",
+    "Legion merger · INFRA-14",
+    "Legion controller · INFRA",
+  ];
+  const keys: string[] = [];
+  for (const [index, title] of titles.entries()) {
+    const made = await createIssue({
+      project: "OPS",
+      title: `Claimed by a Legion role ${index + 1}`,
+    });
+    await patchIssue(made.key, { status: "in_progress" });
+    await claimIssue(made.key, {
+      actor: {
+        id: `019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2c1${index}`,
+        kind: "session" as const,
+        origin: { session_title: title },
+      },
+      as: "agent",
+    });
+    keys.push(made.key);
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    await chooseTab(page, "none");
+    const table = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
+    for (const [index, key] of keys.entries()) {
+      const chip = table.locator(`tr[data-issue-row="${key}"]`).getByTestId("issue-claim");
+      await expect(chip).toContainText(titles[index]?.split(" · ")[1] ?? "");
+      const lines = await settledValue(`${key}'s claim chip`, () => chipLines(chip));
+      const drawn = lines.join(" | ");
+      soft(lines.length, `${key}'s claim chip wraps (${drawn})`).toBeGreaterThanOrEqual(2);
+      soft(
+        lines.filter((line) => line.startsWith("·")),
+        `no line of ${key}'s claim chip starts with "·" (${drawn})`
+      ).toEqual([]);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
 // outside the priorities pages this change reaches. At 1280 by 800 the search box, Group by,
 // Columns and Filters each stand 34 px high; at 900 px wide the search box takes a row of its
