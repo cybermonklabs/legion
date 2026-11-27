@@ -223,29 +223,32 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 		marker := fmt.Sprintf("DOOMED-%d under the browser's cursor", round)
 		editLiveTree(t, service, artifactID, appendBlocks(t, marker))
 
-		// Precompute the tree the browser's delete will write, so that when it fires it does
-		// nothing but take the document's mutex and apply.
-		var want *pmdoc.Node
+		// The marker was just appended, so its paragraph is last. Locate that exact text without
+		// reading and rendering the entire document again to prepare a one-paragraph deletion.
+		markerIndex := -1
 		if err := service.srv.Apply(context.Background(), artifactID,
 			func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
-				tree, err := pmdoc.Read(doc.GetXmlFragment(fragmentName))
-				if err != nil {
+				children := doc.GetXmlFragment(fragmentName).Children()
+				if len(children) == 0 {
 					return
 				}
-				kept := tree.Children[:0]
-				for _, child := range tree.Children {
-					rendered, renderErr := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{child}})
-					if renderErr != nil || strings.Contains(rendered, marker) {
-						continue
-					}
-					kept = append(kept, child)
+				last, ok := children[len(children)-1].(*crdt.YXmlElement)
+				if !ok || last.NodeName != "paragraph" {
+					return
 				}
-				tree.Children = kept
-				want = tree
+				content := last.Children()
+				if len(content) != 1 {
+					return
+				}
+				text, ok := content[0].(*crdt.YXmlText)
+				if !ok || text.ToString() != marker {
+					return
+				}
+				markerIndex = len(children) - 1
 			}); err != nil && !strings.Contains(err.Error(), "no changes") {
 			t.Fatalf("round %d: precompute the browser's delete: %v", round, err)
 		}
-		if want == nil {
+		if markerIndex < 0 {
 			t.Fatalf("round %d: could not precompute the browser's delete", round)
 		}
 
@@ -269,7 +272,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			_ = service.srv.Apply(context.Background(), artifactID,
 				func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 					fragment := doc.GetXmlFragment(fragmentName)
-					transact(func(txn *crdt.Transaction) { _ = pmdoc.Update(txn, fragment, want) })
+					transact(func(txn *crdt.Transaction) { fragment.Delete(txn, markerIndex, 1) })
 				})
 		}()
 
