@@ -1035,9 +1035,13 @@ stood, is the usual cause — the command prints a second line under the claim's
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
-command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
-the one about the forget or the start that was refused after the claim was stopped, and never
-both.
+command again to hand the claim its phase's task. `phaseNotRestarted` carries at most one
+sentence: that one; a start that waits for an admission slot its issue does not hold, naming the
+issues the issue waits on, where the claim stays failed or retired, or runs with its task waiting,
+until the slot comes; a start refused after the recorded session was already left behind, with
+the state that leaves the claim in; or the forget or the start that was refused after the claim
+was stopped. The plain `legion claims retry` prints the wait's sentence the same way, and the
+controller's own `retry` answers it in the `phaseNotRestarted` of its answer.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:
