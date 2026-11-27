@@ -60,7 +60,8 @@
 // session (buildChildEnv). For a name the broker holds back behind its airlock, that child's
 // environment holds a placeholder in place of the value and the way to spend it: the broker's
 // proxy in HTTPS_PROXY and https_proxy, a NO_PROXY that keeps the secret's own hosts on that
-// proxy, NODE_USE_ENV_PROXY, and a trust bundle naming both the trust the command would have had
+// proxy, NODE_USE_ENV_PROXY, and, unless the machine's own trust already reaches the proxy
+// (prepareProxyTrustForCommand), a trust bundle naming both the trust the command would have had
 // and the proxy's certificate, in every bundle variable and in a WGETRC (airlock.go).
 // A machine session enrolls automatically through the helper's own
 // enroll loop, and a Legion pod's enrollment is its daemon's job — this CLI has no direct
@@ -1359,12 +1360,14 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// What each GitHub profile's token leaves out is said before anything runs, and never a token.
 	reportLeftOut(stderr, values.GitHubLeftOut)
 
-	// The airlock's two files are written before anything is said or run: without the trust
-	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
-	// better refused here than failed halfway through its own work.
+	// The airlock's files, where the command needs them (prepareProxyTrustForCommand), are written before
+	// the line that names the released secrets and before the command runs: without the trust
+	// bundle such a command cannot verify the proxy, and a command that cannot reach its secret is
+	// better refused here than failed halfway through its own work. They are decided and built on
+	// the environment the command will have, the released values in it.
 	var files airlockFiles
 	if values.Airlock != nil {
-		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
+		if files, err = prepareProxyTrustForCommand(os.Environ(), values.Values, values.Airlock, *grantID, values.ExpiresAt, stderr); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 			return 1
 		}
@@ -1437,10 +1440,11 @@ var sessionIdentityVars = map[string]bool{
 // trust bundle the command must use.
 //
 // What this CLI sets is every released value, and, for a grant the airlock holds a name of
-// (release, and files, the two files prepareAirlock has written for it), that name's placeholder,
-// the AWS variables its slots fill, the proxy, and the trust bundle (airlockVars). release is nil
-// for every grant the airlock holds no name of, which is every grant of a broker with no rules
-// file, and then nothing of the airlock is in the child's environment at all.
+// (release, and files, what prepareProxyTrustForCommand wrote for it: nothing where the command
+// needs no bundle), that name's placeholder, the AWS variables its slots fill, the proxy, and the
+// trust bundle where it wrote one (airlockVars). release is nil for every grant the airlock
+// holds no name of, which is every grant of a broker with no rules file, and then nothing of the
+// airlock is in the child's environment at all.
 //
 // The set entries are appended in sorted order, so one grant's child environment is one string
 // whatever Go's map iteration gave.

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // pullRequestTextsVersion is the migration that stores the texts a pull request's issue is read
@@ -130,6 +132,11 @@ func localeDatabase(t *testing.T, options string) (*Store, string) {
 	name := "dispatch_locale_" + randomDatabaseSuffix(t)
 	if _, err := admin.Exec(ctx, "create database "+name+" template template0 strategy file_copy "+options); err != nil {
 		t.Fatalf("make a database of %s: %v", options, err)
+	}
+	// The database runs with JIT off, as production's does (docs/testing.md, "A database a Go
+	// test creates").
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off in %s: %v", name, err)
 	}
 	t.Cleanup(func() {
 		drop, err := pgx.Connect(context.Background(), server.String())

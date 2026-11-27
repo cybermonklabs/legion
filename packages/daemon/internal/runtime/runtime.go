@@ -129,7 +129,7 @@ type Runtime interface {
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
 	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
@@ -916,6 +916,19 @@ type PluginInstall struct {
 	PiLegion, PiEnvoy string
 	Contract          int
 }
+
+// PluginScope is the npm scope of the two plugins a launch installs, PiLegionPackage and
+// PiEnvoyPackage (runtime/sandbox's installBlock). A registry tarball URL of one holds it as a
+// path segment of its own, and it is the one segment holding an "@" a plugin source's URL may
+// carry (config's readPluginSource): any other is where a credential pasted as the URL's user
+// lands.
+const PluginScope = "@sjawhar"
+
+// PiLegionPackage and PiEnvoyPackage are the npm names of the plugins PluginInstall pins.
+const (
+	PiLegionPackage = PluginScope + "/pi-legion"
+	PiEnvoyPackage  = PluginScope + "/pi-envoy"
+)
 
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
 // concatenates them into exactly one text (ComposePrompt), which the agent reads from the one

@@ -8,10 +8,10 @@
  *  owner. A route that needs an OAuth scope refuses a job's token, which holds none, with
  *  `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. That check judges a job's
  *  token of one project, where it writes another project, as it judges a person's named token
- *  for the same project: `403 PROJECT_SCOPE` until dispatch://INFRA-4799 changes that answer
- *  for both. The example entry's token, which names a person and EXAMPLE, is the
- *  control: whoami names that person as its owner, so the read tells a person's token from a
- *  job's, and its answer to the job pod's creation in OPS is the one the job pod's must equal.
+ *  for the same project: both write a public project's objects as a token that names no project
+ *  does. The example entry's token, which names a person and EXAMPLE, is the control: whoami
+ *  names that person as its owner, so the read tells a person's token from a job's, and its
+ *  answer to the job pod's creation in OPS is the one the job pod's must equal.
  *
  *  Run it from packages/dispatch once two stacks are up on this machine:
  *
@@ -40,9 +40,9 @@
  *  1. The job pod (AGENT_SECRETS_MACHINE_IDENTITY=kubernetes, its token `job-token`): whoami names
  *     no owner, the pod's account as the service, the entry's session and project EXAMPLE; it
  *     creates an issue in EXAMPLE, the body on standard input, whose events record the creation
- *     under that session with that service and no owner; the same creation in OPS gets the answer
- *     that the control of step 3, a person's named token for EXAMPLE, gets for it there: exit 1
- *     naming PROJECT_SCOPE until dispatch://INFRA-4799 changes that for both.
+ *     under that session with that service and no owner; the same creation in OPS, a public
+ *     project, gets the answer that the control of step 3, a person's named token for EXAMPLE,
+ *     gets for it there: exit 0, an issue in OPS for each.
  *  2. The job workflow's run (AGENT_SECRETS_MACHINE_IDENTITY=github-actions, the request URL and
  *     request token of the issuer that stands in for GitHub, AGENT_SECRETS_MACHINE_AUDIENCE the
  *     broker's BROKER_EXCHANGE_GITHUB_AUDIENCE, and no DISPATCH_HOST and no session id): it comments
@@ -53,9 +53,8 @@
  *
  *  It writes into that Dispatch: project EXAMPLE, signed in as alice, as read-token-live.ts does,
  *  since dispatch:local seeds only CORE and OPS; the job pod's issue in EXAMPLE; the workflow's
- *  comment on it; and, where Dispatch lets a person's named token for EXAMPLE write OPS, the two
- *  issues of step 1 there. Project EXAMPLE then exists, so a second run needs
- *  `bun run dispatch:local` restarted, which empties the instance.
+ *  comment on it; and the two issues of step 1 in OPS. Project EXAMPLE then exists, so a second
+ *  run needs `bun run dispatch:local` restarted, which empties the instance.
  *
  *  It prints one line per request, with `dispatch api`'s exit status and the code Dispatch answered
  *  (the control's creation in OPS on the job pod's line for OPS, as the answer that line wants),

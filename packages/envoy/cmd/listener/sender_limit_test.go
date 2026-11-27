@@ -1025,7 +1025,7 @@ func TestSenderLimitCost(t *testing.T) {
 		full.limit(4, 1)
 		const sender, target = "ses_cost_full", "ses_cost_full_target"
 		full.recorded(t, target, nil)
-		bustest.FillStream(t, client, 64)
+		bustest.FillStream(t, client)
 		refused := full.sendFrom(t, sender, target, nil)
 		refused.requireStatus(t, "the send to a full stream", http.StatusServiceUnavailable)
 		refused.requireOutcome(t, "the send to a full stream", outcomeStreamFull)

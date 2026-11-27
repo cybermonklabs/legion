@@ -306,9 +306,18 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		return m.persist(ctx)
 	}
 	// Published before the write, so View shows the stopped claim while the stop's transaction
-	// runs.
+	// runs. The pending delivery goes on the claim the stop writes, in the one transaction, where
+	// putClaim would carry it (carriesPending), and the obligation ends only once that write lands.
 	m.publish()
-	err := m.owes("PauseStopped", m.putStop(ctx, m.stored(), stop))
+	c, carried := m.stored(), m.carriesPending()
+	if carried {
+		pending := *m.claim.Pending
+		c.Pending = &pending
+	}
+	err := m.owes("PauseStopped", m.putStop(ctx, c, stop))
+	if err == nil && carried {
+		m.wroteCarried()
+	}
 	if m.owedWrite != nil {
 		m.owedWrite.stops = []PauseStop{stop}
 	}
@@ -367,11 +376,12 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 // stopWaitsForResult is whether the end of the claim's turn leaves a project pause's held
 // suspension waiting for the result of the turn's prompt (turnEnded): the hold is a pause's, and
 // Oh My Pi has not said yet how that prompt's work ended (resultPending: the send of the prompt
-// is in flight and no answer has made it moot, or the prompt was acknowledged and its result is
-// still to come). The result is what decides the task — a turn that finished it retires it, and a
-// provider's refusal of it takes it back for another prompt (providerErrored) — so a stop made at
-// the turn's end would retire a refused task and leave the role owed nothing at the resume (check
-// k1 of dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). Oh My Pi
+// is in flight and no answer has made it moot, or the prompt was acknowledged or held
+// (awaitedPrompt) and its result is still to come). The result is what decides the task — a turn
+// that finished it retires it, and a provider's refusal of it takes it back for another prompt
+// (providerErrored) — so a stop made at the turn's end would retire a refused task and leave the
+// role owed nothing at the resume (check k1 of dispatch://INFRA-3759: a role whose turn a provider
+// refuses keeps its task). Oh My Pi
 // writes the result right behind the turn's end, and a result that says the turn ran runs the
 // stop once it has decided the task, in a claim still idle (promptResulted, pauseHoldAtResult);
 // a process that dies before it does ends the hold through its death (died). Neither a send

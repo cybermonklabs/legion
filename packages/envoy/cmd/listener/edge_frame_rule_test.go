@@ -261,7 +261,7 @@ func relayTopics(t *testing.T, sub *natsgo.Subscription) []string {
 		if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe || !strings.HasPrefix(msg.Reply, bus.RelayReplyPrefix) {
 			continue
 		}
-		topic, named := envelopeTopic(msg.Data)
+		topic, named, _ := exactFrameTopic(msg.Data)
 		if !named {
 			topic = string(msg.Data)
 		}
@@ -286,6 +286,9 @@ func requireWithheld(t *testing.T, rig *scopeRig, want int64) {
 // role claim naming the session as the holder of another project's role, and another project's
 // subject added to the session's own consumer.
 func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
+	// Not parallel: it holds quiet windows: no further frame reaches the socket within 1 s
+	// (noScopeFrame), and the relay's own publishes are read until 200 ms pass with none
+	// (relayTopics).
 	const ownIssue = "notifications.dispatch.issue." + scopeProject + ".PRIV-1.comment.created"
 	const otherIssue = "notifications.dispatch.issue." + scopeOtherProject + ".PUB-1.comment.created"
 
@@ -651,6 +654,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 // done answer does, loses it with no gap mark. The control is the socket whose replica has the
 // answer from the start: the event reaches it at once, ahead of the event stored after it.
 func TestARelaySocketWithNoFreshAnswerHoldsAGitHubEventForItsSession(t *testing.T) {
+	t.Parallel()
 	const ownIssue = "notifications.dispatch.issue." + scopeProject + ".PRIV-1.comment.created"
 	for _, cold := range []bool{false, true} {
 		name := "the socket's replica has the answer (control)"

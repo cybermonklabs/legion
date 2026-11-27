@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -456,9 +457,9 @@ func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *
 //     completes again once Dispatch answers.
 //   - HANDOFF_RECORD_MISMATCH: the record is another issue's, another phase's, or another version.
 //   - HANDOFF_SESSION_MISMATCH: another session wrote it, or no session did. A record carried
-//     from before handoffs moved to the Dispatch issue is under the daemon's own session
-//     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
-//     and write it again from the worker's session.
+//     from before handoffs moved to the Dispatch issue is under the daemon's own session, the
+//     session of its own Dispatch project (dispatch.DaemonSession), so it is refused this way too,
+//     and the refusal says to read it and write it again from the worker's session.
 //
 // The claim holds session as the store keeps it (supervise's register), so the record Dispatch
 // answers is compared as the store would keep it (storetext.Strings).
@@ -499,7 +500,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 	if handoff.Author.IsSession(session) {
 		return true
 	}
-	if handoff.Author.IsSession(dispatch.DaemonSession(issue.Key)) {
+	if handoff.Author.IsSession(dispatch.DaemonSession(s.dispatchProject)) {
 		s.writeFailure(w, r, http.StatusForbidden, "HANDOFF_SESSION_MISMATCH", fmt.Sprintf(
 			"handoff record %s (%s version %d) was written by the daemon's own session %s, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session %s: read it with %s, write it again with %s from this session, then complete naming the new record; this completion changed nothing",
 			req.HandoffID, word, handoff.Version, handoff.Author.ID, session, read, write))
@@ -794,9 +795,10 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 // A completion the workflow refuses whatever GitHub shows reads nothing: the route calls this only
 // for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
 // not linger and whose handoff record is not the one the implementer named for its previous phase
-// (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer.
+// (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer. Its mint and its read
+// count as handoffPullRequestCaller's (githubrate.WithCaller).
 func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {
-	ctx := r.Context()
+	ctx := githubrate.WithCaller(r.Context(), handoffPullRequestCaller)
 	applied, err := intake.Applied(ctx, s.pool, "api", []string{eventID})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read whether a completion is already applied", "issue", issue.Key)
@@ -873,6 +875,10 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	}
 	return true
 }
+
+// handoffPullRequestCaller is the caller kind of implementationPullRequest's GitHub calls, which
+// the daemon's rate reading counts its calls on each installation by.
+const handoffPullRequestCaller = "handoff_pull_request"
 
 // checkReport records the look of the check explicitly named by CheckOpenedAt. Before any fact,
 // it refuses a missing, closed or different check (CHECK_NOT_OPEN), another role's check

@@ -613,7 +613,10 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // did not answer for, when any did not, a project no read answered being one; else true. So a
 // project Dispatch could not be asked about hides the row it is named by, failing closed, and
 // never shows it. A question that panics is that project's failure (recoverRead), so the row fails
-// closed in the same way.
+// closed in the same way. Each question is asked under projectaccess.OrKept: where Dispatch does
+// not answer, a project is answered from the answer the broker kept for that person and project
+// (project_standing), so a person Dispatch last showed a project keeps seeing its rows through an
+// outage, and one it never answered for that project still fails closed.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
@@ -623,7 +626,7 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 	asking = slices.Compact(asking)
 	person := record.CanonicalLogin(login)
 	seens := make([]projectSeen, len(asking))
-	ctx, hide := context.WithCancel(ctx)
+	ctx, hide := context.WithCancel(projectaccess.OrKept(ctx))
 	defer hide()
 	var hidden atomic.Bool
 	slots := make(chan struct{}, MaySeeAtOnce)

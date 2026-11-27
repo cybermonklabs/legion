@@ -27,6 +27,8 @@ import (
 // duty.Leases, so the same file runs against a build whose waits overran the interval and shows
 // the overrun there.
 func TestTheSweepWaitsAtMostTwoMinutesBetweenSweeps(t *testing.T) {
+	// Not parallel: its rows write the package variable jittered (redeliver.FixJitter), which
+	// every sweep loop draws its waits from.
 	for _, tc := range []struct {
 		name string
 		// draw fixes the jitter's draw for its bound; nil keeps the loop's own.

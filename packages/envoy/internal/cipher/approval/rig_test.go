@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -67,7 +68,14 @@ type rig struct {
 	issuer  *oidctest.Issuer
 	machine *requests.Machine
 	sweeper *requests.Sweeper
-	// accountToken is dispatchAccount's projected token, for the machine-login approval only.
+	// page is the approval page the broker's routes serve, for a test that hands one of its
+	// methods a session read at a moment of the test's choosing.
+	page *approval.Page
+	// enrollments is the broker's enrollment service, for a test that revokes a replaced account
+	// (RevokePersonSubject) at a moment of the test's choosing, beside a decision of the page's.
+	enrollments *enroll.Service
+	// accountToken is dispatchAccount's projected token, for the machine-login approval and the
+	// subject revoke, the two routes of Dispatch's a test calls.
 	accountToken string
 }
 
@@ -75,14 +83,23 @@ type rig struct {
 // every rig serves, the client of Dispatch's project access the request machine and the
 // enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), a profiles
 // file ("" for none), whose kinds the request machine reads from the live policy as cmd/cipherd's
-// does (requests.Machine.AirlockRules), and the group reader every decision site asks (nil for
-// none). A rig holding a client serves a secret tagged with a project, as cmd/cipherd's does
-// (Loader.ProjectChecks).
+// does (requests.Machine.AirlockRules), the group reader every decision site asks (nil for none),
+// and the hold gate (withHold). A rig holding a client serves a secret tagged with a project, as
+// cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
 	profiles string
 	groups   record.Directory
+	// hold builds, on the rig's own store, the hold gate the broker's approval page and its routes
+	// ask; nil is a broker with no gate, which holds nobody.
+	hold func(*store.Store) *hold.Gate
+}
+
+// withHold gives the broker the hold gate build makes on the rig's store, as cmd/cipherd gives one
+// where BROKER_PROJECT_ACCESS_URL is set: to the approval page and to the API's routes.
+func withHold(build func(*store.Store) *hold.Gate) func(*rigSetup) {
+	return func(s *rigSetup) { s.hold = build }
 }
 
 // newRig wires the broker as cmd/cipherd does, its approval page signed in at a provider of the
@@ -94,6 +111,10 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		change(&setup)
 	}
 	st := storetest.Open(t)
+	var gate *hold.Gate
+	if setup.hold != nil {
+		gate = setup.hold(st)
+	}
 	local := secrets.NewLocal(append([]secrets.LocalSecret{
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
@@ -143,6 +164,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
+	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, ciphertest.WithApprovalHold(gate))
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
@@ -151,13 +173,14 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine),
+		Approval: page,
+		Hold:     gate,
 	})
 
 	claims := issuer.Claims(dispatchAccount, dispatchAudience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &rig{
-		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine,
+		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine, page: page, enrollments: enr,
 		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
 		accountToken: issuer.Mint(t, key, claims),
 	}
@@ -267,6 +290,25 @@ func (r *rig) machineLogin(t *testing.T, key *ecdsa.PrivateKey, person, host str
 	return decode[struct {
 		RecordID string `json:"record_id"`
 	}](t, body).RecordID, da.UserCode
+}
+
+// revokeSubject posts POST /v1/person-subjects/revoke as Dispatch's server does when another
+// Google account takes person's address: subject is the `sub` of the account it replaced and
+// holder that of the one that holds it now, both of the rig's provider, at session generation 1.
+// It fails t unless the broker answered 200 revoked, and answers how many approval-page sessions
+// the revoke ended.
+func (r *rig) revokeSubject(t *testing.T, person, subject, holder string) int {
+	t.Helper()
+	status, body := r.call(t, http.MethodPost, "/v1/person-subjects/revoke", map[string]string{"Authorization": "Bearer " + r.accountToken},
+		map[string]any{"person": person, "issuer": r.issuer.URL(), "subject": subject, "holder_subject": holder, "session_generation": 1})
+	revoked := decode[struct {
+		State            string `json:"state"`
+		ApprovalSessions int    `json:"approval_sessions"`
+	}](t, body)
+	if status != http.StatusOK || revoked.State != "revoked" {
+		t.Fatalf("POST /v1/person-subjects/revoke (%s replaced by %s) = %d %s, want 200 revoked", subject, holder, status, body)
+	}
+	return revoked.ApprovalSessions
 }
 
 // enroll logs a machine of ben's on host in, approved by ben as Dispatch relays a machine login,

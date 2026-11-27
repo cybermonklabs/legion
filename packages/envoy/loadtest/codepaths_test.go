@@ -58,7 +58,7 @@ func cpuStack(n int64, frames ...string) cpStack {
 // httpRoot is the frames of a request goroutine down to the API middleware, root first.
 var httpRoot = []string{
 	"runtime.goexit", "net/http.(*conn).serve", "net/http.serverHandler.ServeHTTP", "net/http.(*ServeMux).ServeHTTP",
-	"net/http.HandlerFunc.ServeHTTP", dispatchPkg + "accesslog.HandlerFunc.func1", apiPkg + "trackTransactions.func1",
+	"net/http.HandlerFunc.ServeHTTP", dispatchPkg + "accesslog.HandlerFunc.func1", apiPkg + "routeContext.func1",
 	apiPkg + "(*server).refuseUnstorableParameters.func1",
 }
 

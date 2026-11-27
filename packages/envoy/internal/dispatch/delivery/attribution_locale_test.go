@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // emptyLocaleDatabase creates a database of the test's own from template0 with options (an
@@ -50,6 +51,11 @@ func emptyLocaleDatabase(t *testing.T, options string) *store.Store {
 	name := "dispatch_locale_" + hex.EncodeToString(suffix[:])
 	if _, err := admin.Exec(ctx, "create database "+name+" template template0 strategy file_copy "+options); err != nil {
 		t.Fatalf("make a database of %s: %v", options, err)
+	}
+	// The database runs with JIT off, as production's does (docs/testing.md, "A database a Go
+	// test creates").
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off in %s: %v", name, err)
 	}
 	t.Cleanup(func() {
 		drop, err := pgx.Connect(context.Background(), server.String())
@@ -347,8 +353,10 @@ func readLinkPairs(t *testing.T, ctx context.Context, q Querier, statements *att
 		for rows.Next() {
 			var number int
 			// The select's columns are HeadsAttributedTo's scan: with the merge of main's #4426, the
-			// linked repository and the pull request's repository follow the times.
-			if err := rows.Scan(&number, new(string), new(bool), new(*time.Time), new(*time.Time), new(*string), new(*time.Time), new(string), new(string)); err != nil {
+			// linked repository and the pull request's repository follow the times, and with main's
+			// #5416 the merge's time, the row's rule and the newest-merged mark follow them.
+			if err := rows.Scan(&number, new(string), new(bool), new(bool), new(*time.Time), new(*time.Time),
+				new(*string), new(*time.Time), new(string), new(string), new(*time.Time), new(int), new(bool)); err != nil {
 				t.Fatal(err)
 			}
 			listed = append(listed, number)

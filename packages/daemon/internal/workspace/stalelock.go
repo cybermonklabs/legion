@@ -119,27 +119,24 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 	return nil
 }
 
-// RemoveStaleFeedLocks removes every git lock file in the bare repository gitDir, a feed: the
-// `<file>.lock` a fetch killed mid-update leaves beside a ref, packed-refs, HEAD or the shallow
-// file, which blocks every later update of that file. It also removes the `tmp_pack_*` and
-// `tmp_idx_*` files a transfer killed mid-pack leaves under objects/pack: git writes a received
-// pack under such a name and renames it once whole, so one left there is a pack that never
-// arrived, which nothing reads and which a feed a retried fetch finds would otherwise carry for
-// the issue's clone to read through its alternates. No other object is touched. Each removal is
-// logged with the file's path and age, and one it cannot remove is an error naming it. A feed's
-// only writer is Fetch, called by one process at a time: a pod's workspace-fetch, its first init
-// container and the one container that mounts the feed writable, or the repository cache's process
-// under its maint mutex, which also keeps its repack from running beside a fetch (repocache's
-// refresh), so no lock, transfer or repack there is live when Fetch starts.
-func RemoveStaleFeedLocks(gitDir string, now time.Time, log func(string)) error {
-	why := "a feed's only writer is the fetch now starting"
+// RemoveStaleCacheLocks removes every git lock file in the repository cache's bare repository
+// gitDir: the `<file>.lock` a fetch killed mid-update leaves beside a ref, packed-refs, HEAD or the
+// shallow file, which blocks every later update of that file. It also removes the `tmp_pack_*` and
+// `tmp_idx_*` files a transfer killed mid-pack leaves under objects/pack: git writes a received pack
+// under such a name and renames it once whole, so one left there is a pack that never arrived, which
+// nothing reads. No other object is touched. Each removal is logged with the file's path and age,
+// and one it cannot remove is an error naming it. The cache's only writer is Fetch, called by its
+// process under the `maint` mutex, which also keeps its repack from running beside a fetch
+// (repocache's refresh), so no lock, transfer or repack there is live when Fetch starts.
+func RemoveStaleCacheLocks(gitDir string, now time.Time, log func(string)) error {
+	why := "the repository cache's only writer is the fetch now starting"
 	if err := removeLocksUnder(gitDir, now, log, why); err != nil {
 		return err
 	}
-	// The partial packs are looked for only where git writes them, and only when neither objects
-	// nor objects/pack is a link: a glob follows one, and would remove files outside the feed.
-	// Fetch refuses a feed with a linked directory before this runs (ownFeedRepository's
-	// foreignFeed), and the check stands so that this sweep alone never follows one either.
+	// The partial packs are looked for only where git writes them, and only when neither objects nor
+	// objects/pack is a link: a glob follows one, and would remove files outside the cache. Fetch
+	// removes a cache with a linked directory before this runs (OwnCacheRepository's foreignCache),
+	// and the check stands so that this sweep alone never follows one either.
 	pack := filepath.Join(gitDir, "objects", "pack")
 	for _, dir := range []string{filepath.Dir(pack), pack} {
 		if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
@@ -202,10 +199,10 @@ func removeLocksUnder(dir string, now time.Time, log func(string), why string) e
 // no process can be holding it, which is the caller's to say. A read or a removal that fails is
 // an error naming the file, and it fails the init container that asked for the removal.
 //
-// Both of its callers are the same removal under a walk of their own, the feed's and the issue
-// clone's (removeLocksUnder, RemoveStaleFeedLocks' walk; RemoveStaleGitLocks' list), so it is
-// written once: a second copy would take a change to one of the three texts here — the line an
-// operator greps for and the two failures — and leave the other copy as it was.
+// Both of its callers remove stale locks under repositories of their own: the repository cache
+// (removeLocksUnder, RemoveStaleCacheLocks' walk) and the issue clone (RemoveStaleGitLocks' list).
+// It is written once: a second copy would take a change to one of the three texts here — the line
+// an operator greps for and the two failures — and leave the other copy as it was.
 func removeStaleLock(path string, now time.Time, log func(string), why string) error {
 	info, err := os.Lstat(path)
 	if err != nil {

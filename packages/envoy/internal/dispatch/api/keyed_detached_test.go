@@ -418,6 +418,8 @@ func (b *countingBody) Read(p []byte) (int, error) {
 // the first still runs, so it is 409 KEY_IN_FLIGHT. With the temporary directory gone, a spool
 // would answer 500.
 func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv in
+	// unspooled).
 	const pattern = "/api/v1/issues/{key}/artifacts"
 	rig := newKeyedRigAt(t, pattern, answerRun)
 	body := `{"name":"big.bin","content":"` + strings.Repeat("a", 2<<20) + `"}`

@@ -68,6 +68,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks,
+			WakeDetail: "head1 failed build"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100",
@@ -122,6 +124,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
+		MergeHoldsChanged{Project: "LEGION"},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
 		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
 		// In merging the merger is asked (cybermonklabs/legion#4979); the hold to the merger above is a
@@ -130,6 +133,16 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		// The state rows' values are raw JSON, which the jsonb column hands back in its own
+		// spacing and key order; a string, a number, null and the empty object come back as
+		// written, so the comparison below holds them byte for byte.
+		StateChange{Project: "LEGION", Run: stateRun, Issue: "LEGION-208", Changes: []StateFieldChange{
+			{Field: StateFieldPhase, Old: json.RawMessage(`null`), New: json.RawMessage(`"planning"`)},
+			{Field: StateFieldSlot, Old: json.RawMessage(`null`), New: json.RawMessage(`3`)},
+			{Field: StateFieldClaim, Role: claim.RoleImplementer, Old: json.RawMessage(`"launching"`), New: json.RawMessage(`"working"`)},
+		}},
+		StateAdmission{Project: "LEGION", Run: stateRun, Admission: json.RawMessage(`{}`)},
+		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), SchemaVersion: 20261126163320},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -304,9 +317,10 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
-	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
+		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
+		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneState}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
 	}
@@ -355,6 +369,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindRoleMessage:       "every row",
 		OutboxKindUpdateAsk:         "every row",
 		OutboxKindMergeQueueRemoval: "every row",
+		// The merger's message that the project's merge holds changed goes to the merger's own
+		// role topic and wakes a released merger, as the merge-queue removal's message does
+		// (#4065).
+		OutboxKindMergeHoldsChanged: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
 		OutboxKindMergeForward:     "every row",
@@ -385,7 +403,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
-		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
+		// the project is paused changes those holders, which Dispatch should show. The pause's own
+		// stops suspend as released, which keeps each holder, so they queue none.
 		OutboxKindRoleHoldersPublish: "",
 		// A step record writes Dispatch one start or one end of a step of an issue
 		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
@@ -399,6 +419,12 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// The state events tell Dispatch what the daemon observes (dispatch://INFRA-3931) and
+		// start no turn. A pause's own claim moves are state changes Dispatch must see, so the
+		// pause holds none of them, and a paused project's state lane keeps publishing.
+		OutboxKindStateChange:    "",
+		OutboxKindStateAdmission: "",
+		OutboxKindStateBoot:      "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -448,6 +474,10 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
+		// The two wakes the controller's skill said to do nothing on (#4065):
+		// the daemon writes neither kind any more, to anyone.
+		{name: "an unslotted notice to the controller", payload: ControllerNotice{Kind: "unslotted", Reason: "LEGION-208 was in_progress"}, reason: "unknown controller notice kind"},
+		{name: "an awaiting-person notice to the controller", payload: ControllerNotice{Kind: "awaiting-person", Reason: "LEGION-208 waits on a person"}, reason: "unknown controller notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
 		{name: "a memory-guard-kill notice for an architect", payload: Notice{Kind: MemoryGuardKillNotice, Role: claim.RoleController}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
@@ -514,6 +544,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a start naming a wake detail and no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
+		{name: "a suspend naming a wake detail", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
 		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
 		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
@@ -576,6 +608,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a merge-holds change of no project", payload: MergeHoldsChanged{}, reason: "a merge-holds change names the project"},
 		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
@@ -597,13 +630,73 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward ask naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
+		{name: "a merge-forward hold naming the launch an ask was sent at", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen, SentLaunch: 2}, reason: "only a merge-forward ask sent again at a launch"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a state change of no project", payload: stateChange("", "run", phaseMoved), reason: `the project "", which is no bare Dispatch project key`},
+		{name: "a state change keyed by an issue rather than its project", payload: stateChange("LEGION-208", "run", phaseMoved), reason: `the project "LEGION-208", which is no bare Dispatch project key`},
+		// Keys the contract's PROJECT_KEY_PATTERN refuses: one letter alone, and eleven characters.
+		{name: "a state change of a one-letter project", payload: stateChange("L", "run", phaseMoved), reason: `the project "L", which is no bare Dispatch project key`},
+		{name: "a state change of a project past ten characters", payload: stateChange("LEGIONLEGIO", "run", phaseMoved), reason: `the project "LEGIONLEGIO", which is no bare Dispatch project key`},
+		{name: "a state change of no run", payload: stateChange("LEGION", "", phaseMoved), reason: "names no run"},
+		{name: "a state change of no issue", payload: StateChange{Project: "LEGION", Run: "run", Changes: []StateFieldChange{phaseMoved}}, reason: `the issue "", which is no issue key`},
+		{name: "a state change naming no field", payload: stateChange("LEGION", "run"), reason: "names no field the write moved"},
+		{name: "a state change of a field Dispatch does not observe", payload: stateChange("LEGION", "run", StateFieldChange{Field: "status", Old: json.RawMessage(`null`), New: json.RawMessage(`"todo"`)}), reason: `the field "status", which is none of`},
+		{name: "a claim change naming no role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "", which is none of a claim's six`},
+		{name: "a claim change of the controller", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Role: claim.RoleController, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "controller", which is none of a claim's six`},
+		{name: "a phase change naming a role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldPhase, Role: claim.RoleTester, Old: json.RawMessage(`null`), New: json.RawMessage(`"testing"`)}), reason: "only a claim change names one"},
+		{name: "a change with no old value", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, New: json.RawMessage(`"LEGION-200"`)}), reason: "write null as null"},
+		{name: "a change whose new value is no JSON", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, Old: json.RawMessage(`null`), New: json.RawMessage(`LEGION-200`)}), reason: "write null as null"},
+		{name: "a state admission of no project", payload: StateAdmission{Run: "run", Admission: json.RawMessage(`{}`)}, reason: "which is no bare Dispatch project key"},
+		{name: "a state admission with no block", payload: StateAdmission{Project: "LEGION", Run: "run"}, reason: "carries no admission block"},
+		{name: "a state admission whose block is null", payload: StateAdmission{Project: "LEGION", Run: "run", Admission: json.RawMessage(`null`)}, reason: "carries no admission block"},
+		{name: "a state boot of no run", payload: StateBoot{Project: "LEGION", Settings: json.RawMessage(`{}`)}, reason: "names no run"},
+		{name: "a state boot with no settings", payload: StateBoot{Project: "LEGION", Run: "run"}, reason: "carries no settings"},
+		{name: "a state boot with a negative schema version", payload: StateBoot{Project: "LEGION", Run: "run", Settings: json.RawMessage(`{}`), SchemaVersion: -1}, reason: "which no store records"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// phaseMoved is a change a state change in the refusal table carries where the case is about
+// something else of the row.
+var phaseMoved = StateFieldChange{Field: StateFieldPhase, Old: json.RawMessage(`"planning"`), New: json.RawMessage(`"implementing"`)}
+
+// stateChange is a state change of LEGION-208 in project, written by run, naming changes.
+func stateChange(project, run string, changes ...StateFieldChange) StateChange {
+	return StateChange{Project: project, Run: run, Issue: "LEGION-208", Changes: changes}
+}
+
+// A wake's start carries the wake's detail beside its kind (SuperviseRequest.WakeDetail), so a
+// cancel or a release's record can render its task again. A start that an earlier daemon queued
+// carries no `wakeDetail` key, and the outbox still decodes it, with the detail empty: the
+// decoder refuses an unknown key (DisallowUnknownFields), never a missing one. Both payloads are
+// spelled as the table holds them.
+func TestAWakeStartDecodesWithItsDetailAndWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          SuperviseRequest
+	}{
+		{name: "this daemon's start, with the detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks","wakeDetail":"head1 failed build"}`,
+			want: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake",
+				WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}},
+		{name: "an earlier daemon's start, with no detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks"}`,
+			want:    SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindSupervise, Issue: "LEGION-208", Payload: []byte(tc.payload)})
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload(%s) = %v, want it decoded", tc.payload, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DecodeOutboxPayload(%s) = %#v, want %#v", tc.payload, got, tc.want)
 			}
 		})
 	}
@@ -749,6 +842,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
+		{name: "a merge-holds change of no project", row: OutboxRow{ID: 62, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{}`)}, reason: "a merge-holds change names the project"},
+		{name: "a merge-holds change naming a role", row: OutboxRow{ID: 63, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{"project":"LEGION","role":"merger"}`)}, reason: "unknown field"},
 		{name: "a conflict confirm with no head", row: OutboxRow{ID: 62, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"firstReadAt":"2026-09-23T00:59:00Z"}`)}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", row: OutboxRow{ID: 66, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de"}`)}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
@@ -1219,7 +1314,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
-			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension the operator or the controller holds over the agent refuses that start when the outbox runs it."},
 		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
@@ -1267,6 +1362,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
+		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		{Kind: "task-stopped", Role: claim.RoleReviewer, Phase: phase.Reviewing, StoppedBy: "legion-legion-legion-208-architect",
 			Reason: "task a of LEGION-208 was stopped by its owner, the architect legion-legion-legion-208-architect"},
 		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
@@ -1278,6 +1376,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon replaced the pod of LEGION-209 (pod pod-uid). The read of the workspace before the replacement found one commit that no branch or tag on origin holds."},
+		{Kind: HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
+			Reason: "Legion hook back-to-implementing's prompt to the implementer of LEGION-208 was not delivered, because the implementer's claim is failed."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

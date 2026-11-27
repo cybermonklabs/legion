@@ -80,9 +80,10 @@ package delivery
 // owe: a link says nothing of the head, so the three readers skip a row whose linked_revision is
 // its revision where a results row is stored. Each other owe gives the row a new revision, so the
 // row hides the head again, whichever of the two owes came first (OweLinkedPullRequestReads).
-// BaseBranchMergedFor does not read this table: GitHub never changes the state or the base branch
-// of a merged pull request, so a merged row answers its base branch also while a read is owed for
-// it. The readers by key and by repository (PullRequestIssues, PullRequestsNotKnown) do not read
+// The readers of merges (MergeOfIssue, MergeIn, LandingOf, MergedPullRequestOf) do not read this
+// table: GitHub never changes the state, the base branch, the merge commit or the merge time of a
+// merged pull request, so a merged row answers them also while a read is owed for it. The readers
+// by key and by repository (PullRequestIssues, PullRequestsNotKnown) do not read
 // it either. A refusal row names how GitHub refuses the read (refused_as) and since when
 // (refused_since), so a reader can name the state and its way out. A release before this one
 // neither reads nor writes the three columns refused_as, refused_since and linked_revision.

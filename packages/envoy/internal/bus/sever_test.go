@@ -4,7 +4,6 @@ import (
 	"net"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -111,8 +110,9 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 			t.Fatalf("the severed connection is %v, want CLOSED", conn.Status())
 		}
 		thaw()
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
-			return client.Connected() && client.Connection() != conn
+		testwait.Until(t, "the client's connection of its own after the sever", func() (bool, bool) {
+			own := client.Connected() && client.Connection() != conn
+			return own, own
 		})
 		replacement := client.Connection()
 		if err := replacement.Publish(subject, []byte("after")); err != nil {

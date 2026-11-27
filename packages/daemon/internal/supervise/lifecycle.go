@@ -37,6 +37,11 @@ import (
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
+	// The admission writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return err
+	}
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -140,21 +145,24 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
 // timers the claim's state calls for, which are the ones a restart reading this claim back from
-// the store would arm for it (NewMachine), and the bound an acknowledged prompt waits for its
-// turn on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim
-// that keeps its process with the launch that was to replace it gone: the park disarmed the boot
+// the store would arm for it (NewMachine), and the bound an outstanding prompt waits for its turn
+// on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim that
+// keeps its process with the launch that was to replace it gone: the park disarmed the boot
 // interval, the registration deadline, the probe interval and the turn bound of that process
-// (waitOnMachine), the claim keeps it and the wake is spent, so a booting process whose agent never
-// registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
-// on nothing.
+// (waitOnMachine), the claim keeps it and the wake is spent, so a booting process whose agent
+// never registers would meet no deadline and an outstanding prompt would wait for its turn on
+// nothing. The next paragraph gives the rule for each of an outstanding prompt's two states.
 //
 // A claim still coming up is watched by its boot interval and its registration deadline, a
 // registered one by the deadline alone, and a claim whose agent is ready by neither: a live
 // session is watched by the runtime's sweep (observe) and by its own connection, and the probe
 // interval is an uncertain answer's retry rather than a watch of the claim's — the sweep asks
-// again at its own pass. The turn bound goes with them for a prompt Oh My Pi acknowledged and no
-// turn has started on (acked, Machine.outstanding), for the same RPC wait that prompt was given,
-// so one the agent read and never turned on still fails rather than waiting for ever (noTurn).
+// again at its own pass. The turn bound goes with them for a prompt of the task outstanding with
+// no turn started on it (Machine.outstanding), in either of its states: one Oh My Pi acknowledged
+// (acked), or one held, whose frame the daemon wrote and whose reply did not come
+// (keepHeldPrompt). It is armed for the same RPC wait that prompt was given, so one the agent never
+// turned on still ends rather than waiting for ever: an acknowledged one is charged, and a held one
+// is sent again under its id, charged nothing (noTurn).
 //
 // A timer already armed keeps the moment it already holds: the park takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and

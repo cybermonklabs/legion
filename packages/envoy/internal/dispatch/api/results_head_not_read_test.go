@@ -323,6 +323,93 @@ func TestAPullRequestWhoseHeadIsNotReadBesideOneThatIs(t *testing.T) {
 	wantNotReadPassStands(t, k2, model.PassStandsUnknown)
 }
 
+// A subject of a `before_merge` check whose head Dispatch has not read leaves a pass at the other
+// subjects not known, never yes: the head GitHub owes a read of is still the head a pass must
+// stand at, whatever Dispatch last stored of it. The subjects are taken over every stored head,
+// read or owed: each open pull request's where one is open, else the merge that merged last. Two
+// traces, each with k1's pass at notReadOwnHead, the head of a pull request Dispatch has read:
+//
+//   - open #10 at notReadOwnHead beside open #11 at notReadOtherCommit, whose read is owed;
+//   - merged #1 at notReadOwnHead beside #2, merged an hour later at notReadKnownHead, whose read
+//     is owed: #2 is the merge that merged last, so the subject, and #1 a basis that is no subject.
+//
+// Each answers pass_stands unknown. The control in each trace is the same rows with no read owed:
+// the other pull request is then a subject Dispatch has read, where no result stands, and k1
+// answers no, which shows it is a subject at all. A guard reads HeadsAttributedTo's list.
+func TestASubjectWhoseHeadIsOwedAReadLeavesThePassNotKnown(t *testing.T) {
+	t.Parallel()
+	merged := notReadUpdatedAt.Add(-2 * time.Hour)
+	for _, tc := range []struct {
+		name          string
+		state         string
+		read, owed    int
+		owedHead      string
+		mergedAt      []time.Time
+		owing, listed []string
+	}{
+		{"an open pull request owed a read beside an open one read", "open", 10, 11, notReadOtherCommit,
+			nil, []string{"#10", "#11?"}, []string{"#10", "#11"}},
+		{"the merge that merged last owed a read beside an older merge read", "merged", 1, 2, notReadKnownHead,
+			[]time.Time{merged, merged.Add(time.Hour)}, []string{"#1", "#2?"}, []string{"#1", "#2"}},
+	} {
+		for _, owing := range []bool{true, false} {
+			name := tc.name
+			if !owing {
+				name += ", control: no read owed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				handler, database, _, _ := readThroughGitHub(t, "acme/widgets")
+				issue := issueInRepository(t, handler, "OWSB", "acme/widgets", "A subject owed a read").Key
+				uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", notReadChecks)
+				for index, pull := range []notReadPull{
+					{number: tc.read, head: notReadOwnHead, branch: "work/read", base: "main", state: tc.state, stored: issue, noTexts: true},
+					{number: tc.owed, head: tc.owedHead, branch: "work/owed", base: "main", state: tc.state, stored: issue, noTexts: true},
+				} {
+					storeNotReadPull(t, database, pull)
+					if tc.mergedAt == nil {
+						continue
+					}
+					if _, err := database.Pool.Exec(context.Background(), `
+						update pull_request_heads set merged_at = $2, merge_commit_sha = $3, attribution_rule = $4
+						where repo = 'acme/widgets' and number = $1`,
+						pull.number, tc.mergedAt[index], fmt.Sprintf("%040x", pull.number), delivery.AttributionRuleVersion); err != nil {
+						t.Fatalf("SETUP: store the merge of #%d: %v", pull.number, err)
+					}
+				}
+				if owing {
+					if _, err := database.Pool.Exec(context.Background(),
+						`insert into pull_request_reads_owed (repo, number, reason) values ('acme/widgets', $1, 'failure')`, tc.owed); err != nil {
+						t.Fatalf("SETUP: owe the read of #%d: %v", tc.owed, err)
+					}
+				}
+				recordNotReadPass(t, handler, issue, "k1", notReadOwnHead)
+				want := tc.listed
+				if owing {
+					want = tc.owing
+				}
+				// The guard compares the set, sorted: two rows written in one instant are listed in
+				// either order (newest learned first).
+				if listed := notReadListed(t, database, issue); !slices.Equal(slices.Sorted(slices.Values(listed)), want) {
+					t.Fatalf("SETUP: HeadsAttributedTo(%s) lists %v, want %v in any order", issue, listed, want)
+				}
+
+				k1 := checkOf(t, readResults(t, handler, issue), "k1")
+				answer := model.PassStandsNo
+				if owing {
+					answer = model.PassStandsUnknown
+				}
+				if k1.PassStands.Answer != answer {
+					t.Fatalf("k1 answers pass_stands %q with subjects %+v and heads_not_read %v, want %q: "+
+						"#%d is a subject, and %s",
+						k1.PassStands.Answer, k1.PassStands.Subjects, headsNotReadOf(k1), answer, tc.owed,
+						map[bool]string{true: "Dispatch has not read its head", false: "no result stands at its head"}[owing])
+				}
+			})
+		}
+	}
+}
+
 // A pass at the head of a pull request whose answer is not known does not say no. Check k1 of
 // NKWN-1 has a pass at headCommit. The merged #85 has headCommit as its head, and a current
 // texts row that names no key. Dispatch has not read its commit messages, and its results row
@@ -468,13 +555,16 @@ func TestACheckThatCIProvesBesideAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t
 }
 
 // An `after_merge` check beside a merge whose answer is not known. The merged #70 of NKAM-1
-// merged into release, and its branch names NKAM-1. Check k2 has a pass at integrationCommit,
-// which only release carries. The merged #85 of the same repository merged into main, and its
-// answer is not known. If #85 is the issue's, release does not decide. So the pass is unknown
-// with issue_not_known, k2 lists #85 in issues_not_known, and pass_stands is unknown. The second
-// subtest adds a pass at mergeCommit, which main carries: that pass stands at main, and
-// pass_stands is yes. Control in the same test: without #85, the first pass stands at release.
-// Guards read the merged branch of NKAM-1 and the answers of the statement.
+// merged into release as integrationCommit, and its branch names NKAM-1. #90, a pull request of
+// no issue, landed release on main as mergeCommit from integrationCommit, a final head that holds
+// #70's merge. A result counts only at a commit whose history holds the merge on its branch, so
+// k2 compares with release at integrationCommit and with main at mergeCommit. Check k2 has a pass
+// at integrationCommit, which only release carries. The merged #85 of the same repository merged
+// into main, and its answer is not known. If #85 is the issue's, release does not decide. So the
+// pass is unknown with issue_not_known, k2 lists #85 in issues_not_known, and pass_stands is
+// unknown. The second subtest adds a pass at mergeCommit, which main carries: that pass stands at
+// main, and pass_stands is yes. Control in the same test: without #85, the first pass stands at
+// release. Guards read the merged branch of NKAM-1 and the answers of the statement.
 func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -500,14 +590,18 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 			uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 			storeNotReadPull(t, database, notReadPull{number: 70, head: headCommit, branch: "legion/" + issue,
 				base: "release", state: "merged", messages: []string{}})
+			fillKnownMerge(t, database, "acme/widgets", 70, integrationCommit)
+			writeKnownBranchLanding(t, database, 90, "release", "main", integrationCommit, mergeCommit)
 			if tc.notKnown {
 				storeNotReadPull(t, database, notReadPull{number: 85, head: newHeadCommit, branch: "work/no-key",
 					base: "main", state: "merged"})
 				wantNotReadAnswer(t, database, 85, "nobody, not known")
 			}
 			wantNotReadAnswer(t, database, 70, issue+", known")
-			if branch, err := unrenamed().BaseBranchMergedFor(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil || branch != "release" {
-				t.Fatalf("SETUP: BaseBranchMergedFor(%s) answers %q (%v), want release", issue, branch, err)
+			wantNotReadAnswer(t, database, 90, "nobody, known")
+			if merged, err := unrenamed().MergeOfIssue(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil ||
+				len(merged) == 0 || merged[0].BaseRef != "release" || merged[0].MergeCommitSHA != integrationCommit {
+				t.Fatalf("SETUP: MergeOfIssue(%s) answers %+v (%v), want its newest merge on release as %s", issue, merged, err, integrationCommit)
 			}
 			onRelease := recordNotReadPass(t, handler, issue, "k2", integrationCommit)
 			onMain := ""

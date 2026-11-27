@@ -40,6 +40,8 @@ const (
 var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidGrant, "%s revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "The Google account this token was minted for no longer holds %s: another account holds that address now, and the broker takes no sign-in of the account it replaced.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login the subject token belongs to has ended.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login has ended.", nil, "provider.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A machine makes a key of its own.", nil, "exchange.go"},
@@ -47,11 +49,11 @@ var corpusRefusals = []corpusRefusal{
 	// The two trades that write a launcher credential refuse a key a live read token is bound to
 	// with one hint (exchange.go's keyBindsReadTokenHint).
 	{oauth2.ErrInvalidGrant, "A live read token is bound to the key this proof was signed with. Make a new key.", nil, "exchange.go"},
-	{oauth2.ErrInvalidRequest, "%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The token names a project its person cannot see: %s.", []any{corpusProject}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
+	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
 	// The broker writes this one's description as oauthwire.PodSessionNotRegistered and a colon in
 	// place of the library's invalid_grant sentence (registeredPodSession).
@@ -63,6 +65,11 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A trade for the approve capability's proxy placeholder that no person's sign-in made, or that a
+	// broker serving no approve capability was asked (grantApprove), and one that asks for the scope
+	// read (exchangeGrant).
+	{oauth2.ErrInvalidRequest, "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.", nil, "approve.go"},
+	{oauth2.ErrInvalidRequest, "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
 	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
 	// refused since a job's token is minted whole.
@@ -143,6 +150,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
+	{"%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on", []any{exchange.ErrRestrictedOneProject, corpusPerson, 2}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 

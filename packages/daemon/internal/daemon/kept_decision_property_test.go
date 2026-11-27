@@ -220,8 +220,8 @@ type keptPublisher struct {
 	genErr    error
 }
 
-func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(topic, message, payload, key, false)
+func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(topic, message, payload, key, false)
 }
 
 func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -1469,7 +1469,7 @@ const (
 // park takes the root out of the workflow — set back to backlog, or left lingering after its
 // close or beside a child one merge from landing — releases the slot its run held, as admission's
 // own pass does for an issue that needs none (releaseSlots), and writes the architect's suspend as
-// the workflow writes one (workflow's suspend). A park that leaves no linger is the tree once its
+// the workflow writes one (workflow's everyClaim). A park that leaves no linger is the tree once its
 // close has run, so its lifecycle is confirmed closed here: the lifecycle, and no longer the slot,
 // is what says a tree runs (record.TreeLive), and under one still open a labelled todo on a member
 // would be a re-entry into a running tree rather than the orphan's admission this park makes it.
@@ -3792,10 +3792,11 @@ func (r *keptRun) issuedRows() int64 {
 	return id
 }
 
-// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote.
+// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote: a
+// row of the lanes the operations write, the state lane's left out (notStateRows).
 func (r *keptRun) lastRow() int64 {
 	var id int64
-	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox").Scan(&id); err != nil {
+	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox where "+notStateRows).Scan(&id); err != nil {
 		r.fatalf("read the newest outbox row: %v", err)
 	}
 	return id

@@ -320,6 +320,7 @@ func retriedRefusal(body []byte) bool {
 // 503 is a verdict: the two answers the listener writes for those causes, and one with another
 // reason (consumer_limit, a refusal until an operator raises max_consumers).
 func TestRetriedRefusalTakesTheBusAndConsumerRefusalsAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		body  string
 		retry bool

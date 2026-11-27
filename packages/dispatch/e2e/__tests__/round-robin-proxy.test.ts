@@ -1,10 +1,11 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { realHostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Server, Subprocess } from "bun";
 
@@ -138,6 +139,15 @@ let proxyPort = 0;
 let origin = "";
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
+/** One link, `python3`, to python3 itself, first on the PATH of each run-server.sh run below:
+ *  run-server.sh starts held-port.py with the python3 on PATH, and a mise shim there would read
+ *  `childHome` for its config, refuse the caller's mise config above the checkout as untrusted
+ *  or find no version, and exit 1 before the server starts (`realHostTool`). */
+const realPython = temporaryDirectory("round-robin-proxy-python");
+const python3 = realHostTool("python3");
+beforeAll(() => {
+  if (python3 !== null) symlinkSync(python3, join(realPython, "python3"));
+});
 
 afterAll(() => {
   a.server.stop(true);
@@ -454,7 +464,12 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     runBounded({
       argv,
       bound: "short",
-      env: { PATH: process.env.PATH ?? "", HOME: childHome, TMPDIR: tmpdir(), ...env },
+      env: {
+        PATH: `${realPython}${delimiter}${process.env.PATH ?? ""}`,
+        HOME: childHome,
+        TMPDIR: tmpdir(),
+        ...env,
+      },
       from: import.meta.url,
     });
   // A process of its own per import: the refusal is the module's evaluation, which runs once.
@@ -555,8 +570,10 @@ describe("DISPATCH_E2E_PROCESSES", () => {
         // and names its port. A previous release adopts it (legion-envoy-v20.1.0 and later), so a
         // two-build run holds B's port like A's and sets none.
         const { DISPATCH_E2E_PORT: _, ...portless } = environment;
+        if (python3 === null)
+          throw new Error("this host has no python3 on PATH that is no mise shim");
         const held = await run(["bash", runServer], portless);
-        expect(held.code).toBe(0);
+        expect(held.code, held.stderr).toBe(0);
         const port = /DISPATCH_PORT=([1-9][0-9]*) /.exec(held.stdout)?.[1];
         expect(port).toBeDefined();
         expect(held.stdout).toBe(

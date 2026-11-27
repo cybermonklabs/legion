@@ -17,10 +17,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 const (
@@ -672,19 +674,33 @@ func firstRecordID(values []string) string {
 // nothing, a POST from any other origin (sameOrigin), one whose form cannot be read, and one
 // whose token does not bind it to this session and to a printed set holding every record it
 // names, or whose token has expired. A POST whose session has lapsed decides nothing either, and
-// answers 200 with a page linking the first record the form names: the page's
-// Content-Security-Policy has form-action 'self', which forbids answering a form post with a
-// redirect to the sign-in provider, so the person follows that link and signs in from the
-// record's own page. An approval is refused too, deciding nothing, when a record it names asks
-// for a profile whose live fingerprint is not the one its page printed (profilesMoved): a
-// profiles roll between the page and the click would otherwise grant a scope the person did not
-// read. A person Dispatch calls a restricted member, who decides no secret request, is refused
-// that before the profile check, each record the form names with the code restricted
-// (refusedRestricted), so they are told nothing of a profile. Each record is then decided on its
-// own by requests.Machine.ApplyDecision as the session's person, so who may decide, the current
-// policy and RECORD_TERMINAL stay that function's: a replayed form decides nothing again. It
-// answers 303 to the first record's page with the decided ids, whose outcomes that page reads
-// from the records themselves.
+// answers 200 with a page linking the first record the form names (writeSignedOut). An approval
+// is refused too, deciding nothing, when a record it names asks for a profile whose live
+// fingerprint is not the one its page printed (profilesMoved): a profiles roll between the page
+// and the click would otherwise grant a scope the person did not read. A person Dispatch calls a
+// restricted member, who decides no secret request, is refused that before the profile check,
+// each record the form names with the code restricted (refusedRestricted), so they are told
+// nothing of a profile. Each record is then decided on its own by
+// requests.Machine.ApplyPageDecision under the session, so who may decide, the current policy and
+// RECORD_TERMINAL stay that function's: a replayed form decides nothing again. It answers 303 to
+// the first record's page with the decided ids, whose outcomes that page reads from the records
+// themselves.
+//
+// sess is the session the route read before the body arrived, and a body can be held back for
+// as long as the connection stays open, so each record's decision reads the session again in
+// its own transaction, under the person's lock (store.HoldBrowserSessionTx): a session ended in
+// the meantime — a sign-out, `broker end-sessions`, or the revoke of an account that no longer
+// holds the person's address (enroll.Service.RevokePersonSubject) — decides nothing more, and the
+// POST answers as a lapsed session's does. The revoke takes that lock too, so a decision either
+// commits before the revoke reads the person's sessions, made while the account still held the
+// address, or waits for the revoke to commit and decides nothing.
+//
+// Once the form checks out, and before any record is decided, the hold gate (Config.Hold) is
+// asked whether Dispatch holds the signed-in person, so no ask is made under the person's lock
+// that each decision takes: a held approver's POST decides nothing and is answered the page's
+// refusal, 403 in the broker's own words, and while the gate cannot tell, the same page with 503.
+// The hold is asked before the restricted-member read and the profile check. The record's own
+// page (ServeRecord) asks nothing.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
 		refuseOrigin(w)
@@ -696,13 +712,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		return
 	}
 	if !sess.live() {
-		m := say("Not signed in", "Your sign-in to the secrets broker has ended, so nothing was decided.")
-		if id := firstRecordID(r.PostForm["record"]); id != "" {
-			m.Link = &link{Href: approvePrefix + id, Text: "Open the request again to sign in"}
-		} else {
-			m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
-		}
-		writeMessage(w, http.StatusOK, "", m)
+		writeSignedOut(w, r.PostForm["record"])
 		return
 	}
 	form := r.PostForm
@@ -740,6 +750,9 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 			return
 		}
 	}
+	if p.refuseHeld(w, r, sess.Login) {
+		return
+	}
 	// A person Dispatch calls a restricted member decides no secret request
 	// (requests.ErrRestrictedDecider), so their approval is refused as one before the profile
 	// check says anything of a profile it names, such as that it changed since their page.
@@ -756,12 +769,12 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 			return
 		}
 	}
-	decided := false
+	var decided, ended bool
 	var refused []string
 	for _, id := range decide {
 		outcome, code, made := "refused: "+requests.ErrRestrictedDecider.Error(), refusedRestricted, false
 		if !restricted {
-			outcome, code, made = p.decide(r.Context(), id, approve, sess.Login)
+			outcome, code, made, ended = p.decide(r.Context(), id, approve, sess)
 		}
 		decided = decided || made
 		if code != "" {
@@ -769,6 +782,11 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		}
 		slog.Info("approval page decision", "login", sess.Login, "record", id, "decision", form.Get("decision"),
 			"outcome", outcome)
+		if ended {
+			// The session ended after the route read it, so nothing after this record is
+			// decided either; what this POST did decide before it is recorded below all the same.
+			break
+		}
 	}
 	// One write for the POST, however many records it named, and none at all when it decided
 	// none: what GET /signin/status answers is when a person last approved or denied something
@@ -777,11 +795,51 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	if decided {
 		p.recordDecision(r.Context())
 	}
+	if ended {
+		writeSignedOut(w, decide)
+		return
+	}
 	to := "/approve/" + decide[0] + "?decided=" + strings.Join(decide, ",")
 	if len(refused) > 0 {
 		to += "&refused=" + strings.Join(refused, ",")
 	}
 	redirect(w, http.StatusSeeOther, to)
+}
+
+// refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
+// the page's refusal when it does or cannot tell, reporting whether it refused, by the gate's
+// Verdict and in its words (hold.Verdict.Refusal): 403 for hold.Held, and 503 for every kind that
+// decides nothing, a held answer the gate could not keep among them, saying why in fixed words and
+// logging the gate's own error, which can carry the database's user, name and address, alone. A
+// broker with no gate holds nobody.
+func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
+	v := p.cfg.Hold.Decide(r.Context(), login)
+	status, code, words := v.Refusal()
+	switch v.Kind {
+	case hold.Served:
+		return false
+	case hold.Held:
+		writeMessage(w, status, code, say("Held", words+".", "Nothing was decided."))
+	default:
+		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", v.Err)
+		writeMessage(w, status, code, say("Unavailable", strings.ToUpper(words[:1])+words[1:]+".", "Nothing was decided. Try again shortly."))
+	}
+	return true
+}
+
+// writeSignedOut answers a POST whose session is not live, or ended while it was being decided:
+// 200 saying nothing was decided, with a page linking the first record the form names. It is a
+// page rather than a redirect to the sign-in provider because the page's Content-Security-Policy
+// has form-action 'self', which forbids answering a form post with one, so the person follows
+// that link and signs in from the record's own page.
+func writeSignedOut(w http.ResponseWriter, records []string) {
+	m := say("Not signed in", "Your sign-in to the secrets broker has ended, so nothing was decided.")
+	if id := firstRecordID(records); id != "" {
+		m.Link = &link{Href: approvePrefix + id, Text: "Open the request again to sign in"}
+	} else {
+		m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
+	}
+	writeMessage(w, http.StatusOK, "", m)
 }
 
 // profileDigests reads a decision form's profile_digest fields (profileDigestFields) as each
@@ -865,80 +923,84 @@ const (
 	refusedRestricted  = "restricted"
 )
 
-// decide decides one record as login and answers what became of it, for the log, the code of why
-// the broker refused to decide it (refusalSentences), empty when it did not refuse or when the
-// page it lands on says why already, and whether this POST decided it: an approval or a denial the
-// broker applied now, which is what the sign-in status's last decision counts. A record already
-// decided, expired, gone, or one login may not decide, is decided by nobody here. So is an
-// approval whose target a profiles roll took out of its profile before the page was made
-// (requests.ErrTargetRefused): the page printed the live profile, so profilesMoved let it
-// through, and the approval's own target check refuses it as the current policy's. A machine login
-// is never decided here, whatever a form says: its typed code is decided on Dispatch's page. An
-// approval the broker recorded as a denial answers with that decision's own detail, so the person
-// who pressed approve reads which secret refused it and why rather than one fixed sentence. A
-// record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
-// decided by nobody, and the POST's other records are decided as ever: the page it lands on says
-// that one is unavailable. An approval for which Dispatch could not say whether the request's
-// person is a restricted member, and any decision for which it could not say whether the deciding
-// person is one (*projectaccess.MemberKindUncheckable), is decided by nobody either, and its page
-// says it could not be decided; neither writes an ERROR line. A deciding person Dispatch calls a
-// restricted member decides nothing (requests.ErrRestrictedDecider), and its code says so
-// (refusedRestricted). A record of a
-// private project login may not see is "no such record", as for an id no record has (the
-// machine's refusal is pgx.ErrNoRows alone), so the POST tells them nothing of it. A refusal
-// record.ErrNotApprover carries for a record whose approver line names someone else is said by the
-// page it lands on in its own words ("not yours to decide"), and carries no code; one for a record
-// login may still see and decide is the current policy's — its owner, a max-grant or a withheld
-// name moved since the page was printed — or, where a name's requesters name a group the broker
-// has not read in the last two hours, that group's (requests.ErrRequestersGroupUnread), which the
-// same approval passes once the group is read.
-func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
+// decide decides one record under sess and answers what became of it, for the log, the code of
+// why the broker refused to decide it (refusalSentences), empty when it did not refuse or when the
+// page it lands on says why already, whether this POST decided it, and whether sess had ended: an
+// approval or a denial the broker applied now, which is what the sign-in status's last decision
+// counts. A record already decided, expired, gone, or one the session's person may not decide, is
+// decided by nobody here, and neither is one whose decision found the session ended
+// (store.ErrBrowserSessionEnded). So is an approval whose target a profiles roll took out of its
+// profile before the page was made (requests.ErrTargetRefused): the page printed the live
+// profile, so profilesMoved let it through, and the approval's own target check refuses it as the
+// current policy's. A machine login is never decided here, whatever a form says: its typed code
+// is decided on Dispatch's page. An approval the broker recorded as a denial answers with that
+// decision's own detail, so the person who pressed approve reads which secret refused it and why
+// rather than one fixed sentence. A record Dispatch could not say whether the person may see
+// (requests.ErrProjectAccessUnavailable) is decided by nobody, and the POST's other records are
+// decided as ever: the page it lands on says that one is unavailable. An approval for which
+// Dispatch could not say whether the request's person is a restricted member, and any decision for
+// which it could not say whether the deciding person is one
+// (*projectaccess.MemberKindUncheckable), is decided by nobody either, and its page says it could
+// not be decided; neither writes an ERROR line. A deciding person Dispatch calls a restricted
+// member decides nothing (requests.ErrRestrictedDecider), and its code says so
+// (refusedRestricted). A record of a private project the person may not see is "no such record",
+// as for an id no record has (the machine's refusal is pgx.ErrNoRows alone), so the POST tells
+// them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
+// names someone else is said by the page it lands on in its own words ("not yours to decide"), and
+// carries no code; one for a record the person may still see and decide is the current policy's —
+// its owner, a max-grant or a withheld name moved since the page was printed — or, where a name's
+// requesters name a group the broker has not read in the last two hours, that group's
+// (requests.ErrRequestersGroupUnread), which the same approval passes once the group is read.
+func (p *Page) decide(ctx context.Context, id string, approve bool, sess Session) (outcome, refusal string, made, ended bool) {
+	login := sess.Login
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "no such record", "", false
+		return "no such record", "", false, false
 	case err != nil:
 		slog.Error("approval page: read the record's kind", "record", id, "error", err)
-		return "error", refusedError, false
+		return "error", refusedError, false, false
 	case kind != record.KindAgentSecret:
-		return "not decided: a machine login", "", false
+		return "not decided: a machine login", "", false, false
 	}
-	decision, err := p.cfg.Machine.ApplyDecision(ctx, id, approve, login)
+	decision, err := p.cfg.Machine.ApplyPageDecision(ctx, id, approve, store.BrowserSessionRef{Hash: sha256.Sum256(sess.secret), Login: sess.Login})
 	switch {
 	case err == nil && decision.State == "denied" && approve && decision.Detail != "":
-		return "denied: " + decision.Detail, "", true
+		return "denied: " + decision.Detail, "", true, false
 	case err == nil:
-		return decision.State, "", true
+		return decision.State, "", true, false
+	case errors.Is(err, store.ErrBrowserSessionEnded):
+		return "not decided: the sign-in has ended", "", false, true
 	case errors.Is(err, pgx.ErrNoRows):
-		return "no such record", "", false
+		return "no such record", "", false, false
 	case errors.Is(err, requests.ErrExpired):
-		return "expired", "", false
+		return "expired", "", false, false
 	case errors.Is(err, requests.ErrTerminal):
-		return "already decided", "", false
+		return "already decided", "", false, false
 	case errors.Is(err, requests.ErrGrantChainInvalid):
-		return "refused: " + err.Error(), refusedChain, false
+		return "refused: " + err.Error(), refusedChain, false, false
 	case errors.Is(err, requests.ErrTargetRefused):
-		return "refused: " + err.Error(), refusedPolicy, false
+		return "refused: " + err.Error(), refusedPolicy, false, false
 	case errors.Is(err, requests.ErrRequestersGroupUnread):
-		return "refused: " + err.Error(), refusedGroupUnread, false
+		return "refused: " + err.Error(), refusedGroupUnread, false, false
 	case errors.Is(err, requests.ErrRestrictedDecider):
-		return "refused: " + err.Error(), refusedRestricted, false
+		return "refused: " + err.Error(), refusedRestricted, false, false
 	case errors.Is(err, record.ErrNotApprover):
 		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
-			return "refused: " + err.Error(), "", false
+			return "refused: " + err.Error(), "", false, false
 		}
-		return "refused: " + err.Error(), refusedPolicy, false
+		return "refused: " + err.Error(), refusedPolicy, false, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		return "unavailable: " + err.Error(), "", false
+		return "unavailable: " + err.Error(), "", false, false
 	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
 		// Dispatch could not say whether the request's person or the deciding person is a
-		// restricted member, which a decision asks (requests.Machine.ApplyDecision): nothing was
+		// restricted member, which a decision asks (requests.Machine.ApplyPageDecision): nothing was
 		// decided, and the person decides again once Dispatch answers. Dispatch not answering is no
 		// fault of the page's, so no ERROR line; the decision line logs the outcome.
-		return "unavailable: " + err.Error(), refusedError, false
+		return "unavailable: " + err.Error(), refusedError, false, false
 	case errors.Is(err, requests.ErrJudgeHolds):
-		return "refused: the model judge is deciding this request", "", false
+		return "refused: the model judge is deciding this request", "", false, false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
-	return "error", refusedError, false
+	return "error", refusedError, false, false
 }

@@ -20,8 +20,10 @@ import { harnessPorts } from "./harness-ports";
 // holds no such commit, empty delivery listings, and a seeded pull request with its
 // commits, its head's check runs and workflow runs. The GraphQL route answers the
 // aliased pull request queries of the reconcile's facts reads from the seeded pull
-// requests. It answers the merged search of the reconcile from the merged pull requests
-// that a seed marks `searched`. It answers an empty search to every other query. The seed
+// requests, and the aliased `object(oid:)` query of many commits' pull requests from
+// `commit_pulls`, as the REST read of one commit's pull requests answers. It answers the
+// merged search of the reconcile from the merged pull requests that a seed marks
+// `searched`. It answers an empty search to every other query. The seed
 // fields of the search and the completion are `searched`, `author`, `created_at`,
 // `merged_at` and `labels`. A pull request with one of them also answers what the
 // completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
@@ -141,6 +143,16 @@ function mergedAtOf(pull: FakePull): string | undefined {
   return pull.merged === true ? (pull.merged_at ?? pull.updated_at) : undefined;
 }
 
+/** When the pull request last changed, as every route of this fake answers it: the seed's
+ *  `updated_at`, or one fixed time where the seed gives none. Its REST routes and its GraphQL
+ *  nodes answered two different times for such a seed, and Dispatch, which stores a pull
+ *  request's texts as describing its head only while both carry the head's time
+ *  (texts_current), took the pull request a GraphQL read stored after a REST one to be of
+ *  nobody. */
+function updatedOf(pull: FakePull): string {
+  return pull.updated_at ?? "2026-01-01T00:00:00Z";
+}
+
 /** The author date and the committer date of each commit of a pull request that `completes`
  *  selects: 2 hours before `updated_at`. Without `updated_at`, a commit has no date, and the
  *  completion of the pull request fails. */
@@ -229,7 +241,7 @@ function pullNode(fullName: string, number: number, pull: FakePull, first: numbe
     number,
     state: pull.merged === true ? "MERGED" : pull.state === "open" ? "OPEN" : "CLOSED",
     title: pull.title,
-    updatedAt: pull.updated_at ?? null,
+    updatedAt: updatedOf(pull),
     url: `https://github.com/${fullName}/pull/${number}`,
   };
 }
@@ -290,6 +302,48 @@ function askedRepositories(query: string, variables: Record<string, unknown>): A
   return asked;
 }
 
+/** One `repository(owner:, name:)` field of a GraphQL query that asks for the pull requests of
+ *  commits, the results read's batched read-through (delivery's commitPullsQuery): the name its
+ *  answer goes under, the repository, and each `<alias>: object(oid:)` field in it, with how many
+ *  pull requests its `associatedPullRequests(first:)` reads. */
+interface AskedCommits {
+  readonly alias: string;
+  readonly fullName: string;
+  readonly commits: readonly {
+    readonly alias: string;
+    readonly sha: string;
+    readonly first: number;
+  }[];
+}
+
+/** Each repository field of `query` that holds an `object(oid:)` field, in the order the query
+ *  names them. A query with none answers an empty list. */
+function askedCommits(query: string, variables: Record<string, unknown>): AskedCommits[] {
+  const asked: AskedCommits[] = [];
+  for (const field of query.matchAll(/(?:(\w+)\s*:\s*)?\brepository\s*\(([^)]*)\)\s*\{/g)) {
+    const selection = selectionAt(query, (field.index ?? 0) + field[0].length - 1);
+    const commits = [...selection.matchAll(/(\w+)\s*:\s*object\s*\(([^)]*)\)\s*\{/g)].map(
+      (object) => {
+        const inner = selectionAt(selection, (object.index ?? 0) + object[0].length - 1);
+        return {
+          alias: object[1] ?? "object",
+          first: Number(
+            inner.match(/\bassociatedPullRequests\s*\(\s*first\s*:\s*(\d+)/)?.[1] ?? 30
+          ),
+          sha: String(argumentsOf(object[2] ?? "", variables).oid),
+        };
+      }
+    );
+    if (commits.length === 0) continue;
+    const { name, owner } = argumentsOf(field[2] ?? "", variables);
+    asked.push({
+      alias: field[1] ?? "repository",
+      commits,
+      fullName: `${String(owner)}/${String(name)}`,
+    });
+  }
+  return asked;
+}
 /** Whether the installation `id` has spent its rate limit: a repository of it is rate_limited. */
 function installationLimited(id: number): boolean {
   return [...repos.values()].some(
@@ -297,11 +351,17 @@ function installationLimited(id: number): boolean {
   );
 }
 
-/** The installation an installation token of this fake was minted for (`ghs_fake_<id>`), or
- *  undefined for any other credential. */
+/** The installation an installation token of this fake was minted for (`ghs_fake_<id>_<n>`, the
+ *  `n`th mint), or undefined for any other credential. */
 function tokenInstallation(request: Request): number | undefined {
-  const token = request.headers.get("Authorization")?.match(/^Bearer ghs_fake_(\d+)$/);
+  const token = request.headers.get("Authorization")?.match(/^Bearer ghs_fake_(\d+)_\d+$/);
   return token === null || token === undefined ? undefined : Number(token[1]);
+}
+
+/** The installation token a call carries, as this fake minted it, or undefined for any other
+ *  credential (the App's JWT, none). */
+function tokenOf(request: Request): string | undefined {
+  return request.headers.get("Authorization")?.match(/^Bearer (ghs_fake_\d+_\d+)$/)?.[1];
 }
 
 /** The headers GitHub answers a call of a spent budget with: no requests remain, and the budget
@@ -315,6 +375,9 @@ function spentBudgetHeaders(resource: string): Record<string, string> {
   };
 }
 
+// The mints the fake answered since it started, which numbers each token it mints.
+let mints = 0;
+
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
@@ -326,13 +389,18 @@ const server = Bun.serve({
     if (fixture !== undefined) return fixture;
 
     if (url.pathname === "/healthz") return Response.json({ ok: true });
+    // While GitHub is down every call, a mint among them, is logged here and answered the outage's
+    // status, and nothing else is read or counted.
     if (outage !== undefined) {
-      logCall(callOf(request.method, url.pathname));
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
       return githubError(outage);
     }
-    // A GraphQL query is logged where its body is read, below, with what it asks for.
-    if (!(request.method === "POST" && url.pathname === "/graphql")) {
-      logCall(callOf(request.method, url.pathname));
+    // A GraphQL query is logged where its body is read, below, with what it asks for, and a mint
+    // where it is answered, with the token it answers.
+    const minting =
+      request.method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname);
+    if (!(request.method === "POST" && url.pathname === "/graphql") && !minting) {
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
@@ -350,15 +418,17 @@ const server = Bun.serve({
       });
     }
 
-    if (
-      request.method === "POST" &&
-      /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)
-    ) {
+    if (minting) {
+      const installationId = Number(url.pathname.split("/")[3]);
+      mints++;
+      const token = `ghs_fake_${installationId}_${mints}`;
+      logCall({
+        installation: installationId,
+        minted: token,
+        route: "POST /app/installations/{n}/access_tokens",
+      });
       return Response.json(
-        {
-          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-          token: `ghs_fake_${url.pathname.split("/")[3]}`,
-        },
+        { expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), token },
         { status: 201 }
       );
     }
@@ -377,9 +447,7 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/installation/repositories") {
-      const installationId = Number(
-        request.headers.get("Authorization")?.replace("Bearer ghs_fake_", "")
-      );
+      const installationId = tokenInstallation(request);
       return Response.json({
         repositories: [...repos]
           .filter(([, repo]) => repo.installation_id === installationId)
@@ -420,19 +488,35 @@ const server = Bun.serve({
       for (const repository of asked) {
         countPullRead(repository.fullName, "graphql_pulls", repository.pulls.length);
       }
+      // A commit the batched query names counts as one read of that commit's pull requests, the
+      // read of one commit over REST that it stands for.
+      const commitsAsked = askedCommits(query, variables);
+      for (const repository of commitsAsked) {
+        countPullRead(repository.fullName, "commit_pulls", repository.commits.length);
+      }
+      const token = tokenOf(request);
       logCall({
         asks:
-          asked.length === 0
-            ? "search"
-            : asked
+          commitsAsked.length > 0
+            ? commitsAsked
                 .flatMap((repository) =>
-                  repository.pulls.map(
-                    (pull) =>
-                      `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                  repository.commits.map(
+                    (commit) => `${repository.fullName}@${commit.sha.slice(0, 12)}`
                   )
                 )
-                .join(", "),
+                .join(", ")
+            : asked.length === 0
+              ? "search"
+              : asked
+                  .flatMap((repository) =>
+                    repository.pulls.map(
+                      (pull) =>
+                        `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                    )
+                  )
+                  .join(", "),
         route: "POST /graphql",
+        ...(token === undefined ? {} : { token }),
       });
       const installationId = tokenInstallation(request);
       if (installationId !== undefined && installationLimited(installationId)) {
@@ -448,6 +532,47 @@ const server = Bun.serve({
           },
           { headers: spentBudgetHeaders("graphql") }
         );
+      }
+      // The batched read of commits' pull requests: each commit answers what `GET
+      // …/commits/{sha}/pulls` answers for it (`commit_pulls`), its first `first` pull requests
+      // with their count, so a commit that names none answers an empty list, as REST does. A
+      // repository the token's installation does not hold answers null with NOT_FOUND.
+      if (commitsAsked.length > 0) {
+        const data: Record<string, unknown> = {};
+        const errors: { message: string; path: string[]; type: string }[] = [];
+        for (const repository of commitsAsked) {
+          const seeded = repos.get(repository.fullName);
+          if (
+            seeded === undefined ||
+            seeded.installation_missing === true ||
+            seeded.installation_id !== installationId
+          ) {
+            data[repository.alias] = null;
+            errors.push({
+              message: `Could not resolve to a Repository with the name '${repository.fullName}'.`,
+              path: [repository.alias],
+              type: "NOT_FOUND",
+            });
+            continue;
+          }
+          const answer: Record<string, unknown> = {};
+          for (const commit of repository.commits) {
+            const named = (seeded.commit_pulls?.[commit.sha] ?? []).filter(
+              (number) => seeded.pulls?.[String(number)] !== undefined
+            );
+            answer[commit.alias] = {
+              associatedPullRequests: {
+                nodes: named.slice(0, commit.first).map((number) => {
+                  const pull = seeded.pulls?.[String(number)] as FakePull;
+                  return pullNode(repository.fullName, number, pull, 0);
+                }),
+                totalCount: named.length,
+              },
+            };
+          }
+          data[repository.alias] = answer;
+        }
+        return Response.json(errors.length === 0 ? { data } : { data, errors });
       }
       if (asked.length === 0) {
         const search = query.match(/\bsearch\s*\(([^)]*)\)/)?.[1] ?? "";
@@ -554,7 +679,6 @@ const server = Bun.serve({
               created_at: createdAtOf(seeded) ?? null,
               deletions: 1,
               labels: (seeded.labels ?? []).map((name) => ({ name })),
-              merged_at: mergedAtOf(seeded) ?? null,
               user: { login: authorOf(seeded) },
             }
           : {}),
@@ -568,10 +692,11 @@ const server = Bun.serve({
         html_url: `https://github.com/${pull[1]}/${pull[2]}/pull/${pull[3]}`,
         merge_commit_sha: seeded.merge_commit_sha ?? null,
         merged: seeded.merged ?? false,
+        merged_at: (completes(seeded) ? mergedAtOf(seeded) : seeded.merged_at) ?? null,
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
-        updated_at: seeded.updated_at ?? null,
+        updated_at: updatedOf(seeded),
       });
     }
 
@@ -664,10 +789,12 @@ const server = Bun.serve({
               },
               html_url: `https://github.com/${commitPulls[1]}/${commitPulls[2]}/pull/${number}`,
               merged: seeded.merged ?? false,
+              merge_commit_sha: seeded.merge_commit_sha ?? null,
+              merged_at: seeded.merged_at ?? null,
               number,
               state: seeded.state,
               title: seeded.title,
-              updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+              updated_at: updatedOf(seeded),
             },
           ];
         })

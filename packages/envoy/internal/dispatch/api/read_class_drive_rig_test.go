@@ -777,6 +777,7 @@ func (g *driveGitHub) serve(t *testing.T) string {
 		}
 		fmt.Fprintf(w, `{"status":%q}`, answer)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	return githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 }
 

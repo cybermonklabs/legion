@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { openIssueDetails } from "./issue-details";
 import { sql } from "./psql";
 import { settledState } from "./settled";
 import { expect, test } from "./test";
@@ -34,6 +35,8 @@ test("an issue and its ask show a cross-project message and structural backlinks
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto(`/issues/${target.key}`);
+  // What references the issue is a row of Details; its control draws the count.
+  await openIssueDetails(page);
   await page
     .getByTestId("issue-header")
     .getByRole("button", { name: /^Referenced by/ })
@@ -73,7 +76,8 @@ test("an issue and its ask show a cross-project message and structural backlinks
   ).resolves.toBe(true);
 
   await page.goto("/");
-  const phoneCard = page.getByTestId(`ask-${decision.id}`);
+  // At 390 px the Inbox lists short rows; the question's card is read in the view its row opens.
+  const phoneCard = await askCard(page, decision.id);
   await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
   await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
     `Message · ${source.key}`
@@ -118,6 +122,7 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
   // one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
+  await openIssueDetails(page);
   await page.getByRole("button", { name: /^Referenced by/ }).click();
   const references = page.getByTestId("issue-header").getByRole("region", {
     name: "Referenced by",
@@ -365,6 +370,7 @@ test("an issue header's count follows an ask whose question cites it", async ({ 
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
   const header = page.getByTestId("issue-header");
+  await openIssueDetails(page);
   // The issue's own spec document is attached to it, so it starts at one.
   await expect(header.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible();
 
@@ -399,6 +405,8 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   );
 
   await page.goto(`/issues/${target.key}`);
+  // What references the issue is a row of the header's Details (dispatch://INFRA-5200).
+  await openIssueDetails(page);
   const header = page.getByTestId("issue-header");
   // The issue's own spec document and the message: the unknown edge would make it three.
   await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();

@@ -218,7 +218,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	var lifetime *int
 	var live bool
 	var enr enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, `+grantAndEnrollmentLive("g", "e")+`,
 		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host, e.projects
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
@@ -287,15 +287,16 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	for _, g := range granted {
 		if recheck {
-			if err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
-				// A grant whose frozen source is not the one the name is served from now (its
-				// type was changed or removed) ends for good: setting the type back serves the
-				// same source again, and the grant must not come back with it. So does one whose
-				// requesters tag no longer lists this session: listing the person again must not
-				// revive a grant made while they were off the list. So does a judged grant of a
-				// secret the policy now tags as an administrator's: a person approves every
-				// release of one, so taking the tag off again must not revive a grant no person
-				// ever approved — the session asks again, as a new request.
+			if err := stillAllowed(set, m.sourceRule(), g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
+				// A grant whose frozen source does not count as the one the name is served from
+				// now (sourceRule.counts: its type was changed or removed) ends for good: setting
+				// the type back serves the same source again, and the grant must not come back
+				// with it. So does one whose requesters tag no longer lists this session: listing
+				// the person again must not revive a grant made while they were off the list. So
+				// does a judged grant of a secret the policy now tags as an administrator's: a
+				// person approves every release of one, so taking the tag off again must not
+				// revive a grant no person ever approved — the session asks again, as a new
+				// request.
 				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
@@ -400,8 +401,9 @@ func (m *Machine) endJudgedGrant(ctx context.Context, grantID string, chainErr e
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
 // nil for a grant that lasts until its session ends. Every call runs checkRelease's whole set of
 // re-checks and then the release loop both releases of a grant run (readRelease, release.go). A
-// stored secret releases its frozen source. A type secret reads that same stored source and
-// passes its value to the type's minter, with the scope of the profile it is served as
+// stored secret releases the source the policy serves its name from, which is its frozen source
+// or one its frozen source counts as (readSource). A type secret reads that same stored source
+// and passes its value to the type's minter, with the scope of the profile it is served as
 // (mintRequest). It holds no pooled connection across a Secrets Manager read: the grant's names
 // are read into memory before the first value is fetched.
 //
@@ -534,12 +536,14 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 // type froze) against the policy as it stands after Values read the store, since the policy Values
 // checked before its reads can be replaced while they run: a retag to a type, reread as a read
 // starts, makes the read return what the secret stores as that type (a GitHub App key, or a Google
-// refresh token stored once the reread served the type). A name now served from another source,
-// a type's included, ends the grant for good (endGrant), as it does before the reads; a name the
-// policy no longer serves pauses it, as before the reads. Either way Values releases none of the
-// values it read. A minted name needs no such check: its minter returns only a token.
+// refresh token stored once the reread served the type). A name now served from a source its
+// frozen one does not count as (sourceRule.counts), a type's included, ends the grant for good
+// (endGrant), as it does before the reads; a name the policy no longer serves pauses it, as before
+// the reads. Either way Values releases none of the values it read. A minted name needs no such
+// check: its minter returns only a token.
 func (m *Machine) recheckStoredSources(ctx context.Context, grantID string, granted []requestedSecret) error {
 	now := m.Policy.Get()
+	rule := m.sourceRule()
 	for _, g := range granted {
 		if _, _, minted, _ := policy.ParseTypeSource(g.source); minted {
 			continue
@@ -548,7 +552,7 @@ func (m *Machine) recheckStoredSources(ctx context.Context, grantID string, gran
 		if !served {
 			return noLongerServed(g.name)
 		}
-		if current.Source != g.source {
+		if !rule.counts(g.source, current.Source) {
 			return m.endGrant(ctx, grantID, sourceMoved(g.name))
 		}
 	}
@@ -561,10 +565,81 @@ func noLongerServed(name string) error {
 	return fmt.Errorf("%w: %s is no longer an agent secret", ErrGrantNotLive, name)
 }
 
-// sourceMoved is the refusal of a granted name the current policy serves from another source than
-// its grant froze, which ends the grant for good (errSourceMoved).
+// sourceMoved is the refusal of a granted name the current policy serves from a source its grant's
+// frozen one does not count as (sourceRule.counts), which ends the grant for good
+// (errSourceMoved). Its text does not change: a deployment's checks read it in the broker's log.
 func sourceMoved(name string) error {
 	return fmt.Errorf("%w: %w: %s is now served from another source than this grant's", ErrGrantNotLive, errSourceMoved, name)
+}
+
+// sourceRule is the one rule of whether a grant's frozen source, the source its request froze
+// for a name (requestedSecret.source), counts as the source the policy serves that name from now
+// (policy.Secret.Source). Every compare of the two calls counts: the re-check of a release and of
+// Create's reuse of a live grant (stillAllowed), the re-check after a release's reads
+// (recheckStoredSources), and the release's read itself (readSource). prefix is
+// BROKER_SECRETS_PREFIX and second BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and
+// Machine.SecondPrefix); with second empty the rule counts equal sources alone, which is every
+// broker that does not set it.
+type sourceRule struct{ prefix, second string }
+
+// sourceRule is the rule this machine holds a frozen source to.
+func (m *Machine) sourceRule() sourceRule {
+	return sourceRule{prefix: m.SecretsPrefix, second: m.SecondPrefix}
+}
+
+// counts reports whether frozen counts as served. Equal sources count. With a second prefix set,
+// two more count, the two a deployment's move of its store to another prefix makes, which keeps
+// the part of a source after the prefix and its type: a stored frozen source that is served with
+// the configured prefix replaced by the second, and a minted one (policy.TypeSource) of served's
+// type whose store source is served's so replaced. A profile's source is its source secret's, so a
+// moved profile counts by the same two cases. Every other frozen source does not count: one of
+// another type, one that differs after the prefix, one under a prefix that is neither of the two,
+// a stored source against a minted one or the reverse, and one under the configured prefix where
+// the policy serves the second's, since the policy lists under the configured prefix alone. Such a
+// source no longer names the secret the policy decides about, so its grant ends (sourceMoved).
+func (r sourceRule) counts(frozen, served string) bool {
+	if frozen == served {
+		return true
+	}
+	if r.prefix == "" || r.second == "" {
+		return false
+	}
+	frozenType, frozenStore, frozenMinted, err := policy.ParseTypeSource(frozen)
+	if err != nil {
+		return false
+	}
+	servedType, servedStore, servedMinted, err := policy.ParseTypeSource(served)
+	if err != nil || frozenMinted != servedMinted || frozenType != servedType {
+		return false
+	}
+	rest, under := strings.CutPrefix(servedStore, r.prefix)
+	return under && rest != "" && frozenStore == r.second+rest
+}
+
+// readSource is the type and the store source a release of g reads, and whether it mints, all
+// from the source the policy serves g's name from (served.Source): the secret the policy loader
+// listed under BROKER_SECRETS_PREFIX and checked for its key, whose version a refusal of its value
+// is keyed on (policy.Set.ValueVersion), and never g's frozen source, which under a second prefix
+// names a secret no listing checked and which can hold another value while a move runs. It reads
+// it only where the frozen source counts as the policy's (sourceRule.counts), and refuses the name
+// as moved where it does not, ending nothing: checkRelease's re-check has already held the two to
+// the rule wherever the policy's version moved, and a version that did not move serves the very
+// source the request froze, so this refuses nothing a release could otherwise reach.
+func (m *Machine) readSource(g requestedSecret, served policy.Secret) (secretType, source string, minted bool, err error) {
+	// The frozen source is read first, so a row holding one no policy built — mint: with no type
+	// or no store source — is named as malformed, as it was before the rule, rather than as a
+	// source that moved (TestAMalformedMintedSourceIsNamedAndReleasesNothing).
+	if _, _, _, err := policy.ParseTypeSource(g.source); err != nil {
+		return "", "", false, fmt.Errorf("secret %s: %w", g.name, err)
+	}
+	if !m.sourceRule().counts(g.source, served.Source) {
+		return "", "", false, sourceMoved(g.name)
+	}
+	secretType, source, minted, err = policy.ParseTypeSource(served.Source)
+	if err != nil {
+		return "", "", false, fmt.Errorf("secret %s: %w", g.name, err)
+	}
+	return secretType, source, minted, nil
 }
 
 // profileChanged is the refusal of a granted name whose fingerprint is not the one its request
@@ -576,17 +651,31 @@ func sourceMoved(name string) error {
 // be, where it is the source's tag and not the profile's own proxy string that puts the profile
 // behind its kind, since the kind it is behind is in the fingerprint; so can the judge tag of a
 // profile behind the proxy, whose judge seconds are in it, where the source carries one now or the
-// model judge decided the grant (decidedBy), so it carried one then. A stored secret served by its
-// own name behind the proxy has its own proxy tag in its fingerprint, and no judge seconds. The
-// proxy-narrowed tag, which a fingerprint behind the proxy holds too, is never named: a change of
-// it refuses the name (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed)
-// rather than serve it with another fingerprint.
+// model judge decided the grant (decidedBy), so it carried one then; and so can the scopes tag of a
+// google-service-account source whose profile has no google block of its own, whose scopes it
+// mints at and holds in its fingerprint. A stored secret served by its own name behind the proxy
+// has its own proxy tag in its fingerprint, and no judge seconds; a google-service-account one has
+// its own scopes tag in it, behind the proxy or not. The proxy-narrowed tag, which a fingerprint
+// behind the proxy holds too, is never named: a change of it refuses the name
+// (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed) rather than serve it
+// with another fingerprint.
 func profileChanged(set *policy.Set, name, decidedBy string) error {
 	served := set.Secrets[name]
 	const changed = "%w: %s's profile changed since this grant was decided"
+	scoped := served.Type() == policy.TypeGoogleServiceAccount
 	if served.Profile == nil {
+		var own []string
 		if served.Proxy != "" {
-			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, policy.TagProxy)
+			own = append(own, policy.TagProxy)
+		}
+		if scoped {
+			own = append(own, policy.TagScopes)
+		}
+		switch {
+		case served.Proxy != "":
+			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, strings.Join(own, " or "))
+		case scoped:
+			return fmt.Errorf(changed+": its own %s tag", ErrGrantNotLive, name, policy.TagScopes)
 		}
 		return fmt.Errorf(changed, ErrGrantNotLive, name)
 	}
@@ -596,6 +685,9 @@ func profileChanged(set *policy.Set, name, decidedBy string) error {
 	}
 	if _, judged := record.JudgeLogin(decidedBy); served.Proxy != "" && (served.Judge != 0 || judged) {
 		tags = append(tags, policy.TagJudge)
+	}
+	if scoped && served.Profile.Google == nil {
+		tags = append(tags, policy.TagScopes)
 	}
 	if len(tags) == 0 {
 		return fmt.Errorf(changed, ErrGrantNotLive, name)
@@ -667,13 +759,15 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 }
 
 // release is one granted name's value, and when that value stops working for a type whose
-// minter says. A stored secret reads its frozen source and ignores the policy metadata; it
-// carries no expiry, since nothing but a new stored version ends it. A type source reads its
-// frozen store source (on Secret Manager its deletion verdict is cached for 30 s, as for every
-// secret), then passes that value and the name, tier, the scope in effect of the GitHub profile
-// it is served as (the target its request recorded, else the profile's own: gitHubScope) and its
-// Google OAuth scopes from the policy snapshot Values checked to the minter (mintRequest). Either
-// value is spent by the one line-ending rule (policy.TrimLineEnding): the
+// minter says. Both read the source the policy serves the name from (readSource), never the
+// frozen source itself, which is that source or one that counts as it. A stored secret reads that
+// source and ignores the rest of the policy metadata; it carries no expiry, since nothing but a
+// new stored version ends it. A type source reads that source's store source (on Secret Manager
+// its deletion verdict is cached for 30 s, as for every secret), then passes that value and the
+// name, tier, the scope in effect of the GitHub profile it is served as (the target its request
+// recorded, else the profile's own: gitHubScope) and its Google OAuth scopes from the policy
+// snapshot Values checked to the minter (mintRequest). Either value is spent by the one
+// line-ending rule (policy.TrimLineEnding): the
 // stored value a session is handed, and the input the minter is given, are read by the one rule,
 // and each value the rule changed is logged as TrailingLineEndingRemovedMessage with the secret's
 // name. A token a minter makes is never touched; the rule reaches the stored value alone.
@@ -690,9 +784,9 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
-	secretType, source, minted, err := policy.ParseTypeSource(g.source)
+	secretType, source, minted, err := m.readSource(g, served)
 	if err != nil {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("secret %s: %w", g.name, err)
+		return secrets.Minted{}, mintedFrom{}, err
 	}
 	if !minted {
 		stored, err := m.Secrets.Read(ctx, source)
@@ -876,9 +970,10 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // decidedBy too: the withhold ended every grant that got such a name without asking (withhold),
 // so a live one was approved after it, by someone the withheld name let approve it
 // (currentPolicyAdmits), and an automatic grant, which no one decided, never passes. A grant whose
-// frozen source is not the one the policy now serves the name from (the broker moved between
-// stores, or, on AWS, the secret was replaced by another of the same name, which gets a new ARN;
-// a Secret Manager source is the resource name, which a recreated secret keeps) is not live
+// frozen source does not count as the one the policy now serves the name from (sources, the one
+// rule of that: sourceRule.counts; the broker moved between stores with no second prefix to carry
+// the grant, or, on AWS, the secret was replaced by another of the same name, which gets a new
+// ARN; a Secret Manager source is the resource name, which a recreated secret keeps) is not live
 // either: the frozen source no longer names the secret the policy decides about, so the session
 // asks again. A name whose requesters tag no longer lists this requester is not live either, and
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
@@ -891,7 +986,7 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // secret must not be an administrator's now, and its judge tag must still give the name a judge of
 // at least the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
 // No judge login goes through record.MayDecide, which refuses every one of them.
-func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
+func stillAllowed(set *policy.Set, sources sourceRule, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
 	if errors.Is(err, policy.ErrUnknownSecret) {
 		return noLongerServed(name)
@@ -899,7 +994,7 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 	if err != nil {
 		return err
 	}
-	if set.Secrets[name].Source != frozenSource {
+	if !sources.counts(frozenSource, set.Secrets[name].Source) {
 		return sourceMoved(name)
 	}
 	_, judged := record.JudgeLogin(decidedBy)
@@ -970,9 +1065,10 @@ func judgeStillDecides(set *policy.Set, name string, lifetime *int) error {
 	return nil
 }
 
-// errSourceMoved is stillAllowed's refusal of a name served from another source than its grant
-// froze: a type changed or removed, a secret replaced on AWS, the broker moved between stores.
-// Values ends such a grant for good (endGrant).
+// errSourceMoved is stillAllowed's refusal of a name served from a source its grant's frozen one
+// does not count as (sourceRule.counts): a type changed or removed, a secret replaced on AWS, the
+// broker moved between stores with no second prefix to carry the grant. Values ends such a grant
+// for good (endGrant).
 var errSourceMoved = errors.New("source moved")
 
 // errRequesterNotListed is stillAllowed's refusal of a granted name the secret's requesters tag
@@ -1242,6 +1338,13 @@ func (m *Machine) LiveGrants(ctx context.Context, enrollmentID string) ([]Grant,
 // whether a grant is live uses it beside revoked_at is null.
 func grantUnexpired(alias string) string {
 	return "(" + alias + ".expires_at is null or " + alias + ".expires_at > now())"
+}
+
+// grantAndEnrollmentLive is the SQL predicate that grant alias g and its enrollment alias e are
+// both live: the grant not revoked and unexpired (grantUnexpired), and the enrollment not revoked
+// and its lease not lapsed. A grant's release and every read of the proxy port ask it alike.
+func grantAndEnrollmentLive(g, e string) string {
+	return g + ".revoked_at is null and " + grantUnexpired(g) + " and " + e + ".revoked_at is null and enrollment_lease_live(" + e + ".lease_expires_at)"
 }
 
 // insertGrant writes a grant that lasts lifetimeSeconds from now, or, when nil, until its session
@@ -1514,7 +1617,7 @@ candidates:
 		}
 		for _, g := range granted {
 			if recheck {
-				err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				err := stillAllowed(set, m.sourceRule(), g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
 				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed):
 					// The list dropped this requester while the grant was live, the secret
@@ -1560,8 +1663,8 @@ candidates:
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
-// "launcher_credential") — the one column api.decideRecord needs before it knows which service's
-// ApplyDecision a record id belongs to. pgx.ErrNoRows means no such record.
+// "launcher_credential") — the one column api.decideRecord needs before it knows which service
+// decides a record id. pgx.ErrNoRows means no such record.
 func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, error) {
 	var kind string
 	err := m.Store.Pool.QueryRow(ctx, `select kind from credential_requests where id=$1`, recordID).Scan(&kind)
@@ -1813,9 +1916,9 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // still, which no person holds as their own, so a restricted member it names has it on no list.
 // Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
-// (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
-// endEnrollment wrote that event carries none, so the request row is the truth. A machine login
-// has no request row and is pending while it carries no terminal decision event, matching
+// (store.EndPendingRequests, applyDecisionAttempt), but a request an ended enrollment cancelled
+// before endEnrollment wrote that event carries none, so the request row is the truth. A machine
+// login has no request row and is pending while it carries no terminal decision event, matching
 // credential_request_decision's own partial index — see pendingForApproverQuery's own comment for
 // why that match requires a literal predicate, not record.TerminalEventNames() bound as a
 // parameter. The approver scan itself is credential_requests_approver
@@ -2189,7 +2292,7 @@ type RecordDecision struct {
 	// decided a record reads it beside Login (record.JudgeLogin).
 	Actor string
 	// Detail is what the decision records beside its event, empty when it records nothing. An
-	// agent_secret approval carries one exactly when ApplyDecision recorded the request denied
+	// agent_secret approval carries one exactly when its decision recorded the request denied
 	// rather than granted: because its requesting enrollment was no longer live, or because the
 	// secret's requesters tag no longer listed the session, which the broker denies in the
 	// approver's place (requests.PolicyDeniedActor).

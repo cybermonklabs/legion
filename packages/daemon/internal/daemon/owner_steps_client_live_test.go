@@ -117,6 +117,7 @@ func heldOlder(outcome clientOutcome, contract int) error {
 }
 
 func TestOwnerStepsClientLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newOwnerStepsClientLive).
 	l := newOwnerStepsClientLive(t)
 	planned, returnRefused, stopped, older := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
 	l.note("Dispatch %s, project %s, issues %s, %s, %s and %s; daemon at %s (contract %d); client of %s",

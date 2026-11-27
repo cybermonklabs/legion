@@ -307,7 +307,8 @@ func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *t
 			}
 			return logRead(t, "comment.created", "message.created")
 		}},
-		// attachPostMarks, through replayThrough's readEventsAfterID and the relay's.
+		// attachPostMarks, through replayThrough's readEventsAfterID and the relay's
+		// readEventsAfterIDOnLog.
 		{"1.28 GET /ws/live, the events view's replay", []logged{comment, message}, func(t *testing.T, deleted bool) []byte {
 			if deleted {
 				return socketReplay(t, "after", "comment.deleted", "message.deleted")

@@ -850,6 +850,65 @@ func TestTheStatesWebhookAppGapsAreTheLiveRepositoriesThatHoldOne(t *testing.T) 
 	}
 }
 
+// The repositories block names a record kept on a configured pair's `from` under the pair's `to`
+// exactly where the rename rule serves it there (servesLocked): GitHub answered the `to` served
+// and the `from` not; GitHub answered neither name yet, which serves the pair as the operator
+// configured it; and never where GitHub answered both names served, since each is then a
+// repository of its own. The entry reads its Apps and its read error from the served name's entry,
+// and shows Apps only once GitHub answered both reads.
+func TestTheRepositoriesBlockServesAPairsOldNameWhereTheRenameRuleDoes(t *testing.T) {
+	t.Parallel()
+	renames := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	live := liveOf(t, "sjawhar/legion", "Acme/Widgets", "acme/widgets")
+	both := appInstallations{implement: appInstallation{answered: true, installed: true}, review: appInstallation{answered: true, installed: true}}
+	neither := appInstallations{implement: appInstallation{answered: true}, review: appInstallation{answered: true}}
+	installed := &api.AppInstallationsView{Implement: true, Review: true}
+	const widgetsFailed = "the implement App's installation on Acme/Widgets could not be read: GitHub answered 502"
+	type read struct {
+		apps      appInstallations
+		readError string
+	}
+	for _, tc := range []struct {
+		name  string
+		reads map[string]read
+		want  api.LiveRepositoryView
+	}{
+		{
+			name:  "the transfer answered",
+			reads: map[string]read{"sjawhar/legion": {apps: neither}, "cybermonklabs/legion": {apps: both}},
+			want:  api.LiveRepositoryView{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", Apps: installed},
+		},
+		{
+			name: "no read of either name answered",
+			reads: map[string]read{"cybermonklabs/legion": {
+				apps: appInstallations{implement: appInstallation{answered: true, installed: true}}, readError: "GitHub answered 502"}},
+			want: api.LiveRepositoryView{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", ReadError: "GitHub answered 502"},
+		},
+		{
+			name:  "both names served",
+			reads: map[string]read{"sjawhar/legion": {apps: both}, "cybermonklabs/legion": {apps: both}},
+			want:  api.LiveRepositoryView{Repo: "sjawhar/legion", Apps: installed},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repos := newRepositories("LEGION", renames)
+			repos.keepRead(ghrepo.MustParse("Acme/Widgets"), appInstallations{}, widgetsFailed)
+			for name, r := range tc.reads {
+				repos.keepRead(ghrepo.MustParse(name), r.apps, r.readError)
+			}
+			view := repos.view(live, nil)
+			want := []api.LiveRepositoryView{{Repo: "Acme/Widgets", ReadError: widgetsFailed}, tc.want}
+			if !reflect.DeepEqual(view.Live, want) {
+				t.Fatalf("live = %+v\nwant %+v", view.Live, want)
+			}
+			if view.WithoutWebhookApp != nil || view.Caches != nil {
+				t.Fatalf("withoutWebhookApp = %+v, caches = %+v, want neither", view.WithoutWebhookApp, view.Caches)
+			}
+		})
+	}
+}
+
 // One lookup of the entries answers for a repository, and every reader takes it from that lookup:
 // what an issue on it is recorded with (ResolveRepository), whether release_children waits for it
 // (repositoryUnread), and whether the preparation of a todo issue on it reads GitHub itself

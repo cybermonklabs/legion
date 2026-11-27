@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -161,6 +163,7 @@ func (d *defaultBranches) hold(repo ghrepo.Repository, answer ghbranch.Repositor
 // repo names would reach nothing, and the address follows the token even though GitHub answers
 // the old one by redirect.
 func (d *defaultBranches) fetch(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
+	ctx = githubrate.WithCaller(ctx, callerDefaultBranch)
 	served := d.repos.serving(repo)
 	lease, err := d.tokens.Token(ctx, appauth.Implement, served.Owner())
 	if err != nil {

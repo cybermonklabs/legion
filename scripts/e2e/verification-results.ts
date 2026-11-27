@@ -230,6 +230,13 @@ const heldCommits = {
   comparedApart: "a7".repeat(20),
   /** The commit the bases case names to the command and to the API, which no result is at. */
   comparedNamed: "a8".repeat(20),
+  /** The release branch's final head and its merge into main. */
+  comparedLandingHead: "a9".repeat(20),
+  comparedLandingMerge: "ab".repeat(20),
+  /** The merge, later result and deployed build the real commands drive. */
+  answerMerge: "b1".repeat(20),
+  answerLater: "b2".repeat(20),
+  deployedBuild: "b3".repeat(20),
   /** The head of the attribution case's first pull request, the one its branch credits to the
    *  child. */
   attributionBranch: "c1".repeat(20),
@@ -743,8 +750,9 @@ async function publishPullRequest(payload: Record<string, string>): Promise<Publ
   return publishEnvelope(payload);
 }
 
-/** What GitHub holds of a pull request after the event `payload` reports: the event's fields, and
- *  a state that is closed after a close and open after any other action. */
+/** What GitHub holds of a pull request after the event `payload` reports: the event's fields, the
+ *  time of a merge among them, and a state that is closed after a close and open after any other
+ *  action. */
 function pullAfter(payload: Record<string, string>): FakePullRequest {
   return {
     base_ref: payload.base_ref,
@@ -754,6 +762,7 @@ function pullAfter(payload: Record<string, string>): FakePullRequest {
     head_sha: payload.head_sha,
     merge_commit_sha: payload.merge_commit_sha,
     merged: payload.merged === "true",
+    merged_at: payload.merged_at,
     state: payload.action === "closed" ? "closed" : "open",
     title: payload.title,
     updated_at: payload.updated_at,
@@ -866,7 +875,11 @@ interface DispatchRun {
  *  directory when that is absent. */
 async function runDispatch(
   argv: readonly string[],
-  { stdin, cwd }: { readonly stdin?: string; readonly cwd?: string } = {}
+  {
+    stdin,
+    cwd,
+    token,
+  }: { readonly stdin?: string; readonly cwd?: string; readonly token?: string } = {}
 ): Promise<DispatchRun> {
   const home = mkdtempSync(join(tmpdir(), "verification-results-cli-"));
   try {
@@ -875,7 +888,7 @@ async function runDispatch(
       env: {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: session,
-        DISPATCH_TOKEN: agentToken,
+        DISPATCH_TOKEN: token ?? agentToken,
         DISPATCH_URL: dispatchUrl,
         HOME: home,
         PATH: process.env.PATH ?? "",
@@ -983,6 +996,21 @@ async function sql(statement: string): Promise<string> {
  *  the build of a commit before it, which a negative control runs, has none. */
 async function textsTableExists(): Promise<boolean> {
   return (await sql("select to_regclass('pull_request_texts') is not null")) === "t";
+}
+
+/** Whether pull_request_heads holds the merge columns, merge_commit_sha and merged_at (main's
+ *  20261125125702_after_merge_states): the build of a commit before them has neither. A read of
+ *  GitHub that writes a merged row writes both, and a results read that orders an issue's merged
+ *  rows reads GitHub again for a merged row holding no time of merge (api's fillMergeTimes), so a
+ *  fixture's merged row that stands for a row a read wrote holds both too. */
+async function mergeColumnsExist(): Promise<boolean> {
+  return (
+    (await sql(
+      `select count(*) from information_schema.columns
+       where table_schema = current_schema() and table_name = 'pull_request_heads'
+         and column_name in ('merge_commit_sha', 'merged_at')`
+    )) === "2"
+  );
 }
 
 /** One stored pull request row, as pull_request_heads holds it: the issue it records and the
@@ -1358,11 +1386,11 @@ interface OnePassPhase {
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
  *  the head commit and branch, the repository the head branch is in, the base branch, the
- *  state, the title and body, the time GitHub last updated it, and the merge's own commit; and
- *  as its commits read and its GraphQL route read it: the messages of its commits, and the status
- *  the commits read answers in place of them. limit-of-one sets two more: `searched`, so the
- *  merged search finds the pull request, and `author`, which also makes the fake answer the
- *  fields that the completion of a partial pull request reads. */
+ *  state, the title and body, the time GitHub last updated it, and the merge's own commit and
+ *  time; and as its commits read and its GraphQL route read it: the messages of its commits, and
+ *  the status the commits read answers in place of them. limit-of-one sets two more: `searched`,
+ *  so the merged search finds the pull request, and `author`, which also makes the fake answer
+ *  the fields that the completion of a partial pull request reads. */
 interface FakePullRequest {
   readonly author?: string;
   readonly base_ref?: string;
@@ -1374,6 +1402,7 @@ interface FakePullRequest {
   readonly head_sha: string;
   readonly merge_commit_sha?: string;
   readonly merged: boolean;
+  readonly merged_at?: string;
   readonly searched?: boolean;
   readonly state: string;
   readonly title: string;
@@ -1428,7 +1457,19 @@ async function seedRepositories(
   await putFakeRepositories({
     [repo]: {
       actions: "read",
-      branch_commits: { main: [commits.behind, commits.comparedOnMain, commits.mainHead] },
+      branch_commits: {
+        main: [
+          commits.behind,
+          commits.comparedOnMain,
+          commits.mainHead,
+          commits.comparedLandingMerge,
+          commits.answerMerge,
+          commits.answerLater,
+        ],
+        [commits.comparedLandingHead]: [commits.comparedMergeCommit],
+        [commits.comparedOnMain]: [commits.comparedLandingMerge],
+        [commits.answerLater]: [commits.answerMerge],
+      },
       commits: Object.values(heldCommits),
       contents: "read",
       default_branch: "main",
@@ -2289,12 +2330,9 @@ The pre-merge check of the same unreadable repository.
 });
 
 // k-compared-commit. What each check compares its results with, read through the `dispatch
-// results` command and through the API: a `before_merge` check names the head of every pull
-// request of its issue, open or merged, an `after_merge` check names the branch the merge went
-// to and the default branch, and a `default_branch` check names the default branch alone. A
-// commit named to the command (`--at`) or to the API (`?at=`) replaces all of them, for every
-// check of the issue. Dispatch then reads GitHub for nothing but the check runs of a check CI
-// proves, at the issue's newest pull request head as on every read.
+// results` command and through the API: a `before_merge` check names each open head, an
+// `after_merge` check names the branch the merge went to and its landing on the default branch,
+// and a `default_branch` check names the default branch alone. A named commit replaces them all.
 //
 // The case's negative control is the second open pull request: with no commit named, the result
 // at its head stands at that head, so a run that named one head alone would fail here.
@@ -2341,10 +2379,9 @@ A default-branch result is compared with the default branch alone.
     });
     openedPulls.set(pull.number, published);
   }
-  // The merged pull request's base branch is one the fake holds no commits for, as a repository
-  // that deletes a branch on the merge leaves it: the compare read says that branch does not
-  // carry the commit, and the default branch answers for the work. The envelope names no author
-  // of the delivery population, so the merge writes this head row and nothing else.
+  // The deleted release branch holds no result commit. Its landing on main must hold the
+  // issue's merge, and the result must hold that landing, not merely be a commit of main.
+  const mergedAt = new Date().toISOString();
   await publishPullRequest({
     action: "closed",
     base_ref: "release/old",
@@ -2354,12 +2391,32 @@ A default-branch result is compared with the default branch alone.
     head_sha: commits.comparedMergedHead,
     kind: "pr",
     merge_commit_sha: commits.comparedMergeCommit,
+    merged_at: mergedAt,
     merged: "true",
+    state: "closed",
     number: "23",
     repo,
     title: `${basesIssue} merged pull request #23`,
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/23`,
+  });
+  await publishPullRequest({
+    action: "closed",
+    base_ref: "main",
+    body: "Land the release branch.",
+    head_ref: "release/old",
+    head_repo: repo,
+    head_sha: commits.comparedLandingHead,
+    kind: "pr",
+    merge_commit_sha: commits.comparedLandingMerge,
+    merged_at: mergedAt,
+    merged: "true",
+    state: "closed",
+    number: "24",
+    repo,
+    title: "Land the release branch",
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/24`,
   });
   note(`${basesIssue} has pull requests #21 and #22 open, and #23 merged into release/old`);
 
@@ -2399,34 +2456,71 @@ A default-branch result is compared with the default branch alone.
   const wantedLines = [
     `the head of pull request #21 at ${commits.comparedHeadA}`,
     `the head of pull request #22 at ${commits.comparedHeadA2}`,
-    `the head of pull request #23 at ${commits.comparedMergedHead}`,
-    "branch release/old",
-    "branch main",
+    `branch release/old, merged at ${commits.comparedMergeCommit}`,
+    `branch main, merged at ${commits.comparedLandingMerge}`,
   ];
   for (const wanted of wantedLines) {
     if (!printed.includes(wanted)) return `the command named no ${wanted}`;
   }
 
-  // The API, with no commit named: the same bases, each with its pull request's number and the
-  // time Dispatch learned that head. A before-merge check names the head of every pull request
-  // of its issue, the merged one's among them.
+  // A merged head remains a comparison basis; only open heads are pass subjects.
   const before = await checkOf(basesIssue, "before");
   note(`the API's before check compares with ${comparedOf(before)}`);
-  const heads = new Map((before.compared_with ?? []).map((basis) => [basis.pull_request, basis]));
-  if (heads.size !== 3)
-    return `the before check compares with ${comparedOf(before)}, want the heads of #21, #22 and #23`;
-  for (const [number, head] of [
-    [21, commits.comparedHeadA],
-    [22, commits.comparedHeadA2],
-    [23, commits.comparedMergedHead],
-  ] as const) {
+  const bases = before.compared_with ?? [];
+  const heads = new Map(bases.map((basis) => [basis.pull_request, basis]));
+  const wantedBases = [
+    [21, commits.comparedHeadA, false],
+    [22, commits.comparedHeadA2, false],
+    [23, commits.comparedMergedHead, true],
+  ] as const;
+  for (const [number, commit, merged] of wantedBases) {
     const basis = heads.get(number);
-    if (basis === undefined || basis.kind !== "pull_request" || basis.commit !== head) {
-      return `the basis of pull request #${number} is ${JSON.stringify(basis)}`;
+    if (
+      basis?.kind !== "pull_request" ||
+      (basis.repo ?? repo) !== repo ||
+      basis.commit !== commit ||
+      (basis.merged ?? false) !== merged
+    ) {
+      return `compared_with is missing basis ${repo}#${number}@${commit} (merged=${merged}); got ${JSON.stringify(bases)}`;
     }
     if (basis.learned_at === undefined) {
       return `the basis of pull request #${number} says no time Dispatch learned it`;
     }
+  }
+  if (bases.length !== 3 || heads.size !== 3) {
+    return `compared_with must be exactly the three expected bases; got ${JSON.stringify(bases)}`;
+  }
+  const subjects = before.pass_stands.subjects ?? [];
+  for (const [number, commit, merged] of wantedBases) {
+    if (
+      !merged &&
+      !subjects.some(
+        ({ basis }) =>
+          basis.kind === "pull_request" &&
+          (basis.repo ?? repo) === repo &&
+          basis.pull_request === number &&
+          basis.commit === commit
+      )
+    ) {
+      return `pass_stands.subjects is missing open subject ${repo}#${number}@${commit}; got ${JSON.stringify(subjects)}`;
+    }
+  }
+  for (const { basis } of subjects) {
+    if (
+      !wantedBases.some(
+        ([number, commit, merged]) =>
+          !merged &&
+          basis.kind === "pull_request" &&
+          (basis.repo ?? repo) === repo &&
+          basis.pull_request === number &&
+          basis.commit === commit
+      )
+    ) {
+      return `pass_stands.subjects contains unexpected subject ${basis.repo}#${basis.pull_request}@${basis.commit}; only the two open heads are subjects`;
+    }
+  }
+  if (subjects.length !== 2) {
+    return `pass_stands.subjects must contain exactly the two open subjects; got ${JSON.stringify(subjects)}`;
   }
   for (const [commit, number] of [
     [commits.comparedHeadA, 21],
@@ -2453,8 +2547,13 @@ A default-branch result is compared with the default branch alone.
 
   const after = await checkOf(basesIssue, "after");
   note(`the API's after_merge check compares with ${comparedOf(after)}`);
-  const branches = (after.compared_with ?? []).map((basis) => `${basis.kind} ${basis.branch}`);
-  if (branches.join(", ") !== "branch release/old, branch main") {
+  const branches = (after.compared_with ?? []).map(
+    (basis) => `branch ${basis.branch}, merged at ${basis.merge_commit}`
+  );
+  if (
+    branches.join(", ") !==
+    `branch release/old, merged at ${commits.comparedMergeCommit}, branch main, merged at ${commits.comparedLandingMerge}`
+  ) {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
   const merged = (after.results ?? []).find((row) => row.commit_sha === commits.comparedOnMain);
@@ -2576,6 +2675,102 @@ A check of an issue whose repository Dispatch cannot read compares with nothing 
   return passUnreadable === "unknown"
     ? undefined
     : `a pass of it stands ${passUnreadable}, want unknown`;
+});
+
+// Both cases use the real command against this run's server, not the renderer as a substitute.
+await runCase("after-merge-answer", async () => {
+  const issue = await seedIssue(
+    "VRF",
+    "The newest after-merge result decides the command's line",
+    ':::check{#newest when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe newest result names the build it proves.\n:::\n'
+  );
+  const mergedAt = new Date().toISOString();
+  await publishPullRequest({
+    action: "closed",
+    base_ref: "main",
+    body: `Proves ${issue}.`,
+    head_ref: `legion/${issue}`,
+    head_repo: repo,
+    head_sha: commits.answerMerge,
+    kind: "pr",
+    merge_commit_sha: commits.answerMerge,
+    merged_at: mergedAt,
+    merged: "true",
+    state: "closed",
+    number: "31",
+    repo,
+    title: `${issue} merged work`,
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/31`,
+  });
+  const recordWithCommand = async (verdict: "pass" | "fail", commit: string): Promise<string> => {
+    const argv = resultArgv(issue, "newest", commit);
+    argv[argv.indexOf("--verdict") + 1] = verdict;
+    const run = await runDispatch([
+      ...argv,
+      "--run",
+      "bash scripts/e2e/verification-results.sh",
+      "--observed",
+      "The build was checked.",
+    ]);
+    if (run.code !== 0) throw new Error(stepFailed(1, argv, run, 0));
+    const result = (await checkOf(issue, "newest")).results.find(
+      (row) => row.verdict === verdict && row.commit_sha === commit
+    );
+    if (result === undefined) throw new Error(`the command stored no ${verdict} at ${commit}`);
+    return result.id;
+  };
+  await recordWithCommand("pass", commits.answerMerge);
+  const failed = await recordWithCommand("fail", commits.answerLater);
+  const placed = await awaitCommitStands(issue, "newest", commits.answerLater, "at_basis");
+  if (placed !== "at_basis") return `the later result stands ${placed}`;
+  const failureLine = `A pass stands: no, as the newest result is fail ${failed} at ${commits.answerLater}.`;
+  const failedOutput = await resultsCommand(issue);
+  for (const line of commandHeadLines(failedOutput)) note(line);
+  if (!failedOutput.includes(failureLine)) return `the command omitted ${failureLine}`;
+  const passed = await recordWithCommand("pass", commits.answerLater);
+  const conflictLine = `A pass stands: not known, as pass ${passed} and fail ${failed} both count at ${commits.answerLater}. A retraction of the wrong one ends it.`;
+  const conflictOutput = await resultsCommand(issue);
+  for (const line of commandHeadLines(conflictOutput)) note(line);
+  return conflictOutput.includes(conflictLine) ? undefined : `the command omitted ${conflictLine}`;
+});
+
+await runCase("deploy-recorded", async () => {
+  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
+    name: "verification-deploy",
+    scopes: ["person"],
+  })) as { token: string };
+  const argv = [
+    "deploy",
+    "--repo",
+    repo,
+    "--program",
+    "proof",
+    "--commit",
+    commits.deployedBuild,
+    "--json",
+  ];
+  const recorded = await runDispatch(argv, { token: credential.token });
+  if (recorded.code !== 0) return stepFailed(1, argv, recorded, 0);
+  const answer = JSON.parse(recorded.stdout) as {
+    deploy: { program: string; commit: string; recorded_by: { kind: string; id: string } };
+  };
+  if (
+    answer.deploy.program !== "proof" ||
+    answer.deploy.commit !== commits.deployedBuild ||
+    answer.deploy.recorded_by.kind !== "user" ||
+    answer.deploy.recorded_by.id !== person
+  ) {
+    return `the deploy command did not name the run's person: ${recorded.stdout}`;
+  }
+  const listed = await runDispatch(["deploys", "--repo", repo], { token: credential.token });
+  if (listed.code !== 0) return stepFailed(2, ["deploys", "--repo", repo], listed, 0);
+  note(listed.stdout.trim());
+  return ["proof", commits.deployedBuild, `user ${person}`].every((value) =>
+    listed.stdout.includes(value)
+  )
+    ? undefined
+    : `the deploy list omitted the build or its writer: ${listed.stdout}`;
 });
 
 // k-attribution. What decides a pull request's issue: the five ranked sources
@@ -3671,7 +3866,10 @@ async function ruleIssues(): Promise<string | undefined> {
 }
 
 /** rule-reaches-each-row's fixture, while no server runs: GitHub's answer for the 5,000 pull
- *  requests, and their rows. */
+ *  requests, and their rows. Each row holds GitHub's merge commit and time where the build's table
+ *  has the columns (mergeColumnsExist), as a read of GitHub writes a merged row: the case's reads
+ *  are the rule's, and a row holding no time of merge would have each results read that orders the
+ *  issue's merges ask GitHub for it. */
 async function ruleFixture(): Promise<void> {
   const { B, T } = sevenPart("rule");
   const pulls: Record<string, FakePullRequest> = {};
@@ -3696,13 +3894,14 @@ async function ruleFixture(): Promise<void> {
     pulls: { ...seeded.pulls, ...pulls },
   }));
   const texts = await textsTableExists();
+  const merges = await mergeColumnsExist();
   const k = "(n - 10000) % 100 + 1";
   await sql(
     `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
-       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"})
+       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"}${merges ? ", merge_commit_sha, merged_at" : ""})
      select '${attributionRepo}', n, lpad(to_hex(n), 40, 'f'), 'legion/' || lower((${sqlKeys(B)})[${k}]),
        'main', 'merged', (${sqlKeys(T)})[${k}], 'title_body', 'Change ' || n,
-       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}
+       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}${merges ? `, lpad(to_hex(n), 40, 'e'), '${attributionUpdatedAt}'` : ""}
      from generate_series(10001, 15000) n`
   );
   if (texts) {
@@ -3827,7 +4026,8 @@ async function ruleProbe(): Promise<string | undefined> {
 }
 
 /** rule-reaches-each-row's last fixture: pull request #15001, whose branch names the key of the
- *  issue nobody has made yet, in lower case as the other branches are written. */
+ *  issue nobody has made yet, in lower case as the other branches are written. Its row holds its
+ *  merge commit and time where the table has the columns, as ruleFixture's rows do. */
 async function ruleNewIssuePull(): Promise<void> {
   const { nextKey } = sevenPart("rule");
   const branch = `legion/${String(nextKey).toLowerCase()}`;
@@ -3850,12 +4050,13 @@ async function ruleNewIssuePull(): Promise<void> {
       },
     },
   }));
+  const merges = await mergeColumnsExist();
   await sql(
     `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
-       attribution_source, title, url, event_at, checked_at, github_read_at)
+       attribution_source, title, url, event_at, checked_at, github_read_at${merges ? ", merge_commit_sha, merged_at" : ""})
      values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}', 'main', 'merged',
        'none', 'Change 15001', 'https://github.com/${attributionRepo}/pull/15001',
-       '${attributionUpdatedAt}', now(), now())`
+       '${attributionUpdatedAt}', now(), now()${merges ? `, '${attributionSha(15001, "e")}', '${attributionUpdatedAt}'` : ""})`
   );
   if (await textsTableExists()) {
     await sql(
@@ -4889,8 +5090,10 @@ async function headRows(repository?: string): Promise<string[]> {
 interface FakeCall {
   readonly asks?: string;
   readonly installation?: number;
+  readonly minted?: string;
   readonly repo?: string;
   readonly route: string;
+  readonly token?: string;
 }
 
 /** The fake's log of the calls it took since its counts were last emptied (resetPullReads),
@@ -4930,7 +5133,13 @@ function callText(call: FakeCall): string {
   const repository = call.repo === undefined ? "" : ` (${call.repo})`;
   const installation =
     call.installation === undefined ? "" : ` (installation ${call.installation})`;
-  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}`;
+  const token =
+    call.minted !== undefined
+      ? ` minting ${call.minted}`
+      : call.token === undefined
+        ? ""
+        : ` with ${call.token}`;
+  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}${token}`;
 }
 
 /** Whether `call` reads a pull request by the REST routes the intake reads one with: the pull
@@ -4975,6 +5184,36 @@ function tipMint(call: FakeCall): boolean {
     call.route === "POST /app/installations/{n}/access_tokens" &&
     call.installation === tipInstallation
   );
+}
+
+/** The calls of `calls` that the rate reading of each start makes (cmd/dispatch's ratereading.go,
+ *  main's #4681): the App's installations (`GET /app/installations`, which only
+ *  githubapp.Client.ReadInstallations asks, for the rate reading), the App itself (`GET /app`,
+ *  AppIdentity, the same), the first repository of an installation (`GET
+ *  /installation/repositories` with `per_page=1`, where the reconcile's listing asks 100 a page),
+ *  that repository's workflows, whose answer carries the REST counter, `GET /rate_limit`, which
+ *  only the reading reads, and the token it mints for an installation: a mint whose token those
+ *  reads alone carried. The client keeps one token for each installation, so a token the pass also
+ *  carried is the pass's too, and stays counted. */
+function rateReadingCalls(calls: readonly FakeCall[]): Set<FakeCall> {
+  const reads = new Set(
+    calls.filter(
+      (call) =>
+        [
+          "GET /app/installations",
+          "GET /app",
+          "GET /repos/{owner}/{repo}/actions/workflows",
+          "GET /rate_limit",
+        ].includes(call.route) ||
+        (call.route === "GET /installation/repositories" && call.asks === "per_page=1")
+    )
+  );
+  for (const mint of calls) {
+    if (mint.minted === undefined) continue;
+    const carried = calls.filter((call) => call.token === mint.minted);
+    if (carried.length > 0 && carried.every((call) => reads.has(call))) reads.add(mint);
+  }
+  return reads;
 }
 
 /** Runs one half of first-start-tip, and ends the process. */
@@ -5238,13 +5477,18 @@ async function tipSecondStart(
   // GraphQL query, the facts line's, asking for #22 alone, beside the installation lookup and the
   // token that query needs, and #22's messages are stored after the pass. Where they were stored
   // before, it calls GitHub for nothing. The webhook redelivery sweep's read
-  // (GET /app/hook/deliveries) is the App's own duty, neither the intake's nor the pass's, and is
-  // left out.
+  // (GET /app/hook/deliveries) and the start's rate reading (rateReadingCalls, main's #4681: its
+  // reads and the token it minted for them alone) are the App's own duties, neither the intake's
+  // nor the pass's, and are left out, and named so a reader sees what was.
   const messagesAfter = await sql(tipMessagesOfTheSecond);
   note(
     `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
   );
-  const counted = calls.filter((call) => call.route !== "GET /app/hook/deliveries");
+  const reading = rateReadingCalls(calls);
+  note(`T3 left out as the rate reading's: ${[...reading].map(callText).join("; ") || "none"}`);
+  const counted = calls.filter(
+    (call) => call.route !== "GET /app/hook/deliveries" && !reading.has(call)
+  );
   const unstored = messagesBefore === "not read";
   if (unstored) {
     const queries = counted.filter((call) => call.route === "POST /graphql");

@@ -179,9 +179,13 @@ func readersOf(t *testing.T, a *Attributor, ctx context.Context, pool *store.Poo
 	if err != nil {
 		t.Fatalf("NewestPullRequestHead(%s): %v", issue, err)
 	}
-	branch, err := a.BaseBranchMergedFor(ctx, pool, issue, HeadAnswers{})
+	merges, err := a.MergeOfIssue(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
-		t.Fatalf("BaseBranchMergedFor(%s): %v", issue, err)
+		t.Fatalf("MergeOfIssue(%s): %v", issue, err)
+	}
+	branch := ""
+	if len(merges) > 0 {
+		branch = merges[0].BaseRef
 	}
 	newestLine := "none"
 	if found {

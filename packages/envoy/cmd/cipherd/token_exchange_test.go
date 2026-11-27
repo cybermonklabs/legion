@@ -1416,9 +1416,11 @@ func projectsOf(t *testing.T, answer map[string]any) []string {
 // TestATradeNamesOnlyProjectsItsPersonSees is c-token-projects against the real broker binary and
 // a Dispatch stand-in answering both project-access routes: a trade naming a project its person
 // may see is answered a token whose introspection lists exactly that project; a trade naming one
-// its person may not see is refused; a restricted member's trade naming none is refused; and a
-// full member's trade naming none, and the same trade while Dispatch cannot be reached, are
-// answered with no project, as today.
+// its person may not see is refused; a restricted member's trade naming none is refused; a full
+// member's trade naming none is answered with no project, as today; and the same trade while
+// Dispatch cannot be reached is refused temporarily_unavailable, for the client to trade again,
+// since the broker cannot tell a restricted member's machine from anyone else's without Dispatch's
+// answer (approverUnreachable).
 func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -1477,17 +1479,50 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 			t.Fatalf("%s's token naming no project names %v, want none", privateOwner, got)
 		}
 	})
-	t.Run("the same trade while Dispatch cannot be reached is answered with no project, as today", func(t *testing.T) {
-		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
+	t.Run("the same trade while Dispatch cannot be reached is refused, for the client to trade again", func(t *testing.T) {
+		// The device-code grant of erin's machine login asks the hold gate about her. With Dispatch
+		// down it caches that failed person read for two seconds, which MemberKind now shares. An
+		// exchange inside that window is correctly refused from the failure but cannot prove an
+		// exchange read Dispatch. Keep Dispatch down and retry until the exchange itself reaches
+		// the stand-in; that attempt proves the outage refusal below.
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
+		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
 		before := dispatch.Calls()
-		_, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
-		if dispatch.Calls() == before {
-			t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+		outageDeadline := time.Now().Add(10 * time.Second)
+		var status int
+		var body map[string]any
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if dispatch.Calls() > before {
+				break
+			}
+			if time.Now().After(outageDeadline) {
+				t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		description, _ := body["error_description"].(string)
+		if status != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" || body["access_token"] != nil ||
+			!strings.Contains(description, "Dispatch could not be asked what kind of member") {
+			t.Fatalf("%s's trade naming no project while Dispatch was down = %d %v %q, want 503 temporarily_unavailable saying Dispatch could not be asked what kind of member the approver is",
+				fullMember, status, body["error"], description)
+		}
+		dispatch.SetDown(false)
+		// The broker answers a person's member-kind read that failed from that failure for two
+		// seconds after it came back (projectaccess's failureTTL), so the client's next trade is
+		// answered 503 inside that window and minted after it. The broker is its own process, so
+		// the window is waited out, bounded at five times its length.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
 		if got := projectsOf(t, introspected(t, live, body, fullMember)); got != nil {
-			t.Fatalf("%s's token minted while Dispatch was down names %v, want none", fullMember, got)
+			t.Fatalf("%s's token minted once Dispatch answers again names %v, want none", fullMember, got)
 		}
 	})
 }

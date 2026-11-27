@@ -152,6 +152,9 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Contains(t, user.Properties, "dispatchMachineId")
 	require.Contains(t, user.Properties, "listenerMachineId")
 	require.Equal(t, "boolean", user.Properties["daemon"].Type)
+	// githubWebhook goes with listenerMachineId alone, so the schema takes it as an optional flag.
+	require.Equal(t, "boolean", user.Properties["githubWebhook"].Type)
+	require.NotContains(t, user.Required, "githubWebhook")
 	for _, direction := range []string{"publish", "subscribe"} {
 		require.Equal(t, "#/types/envoy-infra:nats:Rules",
 			s.Types["envoy-infra:gcp:Permissions"].Properties[direction].Ref)
@@ -359,7 +362,7 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
 	require.ElementsMatch(t, []string{"region", "hostname"}, dispatch.RequiredInputs)
 	require.True(t, dispatch.Properties["agentToken"].Secret)
-	for _, output := range []string{"serviceAccountIssuer", "serviceAccountSubject"} {
+	for _, output := range []string{"serviceAccountIssuer", "serviceAccountSubject", "serviceAccountUid"} {
 		require.Equal(t, "string", dispatch.Properties[output].Type, output)
 		require.False(t, dispatch.Properties[output].Secret, output)
 	}

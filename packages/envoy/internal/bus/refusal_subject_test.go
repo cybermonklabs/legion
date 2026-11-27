@@ -64,11 +64,12 @@ type refusalSeen struct {
 
 // besideRefusal runs call while the connection earns two refusals of subject, a request call does
 // not send at that moment, once call's own request is on the wire (refusalOfAnotherSubject), and
-// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). It
-// returns call's error, and requireLeft, which the row runs once it has judged that error, named
-// what: it fails the row unless the refusal was recorded before call ended, since one recorded
-// after the call had read the record could not have answered it and the row would hold nothing,
-// and unless the refusal is still in the record for the request that earned it.
+// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). The
+// waits for those refusals end when call returns, so a call that took a refusal it did not earn is
+// judged at once. It returns call's error, and requireLeft, which the row runs once it has judged
+// that error, named what: it fails the row unless the refusal was recorded before call ended,
+// since one recorded after the call had read the record could not have answered it and the row
+// would hold nothing, and unless the refusal is still in the record for the request that earned it.
 func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject string, release chan struct{}, call func() error) (requireLeft func(what string), err error) {
 	t.Helper()
 	owner := clientOwning(client.Conn)
@@ -76,8 +77,9 @@ func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject
 		t.Fatal("no client owns the connection, so nothing records the server's refusals")
 	}
 	seen := make(chan refusalSeen, 1)
+	callEnded := make(chan struct{})
 	go func() {
-		denial := refusalOfAnotherSubject(t, relay, owner, client.Conn, subject)
+		denial := refusalOfAnotherSubject(t, relay, owner, client.Conn, subject, callEnded)
 		seen <- refusalSeen{denial: denial, at: time.Now()}
 		if release != nil {
 			close(release)
@@ -86,6 +88,7 @@ func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject
 	sentAt := time.Now()
 	err = call()
 	ended := time.Now()
+	close(callEnded)
 	got := <-seen
 	return func(what string) {
 		t.Helper()

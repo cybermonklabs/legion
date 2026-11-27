@@ -63,6 +63,7 @@ func requirementsVersion(blocks int, word, last string) string {
 // version keeps each of its requirements, and both change sets name the reworded requirement and
 // no other block.
 func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
+	// Not parallel: it writes the package variable writtenIDReads, the hook compareVersions calls.
 	one := pmdoc.MeasureDocument(requirementsVersion(1, "a", "a"))
 	two := pmdoc.MeasureDocument(requirementsVersion(2, "a", "a"))
 	elements, bytes := two.Elements-one.Elements, two.Bytes-one.Bytes

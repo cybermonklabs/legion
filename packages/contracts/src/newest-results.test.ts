@@ -85,6 +85,19 @@ describe("newestResultsText", () => {
     ).toBe("Newest at that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)");
   });
 
+  test("a result that counts for nothing is left out, and the role's newest that counts is named", () => {
+    const otherDeploy = result("tester", "66666666-tester", {
+      created_at: "2026-11-10T12:00:00Z",
+      not_counted: "it was recorded before the current deploy of the program this check reads",
+    });
+    expect(
+      newestResultsText({
+        compared_with: [main],
+        results: [otherDeploy, testerFail, implementerPass],
+      })
+    ).toBe("Newest on that branch: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)");
+  });
+
   test("a result at no compared commit is left out", () => {
     const elsewhere = result("tester", "88888888-tester", {
       commit_sha: "f".repeat(40),

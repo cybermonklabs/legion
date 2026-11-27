@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // R6 of #5285: the daemon asks an issue pod's launcher to read the workspace where
@@ -19,6 +20,7 @@ import (
 // asked, and the one that said readsWorkspace is sent the read and its answer comes back to the
 // request (ServeLauncher's workspace-work-result case).
 func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	serve := func(token claim.Token, hello shimwire.LauncherHello) (*launcherSession, net.Conn) {
 		t.Helper()
@@ -36,12 +38,12 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 	serve(claim.Token("legion-legion-legion-208-architect"), shimwire.LauncherHello{PodUID: "pod-b", LauncherID: "other-pod", ReadsWorkspace: true})
 	session, peer := serve(reader, shimwire.LauncherHello{PodUID: "pod-a", LauncherID: "reader", ReadsWorkspace: true})
 
-	deadline := time.Now().Add(5 * time.Second)
-	var chosen *launcherSession
-	for chosen == nil && time.Now().Before(deadline) {
-		chosen = launchers.workspaceReader(testTree, "pod-a")
-		time.Sleep(5 * time.Millisecond)
-	}
+	// The launchers' state frames are read on ServeLauncher's goroutines; the wait ends at the test
+	// binary's deadline, not at a span of its own the load of the tests beside it could use up.
+	chosen := testwait.Until(t, "a launcher of pod-a that says it reads a workspace", func() (*launcherSession, bool) {
+		s := launchers.workspaceReader(testTree, "pod-a")
+		return s, s != nil
+	})
 	if chosen != session {
 		t.Fatalf("the launcher asked to read pod-a's workspace = %v, want the one of pod-a that said it reads one (%s)", chosen, reader)
 	}
@@ -70,8 +72,7 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 		answered <- shimwire.NewWriter(peer).WriteFrame(shimwire.WorkspaceWorkResult{ID: request.ID, OK: true,
 			Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Count: 0})
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	answer, _, err := launchers.requestSession(ctx, chosen, shimwire.WorkspaceWork{ID: "read-1", Issue: testTree, TimeoutMs: 1000}, "read-1")
 	if err != nil {
 		t.Fatalf("the read through the launcher: %v", err)
@@ -92,6 +93,7 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 // and names the pod on its empty answer too. The control is a launcher that read one commit, whose
 // answer is that work in that pod.
 func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
+	t.Parallel()
 	const commit = "f2f134541b30dfa5160a5d1ce5e17b76c967c661"
 	for _, tc := range []struct {
 		name    string
@@ -111,10 +113,9 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 			if err := shimwire.NewWriter(peer).WriteFrame(shimwire.LauncherState{}); err != nil {
 				t.Fatalf("write the launcher's state: %v", err)
 			}
-			deadline := time.Now().Add(5 * time.Second)
-			for launchers.workspaceReader(testTree, "pod-a") == nil && time.Now().Before(deadline) {
-				time.Sleep(5 * time.Millisecond)
-			}
+			testwait.Eventually(t, "pod-a's launcher that reads a workspace", func() bool {
+				return launchers.workspaceReader(testTree, "pod-a") != nil
+			})
 			answered := make(chan error, 1)
 			go func() {
 				line, err := shimwire.NewReader(bufio.NewReader(peer)).ReadLine()
@@ -136,8 +137,7 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 				result.ID = request.ID
 				answered <- shimwire.NewWriter(peer).WriteFrame(result)
 			}()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			work, err := (&Runtime{launchers: launchers}).launcherWorkspaceWork(ctx, testTree, "pod-a")
 			if sent := <-answered; sent != nil {
 				t.Fatalf("the launcher's side of the read: %v", sent)
@@ -168,6 +168,7 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 // control is the pod a launch made, whose launcher says it reads no workspace: an error that names
 // that pod.
 func TestAReadOfAPodTheRuntimeCannotNameOrHoldsNoneOfIsAReadThatCouldNotBeMade(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	ctx := context.Background()
 	for _, tc := range []struct{ name, issue, says string }{

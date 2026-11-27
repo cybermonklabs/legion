@@ -29,7 +29,7 @@ import (
 // request's head names a commit of the second repository. They are read from the links
 // themselves, since the route asks GitHub about each pull request they name, and Dispatch may hold
 // no row of it yet. The results read takes the same pull request from the statement instead
-// (HeadsAttributedTo, BaseBranchMergedIn): a link of a pull request's own URL gives that pull
+// (HeadsAttributedTo, MergeIn): a link of a pull request's own URL gives that pull
 // request to the issue in any repository (attributedTerms), so it is one of the issue's heads
 // once Dispatch holds its row, and the timeline names the same issue for it. A link to a pull
 // request of the repository the issue resolves to names nothing here, since that repository is

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -158,10 +157,10 @@ func TestAWindowWhoseConnectionIsLostAnswersUnavailableBeforeSending(t *testing.
 		t.Fatalf("first publish answered %v", err)
 	}
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to see its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 
 	answer := window.PublishAsync(numberedEnvelope(orderedStreamTopic, 1))
 	select {

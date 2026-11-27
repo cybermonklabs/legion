@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -406,14 +407,20 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	return nil
 }
 
-// envValue is the value environ gives name, "" when it gives none.
-func envValue(environ []string, name string) string {
-	value := ""
-	for _, pair := range environ {
+// envLookup is the value environ gives name and whether it gives one, the last entry winning where
+// a name is set twice, as os/exec builds a child's environment from such a list.
+func envLookup(environ []string, name string) (string, bool) {
+	for _, pair := range slices.Backward(environ) {
 		if found, v, _ := strings.Cut(pair, "="); found == name {
-			value = v
+			return v, true
 		}
 	}
+	return "", false
+}
+
+// envValue is the value environ gives name, "" when it gives none (envLookup).
+func envValue(environ []string, name string) string {
+	value, _ := envLookup(environ, name)
 	return value
 }
 

@@ -1,8 +1,8 @@
-/** The layout rule's instrument (`packages/dispatch/AGENTS.md`, "Layout"; dispatch://INFRA-5200):
- *  what a page breaks of the rule, read off the live DOM. `measureLayout` runs inside the page
- *  (`page.evaluate(measureLayout)`), so it is self-contained: it closes over nothing and
- *  imports nothing, and every helper is declared inside it. It reads sideways only: a box cut at
- *  its bottom, or one that scrolls down, is no breach of the rule.
+/** The layout rule's instrument (`packages/dispatch/web/src/AGENTS.md`, "Layout";
+ *  dispatch://INFRA-5200): what a page breaks of the rule, read off the live DOM. `measureLayout`
+ *  runs inside the page (`page.evaluate(measureLayout)`), so it is self-contained: it closes over
+ *  nothing and imports nothing, and every helper is declared inside it. It reads sideways only: a
+ *  box cut at its bottom, or one that scrolls down, is no breach of the rule.
  *
  *  It reports four kinds of breach:
  *  - `page-scroll`: the document is wider than the viewport, so the page scrolls sideways. One

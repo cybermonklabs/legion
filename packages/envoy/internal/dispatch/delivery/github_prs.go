@@ -194,6 +194,24 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 	return payload, nil
 }
 
+// commitPullsPerPage is the page the REST read of a commit's pull requests asks first, and
+// commitPullsMaxPages bounds the pages one read asks, a page asked again smaller included. The
+// page is a power of two, so a page halved after it passed the cap starts where the page it halves
+// started (fetchCommitPullPayloads). Thirty-two is GitHub's default page of thirty with the room to
+// halve; a commit whose pull requests carry long bodies, 40,000 bytes each, passes the client's
+// cap on a response at about thirty of them, and fits at sixteen.
+const (
+	commitPullsPerPage  = 32
+	commitPullsMaxPages = 64
+)
+
+// ErrCommitPullsIncomplete is the error of a read of a commit's pull requests that could not read
+// GitHub's whole list: one pull request's own answer passed the client's cap, or the list ran past
+// commitPullsMaxPages. It is a failure of the read, never an answer that GitHub named fewer pull
+// requests: a list cut short reads its oldest pull requests, and the newest are the ones a read of
+// a result's commit exists to learn.
+var ErrCommitPullsIncomplete = errors.New("GitHub's list of the commit's pull requests was not read to its end")
+
 // fetchCommitPullPayloads is every pull request GitHub associates with one commit
 // (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`) under token, through readGitHubPage's
 // bounded retry, decoded as the same pullRequestPayload the single-pull-request read answers, so
@@ -201,28 +219,57 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // result's commit (ReadThroughCommitPulls), so a pull request opened while Dispatch was not
 // listening is known at once, a second pull request at a head Dispatch holds included.
 //
+// It reads every page GitHub lists, oldest first, commitPullsPerPage at a time. A page whose
+// answer passes the client's cap on a response (*githubapp.ResponseTooLargeError) is asked again
+// at half its size from the same pull request, and later pages keep the smaller size, so a list
+// of long pull requests is read whole rather than failed: on 2026-11-27 64 commits of one
+// repository failed a read of one 30-entry page 18 times each. A list it still cannot read whole
+// is ErrCommitPullsIncomplete, never a shorter list.
+//
 // A commit the repository does not have answers an empty list, as GitHub's own 422 for it
 // does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
 // githubapp.ErrRepositoryUnreadable, which the results read takes as unknown, never as a
 // commit it placed elsewhere.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
-	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
-	body, status, header, _, err := readGitHubPage(ctx, client, token, pullsPath)
-	if err != nil {
-		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, sha, err)
-	}
 	repoFull := owner + "/" + repo
-	if err := githubapp.CheckRepositoryResponse(status, header, body, repoFull, pullsPath, http.StatusUnprocessableEntity); err != nil {
-		return nil, fmt.Errorf("fetch the pull requests of %s@%s: %w", repoFull, sha, err)
-	}
-	if status == http.StatusUnprocessableEntity {
-		return nil, nil
-	}
 	var payloads []pullRequestPayload
-	if err := json.Unmarshal(body, &payloads); err != nil {
-		return nil, fmt.Errorf("decode the pull requests of %s@%s: %w", repoFull, sha, err)
+	perPage := commitPullsPerPage
+	for asked := 1; ; asked++ {
+		if asked > commitPullsMaxPages {
+			return nil, fmt.Errorf("fetch the pull requests of %s@%s: %d pages asked: %w", repoFull, sha, commitPullsMaxPages, ErrCommitPullsIncomplete)
+		}
+		// Every page before this one was perPage or a multiple of it, so the pull requests read so
+		// far are whole pages of this size.
+		page := len(payloads)/perPage + 1
+		pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha), perPage, page)
+		body, status, header, _, err := readGitHubPage(ctx, client, token, pullsPath)
+		var tooLarge *githubapp.ResponseTooLargeError
+		switch {
+		case errors.As(err, &tooLarge) && perPage > 1:
+			perPage /= 2
+			continue
+		case errors.As(err, &tooLarge):
+			return nil, fmt.Errorf("fetch the pull requests of %s@%s: one pull request passes the cap on a response: %w: %w",
+				repoFull, sha, ErrCommitPullsIncomplete, err)
+		case err != nil:
+			return nil, fmt.Errorf("fetch the pull requests of %s@%s: %w", repoFull, sha, err)
+		}
+		if err := githubapp.CheckRepositoryResponse(status, header, body, repoFull, pullsPath, http.StatusUnprocessableEntity); err != nil {
+			return nil, fmt.Errorf("fetch the pull requests of %s@%s: %w", repoFull, sha, err)
+		}
+		if status == http.StatusUnprocessableEntity {
+			return payloads, nil
+		}
+		var listed []pullRequestPayload
+		if err := json.Unmarshal(body, &listed); err != nil {
+			return nil, fmt.Errorf("decode the pull requests of %s@%s: %w", repoFull, sha, err)
+		}
+		payloads = append(payloads, listed...)
+		if len(listed) < perPage {
+			return payloads, nil
+		}
 	}
-	return payloads, nil
 }
 
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when

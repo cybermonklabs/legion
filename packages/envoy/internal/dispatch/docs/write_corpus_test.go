@@ -488,6 +488,8 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 }
 
 func TestWriteCorpus(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in runWriteCorpus).
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {
 		t.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to dump the writes on them")

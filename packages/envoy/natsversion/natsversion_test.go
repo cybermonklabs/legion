@@ -13,6 +13,7 @@ import (
 // gsl.IntersectStree, so every candidate of a line's first fixed release is refused, while a
 // candidate of a later patch, which is after a fixed release, is taken.
 func TestRefusalNamesEveryServerThatCanSkipAFilter(t *testing.T) {
+	t.Parallel()
 	for version, fixed := range map[string]bool{
 		"2.9.25":        false,
 		"2.10.0":        false,

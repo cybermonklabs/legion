@@ -307,20 +307,25 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 
 // proxied holds the profile at index i, served from source as secret, to Cipher's proxy
 // (ProxyFaults), refusing it for the first fault, and otherwise writes into secret the kind it is
-// behind, its way, its source's proxy-narrowed tag and its fingerprint (servedDigest).
+// behind, its way, its source's proxy-narrowed tag and its fingerprint (servedDigest), which holds
+// its source's scopes tag where the profile mints at it, having no google block of its own.
 func (p Profiles) proxied(i int, source Secret, secret *Secret) (reason, detail string) {
 	profile := &p.list[i]
 	if faults := p.ProxyFaults(profile, &source); len(faults) > 0 {
 		return faults[0].Reason, faults[0].Detail
 	}
+	var scopes string
+	if profile.Google == nil {
+		scopes = source.Scopes
+	}
 	kind := p.fileRules.Kind(ProfileKind(profile, source.Proxy))
 	if kind == nil {
-		secret.ProfileDigest = p.servedDigest(i, servedAs{})
+		secret.ProfileDigest = p.servedDigest(i, servedAs{scopes: scopes})
 		return "", ""
 	}
 	way, _ := WayOf(*kind, source.Type())
 	secret.Proxy, secret.Way, secret.ProxyNarrowed = kind.Name, way, source.ProxyNarrowed
-	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, kindAllow: p.kindAllowForm(kind.Name), narrowed: source.ProxyNarrowed, judge: source.Judge})
+	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, kindAllow: p.kindAllowForm(kind.Name), narrowed: source.ProxyNarrowed, judge: source.Judge, scopes: scopes})
 	return "", ""
 }
 
@@ -333,10 +338,13 @@ type ProfileFault struct {
 
 // ProfileKind is the name of the kind profile p is served behind, where its source's proxy tag
 // names sourceTag ("" for none): that tag's kind, or else the kind p's own proxy string names, or
-// "" for none. The tag wins because the store, not the file, says where a credential may go; a
-// string that names another kind is a fault (ReasonProxyKindConflict).
+// else, in a file that declares no kinds, the kind of its own its proxy block is served behind
+// (readsBlocks), or "" for none. The tag wins because the store, not the file, says where a
+// credential may go; a string that names another kind is a fault (ReasonProxyKindConflict). In a
+// file that declares no kinds no tag names a kind (proxyTags) and no string does (checkProxy), so
+// the block's kind is the one there.
 func ProfileKind(p *Profile, sourceTag string) string {
-	return cmp.Or(sourceTag, p.ProxyKind)
+	return cmp.Or(sourceTag, p.ProxyKind, p.blockKind)
 }
 
 // ProxyFaults is every fault for which the policy load refuses profile, a profile of p, at

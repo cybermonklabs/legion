@@ -7,5 +7,6 @@ body: |-
   directory, the broker credential (`brokerTokenClient` of `@legion/cipher-client`) proves the
   `key.pem` that `agent-secrets keygen` wrote there. That is the key the role's pod-session
   registration names, so the broker no longer refuses the role's own trade. When that file cannot
-  be read, the call fails naming its path, and no fresh key takes its place. Every other machine
+  be read, the call fails naming the directory by `AGENT_SECRETS_KEY_DIR` and the read's error
+  code, never its path, and no fresh key takes its place. Every other machine
   proves a key that its own process makes, as before.

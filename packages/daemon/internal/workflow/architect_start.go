@@ -489,7 +489,7 @@ func gatedDocuments(steps []record.DesignStep) string {
 	for i, step := range steps {
 		named[i] = "its " + step.Document()
 	}
-	return listed(named)
+	return listed(named, "and")
 }
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's

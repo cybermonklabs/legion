@@ -14,11 +14,12 @@ import (
 )
 
 // commit_pull_reads.go bounds how often one commit's pull requests are read through
-// (ReadThroughCommitPulls). It is branch.go's twin: that file holds how long an answer about a
-// repository and a commit's place on one of its branches is believed, this one how long an
-// answer about the pull requests of a commit stands before GitHub is asked again. Its one
-// caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
-// keeps a memo for the span of one request and no policy. The bound holds across processes:
+// (ReadThroughCommitsPulls, and ReadThroughCommitPulls for one commit). It is branch.go's twin:
+// that file holds how long an answer about a repository and a commit's place on one of its
+// branches is believed, this one how long an answer about the pull requests of a commit stands
+// before GitHub is asked again. Its one caller is the results read (api/results_read_through.go,
+// comparisonReader.readThroughHeads), which keeps a memo for the span of one request and no
+// policy. The bound holds across processes:
 // each process keeps the moment in its memory (CommitPullReads), and the database holds the claim
 // every process shares (commit_pull_reads, ClaimAcrossProcesses). A writer's read claims a commit
 // here; a read-only caller's read takes no claim and only reads the writer's, in this process's
@@ -26,11 +27,14 @@ import (
 // after its request.
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
-// run for that commit. Each read costs one GET /repos/{owner}/{repo}/commits/{sha}/pulls, and
-// one more per pull request GitHub names whose title, body, branch and links name nobody held to
-// the repository, since that one's commit messages are paged too (storePullRequestFacts). The
-// Verification tab refetches an issue's results on every result.recorded, so without a bound
-// every refetch would spend those calls again for every result's commit — for ever, since the
+// run for that commit. Each read costs the commit's share of one GraphQL query, which asks about
+// up to CommitPullsBatch commits of a repository (ReadThroughCommitsPulls), or one GET
+// /repos/{owner}/{repo}/commits/{sha}/pulls for a commit GitHub names more than
+// CommitPullsPerCommit pull requests for, and one more call per pull request GitHub names whose
+// title, body, branch and links name nobody held to the repository, since that one's commit
+// messages are paged too (storePullRequestFacts). The Verification tab refetches an issue's
+// results on every result.recorded, so without a bound every refetch would spend those calls
+// again for every result's commit — for ever, since the
 // read reads a commit that a stored pull request heads too, to learn a second pull request at
 // that head. Five minutes is the span every other answer about a commit is believed for
 // (BranchCommitStaleAfter) and the longest the reconcile waits between two passes
@@ -135,7 +139,7 @@ func (c *CommitPullReads) Refuses(repoFull, sha string, now time.Time) bool {
 // RefusesAcrossProcesses reports whether ClaimAcrossProcesses would refuse sha's pull requests in
 // repoFull at now, and records nothing: no claim in this process's memory or in the database, no
 // hold and no sweep. A read-only caller's results read asks it where a writer's read claims
-// (api/results_read_through.go, comparisonReader.readThroughHead), so it asks GitHub nothing where
+// (api/results_read_through.go, comparisonReader.readThroughHeads), so it asks GitHub nothing where
 // a writer's read at that moment would be refused, and leaves every later read's claim as it found
 // it. It asks this process's memory first (Refuses), and then reads the claim every process shares
 // (commit_pull_reads): a moment held there past now refuses, as claimCommitPullReadSQL's guard
@@ -164,7 +168,7 @@ func (c *CommitPullReads) refusesLocked(key commitPullKey, now time.Time) bool {
 // Settle holds the asking about one repository and commit off for CommitPullSettledFor: GitHub
 // has been read for the pair and named a pull request whose head is another commit, so this
 // commit is behind that pull request and nothing a read within that span can learn about it
-// repairs a result there (api/results_comparison.go, comparisonReader.readThroughHead). Without it
+// repairs a result there (api/results_read_through.go, comparisonReader.readThroughHeads). Without it
 // the pair would be claimed again every CommitPullReadStaleAfter for as long as the result is
 // read, since nothing is stored at a commit no pull request heads.
 //
@@ -290,11 +294,13 @@ func (c *CommitPullReads) SettleAcrossProcesses(ctx context.Context, pool *store
 
 // ReleaseAcrossProcesses gives back the claim ClaimAcrossProcesses granted at now, in this
 // process's memory and in the claim every process shares, so the next read of the pair asks
-// GitHub at once. Its one caller is a read-through whose answer was not stored
-// (ErrReadThroughNotStored): the claim bounds how often GitHub is asked, and a read that stored
-// nothing has left nothing for the bound to protect, so holding it would leave the result at no
-// head for CommitPullReadStaleAfter for no saving. It gives back only that claim: a moment later
-// than it, which a settle or another process's later claim recorded, stays. The write runs on a
+// GitHub at once. Its one caller is the results read, for a commit whose claim no answer of
+// GitHub's stands behind: one the read stopped before, in an earlier batch or earlier in its own
+// query's answer, and one whose answer was not stored (ErrReadThroughNotStored). The claim bounds
+// how often GitHub is asked, and such a read has left nothing for the bound to protect, so holding
+// it would leave the result at no head for CommitPullReadStaleAfter for no saving. It gives back
+// only that claim: a moment later than it, which a settle or another process's later claim
+// recorded, stays. The write runs on a
 // context its caller's end cannot cancel, bounded by commitPullRecordTimeout, as the settle's does.
 func (c *CommitPullReads) ReleaseAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
 	claimed := now.Add(CommitPullReadStaleAfter)

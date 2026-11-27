@@ -9,12 +9,14 @@ import type { CheckBlock } from "./dispatch-api";
  * own answer.
  *
  * A result counts where its commit stands at one of the compared commits (`at_basis`). A retracted
- * result proves nothing and is left out. The API serves a check's results newest first, so the
- * first result of each role is its newest. Each is named by the first eight characters of its id,
- * which its own line names whole. One recorded later than the one before it in the list says
- * `newer`, and one the check's words moved after says so. Where the check compared with heads or
- * named commits the place is `at that commit` or `at those commits`, where with branches `on that
- * branch` or `on those branches`, and for a mix `at what the check compared with`.
+ * result proves nothing and is left out, and so is one the server says counts for nothing
+ * (`not_counted`, a live check's result from another deploy). The API serves a check's results
+ * newest first, so the first result of each role is its newest. Each is named by the first eight
+ * characters of its id, which its own line names whole. One recorded later than the one before it
+ * in the list says `newer`, and one the check's words moved after says so. Where the check
+ * compared with heads or named commits the place is `at that commit` or `at those commits`, where
+ * with branches `on that branch` or `on those branches`, and for a mix `at what the check
+ * compared with`.
  *
  * Undefined where the check compared with nothing, or no result stands at a compared commit.
  */
@@ -25,6 +27,7 @@ export function newestResultsText(
   const newest = new Map<string, NonNullable<CheckBlock["results"]>[number]>();
   for (const result of check.results ?? []) {
     if (result.commit_stands?.answer !== "at_basis" || result.retracted !== undefined) continue;
+    if (result.not_counted !== undefined && result.not_counted !== "") continue;
     if (!newest.has(result.role)) newest.set(result.role, result);
   }
   if (bases.length === 0 || newest.size === 0) return undefined;

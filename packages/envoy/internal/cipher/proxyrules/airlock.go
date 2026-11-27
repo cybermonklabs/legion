@@ -633,13 +633,15 @@ func hasDoubleEncoding(path string) bool {
 	return false
 }
 
-// check is the one decision both Decide and Rewrite take: the kind the request is carried under,
-// or the reason it may not be. The reasons, and the order they are reported in, are the Lean
-// model's.
+// Admit is every rule of the decision that reads no value: the kind the request may carry, or
+// the reason it may not. The proxy asks it of a request to a minted capability before its value
+// exists, so a request it refuses mints nothing. check asks it first and reads the one rule left,
+// a header already carrying the value, after it, so Decide and Rewrite refuse every value with
+// the same reason. The reasons, and the order they are reported in, are the Lean model's.
 //
-// The name's binding gives its kind, whose hosts and allow bind every secret of the kind, and
-// its profile's own allow, which narrows that one name: a request goes through only when both
-// allow it, so a profile never widens its kind.
+// The name's binding gives its kind, whose hosts and allow bind every secret of the kind, and its
+// profile's own allow, which narrows that one name: a request goes through only when both allow
+// it, so a profile never widens its kind.
 //
 // Two of the refusals are about the request's port and names. The CONNECT port must be 443:
 // every name the decision compares - the CONNECT host, the TLS name and the Host header - carries
@@ -669,7 +671,7 @@ func hasDoubleEncoding(path string) bool {
 // which services read them is not something the rules say. With neither list every method is
 // allowed already, so they take nothing away and are not refused. They are read directly below
 // the allow lists, for the same reason the path rules are read directly above them.
-func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
+func Admit(rules Rules, g Grant, r *Request) (*Kind, string) {
 	if g.Placeholder == "" {
 		return nil, "empty placeholder"
 	}
@@ -714,6 +716,16 @@ func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
 	case listed && hasMethodOverrideParameter(r.Query):
 		return nil, "request carries a method override parameter"
 	}
+	return k, ""
+}
+
+// check is the one decision both Decide and Rewrite take: Admit's rules and then the one rule
+// that reads the value.
+func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
+	k, why := Admit(rules, g, r)
+	if k == nil {
+		return nil, why
+	}
 	// A request that already carries the real value learnt it somewhere other than this
 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every
 	// header, not only the ones the kind names, and no way is exempt.
@@ -740,6 +752,24 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 	if k == nil {
 		return nil
 	}
+	return swap(k, g.Placeholder, value, r)
+}
+
+// SwapForScan returns a copy of r with the placeholder replaced by a space in the headers kind
+// names, and with every Cipher-Repository header removed. It takes no decision: the caller has
+// already decided with Rewrite or Decide. The proxy port's leftover scan calls it to read the
+// request as the command wrote it with only the swapped placeholder separated by a space, so text
+// on either side of it is never joined into a false prefix match. No value parameter is exposed:
+// every caller outside proxyrules that needs a value goes through Rewrite, which decides first.
+func SwapForScan(kind *Kind, placeholder string, r *Request) *Request {
+	return swap(kind, placeholder, " ", r)
+}
+
+// swap is the body Rewrite and SwapForScan share: placeholder swapped for value in the headers
+// kind names, and every Cipher-Repository header removed. Rewrite is check and then swap, as the
+// Lean model's rewriteReq is check and then the same filter and map over the headers (keepHeader,
+// swapHeader), so the contract with that model is the contract of check and Rewrite as before.
+func swap(k *Kind, placeholder, value string, r *Request) *Request {
 	names := k.HeaderNames()
 	out := *r
 	out.Headers = make([][2]string, 0, len(r.Headers))
@@ -749,7 +779,7 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 		}
 		for _, n := range names {
 			if fold.ASCII(h[0]) == fold.ASCII(n) {
-				h[1] = substitute(g.Placeholder, value, h[1])
+				h[1] = substitute(placeholder, value, h[1])
 				break
 			}
 		}

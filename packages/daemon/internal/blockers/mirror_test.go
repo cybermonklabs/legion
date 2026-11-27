@@ -85,9 +85,10 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		{fact: intake.DispatchClaim{Key: "LEGION-903", Seq: 3, ClaimedBy: "user:alice"}, claims: []string{"LEGION-903"}},
 	}
 	for _, fact := range []intake.Fact{
-		intake.Handover{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
+		intake.Handover{}, intake.DispatchArtifact{}, intake.MergeHoldsChanged{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{},
+		intake.P0BoundChanged{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
@@ -97,8 +98,9 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
 		intake.GateRequestFound{},
-		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
-		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
+		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
+		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
+		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
 		intake.ReparentRead{},
 	} {

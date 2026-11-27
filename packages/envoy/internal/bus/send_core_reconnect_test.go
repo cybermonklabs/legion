@@ -57,8 +57,9 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	}
 
 	server.Stop(t)
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to read the stop", func() bool {
-		return conn.Status() == nats.RECONNECTING
+	testwait.Until(t, "the connection to read the stop", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
 	})
 	thaw := server.Freeze(t)
 	t.Cleanup(thaw)
@@ -84,16 +85,16 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	// anything buffers nothing, so the wait also ends when the answer arrives.
 	var got answer
 	pinged, done := false, false
-	testwait.WithinPolling(t, 10*time.Second, time.Millisecond, "the flush's PING in the reconnect buffer, or the send's answer", func() bool {
+	testwait.UntilPolling(t, time.Millisecond, "the flush's PING in the reconnect buffer, or the send's answer (the last read is how many bytes nats.go buffered)", func() (int, bool) {
 		select {
 		case got = <-answered:
 			done = true
-			return true
+			return 0, true
 		default:
 		}
 		buffered, err := conn.Buffered()
 		pinged = err == nil && buffered > 0
-		return pinged
+		return buffered, pinged
 	})
 	if pinged && conn.Status() != nats.RECONNECTING {
 		t.Fatalf("the connection reads %v once the PING is buffered; the test proves nothing", conn.Status())
@@ -102,8 +103,9 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	if !done {
 		got = testwait.Receive(t, "sendCore to answer", answered)
 	}
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
-		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+	testwait.Until(t, "the connection to reconnect", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 	})
 	if errors.Is(got.err, nats.ErrTimeout) {
 		t.Fatalf("the flush timed out, so no answer was read; the test proves nothing: %v", got.err)
@@ -159,8 +161,9 @@ func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *te
 		hooked = true
 		reconnects := conn.Stats().Reconnects
 		server.Restart(t, granting)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
-			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		testwait.Until(t, "the connection to reconnect inside the send", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 		})
 		// nats.go reads CONNECTED before it sends the subscriptions again, under the connection's
 		// lock, so this flush's PONG comes once the server holds the subscription it was sent.
@@ -332,8 +335,9 @@ func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
 	client, err := Connect([]string{uri}, WithBeforeCoreSendFlush(func() {
 		reconnects := conn.Stats().Reconnects
 		server.Restart(t, granting)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
-			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		testwait.Until(t, "the connection to reconnect inside the send", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 		})
 		if err := conn.Flush(); err != nil {
 			t.Fatalf("flush the reconnected connection: %v", err)
@@ -438,8 +442,9 @@ func TestSendCoreGivesNoVerdictForAnAnswerReadAfterItsConnectionDropped(t *testi
 	client, err := Connect([]string{uri}, WithAfterCoreSendFlush(func() {
 		hooked = true
 		server.Stop(t)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to read the stop", func() bool {
-			return conn.Status() == nats.RECONNECTING
+		testwait.Until(t, "the connection to read the stop", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.RECONNECTING
 		})
 	}))
 	if err != nil {
@@ -464,8 +469,9 @@ func TestSendCoreGivesNoVerdictForAnAnswerReadAfterItsConnectionDropped(t *testi
 	}
 
 	server.Restart(t, granting)
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
-		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > start
+	testwait.Until(t, "the connection to reconnect", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED && conn.Stats().Reconnects > start
 	})
 	// nats.go reads CONNECTED before it sends the subscriptions again, so this flush's PONG comes
 	// once the server has read every one.

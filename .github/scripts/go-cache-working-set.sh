@@ -16,8 +16,8 @@
 # zips deletes every module zip under `go env GOMODCACHE`/cache/download and prints how many and
 # how large. Go reads a module from the tree it extracted it to; the zip is read only to extract
 # that tree again when it is missing, and by `go mod download` and `go mod verify`. No job that
-# restores these entries runs `go mod verify`, and the one that ran `go mod download` on a module
-# they hold, daemon-go's forced-order step in its leg 2 (packages/envoy/scripts/forced-order.sh),
+# restores these entries runs `go mod verify`, and the one script that ran `go mod download` on a
+# module they hold, packages/envoy/scripts/forced-order.sh (daemon-go's leg 2, envoy-go-race),
 # reads that module's tree through `go list -m` instead. The .ziphash, .mod
 # and .info files beside each zip stay: a build checks the .ziphash
 # (cmd/go/internal/modfetch/fetch.go, DownloadDir). A zip does not

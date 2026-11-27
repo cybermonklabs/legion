@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -122,6 +123,62 @@ func TestParseStampsBlocksWithInjectedGenerator(t *testing.T) {
 	if got, want := blockIDs(tree), []string{"b-000001", "b-000002", "b-000003", "b-000004"}; !equalStrings(got, want) {
 		t.Fatalf("parsed block ids = %q, want %q", got, want)
 	}
+}
+
+// ParseWithBlockIDs stamps every block from the generator its caller hands it and from nothing
+// else: two parses running at once, each with a counter of its own, each number their blocks 1,
+// 2, … in document order under their own prefix, and each tree is Parse's apart from its ids.
+// A generator installed for the whole process (SetBlockIDGenerator) fails this.
+func TestParseWithBlockIDsStampsFromItsCallersGeneratorAlone(t *testing.T) {
+	t.Parallel()
+	var builder strings.Builder
+	builder.WriteString("# Title\n\n")
+	for index := range 200 {
+		fmt.Fprintf(&builder, "Paragraph %d.\n\n- item %d\n\n", index, index)
+	}
+	markdown := builder.String()
+	want, err := Parse(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := len(blockIDs(want))
+
+	const parses = 25
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for _, prefix := range []string{"first", "second"} {
+		group.Go(func() {
+			<-start
+			for parse := range parses {
+				minted := 0
+				tree, err := ParseWithBlockIDs(markdown, func() string {
+					minted++
+					return fmt.Sprintf("%s-%d", prefix, minted)
+				})
+				if err != nil {
+					t.Errorf("parse %d under the %s counter: %v", parse+1, prefix, err)
+					return
+				}
+				ids := blockIDs(tree)
+				if len(ids) != blocks {
+					t.Errorf("parse %d under the %s counter stamped %d blocks, not %d", parse+1, prefix, len(ids), blocks)
+					return
+				}
+				for index, id := range ids {
+					if own := fmt.Sprintf("%s-%d", prefix, index+1); id != own {
+						t.Errorf("parse %d under the %s counter stamped block %d %q, not %q", parse+1, prefix, index+1, id, own)
+						return
+					}
+				}
+				if !reflect.DeepEqual(withoutBlockIDs(tree), withoutBlockIDs(want)) {
+					t.Errorf("parse %d under the %s counter is not Parse's tree apart from its ids", parse+1, prefix)
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	group.Wait()
 }
 
 func installCounterBlockIDs(t *testing.T) {

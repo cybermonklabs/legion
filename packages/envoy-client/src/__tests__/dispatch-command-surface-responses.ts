@@ -422,6 +422,24 @@ export function projectBody(provenSessions: boolean) {
   };
 }
 
+/** `POST` and `GET /api/v1/deploys`: the program's deploy at the example's commit, as a caller's
+ *  own write records it, so the record holds the line `dispatch deploy` and `dispatch deploys`
+ *  print of it. */
+export function deployBody() {
+  return {
+    id: 1,
+    repo: "acme/widgets",
+    program: "worker",
+    commit: COMMIT,
+    deployed_at: AT,
+    recorded_at: AT,
+    recorded_by: actor,
+    source: "route",
+    run_attempt: null,
+    url: "",
+  };
+}
+
 /** `GET /api/v1/priorities`: one live priority with work under it, and one issue in each of the
  *  two faults, so the record holds every line `dispatch priorities` can print. Neither faulted
  *  issue is claimed, so the run reads no agent list and no printed line carries a liveness. */

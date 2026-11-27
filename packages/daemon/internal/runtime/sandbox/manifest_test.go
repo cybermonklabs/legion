@@ -9,7 +9,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -125,11 +125,10 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // and memory and bursts past neither: each has a non-zero request for both, equal to its limit,
 // which is the kubelet's rule for the Guaranteed class — judged over every container of the pod,
 // the init containers included — and each is bounded on the node's disk, an ephemeral-storage
-// request under its limit. An issue pod's one container and its two init containers carry the
-// issue pod's reservation, whichever role's launch creates it; the controller's
-// pod carries the controller's on its one container; and the image probe's one container carries
-// the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
-// only Guaranteed pods.
+// request under its limit. An issue pod's one container and workspace-init carry the issue pod's
+// reservation, whichever role's launch creates it; the controller's pod carries the controller's
+// on its one container; and the image probe's one container carries the probe's own, which the
+// daemon hands it. A deployment with no `resources` block therefore runs only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 	t.Parallel()
 	r, err := configure(goldenOptions())
@@ -143,8 +142,8 @@ func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 		want       corev1.ResourceRequirements
 		containers int
 	}{
-		"root":       {podOf(t, r, rootSpec(t)), want.Issue, 3},
-		"worker":     {podOf(t, r, workerSpec(t)), want.Issue, 3},
+		"root":       {podOf(t, r, rootSpec(t)), want.Issue, 2},
+		"worker":     {podOf(t, r, workerSpec(t)), want.Issue, 2},
 		"controller": {podOf(t, r, controllerSpec(t)), want.Controller, 1},
 		"probe":      {probe.Spec.PodTemplate.Spec, probeReservation(), 1},
 	} {
@@ -242,12 +241,12 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"worker":            {spec: workerSpec(t)},
 		"claude-worker":     {spec: claudeWorkerSpec(t)},
 		"resume":            {spec: resume},
-		"controller":        {spec: controllerSpec(t)},
+		"controller":        {spec: controllerSpec(t), controllerAccount: goldenControllerAccount},
 		"controller-resume": {spec: controllerResume},
 		// controller-microvm is the controller's pod of root-microvm's project, whose type is
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
-		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerAccount: goldenControllerAccount},
 		"root-enrolled":      {spec: rootSpec(t), agentSecrets: rootEnrolled()},
 		"root-microvm":       {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
 		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
@@ -260,22 +259,31 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 	}
 }
 
+// goldenControllerAccount is the controller goldens'
+// runtime.kubernetes.pod.controller_service_account.
+const goldenControllerAccount = "legion-controller"
+
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
 // runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
-// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm,
-// root-microvm-kept and controller-microvm alone. The tests that build every case's manifest on one
-// shared runtime apply each case to it first (apply), so every other case runs unenrolled and in
-// gVisor.
+// root-exchange-identity alone, sandbox, the sandbox block, for root-microvm, root-microvm-kept and
+// controller-microvm alone, and controllerAccount, the runtime's
+// runtime.kubernetes.pod.controller_service_account, for controller and controller-microvm. The
+// tests that build every case's manifest on one shared runtime apply each case to it first
+// (apply), so every other case runs unenrolled and in gVisor, and controller-resume keeps the pods'
+// own service_account (none in these settings) where the two controller goldens pin the account
+// their pods run as when the key is set.
 type manifestCase struct {
-	spec         runtime.SpawnSpec
-	agentSecrets *AgentSecrets
-	sandbox      SandboxConfig
+	spec              runtime.SpawnSpec
+	agentSecrets      *AgentSecrets
+	sandbox           SandboxConfig
+	controllerAccount string
 }
 
 // apply sets on r what the case configures beside goldenOptions, and the pod shapes that sandbox
 // block gives r, which configure encodes once from the block it is built with (podShapes).
 func (c manifestCase) apply(r *Runtime) {
 	r.agentSecrets, r.sandboxConfig = c.agentSecrets, c.sandbox
+	r.pod.ControllerServiceAccount = c.controllerAccount
 	r.podShapes = podShapes(r)
 }
 
@@ -565,7 +573,7 @@ func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
 	legion := "#!/bin/sh\n[ \"$1 $2\" = 'git-credential get' ] || exit 0\n" +
 		"while read -r line; do case $line in path=*) p=${line#path=} ;; esac; done\n" +
 		"[ -n \"$p\" ] || exit 1\necho username=x-access-token\necho \"password=role-token-for-${p%%/*}\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	global := filepath.Join(dir, "gitconfig")
@@ -643,6 +651,77 @@ func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
 				t.Errorf("%s is told %s; it resolves its tools from the image's PATH", init.Name, name)
 			}
 		}
+	}
+}
+
+// An issue pod has one workspace-init container, which fills the clone on the
+// issue volume directly. The two disk shapes use the same container contract:
+// `workspace-init provision`'s argv and environment, no feed mount, the provisioning
+// Secret, the in-memory TMPDIR, the issue volume and the shared config home.
+func TestIssuePodHasOneWorkspaceInitAndNoFeedMount(t *testing.T) {
+	t.Parallel()
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]manifestCase{
+		"an ephemeral issue volume": manifestCases(t)["root"],
+		"a kept microVM volume":     manifestCases(t)["root-microvm-kept"],
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tc.apply(r)
+			l := launchOf(t, r, tc.spec)
+			pod := r.podTemplate(l).Spec
+			if got := len(pod.InitContainers); got != 1 {
+				t.Fatalf("the issue pod has %d init containers, want workspace-init alone: %v", got, pod.InitContainers)
+			}
+			init := pod.InitContainers[0]
+			if init.Name != initContainer {
+				t.Fatalf("the issue pod init container is %q, want %q", init.Name, initContainer)
+			}
+			wantCommand := []string{
+				r.tools.Legion, "workspace-init", "provision", "--issue", tc.spec.Issue, "--repo", tc.spec.Repository.String(),
+				"--default-branch", tc.spec.DefaultBranch, "--root", TreeRoot,
+				"--credential-helper", "!legion git-credential",
+			}
+			if !slices.Equal(init.Command, wantCommand) {
+				t.Errorf("workspace-init argv = %q, want %q", init.Command, wantCommand)
+			}
+			wantEnvironment := map[string]string{
+				"PATH":                               imagePath,
+				"TMPDIR":                             initTempDir,
+				"LEGION_PROVISION_TOKEN_FILE":        ProvisionDir + "/" + provisionTokenKey,
+				"LEGION_REPOSITORY_CACHE_URL":        l.cacheURL,
+				"LEGION_REPOSITORY_CACHE_TOKEN_FILE": ProvisionDir + "/" + cacheTokenKey,
+				"XDG_CONFIG_HOME":                    xdgConfigHome,
+				"XDG_CACHE_HOME":                     xdgCacheHome,
+				"XDG_DATA_HOME":                      xdgDataHome,
+				"XDG_STATE_HOME":                     xdgStateHome,
+			}
+			if got := envOf(init); !maps.Equal(got, wantEnvironment) {
+				t.Errorf("workspace-init environment = %v, want %v", got, wantEnvironment)
+			}
+			for _, want := range []corev1.VolumeMount{
+				{Name: provisionVolume, MountPath: ProvisionDir, ReadOnly: true},
+				{Name: tempVolume, MountPath: initTempDir},
+				{Name: issueVolume, MountPath: TreeRoot},
+				{Name: configVolume, MountPath: xdgConfigHome},
+			} {
+				if !slices.ContainsFunc(init.VolumeMounts, func(mount corev1.VolumeMount) bool {
+					return mount.Name == want.Name && mount.MountPath == want.MountPath && mount.ReadOnly == want.ReadOnly
+				}) {
+					t.Errorf("workspace-init mounts %+v; mounts are %+v", want, init.VolumeMounts)
+				}
+			}
+			for _, container := range slices.Concat(pod.InitContainers, pod.Containers) {
+				for _, mount := range container.VolumeMounts {
+					if mount.MountPath == TreeRoot+"/feed" || mount.SubPath == "feed" {
+						t.Errorf("%s mounts the removed feed at %s (subPath %q)", container.Name, mount.MountPath, mount.SubPath)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -735,7 +814,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
+		if err := execfile.Write(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -1178,218 +1257,6 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 	}
 }
 
-// The provisioning token never shares a process with anything a tree agent can write (Stage 4b
-// Task 4b.6b), and it reaches the container that holds it as a file, never as an environment
-// value (INFRA-1254). Two rules, counted apart:
-//
-//   - The volume route — the claim's Secret as a Secret volume, or projected — belongs to
-//     workspace-fetch alone, the one container of the pod that holds the token. It is required
-//     for it, the only container told where the token is, and forbidden for every other
-//     container, the worker's included. The holder's mount of that volume carries an empty
-//     subPath, because the daemon rewrites the claim's Secret as the lease is renewed and the
-//     kubelet rewrites a whole-volume Secret projection in place, never a subPath copy, which is
-//     taken once when the container starts.
-//   - The environment route — an env entry whose secretKeyRef names the claim Secret's
-//     provisioning-token key, or an envFrom of that Secret — is forbidden everywhere, the
-//     holder included: an environment value is fixed for the container's life, so a container
-//     holding one serves the token the pod started with however often the Secret is rewritten.
-//
-// Beside them, no other container can write a volume the holder mounts. The feed workspace-fetch
-// fills is read-only in workspace-init, and its TMPDIR, where its one-shot credential goes, is an
-// in-memory volume of its own that no other container mounts. So workspace-fetch mounts neither
-// the tree volume nor the config home, and carries no operator's mount (runtime.kubernetes.pod),
-// which reaches the launcher containers and the image probe's and no init container. Every pod's
-// manifest holds to it, by every route Kubernetes offers into a Secret, the worker's container
-// included; the controller's pod has no workspace-fetch, so none of its containers reaches the
-// token at all.
-//
-// What the boundary protects is identity, not a repository-write token kept off the tree volume:
-// an implement role now holds the implement App's token — for the issue's owner the App's own
-// installation token, which writes, where the provisioning token is that same App narrowed to
-// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
-// (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
-// keeps is that no review role ever holds the implement App's token, which is what lets the
-// daemon read a push's App from the App that made it, and so tell the review App's red tests
-// from the implementer's code.
-func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testing.T) {
-	t.Parallel()
-	opts := goldenOptions()
-	// An operator pod with volumes and mounts of its own, so the no-operator-mount assertion
-	// below has something to find: with none configured, that check would pass on a manifest
-	// that handed every one of them to the token-holding container.
-	opts.Pod = operatorPod()
-	r, err := configure(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, tc := range manifestCases(t) {
-		t.Run(name, func(t *testing.T) {
-			l, err := r.prepare(tc.spec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			template := r.podTemplate(l)
-			pod := template.Spec
-			claimSecret := secretName(l.name)
-			volumes := map[string]corev1.Volume{}
-			for _, volume := range pod.Volumes {
-				volumes[volume.Name] = volume
-			}
-			// A Secret source that maps no keys maps every key.
-			maps := func(items []corev1.KeyToPath) bool {
-				return len(items) == 0 || slices.ContainsFunc(items, func(item corev1.KeyToPath) bool { return item.Key == provisionTokenKey })
-			}
-			// The volume route is the token as a file the kubelet rewrites in place when the
-			// Secret changes. Each one carries the mount it came by, since a mount with a subPath
-			// is a copy taken when the container starts that no rewrite reaches.
-			type route struct {
-				mount corev1.VolumeMount
-				named string
-			}
-			volumeRoutes := func(c corev1.Container) []route {
-				var routes []route
-				for _, mount := range c.VolumeMounts {
-					volume := volumes[mount.Name]
-					if secret := volume.Secret; secret != nil && secret.SecretName == claimSecret && maps(secret.Items) {
-						routes = append(routes, route{mount, "secret volume " + mount.Name})
-					}
-					if projected := volume.Projected; projected != nil {
-						for _, source := range projected.Sources {
-							if secret := source.Secret; secret != nil && secret.Name == claimSecret && maps(secret.Items) {
-								routes = append(routes, route{mount, "projected volume " + mount.Name})
-							}
-						}
-					}
-				}
-				return routes
-			}
-			// The environment route is a copy fixed for the container's life, which no container
-			// may hold, the token holder included.
-			envRoutes := func(c corev1.Container) []string {
-				var routes []string
-				for _, v := range c.Env {
-					if from := v.ValueFrom; from != nil && from.SecretKeyRef != nil && from.SecretKeyRef.Name == claimSecret && from.SecretKeyRef.Key == provisionTokenKey {
-						routes = append(routes, "env "+v.Name)
-					}
-				}
-				for _, from := range c.EnvFrom {
-					if from.SecretRef != nil && from.SecretRef.Name == claimSecret {
-						routes = append(routes, "envFrom "+from.SecretRef.Name)
-					}
-				}
-				return routes
-			}
-			containers := slices.Concat(pod.InitContainers, pod.Containers)
-			for _, c := range containers {
-				_, pointed := envOf(c)["LEGION_PROVISION_TOKEN_FILE"]
-				holds := c.Name == fetchContainer
-				mounted := volumeRoutes(c)
-				var named []string
-				for _, r := range mounted {
-					named = append(named, r.named)
-				}
-				if (len(mounted) > 0) != holds || pointed != holds {
-					t.Errorf("%s reaches the provisioning token's file by %v, pointed at %t; want %t for both", c.Name, named, pointed, holds)
-				}
-				for _, r := range mounted {
-					if r.mount.SubPath != "" {
-						t.Errorf("%s takes the provisioning token from %s with subPath %q, want the whole volume: the kubelet rewrites a whole-volume Secret projection in place when the Secret changes and never a subPath copy, so a renewed token would not reach the file",
-							c.Name, r.named, r.mount.SubPath)
-					}
-				}
-				if routes := envRoutes(c); len(routes) > 0 {
-					t.Errorf("%s reaches the provisioning token through the environment by %v, which no container may, %s included: an environment value is fixed for the container's life, so a renewed token never reaches it",
-						c.Name, routes, fetchContainer)
-				}
-			}
-			kind, err := podKindOf(template.Metadata.Labels)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kind == (controllerPod{}) {
-				if slices.ContainsFunc(containers, func(c corev1.Container) bool { return c.Name == fetchContainer }) {
-					t.Errorf("the controller's pod runs %s", fetchContainer)
-				}
-				return
-			}
-			in := func(c corev1.Container, path string) string {
-				for _, mount := range c.VolumeMounts {
-					if mount.MountPath == path {
-						return mount.Name
-					}
-				}
-				return ""
-			}
-			// The one container that holds the token, workspace-fetch: no other container may
-			// write what it mounts. The feed, a subPath of the issue volume, is reachable through
-			// another container's read-write mount of the volume (or of a subPath above the feed)
-			// unless that container mounts the feed read-only over exactly the path the
-			// read-write mount reaches it at.
-			holder := containerNamed(t, pod, fetchContainer)
-			for _, mount := range holder.VolumeMounts {
-				for _, other := range containers {
-					if other.Name == holder.Name {
-						continue
-					}
-					for _, theirs := range other.VolumeMounts {
-						if theirs.Name != mount.Name || theirs.ReadOnly {
-							continue
-						}
-						below, ok := strings.CutPrefix(mount.SubPath, theirs.SubPath)
-						if !ok || (theirs.SubPath != "" && below != "" && !strings.HasPrefix(below, "/")) {
-							continue
-						}
-						reached := path.Join(theirs.MountPath, below)
-						shadowed := slices.ContainsFunc(other.VolumeMounts, func(m corev1.VolumeMount) bool {
-							return m.Name == mount.Name && m.ReadOnly && m.SubPath == mount.SubPath && m.MountPath == reached
-						})
-						if !shadowed {
-							t.Errorf("%s can write volume %s at %s, which %s mounts at %s", other.Name, mount.Name, reached, holder.Name, mount.MountPath)
-						}
-					}
-				}
-			}
-			// The holder's TMPDIR is an in-memory volume of its own: a TMPDIR another container
-			// shared would be one that container could read the one-shot credential in.
-			temp := envOf(holder)["TMPDIR"]
-			volume := in(holder, temp)
-			if dir := volumes[volume].EmptyDir; temp == "" || dir == nil || dir.Medium != corev1.StorageMediumMemory {
-				t.Errorf("%s's TMPDIR %q is not an in-memory volume of its own", holder.Name, temp)
-			}
-			// "Of its own" is about the volume, not the path: another container that mounted the
-			// same volume read-only somewhere else would read the credential just as well, and
-			// the write-overlap check above passes a read-only mount by design. So compare by
-			// volume name across every mount of every other container, whatever its path and
-			// whether it is read-only.
-			for _, other := range containers {
-				if other.Name == holder.Name {
-					continue
-				}
-				for _, mount := range other.VolumeMounts {
-					if mount.Name == volume {
-						t.Errorf("%s mounts %s's TMPDIR volume %s at %s (readOnly %t)",
-							other.Name, holder.Name, volume, mount.MountPath, mount.ReadOnly)
-					}
-				}
-			}
-			// No operator mount reaches the token holder: the operator's pod block
-			// (runtime.kubernetes.pod) names volumes of its own, and one of them in the container
-			// holding the token would share the token with whatever the operator put there.
-			if len(r.pod.VolumeMounts) == 0 {
-				t.Fatal("the operator's pod carries no mount, so this check would pass on a manifest that gave the token holder every one of them")
-			}
-			for _, mount := range holder.VolumeMounts {
-				if slices.ContainsFunc(r.pod.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == mount.Name }) {
-					t.Errorf("%s carries the operator's mount %s at %s", holder.Name, mount.Name, mount.MountPath)
-				}
-			}
-			if feed := in(containerNamed(t, pod, initContainer), FeedDir); feed == "" || feed != in(holder, FeedDir) {
-				t.Errorf("workspace-init reads the feed from %q, and %s fills %q", feed, holder.Name, in(holder, FeedDir))
-			}
-		})
-	}
-}
-
 // A launch the runtime cannot honour exactly is refused before any API call.
 func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 	t.Parallel()
@@ -1425,9 +1292,9 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 }
 
 // New refuses options no cluster could run: an image not pinned by digest, an issue volume with no
-// storage class on a cluster that has no default, a stream pods cannot dial, a pool the runtime
-// does not choose, a microVM issue pod with no ComputeClass to run on or no storage class for its
-// disk, no source for the provisioning token or the roles' gh files, and a Resources
+// storage class on a cluster that has no default, a stream pods cannot dial, a selector of the
+// retired Legion pool's label, a microVM issue pod with no ComputeClass to run on or no storage
+// class for its disk, no source for the provisioning token or the roles' gh files, and a Resources
 // map that would leave a container unreserved — a role or the controller without an entry, or an
 // entry that is no reservation: a cpu or memory request past its limit, no memory, an
 // ephemeral-storage request past its limit or none at all, or a resource the daemon never sizes —
@@ -1447,8 +1314,8 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"bad project":               {func(o *Options) { o.Project = "s4a run" }, "is not a label value"},
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
 		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
-		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool is the runtime's"},
-		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
+		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool"},
+		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "legion"} }, "legion.dev/pool"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
 		"no gh credential":          {func(o *Options) { o.GitHubCredential = nil }, "no github credential function"},
 		"no gh dirs":                {func(o *Options) { o.GitHubDirs = nil }, "no github directories function"},
@@ -1458,6 +1325,34 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"an unreserved cache":       {func(o *Options) { o.RepositoryCache.Resources = corev1.ResourceRequirements{} }, "the repository cache reserves no cpu"},
 		"the issue pod unreserved":  {func(o *Options) { o.Resources.Issue = corev1.ResourceRequirements{} }, "the issue pod reserves no cpu"},
 		"the controller unreserved": {func(o *Options) { o.Resources.Controller = corev1.ResourceRequirements{} }, "the controller's pod reserves no cpu"},
+		"a cache bucket with no account": {
+			func(o *Options) { o.RepositoryCache.Bucket = "example-legion-packs" },
+			`repository cache bucket "example-legion-packs" and ServiceAccount "" are set together or not at all`,
+		},
+		"a cache account with no bucket": {
+			func(o *Options) { o.RepositoryCache.ServiceAccount = "legion-cache" },
+			`repository cache bucket "" and ServiceAccount "legion-cache" are set together or not at all`,
+		},
+		"a cache account the pods run as": {
+			func(o *Options) {
+				o.Pod.ServiceAccount = "legion-worker"
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "legion-worker"
+			},
+			"repository cache ServiceAccount legion-worker is the one the issue pods run as",
+		},
+		"a cache account of default, which the pods run as when they name none": {
+			func(o *Options) {
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "default"
+			},
+			"repository cache ServiceAccount default is the one the issue pods run as",
+		},
+		"a cache account the controller's pod runs as": {
+			func(o *Options) {
+				o.Pod.ServiceAccount, o.Pod.ControllerServiceAccount = "legion-worker", "legion-controller"
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "legion-controller"
+			},
+			"repository cache ServiceAccount legion-controller is the one the controller's pod runs as",
+		},
 		"the file session store": {
 			func(o *Options) { o.SessionStore = ompsessions.Store{Kind: ompsessions.StoreVolume} },
 			"no session store that keeps sessions in a database",
@@ -2091,6 +1986,50 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 	}
 }
 
+// The controller's pod runs as runtime.kubernetes.pod.controller_service_account where the
+// operator names one, fresh and resuming alike, and as pod.service_account where not, so a
+// deployment that names no controller account runs its controller exactly as before. Every other
+// pod Legion runs — an issue pod, whichever role's launch builds it, the image probe's and a
+// repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
+// the controller alone.
+func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	t.Parallel()
+	resume := controllerSpec(t)
+	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct{ pods, controller, wantController string }{
+		"both named":                              {"operator-worker", "legion-controller", "legion-controller"},
+		"the controller's alone named":            {"", "legion-controller", "legion-controller"},
+		"the pods' alone named":                   {"operator-worker", "", "operator-worker"},
+		"neither named, every pod on the default": {"", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Pod.ServiceAccount, opts.Pod.ControllerServiceAccount = tc.pods, tc.controller
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for pod, spec := range map[string]runtime.SpawnSpec{"controller": controllerSpec(t), "resuming controller": resume} {
+				if got := podOf(t, r, spec).ServiceAccountName; got != tc.wantController {
+					t.Errorf("the %s's pod runs as %q, want %q", pod, got, tc.wantController)
+				}
+			}
+			others := map[string]corev1.PodSpec{
+				"root":             podOf(t, r, rootSpec(t)),
+				"worker":           podOf(t, r, workerSpec(t)),
+				"implementer":      podOf(t, r, childSpec(t)),
+				"image probe":      r.probeManifest(probeSandboxName, ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec,
+				"repository cache": r.cachePodTemplate(CacheSandboxName(testProject, cacheRepo), cacheRepo).Spec,
+			}
+			for pod, spec := range others {
+				if spec.ServiceAccountName != tc.pods {
+					t.Errorf("the %s pod runs as %q, want pod.service_account %q", pod, spec.ServiceAccountName, tc.pods)
+				}
+			}
+		})
+	}
+}
+
 // The providers Secret — the TypeScript runtime's legion-<project token>-providers — reaches every
 // pod Legion runs, a worker's and the image probe's alike, as exactly its configured keys, read-only
 // at ProvidersDir in the agent's container alone: each provider key as a file named for the variable
@@ -2349,26 +2288,27 @@ func TestImageOwnedPathsCoverWhatAPodRunsFromTheImage(t *testing.T) {
 }
 
 // Every Legion pod, an issue's and the controller's alike, asks nothing of its placement beyond the
-// Legion pool and, for a microVM pod, its ComputeClass: of its template's fields, the ones that
-// bear on scheduling are the node selector and tolerations and the Legion priority class, and no
-// other — nothing ties it to, or keeps it off, another pod's node. Each issue pod owns a
-// ReadWriteOnce volume of its own and shares nothing with the other pods of its tree, so the
-// scheduler places it wherever the pool has room (LEGION-632). Pinned as the exact key set of the
+// operator's scheduling and, for a microVM pod, its ComputeClass: of its template's fields, the
+// ones that bear on scheduling are the node selector and tolerations and the Legion priority
+// class, and no other — nothing ties it to, or keeps it off, another pod's node. Each issue pod
+// owns a ReadWriteOnce volume of its own and shares nothing with the other pods of its tree, so the
+// scheduler places it wherever a node has room (LEGION-632). Pinned as the exact key set of the
 // pod spec the manifest sends, so a field added to the template shows here by name; the
 // controller's pod alone sends no initContainers, since it runs none. The selector and the
-// tolerations are pinned whole too: the pool's label and taint alone on a gVisor pod, and on a
-// microVM pod — an issue's whose issue runs in one (SandboxConfig.Of), or the controller's of a
-// microvm project (SandboxConfig.Controller) — those and its ComputeClass's label and taint alone.
-func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
+// tolerations are pinned whole too: the golden options name a priority class and neither of them,
+// so a gVisor pod sends neither, and a microVM pod — an issue's whose issue runs in one
+// (SandboxConfig.Of), or the controller's of a microvm project (SandboxConfig.Controller) — sends
+// its ComputeClass's label and taint alone.
+func TestEveryLegionPodAsksNothingOfItsPlacementBeyondTheOperatorsScheduling(t *testing.T) {
 	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"automountServiceAccountToken", "containers", "enableServiceLinks", "initContainers", "nodeSelector",
+		"automountServiceAccountToken", "containers", "enableServiceLinks", "initContainers",
 		"priorityClassName", "restartPolicy", "runtimeClassName", "securityContext", "terminationGracePeriodSeconds",
-		"tolerations", "volumes",
+		"volumes",
 	}
 	taint := func(key, value string) map[string]any {
 		return map[string]any{"key": key, "operator": "Equal", "value": value, "effect": "NoSchedule"}
@@ -2378,28 +2318,130 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			tc.apply(r)
 			manifest := manifestOf(t, r, tc.spec).(map[string]any)
 			pod := manifest["spec"].(map[string]any)["podTemplate"].(map[string]any)["spec"].(map[string]any)
-			expected := want
-			if tc.spec.Role == claim.RoleController {
-				expected = slices.DeleteFunc(slices.Clone(want), func(key string) bool { return key == "initContainers" })
-			}
-			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
-				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
-			}
-			selector, tolerations := map[string]any{poolKey: poolValue}, []any{taint(poolKey, poolValue)}
 			where := tc.sandbox.Of(tc.spec.Issue)
 			if tc.spec.Role == claim.RoleController {
 				where = tc.sandbox.Controller()
 			}
+			// selector and tolerations are nil, a key the pod spec does not send, where the pod has none.
+			var selector, tolerations any
+			expected := slices.Clone(want)
 			if where == SandboxMicroVM {
 				class := tc.sandbox.MicroVM.ComputeClass
-				selector[computeClassKey] = class
-				tolerations = append(tolerations, taint(computeClassKey, class))
+				selector, tolerations = map[string]any{computeClassKey: class}, []any{taint(computeClassKey, class)}
+				expected = append(expected, "nodeSelector", "tolerations")
+			}
+			if tc.spec.Role == claim.RoleController {
+				expected = slices.DeleteFunc(expected, func(key string) bool { return key == "initContainers" })
+				if tc.controllerAccount != "" {
+					// The case's controller_service_account names the controller pod's account.
+					expected = append(expected, "serviceAccountName")
+				}
+			}
+			slices.Sort(expected)
+			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
+				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
 			}
 			if got := pod["nodeSelector"]; !reflect.DeepEqual(got, selector) {
 				t.Errorf("the pod selects %v, want exactly %v", got, selector)
 			}
 			if got := pod["tolerations"]; !reflect.DeepEqual(got, tolerations) {
 				t.Errorf("the pod tolerates %v, want exactly %v", got, tolerations)
+			}
+		})
+	}
+}
+
+// No pod the runtime builds carries the Legion pool's placement: its node selector has no
+// legion.dev/pool key and none of its tolerations is of that key, so a Legion pod runs on the
+// cluster's general nodes. A gVisor pod's selector and tolerations are the operator's scheduling
+// exactly as configured, and a microVM pod's are those and its ComputeClass's label and the
+// toleration of the taint GKE puts on that class's nodes, and nothing else. Each pod runs under
+// its sandbox's RuntimeClass, gVisor's or the microVM one, and building it writes nothing into the
+// operator's scheduling.
+// The pods are an issue's, fresh and resumed, the controller's of a gVisor project, a repository
+// cache's, the image probe's, an issue's whose issue runs in a microVM and the controller's of a
+// microVM project, each built under no scheduling at all and under an operator's selector and
+// toleration of keys other than the pool's. A microVM project's runtime also builds its cache and
+// probe pods, which run in gVisor whatever the sandbox block says, so a microVM pod that wrote its
+// class into that runtime's selector would show in them. Each runtime is configured with a
+// scheduling of its own, and every expectation is written out, so no map or slice of a pod, the
+// configuration or an expectation is another's.
+func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
+	t.Parallel()
+	// poolLabel is the Legion pool's node label and the key of its taint, written out so the test
+	// holds this key and not whatever the runtime's constant names.
+	const poolLabel = "legion.dev/pool"
+	resume := manifestCases(t)["resume"].spec
+	block := testMicroVM()
+	dedicated := corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
+	for name, operator := range map[string]struct {
+		// scheduling is the operator's scheduling, made afresh at each call.
+		scheduling func() Scheduling
+		// selector and tolerations are what a gVisor pod selects and tolerates under it.
+		selector    map[string]string
+		tolerations []corev1.Toleration
+	}{
+		"no scheduling": {func() Scheduling { return Scheduling{} }, map[string]string{}, nil},
+		"the operator's scheduling": {
+			func() Scheduling {
+				return Scheduling{NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"}, Tolerations: []corev1.Toleration{dedicated}}
+			},
+			map[string]string{"kubernetes.io/arch": "amd64"}, []corev1.Toleration{dedicated},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gVisorScheduling, microVMScheduling := operator.scheduling(), operator.scheduling()
+			gVisor := sandboxRuntime(t, SandboxConfig{}, func(o *Options) { o.Scheduling = gVisorScheduling })
+			microVM := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, func(o *Options) { o.Scheduling = microVMScheduling })
+			probe := func(r *Runtime) corev1.PodSpec {
+				return r.probeManifest(probeSandboxName, ImageProbe{Contract: 3, RoleReferences: testRoleReferences}, time.Now()).Spec.PodTemplate.Spec
+			}
+			for what, tc := range map[string]struct {
+				pod corev1.PodSpec
+				// class is the ComputeClass a microVM pod runs on, and "" for a gVisor pod.
+				class string
+			}{
+				"a fresh issue pod":                         {podOf(t, gVisor, rootSpec(t)), ""},
+				"a resumed issue pod":                       {podOf(t, gVisor, resume), ""},
+				"the controller's pod of a gVisor project":  {podOf(t, gVisor, controllerSpec(t)), ""},
+				"a repository cache pod":                    {gVisor.cacheManifest(cacheRepo).Spec.PodTemplate.Spec, ""},
+				"the image probe pod":                       {probe(gVisor), ""},
+				"a microVM issue pod":                       {podOf(t, microVM, rootSpec(t)), block.ComputeClass},
+				"the controller's pod of a microVM project": {podOf(t, microVM, controllerSpec(t)), block.ComputeClass},
+				"a microVM project's repository cache pod":  {microVM.cacheManifest(cacheRepo).Spec.PodTemplate.Spec, ""},
+				"a microVM project's image probe pod":       {probe(microVM), ""},
+			} {
+				t.Run(what, func(t *testing.T) {
+					if value, ok := tc.pod.NodeSelector[poolLabel]; ok {
+						t.Errorf("the pod selects the Legion pool's label %s=%q, want no %s key in its node selector", poolLabel, value, poolLabel)
+					}
+					for _, toleration := range tc.pod.Tolerations {
+						if toleration.Key == poolLabel {
+							t.Errorf("the pod tolerates the Legion pool's taint %+v, want no toleration of %s", toleration, poolLabel)
+						}
+					}
+					wantSelector, wantTolerations, runtimeClass := map[string]string{}, slices.Clone(operator.tolerations), gvisor
+					maps.Copy(wantSelector, operator.selector)
+					if tc.class != "" {
+						wantSelector[computeClassKey] = tc.class
+						wantTolerations = append(wantTolerations, computeClassToleration(tc.class))
+						runtimeClass = microVMRuntimeClass
+					}
+					if !maps.Equal(tc.pod.NodeSelector, wantSelector) {
+						t.Errorf("the pod selects %v, want exactly %v", tc.pod.NodeSelector, wantSelector)
+					}
+					if !slices.Equal(tc.pod.Tolerations, wantTolerations) {
+						t.Errorf("the pod tolerates %+v, want exactly %+v", tc.pod.Tolerations, wantTolerations)
+					}
+					if got := tc.pod.RuntimeClassName; got == nil || *got != runtimeClass {
+						t.Errorf("the pod runs under the RuntimeClass %s, want %s", runtimeClassText(got), runtimeClass)
+					}
+				})
+			}
+			for kind, scheduling := range map[string]Scheduling{"gVisor": gVisorScheduling, "microVM": microVMScheduling} {
+				if !maps.Equal(scheduling.NodeSelector, operator.selector) || !slices.Equal(scheduling.Tolerations, operator.tolerations) {
+					t.Errorf("building the %s runtime's pods left the operator's scheduling selecting %v and tolerating %+v, want %v and %+v as configured", kind, scheduling.NodeSelector, scheduling.Tolerations, operator.selector, operator.tolerations)
+				}
 			}
 		})
 	}
@@ -2545,10 +2587,8 @@ func sandboxOf(c config.SandboxConfig) SandboxConfig {
 	return block
 }
 
-// poolToleration is the Legion pool's taint, tolerated, and computeClassToleration the taint GKE
-// puts on the nodes of the custom ComputeClass class.
-var poolToleration = corev1.Toleration{Key: poolKey, Operator: corev1.TolerationOpEqual, Value: poolValue, Effect: corev1.TaintEffectNoSchedule}
-
+// computeClassToleration is the taint GKE puts on the nodes of the custom ComputeClass class,
+// tolerated.
 func computeClassToleration(class string) corev1.Toleration {
 	return corev1.Toleration{Key: computeClassKey, Operator: corev1.TolerationOpEqual, Value: class, Effect: corev1.TaintEffectNoSchedule}
 }
@@ -2638,8 +2678,9 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 					continue
 				}
 				t.Run(name, func(t *testing.T) {
-					// The case's enrollment alone: its sandbox, gVisor's, is the block's here.
-					r.agentSecrets = tc.agentSecrets
+					// The case's enrollment and controller account alone: its sandbox, gVisor's, is
+					// the block's here.
+					r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 					checkGolden(t, name, manifestOf(t, r, tc.spec))
 					template := r.podTemplate(launchOf(t, r, tc.spec))
 					if got := renderedSandbox(t, template); got != SandboxGVisor {
@@ -2660,10 +2701,10 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 	}
 }
 
-// A microVM project runs each of its issue pods on GKE Sandbox's microVM RuntimeClass, on the Legion
-// pool's nodes of its ComputeClass: the selector is the pool's and the operator's with the class
-// beside them, the tolerations the pool's and the operator's with the class's taint after them, and
-// the pod is labelled legion.dev/sandbox=microvm, the label a NetworkPolicy selects it by.
+// A microVM project runs each of its issue pods on GKE Sandbox's microVM RuntimeClass, on the nodes
+// of its ComputeClass: the selector is the operator's with the class beside it, the tolerations the
+// operator's with the class's taint after them, and the pod is labelled legion.dev/sandbox=microvm,
+// the label a NetworkPolicy selects it by.
 func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 	t.Parallel()
 	dedicated := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}
@@ -2678,11 +2719,11 @@ func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 			if pod.RuntimeClassName == nil || *pod.RuntimeClassName != "microvm" {
 				t.Errorf("the pod runs under the RuntimeClass %s, want microvm", runtimeClassText(pod.RuntimeClassName))
 			}
-			selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
+			selector := map[string]string{"kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 			if !maps.Equal(pod.NodeSelector, selector) {
 				t.Errorf("the pod selects %v, want exactly %v", pod.NodeSelector, selector)
 			}
-			tolerations := []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}
+			tolerations := []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}
 			if !reflect.DeepEqual(pod.Tolerations, tolerations) {
 				t.Errorf("the pod tolerates %+v, want exactly %+v", pod.Tolerations, tolerations)
 			}
@@ -2967,6 +3008,8 @@ func TestOnlyAMicroVMPodKeepsItsVolume(t *testing.T) {
 			if tc.block.Controller() == SandboxMicroVM {
 				controllerGolden = "controller-microvm"
 			}
+			// Each controller golden's controller_service_account, as its manifest case sets it.
+			r.pod.ControllerServiceAccount = manifestCases(t)[controllerGolden].controllerAccount
 			checkGolden(t, controllerGolden, manifestOf(t, r, controllerSpec(t)))
 			if decoded, stored := keptReadings(t, r.sandboxManifest(launchOf(t, r, controllerSpec(t)))); decoded || stored {
 				t.Errorf("the controller's Sandbox reads as kept %v decoded and %v stored, want neither", decoded, stored)
@@ -3009,8 +3052,8 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 }
 
 // A microVM pod tolerates the taint GKE puts on its ComputeClass's nodes,
-// cloud.google.com/compute-class=<class>:NoSchedule, after the pool's and the operator's
-// tolerations. The class it names replaces any the operator's scheduling names, the class the
+// cloud.google.com/compute-class=<class>:NoSchedule, after the operator's tolerations. The class it
+// names replaces any the operator's scheduling names, the class the
 // project's gVisor pods run on: the operator's compute class selector takes the microVM class's
 // value and the operator's toleration of a compute class is dropped, every other entry of both kept
 // as the operator wrote it. A gVisor pod of the same project keeps the operator's class, and the
@@ -3028,11 +3071,11 @@ func TestAMicroVMPodToleratesItsComputeClass(t *testing.T) {
 		class       string
 		tolerations []corev1.Toleration
 	}{
-		"the canary's microVM pod": {childSpec(t), testComputeClass, []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}},
-		"a gVisor issue pod":       {rootSpec(t), "Scale-Out", []corev1.Toleration{poolToleration, scaleOut, dedicated}},
+		"the canary's microVM pod": {childSpec(t), testComputeClass, []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}},
+		"a gVisor issue pod":       {rootSpec(t), "Scale-Out", []corev1.Toleration{scaleOut, dedicated}},
 	} {
 		pod := podOf(t, r, tc.spec)
-		selector := map[string]string{poolKey: poolValue, computeClassKey: tc.class, "kubernetes.io/arch": "amd64"}
+		selector := map[string]string{computeClassKey: tc.class, "kubernetes.io/arch": "amd64"}
 		if !maps.Equal(pod.NodeSelector, selector) {
 			t.Errorf("%s selects %v, want exactly %v", what, pod.NodeSelector, selector)
 		}
@@ -3189,11 +3232,11 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				if pod.RuntimeClassName == nil || *pod.RuntimeClassName != microVMRuntimeClass {
 					t.Errorf("the controller's pod runs under the RuntimeClass %s, want %s", runtimeClassText(pod.RuntimeClassName), microVMRuntimeClass)
 				}
-				selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
+				selector := map[string]string{"kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 				if !maps.Equal(pod.NodeSelector, selector) {
 					t.Errorf("the controller's pod selects %v, want exactly %v", pod.NodeSelector, selector)
 				}
-				if want := []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}; !reflect.DeepEqual(pod.Tolerations, want) {
+				if want := []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}; !reflect.DeepEqual(pod.Tolerations, want) {
 					t.Errorf("the controller's pod tolerates %+v, want exactly %+v, Scale-Out's not among them", pod.Tolerations, want)
 				}
 				if got := controller.Metadata.Labels[labelSandbox]; got != string(SandboxMicroVM) {
@@ -3252,11 +3295,11 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor {
 					t.Errorf("the %s pod runs under the RuntimeClass %s, want %s", pod.kind, runtimeClassText(spec.RuntimeClassName), gvisor)
 				}
-				if want := map[string]string{poolKey: poolValue, computeClassKey: "Scale-Out", "kubernetes.io/arch": "amd64"}; !maps.Equal(spec.NodeSelector, want) {
-					t.Errorf("the %s pod selects %v, want exactly the pool's and the operator's %v", pod.kind, spec.NodeSelector, want)
+				if want := map[string]string{computeClassKey: "Scale-Out", "kubernetes.io/arch": "amd64"}; !maps.Equal(spec.NodeSelector, want) {
+					t.Errorf("the %s pod selects %v, want exactly the operator's %v", pod.kind, spec.NodeSelector, want)
 				}
-				if want := []corev1.Toleration{poolToleration, scaleOut, dedicated}; !reflect.DeepEqual(spec.Tolerations, want) {
-					t.Errorf("the %s pod tolerates %+v, want exactly the pool's and the operator's %+v", pod.kind, spec.Tolerations, want)
+				if want := []corev1.Toleration{scaleOut, dedicated}; !reflect.DeepEqual(spec.Tolerations, want) {
+					t.Errorf("the %s pod tolerates %+v, want exactly the operator's %+v", pod.kind, spec.Tolerations, want)
 				}
 				if value, ok := pod.template.Metadata.Labels[labelSandbox]; ok {
 					t.Errorf("the %s pod is labelled %s=%q", pod.kind, labelSandbox, value)

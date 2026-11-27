@@ -405,10 +405,10 @@ type stoppingPublisher struct {
 	cancel context.CancelFunc
 }
 
-func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.inner.Publish(ctx, topic, message, payload, key)
+func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	holder, err := p.inner.Publish(ctx, topic, message, payload, key)
 	p.cancel()
-	return err
+	return holder, err
 }
 
 func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {

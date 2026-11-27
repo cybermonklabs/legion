@@ -21,10 +21,11 @@ body: |-
 
   A recorded check's head line names the newest result of each role at what the check compared
   with, pass and fail alike, oldest first, in place of the roles a pass stands from:
-  `A pass stands: yes. Newest at that commit: implementer: pass (2120a467); tester: fail
-  (9f5fd8c4, newer).` The roles alone read as a verdict and hid a newer fail beside the pass.
-  Whether a pass stands is Dispatch's answer, unchanged. A check CI proves keeps
-  `A pass stands: yes, from ci.`
+  `A pass stands: not known. Newest at that commit: implementer: pass (2120a467); tester: fail
+  (9f5fd8c4, newer).` The roles alone read as a verdict and could hide a newer fail beside a pass;
+  a result that is retracted or counts for nothing is left out. Whether a pass stands is
+  Dispatch's answer, unchanged, and a check compared with a branch still names the result that
+  decides it. A check CI proves keeps `A pass stands: yes, from ci.`
 time: 2026-11-26T21:02:01Z
 custom:
     Issue: INFRA-3992

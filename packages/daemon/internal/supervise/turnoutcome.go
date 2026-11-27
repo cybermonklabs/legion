@@ -146,7 +146,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // reminder of a failed claim. A refusal that can
 // clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
 // counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
-// so the project's controller is told once when that run reaches providerErrorRunTold.
+// so the run is handed to Deps.ProviderErrorRunReached once when it reaches providerErrorRunTold.
 //
 // A clean report ends that run whether or not it is marked unprompted (providerErrorRunOver), as
 // a clean prompt result does: the provider answered that turn either way. A turn the plugin reads
@@ -161,10 +161,10 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // prompt's error result, and before that prompt's own report, still ends the run that error began.
 // The reverse holds too: a clean prompt result ends the run with no such guard (promptResulted), so
 // one that arrives after a later plugin turn's refused report was counted ends the run that refusal
-// began. Either way the controller's notice comes later, or not at all for a run of exactly six,
-// and no claim fails or is held for it. A refused report marked prompted is still judged by
-// nothing: its prompt's result counts it. The same two bounds hold for every judgment: new to the
-// window, and of the generation the claim runs now.
+// began. Either way the notice at providerErrorRunTold comes later, or not at all for a run of
+// exactly six, and no claim fails or is held for it. A refused report marked prompted is still
+// judged by nothing: its prompt's result counts it. The same two bounds hold for every judgment:
+// new to the window, and of the generation the claim runs now.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.turnOutcomeFailed = false
@@ -199,12 +199,12 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 // controller's choice (dispatch://INFRA-956's Design), and for every retry of a claim held for
 // OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy), whoever makes it. Every other retry —
 // its architect's retry_or_escalate, the next start of its role, an operator's retry that asks for
-// nothing — resumes the recorded session with fresh budgets, whatever the claim's run of refused
-// turns (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that
-// cannot clear fails the claim on the turn it ends, and holds the issue, so a run is mostly
-// refusals that can clear or carry no status, such as a team limit's 429, which refuses every
-// session of the team alike. A claim failed on a refusal that cannot clear resumes too; if its
-// session is refused again, it fails again at once.
+// nothing — resumes the recorded session with fresh budgets, but for the two cases at the end,
+// whatever the claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that
+// the session is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds
+// the issue, so a run is mostly refusals that can clear or carry no status, such as a team limit's
+// 429, which refuses every session of the team alike. A claim failed on a refusal that cannot clear
+// resumes too; if its session is refused again, it fails again at once.
 //
 // A cyber-policy refusal is the one failure that a resume would repeat by itself: the retry's
 // first task is input from outside the session, which ends Oh My Pi's hold, so the session's
@@ -214,12 +214,18 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 // leaves the session behind: the claim's failure sentence is the reason the abandoned session is
 // recorded under (retry), and the run of provider-error turns starts over with it
 // (Machine.forgetSession).
+//
+// The two cases at the end are the project controller's, and each is decided in the launch, not
+// here: whatever this answers, the launch after the session's second end in a row since a
+// finished turn forgets the session and spawns a fresh agent (launchNow's replaceEndedSession,
+// dispatch://INFRA-2045 R1), and so does a launch no operator's request raised — the keeper's
+// retry among them — of a session older than its age (replaceAgedSession, R3).
 func freshSession(c Claim, ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {
 	case RequestRetry:
 		asked = ev.FreshSession
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		asked = ev.FreshSession
 	}
 	switch {

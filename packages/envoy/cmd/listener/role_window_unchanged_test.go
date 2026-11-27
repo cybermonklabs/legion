@@ -105,11 +105,12 @@ func (rig *windowRig) lookupRole(t *testing.T, role string) windowRoleAnswer {
 	return rig.serve(t, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 }
 
-// publishToRole publishes message to role's topic through the publish route, from no sender
-// session.
+// publishToRole publishes message to role's topic through the publish route from a sender session
+// that holds no role here: a publish that names no session is refused, not kept, when no live
+// session holds the role (roleSend.noHolder), and the rows read the kept answer.
 func (rig *windowRig) publishToRole(t *testing.T, role, message string) windowRoleAnswer {
 	t.Helper()
-	body, err := json.Marshal(roleMessage(role, "", message))
+	body, err := json.Marshal(roleMessage(role, "ses_window_sender", message))
 	if err != nil {
 		t.Fatal(err)
 	}

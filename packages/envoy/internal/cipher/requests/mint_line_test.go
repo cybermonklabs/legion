@@ -62,7 +62,7 @@ func TestEachMintedTokenWritesOneMintLineWithItsHashAndNeverTheToken(t *testing.
 		`{"name": "FEDERATION_KEY", "proxy": "anthropic"}`,
 	)
 	m, enr, key := newAirlockFixture(t, file)
-	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
+	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
 	retag(t, m,
 		policytest.TypeSecret("APP_KEY", fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.TypeSecret("FEDERATION_KEY", fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)),

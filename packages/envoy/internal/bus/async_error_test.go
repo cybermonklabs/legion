@@ -130,10 +130,10 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 				}
 				return out
 			}
-			reported := func() bool { return len(lines()) > 0 }
-			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, reported) {
-				t.Fatalf("the client never reported the handshake the server %s", row.name)
-			}
+			testwait.UntilPolling(t, 20*time.Millisecond, "the client to report the handshake the server "+row.name, func() ([]string, bool) {
+				reported := lines()
+				return reported, len(reported) > 0
+			})
 			if got, want := lines()[0], "WARN envoy nats reconnect attempt failed"; got != want {
 				t.Fatalf("a reconnect handshake the server %s logged %q, want %q", row.name, got, want)
 			}

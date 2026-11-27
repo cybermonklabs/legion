@@ -16,23 +16,26 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// Sever does not wait for the client's own lock. A caller of Client.Connected holds that lock
-// while it reads nats.go's status, which waits for nats.go's lock: an intake's stop leaves such
-// reads running (its drain wait and mayHandBack) once a write holds nats.go's lock. A Sever that took
-// the client's lock to find the connection waited behind that read for as long as the write held,
-// and once the link moved, the publish that waited behind the write went out before the sever.
-// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock, which
-// the row waits for until the client's lock stays taken. Each requires that Sever returns while the
-// write still holds the lock, and that the publish that waited behind the write never reaches the
-// server: once the client has a connection of its own again, a second marker published and flushed
-// on it is the first the subscriber receives.
+// Sever does not wait for the client's own lock. A caller can hold that lock while it waits for
+// nats.go's: ResendRefusedCore reads its connection's status under it, and Close closes the
+// connection under it. Connected does not: it reads the status with the client's lock released. A
+// Sever that took the client's lock to find the connection would wait behind such a caller for as
+// long as a write holds nats.go's lock, and once the link moves, the publish waiting behind the
+// write would go out before the sever. Two subtests: with no such caller (the control), and with a
+// ResendRefusedCore left waiting for nats.go's lock, which the row waits for until the client's
+// lock stays taken. Each requires that Sever returns while the write still holds the lock, and that
+// the publish that waited behind the write never reaches the server: once the client has a
+// connection of its own again, a second marker published and flushed on it is the first the
+// subscriber receives.
 func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
+	// Serial (busTestParallelism): it reads back something the whole process shares, every
+	// goroutine's stack, which HoldStalledWrite reads to find its stalled write.
 	testnats.RequireSocketQueues(t)
 	const subject = "testbus.sever.locked-marker"
 	for _, withRead := range []bool{false, true} {
 		name := "no read of the connection waits"
 		if withRead {
-			name = "a Connected read waits for nats.go's lock"
+			name = "a read holding the client's lock waits for nats.go's lock"
 		}
 		t.Run(name, func(t *testing.T) {
 			client, hold := heldHandshakeClient(t)
@@ -51,26 +54,26 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			if withRead {
 				read := make(chan struct{})
 				go func() {
-					client.Connected()
+					_ = client.ResendRefusedCore()
 					close(read)
 				}()
 				// The read holds the client's lock while it waits for nats.go's. The row polls until
 				// the lock stays taken across three polls, which no caller that holds it only briefly
 				// does, so Sever runs once the read holds it.
 				taken := 0
-				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the Connected read holding the client's lock", func() bool {
+				testwait.UntilPolling(t, 5*time.Millisecond, "the read holding the client's lock (the last read is across how many polls in a row it was taken)", func() (int, bool) {
 					select {
 					case <-read:
-						t.Fatal("control: Connected answered while a write held nats.go's lock")
+						t.Fatal("control: the read under the client's lock answered while a write held nats.go's lock")
 					default:
 					}
 					if client.mu.TryLock() {
 						client.mu.Unlock()
 						taken = 0
-						return false
+						return taken, false
 					}
 					taken++
-					return taken >= 3
+					return taken, taken >= 3
 				})
 			}
 			severed := make(chan struct{})
@@ -82,8 +85,9 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			// the test's end does (HoldStalledWrite's cleanup), so the wait names it.
 			testwait.Receive(t, "Sever to return while the write holds nats.go's lock", severed)
 			thaw()
-			testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
-				return client.Connected() && client.Connection() != conn
+			testwait.Until(t, "the client's connection of its own after the sever", func() (bool, bool) {
+				own := client.Connected() && client.Connection() != conn
+				return own, own
 			})
 			replacement := client.Connection()
 			if err := replacement.Publish(subject, []byte("after")); err != nil {
@@ -137,7 +141,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 		peers = append(peers, conn)
 	}
 	ended := make([]bool, dropped)
-	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every dropped socket closed by the garbage collector", func() bool {
+	testwait.UntilPolling(t, 50*time.Millisecond, "every dropped socket closed by the garbage collector (the last read is which peers had read the end)", func() ([]bool, bool) {
 		runtime.GC()
 		all := true
 		for i, peer := range peers {
@@ -155,7 +159,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 				t.Fatalf("read the peer of a dropped socket: %v", err)
 			}
 		}
-		return all
+		return ended, all
 	})
 	// The connection keeps its dialer for its whole life (nats.Options.CustomDialer), so the row
 	// keeps it too: a dialer the collector frees takes everything it holds with it.

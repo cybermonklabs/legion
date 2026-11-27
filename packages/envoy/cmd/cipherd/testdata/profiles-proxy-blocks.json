@@ -241,7 +241,7 @@
       }
     },
     {
-      "name": "GWS_THEOREM_ADMIN_OAUTH",
+      "name": "GWS_EXAMPLE_ADMIN_OAUTH",
       "proxy": {
         "hosts": ["admin.googleapis.com", "www.googleapis.com"],
         "headers": ["Authorization"]
@@ -311,7 +311,7 @@
         "allow": [
           {
             "method": "POST",
-            "pathPrefix": "/v1/projects/-/serviceAccounts/aws-admin@theorem-aws-admin.iam.gserviceaccount.com:generateIdToken"
+            "pathPrefix": "/v1/projects/-/serviceAccounts/aws-admin@example-aws-admin.iam.gserviceaccount.com:generateIdToken"
           }
         ]
       }

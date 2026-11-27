@@ -44,7 +44,8 @@ import (
 // self round-trips whatever id was on disk rather than a hardcoded one.
 const testEnrollmentID = "enr-fake-1"
 
-// buildAgentSecrets compiles this package's binary into the test's temporary directory.
+// buildAgentSecrets compiles this package's binary, once for the test process (TestMain), and
+// returns its path.
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
 	return cmdtest.Build(t, "agent-secrets")

@@ -1087,15 +1087,8 @@ func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
 	if got := logs.count(name, "envoy nats recovery attempt"); got != 0 {
 		t.Errorf("the recovery the refused start's close began made %d attempt(s), want none", got)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the server to hold no connection of the refused start (the last read is the ones it held)", func() ([]uint64, bool) {
 		open := connections()[name]
-		if len(open) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server holds connection(s) %v of the refused start, want none", open)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return open, len(open) == 0
+	})
 }

@@ -55,12 +55,27 @@ type batchAnswer struct {
 	Absent, Stored bool
 }
 
+// factsHeadFields is what both batched queries read of each pull request for its head row and its
+// texts (factsNode, payload).
+const factsHeadFields = `number title body url state merged mergedAt updatedAt headRefName headRefOid baseRefName
+  headRepository { nameWithOwner } mergeCommit { oid }`
+
 // factsFields is what the query reads of each pull request: the fields of its head row and its
 // texts, and its first 100 commit messages with the count of its commits.
 const factsFields = `fragment pullRequestFacts on PullRequest {
-  number title body url state merged mergedAt updatedAt headRefName headRefOid baseRefName
-  headRepository { nameWithOwner } mergeCommit { oid }
+  ` + factsHeadFields + `
   commits(first: 100) { totalCount nodes { commit { message } } }
+}
+`
+
+// commitPullsFields is what the query of many commits' pull requests reads of each pull request
+// (commitPullsQuery): factsFields without the commit messages. factsNode.payload reads none of
+// them, and the read stores each pull request through storePullRequestFacts, which reads its
+// commit messages itself, so a page of them in this answer only makes it larger and splits a
+// batch for its size sooner. It keeps factsFields' fragment name, so both answers decode into
+// factsNode alike.
+const commitPullsFields = `fragment pullRequestFacts on PullRequest {
+  ` + factsHeadFields + `
 }
 `
 

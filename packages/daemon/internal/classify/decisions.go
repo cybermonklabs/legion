@@ -1565,7 +1565,7 @@ func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateF
 	case MergeStateFactHeadMove:
 		return MergeForwardStands(issue, line)
 	case MergeStateFactBasePush:
-		return MergeForwardStands(issue, line) && record.StandsAt(issue) != phase.Implementing
+		return phase.MovesBackOn(line, record.StandsAt(issue), phase.Implementing)
 	}
 	return false
 }
@@ -1630,8 +1630,8 @@ func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.Ba
 
 // MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
 // phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
-// accepting where no step of the task follows the acceptance, or is held from one of them
-// merges. In the default steps these are accepting, retro and merging. In merging the merger
+// accepting where no step of the task follows the acceptance, or is held from one of them. In
+// the default steps these are accepting, retro and merging. In merging the merger
 // merges the base forward itself, and before it the conflict waits for merging
 // (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
 // acceptance, that step runs at the head before the merge, as a tester or a reviewer does after

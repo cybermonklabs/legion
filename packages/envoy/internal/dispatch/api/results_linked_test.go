@@ -70,8 +70,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 		unheldCommit = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
 	)
 	linked := &linkedGitHub{
-		held:     map[string][]string{"acme/tools": {toolsMerge}},
-		pulls:    map[string]string{"acme/tools#9": "merged"},
+		held:  map[string][]string{"acme/tools": {toolsMerge}},
+		pulls: map[string]string{"acme/tools#9": "merged"},
+		merged: map[string]linkedMerge{"acme/tools#9": {title: "The linked work", headRef: "work", headSHA: headCommit,
+			base: "main", mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"}},
 		branches: map[string][]string{"acme/tools:main": {toolsMerge}},
 		failing:  []string{"acme/widgets"},
 	}
@@ -79,7 +81,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/9")
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
+	// acme/tools#9 as a read of GitHub stores it, with texts that name no issue, so only the link
+	// names it as the issue's. R10 and R19 of the spec of several open pull requests: a row with no
+	// texts keeps the issue it stores, here none.
+	storeLinkedHeadOn(t, database, "acme/tools", 9, headCommit, "merged", "main")
 
 	_, toolsAsksBefore := linked.counts("acme/tools")
 	_, widgetsAsksBefore := linked.counts("acme/widgets")
@@ -496,8 +501,8 @@ func storeLinkedHead(t *testing.T, database *store.Store, repo string, number in
 }
 
 // storeLinkedHeadOn is storeLinkedHead for a pull request in state on the base branch base: a
-// merged one is the row delivery.Attributor.BaseBranchMergedIn answers the branch of. No
-// caller's server holds a rename pair, so it writes with unrenamed.
+// merged one is a row delivery.Attributor.MergeIn answers the issue's merges from. No caller's
+// server holds a rename pair, so it writes with unrenamed.
 func storeLinkedHeadOn(t *testing.T, database *store.Store, repo string, number int, sha, state, base string) {
 	t.Helper()
 	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)

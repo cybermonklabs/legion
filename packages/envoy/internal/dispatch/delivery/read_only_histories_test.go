@@ -171,6 +171,12 @@ func roMerged(head PullRequestHead, base, commit string) PullRequestHead {
 	return head
 }
 
+// roMergedAt is head with the merge time at.
+func roMergedAt(head PullRequestHead, at *time.Time) PullRequestHead {
+	head.MergedAt = at
+	return head
+}
+
 // roClosed is head closed unmerged.
 func roClosed(head PullRequestHead) PullRequestHead {
 	head.State = "closed"
@@ -289,19 +295,31 @@ func readOnlyHistories() []readOnlyHistory {
 			request: []readOnlyStep{roAnswer(roUnread(roTimed(roPull(6, roSHA("6")), roAt(1), nil)))}},
 		{name: "a merged pull request the linking issue links answers its merged-in branch", matters: true, branches: onRelease,
 			request: []readOnlyStep{roAnswer(roTimed(roMerged(roPull(readOnlyLinkedPull, roSHA("1")), "release", merge), roAt(1), roAt(20)))}},
+		// main's merge reads of a read-only request (#5416), in this design's form: a later answer
+		// that carries no merge commit and no merge time keeps the row's, and a merged row stored
+		// with neither gains both from the request's answer, as a writer's refresh gives them.
+		{name: "a later answer with no merge fields keeps the stored merge",
+			stored: []readOnlyStep{roAnswer(roTimed(roMergedAt(roTitled(roMerged(roPull(5, roSHA("1")), "release", merge), readOnlyIssue), roAt(1)),
+				roAt(3), roAt(10)))},
+			request: []readOnlyStep{roAnswer(roTimed(roTitled(roMerged(roPull(5, roSHA("1")), "release", ""), readOnlyIssue), roAt(4), roAt(11)))}},
+		{name: "a merged row stored with no merge commit or time gains both from the answer", matters: true,
+			stored: []readOnlyStep{roAnswer(roTimed(roTitled(roMerged(roPull(5, roSHA("1")), "release", ""), readOnlyIssue), roAt(2), roAt(10)))},
+			request: []readOnlyStep{roAnswer(roTimed(roMergedAt(roTitled(roMerged(roPull(5, roSHA("1")), "release", merge), readOnlyIssue), roAt(1)),
+				roAt(3), roAt(20)))}},
 	}
 }
 
 // readOnlyQuestions is the answer of each read of the results path a read-only caller's request
 // passes its answers to, on pool, in one line each, for both fixture issues: the heads the
 // issue's checks compare with (HeadsAttributedTo), the newest head a check CI proves is derived
-// at (NewestPullRequestHead), the branch an `after_merge` check compares with
-// (BaseBranchMergedFor), the linked pull requests whose head is not held (LinkedHeadsUnread); the
-// branch the linking issue's pull request merged into in deliveryRepo (BaseBranchMergedIn); the
-// pull requests of deliveryRepo and of gadgetsRepo whose answer is not known
-// (PullRequestsNotKnown); and each commit of branches on its branch (Branches.ReadCommitOnBranch,
-// with a branch cache and a carry of its own, and client). asked, where not nil, gets each read's
-// answeredReads name.
+// at (NewestPullRequestHead), the merges an `after_merge` check compares with (MergeOfIssue), the
+// linked pull requests whose head is not held (LinkedHeadsUnread); the merges of the linking
+// issue's pull requests in deliveryRepo (MergeIn); the merges that landed the fixture's head branch
+// `work` in deliveryRepo (LandingOf) and the merged rows of #5 and of readOnlyLinkedPull there
+// (MergedPullRequestOf); the pull requests of deliveryRepo and of gadgetsRepo whose answer is not
+// known (PullRequestsNotKnown); and each commit of branches on its branch
+// (Branches.ReadCommitOnBranch, with a branch cache and a carry of its own, and client). asked,
+// where not nil, gets each read's answeredReads name.
 func readOnlyQuestions(
 	ctx context.Context, pool *store.Pool, a *Attributor, client *githubapp.Client, branches [][3]string,
 	answers HeadAnswers, asked map[string]bool,
@@ -329,12 +347,14 @@ func readOnlyQuestions(
 		note("Attributor.NewestPullRequestHead")
 		lines = append(lines, fmt.Sprintf("%s newest found=%t %s#%d %.7s %s owed=%t",
 			issue, found, newest.Repo, newest.Number, newest.HeadSHA, newest.State, newest.ReadOwed))
-		merged, err := a.BaseBranchMergedFor(ctx, pool, issue, answers)
+		merges, err := a.MergeOfIssue(ctx, pool, issue, answers)
 		if err != nil {
 			return "", err
 		}
-		note("Attributor.BaseBranchMergedFor")
-		lines = append(lines, fmt.Sprintf("%s merged into %q", issue, merged))
+		note("Attributor.MergeOfIssue")
+		for _, merged := range merges {
+			lines = append(lines, fmt.Sprintf("%s merged %s", issue, describeMerged(merged)))
+		}
 		unread, err := a.LinkedHeadsUnread(ctx, pool, issue, answers)
 		if err != nil {
 			return "", err
@@ -344,12 +364,30 @@ func readOnlyQuestions(
 			lines = append(lines, fmt.Sprintf("%s linked unread %s#%d", issue, link.Repo, link.Number))
 		}
 	}
-	mergedIn, err := a.BaseBranchMergedIn(ctx, pool, readOnlyLinkingIssue, deliveryRepo, answers)
+	mergesIn, err := a.MergeIn(ctx, pool, readOnlyLinkingIssue, deliveryRepo, answers)
 	if err != nil {
 		return "", err
 	}
-	note("Attributor.BaseBranchMergedIn")
-	lines = append(lines, fmt.Sprintf("%s merged in %s into %q", readOnlyLinkingIssue, deliveryRepo, mergedIn))
+	note("Attributor.MergeIn")
+	for _, merged := range mergesIn {
+		lines = append(lines, fmt.Sprintf("%s merged in %s %s", readOnlyLinkingIssue, deliveryRepo, describeMerged(merged)))
+	}
+	landings, err := LandingOf(ctx, pool, deliveryRepo, "work", answers)
+	if err != nil {
+		return "", err
+	}
+	note("LandingOf")
+	for _, merged := range landings {
+		lines = append(lines, fmt.Sprintf("landed work in %s %s", deliveryRepo, describeMerged(merged)))
+	}
+	for _, number := range []int{5, readOnlyLinkedPull} {
+		merged, found, err := MergedPullRequestOf(ctx, pool, deliveryRepo, number, answers)
+		if err != nil {
+			return "", err
+		}
+		note("MergedPullRequestOf")
+		lines = append(lines, fmt.Sprintf("merged row %s#%d found=%t %s", deliveryRepo, number, found, describeMerged(merged)))
+	}
 	for _, repo := range []string{deliveryRepo, gadgetsRepo} {
 		notKnown, err := a.PullRequestsNotKnown(ctx, pool, repo, answers)
 		if err != nil {
@@ -366,6 +404,16 @@ func readOnlyQuestions(
 		lines = append(lines, fmt.Sprintf("%s@%.7s on %s: %v", branch[0], branch[2], branch[1], on))
 	}
 	return strings.Join(lines, "\n\t"), nil
+}
+
+// describeMerged is one merged pull request as readOnlyQuestions prints it.
+func describeMerged(merged MergedPullRequest) string {
+	at := "none"
+	if merged.MergedAt != nil {
+		at = merged.MergedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("%s#%d into %q head %.7s merge %.7s at %s rule %d",
+		merged.Repo, merged.Number, merged.BaseRef, merged.HeadSHA, merged.MergeCommitSHA, at, merged.AttributionRule)
 }
 
 // readOnlyStored is every row of each table a writer's read writes, whole, one row a line in one

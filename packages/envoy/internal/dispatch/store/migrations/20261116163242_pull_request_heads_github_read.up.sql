@@ -21,8 +21,9 @@
 -- as one no read of GitHub wrote: for every such row the stored time stops no read and wins
 -- against no answer, which is what clearing event_at would do for the two guards, without
 -- rewriting a row and without losing GitHub's own time where a row holds it (the results read
--- shows the time a head was learned by, and delivery.BaseBranchMergedFor orders merged rows by
--- it). The reconcile then reads each stored open or merged row from GitHub once more: no row
+-- shows the time a head was learned by; the reads of merges order merged rows by the time each
+-- merged, which merge_commit_sha and merged_at hold). The reconcile then reads each stored open
+-- or merged row from GitHub once more: no row
 -- stored before this release has texts (pull_request_texts, 20261117111040), so the facts line
 -- reads it (delivery.Reconcile.readFactsLine), at most delivery.FactsQueriesPerPass queries of
 -- delivery.FactsBatchSize pull requests for each installation a pass. An open row is also read

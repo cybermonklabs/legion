@@ -95,7 +95,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, root)
+		unresumable, err := Unresumable(ctx, e.store, tx, project, root)
 		if err != nil {
 			return nil, false, err
 		}
@@ -559,7 +559,8 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
 // a root in awaiting_person keeps its row through that wait (record.KeepsSlot), even where it
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
-// read the person's answer, and the controller is told.
+// read the person's answer. The controller is told nothing: its skill does nothing for the wait,
+// and the state names it (`phase: awaiting_person`, `waitingOn`) to any reader who asks.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
 	// The root's task keeps its place (moveTask): the wait comes before its first step, so the task
 	// has not started, and awaiting_person, like admitted, is a phase of the architect before it.
@@ -575,10 +576,6 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 	// a root that waits on a person carries the stamp of whatever last moved it before the
 	// wait, and the stall rule would read the wait itself as stillness of that age.
 	if err := e.store.MarkIssueMoved(ctx, tx, root.Key, e.now()); err != nil {
-		return err
-	}
-	waitReason := fmt.Sprintf("%s waits on a person (%s): it keeps its admission slot until they answer", root.Key, reason)
-	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice{Kind: record.AwaitingPersonNotice, Reason: waitReason}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: root waits on a person and keeps its admission slot", "issue", root.Key, "tree", root.Tree,

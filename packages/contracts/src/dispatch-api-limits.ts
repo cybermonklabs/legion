@@ -1,10 +1,12 @@
 /**
  * The Dispatch API's closed lists, caps and wire constants: the values the server enforces, the
  * clients refuse on, and `scripts/gen-go.ts` emits into Go, so each is one literal rather than a
- * server string and a client pattern that can drift apart. It imports nothing, so every other
- * module of the contract - and `dispatch-tools.ts`, whose tool schemas take the same caps - can
- * read it.
+ * server string and a client pattern that can drift apart. It imports only `http-status.ts`, which
+ * imports nothing, so every other module of the contract - and `dispatch-tools.ts`, whose tool
+ * schemas take the same caps - can read it.
  */
+
+import { outage } from "./http-status";
 
 /** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
 export const MAX_ISSUE_BLOCKERS = 20;
@@ -127,6 +129,21 @@ export const MAX_ISSUE_PAGE_LIMIT = 250;
  * `dispatch_issues` when it names no `limit`. Generated into Go as `contracts.DefaultIssuePageLimit`.
  */
 export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
+
+/**
+ * The most threads one page of an issue's threads holds: `limit` is 1 to this on
+ * `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity`. Generated into Go as
+ * `contracts.MaxThreadPageLimit`, which the server enforces.
+ */
+export const MAX_THREAD_PAGE_LIMIT = 100;
+
+/**
+ * The page size of `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity` when a caller names no `limit`.
+ * Generated into Go as `contracts.DefaultThreadPageLimit`.
+ */
+export const DEFAULT_THREAD_PAGE_LIMIT = 20;
 
 /**
  * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
@@ -336,6 +353,15 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
+
+/**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
  * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
  * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
@@ -353,19 +379,15 @@ export type IdempotencyLandedCode =
 
 /**
  * Whether an attempt Dispatch answered with `status` (and `code`, its error body's) ended without
- * Dispatch's verdict on the key, so a client asks again under the same key: a 5xx, a 408 or a 429
- * (none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or `409 IDEMPOTENCY_KEY_IN_FLIGHT`
- * (the first request under the key is still running). Any other answer is Dispatch's verdict, and
+ * Dispatch's verdict on the key, so a client asks again under the same key: an outage (`outage`: a
+ * 5xx, a 408 or a 429, none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or
+ * `409 IDEMPOTENCY_KEY_IN_FLIGHT` (the first request under the key is still running), which is
+ * Dispatch's keyed-write layer rather than an outage. Any other answer is Dispatch's verdict, and
  * the same key would be answered with it again. The page and the `dispatch` command both retry by
  * this one rule.
  */
 export function retriesUnderKey(status: number, code: string | undefined): boolean {
-  return (
-    status >= 500 ||
-    status === 408 ||
-    status === 429 ||
-    (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT)
-  );
+  return outage(status) || (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT);
 }
 
 /**

@@ -59,6 +59,8 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 	}
 
 	started := time.Now()
+	// The bound under test, not a wait: the dial must end at this one-second deadline, which the
+	// row tells from the bus's five-second connect timeout (above).
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)

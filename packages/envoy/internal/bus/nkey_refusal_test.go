@@ -3,7 +3,6 @@ package bus_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -38,8 +37,8 @@ func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
 	require.True(t, nc.IsConnected())
 
 	server.Restart(t, fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q } ]\n}\n", other))
-	testwait.WithinPolling(t, 30*time.Second, 100*time.Millisecond,
-		"the bus connection whose seed the hub refuses twice to close, as it does at the merge base", func() bool {
-			return nc.Status() == nats.CLOSED
-		})
+	testwait.Until(t, "the bus connection whose seed the hub refuses twice to close, as it does at the merge base", func() (nats.Status, bool) {
+		status := nc.Status()
+		return status, status == nats.CLOSED
+	})
 }

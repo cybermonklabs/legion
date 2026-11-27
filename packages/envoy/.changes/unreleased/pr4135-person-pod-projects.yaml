@@ -7,7 +7,8 @@ body: |-
   restricted member's pod enrolls nothing, naming projects or not, as that member's machine login
   does (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`); a full member's pod naming a project the person
   may not see is refused `403 PROJECT_NOT_VISIBLE`; while Dispatch cannot be reached, a person's
-  pod enrolls nothing (`503 MEMBER_KIND_UNCHECKABLE`). The pod's list, not its account's
+  pod enrolls nothing (`503 MEMBER_KIND_UNCHECKABLE`), unless Dispatch last answered the person a
+  full member, whose kept kind the broker serves meanwhile. The pod's list, not its account's
   `BROKER_EXCHANGE_ACCOUNTS` project, is what it names for a private project's secret, and each
   release asks Dispatch again whether the person still sees the project; once the setting no
   longer maps the account, the pod names no list of its own. So while both settings map a pod's

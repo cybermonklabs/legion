@@ -30,8 +30,22 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  envoy-go-race-api:
+  # The Dispatch API's tests run in three legs, all at the same time, each over the group of the
+  # package's tests .github/go-legs/packages/envoy/internal/dispatch/api.yaml gives it;
+  # .github/scripts/go_legs.py prints that group as an anchored -run before the package. A test
+  # in two groups fails every leg; a test in none runs in the group go_legs.py places it in, the
+  # same in every leg, with a warning (.github/ci-notes/ci-job-daemon-go.md says which is which).
+  # The job
+  # envoy-go-race-api below waits for the legs and keeps the check-run name.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api-legs:
+    name: envoy-go-race-api (leg ${{ matrix.leg }})
     runs-on: ubuntu-24.04-arm
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own tests.
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3]
     # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
@@ -73,15 +87,16 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
+      # go-envoy-race, restored only, as envoy-go-race restores it.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -105,8 +120,18 @@ jobs:
       # run sets, and a subprocess helper), prints database_skips=UNKNOWN and runs nothing when either
       # database variable above is unset, and on a failed run prints the failed tests' output, a
       # timed-out binary's goroutine dump among it.
+      # Each leg runs the group of this package's tests .github/go-legs.yaml gives its number,
+      # piped from .github/scripts/go_legs.py into the counter's go test as `-run=^(Name|...)$`
+      # before the package: the names are anchored, so a test whose name begins with another's
+      # runs in one leg only, and each test's subtests run with it. go_legs.py lists the
+      # package's tests under this step's own -race first: a test in two groups fails the step,
+      # and a test in none is placed with a warning. `set -o pipefail` fails the step when
+      # go_legs.py refuses, and `xargs -r` runs nothing on the empty output that leaves, where a
+      # plain xargs would run the counter once with no package, its whole default table.
       - name: Race-test the Dispatch API
-        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+        run: |
+          set -o pipefail
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -117,6 +142,46 @@ jobs:
           else
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
           fi
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race-api
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The check run `envoy-go-race-api / envoy-go-race-api`, which the one job carried before it ran
+  # in legs: it waits for every leg and passes only when all passed, so ci-ok, the merge queue and
+  # every reader of that name read what they read before. A leg's own failure has already posted
+  # its early ci-ok from the leg.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api:
+    needs: envoy-go-race-api-legs
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.envoy-go-race-api-legs.result }}" != success ]; then
+            echo "::error::envoy-go-race-api's legs ended ${{ needs.envoy-go-race-api-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "envoy-go-race-api's legs ended success"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

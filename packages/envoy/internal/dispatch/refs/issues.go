@@ -37,8 +37,10 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // through that issue, route an event short of its root, or leave an ancestor out of work above an
 // issue in work. The status change's plan moves each ancestor that is not in work into work, so
 // that the parent status rule (R24) holds. It names those ancestors to the caller who asked to
-// move them: its dry run and its answer list them, and its 403 PROJECT_SCOPE names one that is in
-// a project the caller's credential may not write.
+// move them: its dry run and its answer list them. It leaves out an ancestor in a private project
+// that the caller's credential does not name (access.CredentialCovers), and each ancestor above
+// it, which the plan reaches only through it: it does not move those ancestors and names them
+// nowhere, and the parent status rule still judges the private one.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -119,8 +121,10 @@ type IssueDescendant struct {
 // skipped an issue it may not see would leave that issue open under a done parent; and the check
 // of a move, which must see every issue of the moved subtree that Legion runs. The plan names the
 // issues it will move or unlink to the caller who asked to move or unlink them: its dry run and
-// its answer list them, and its 403 PROJECT_SCOPE names one that is in a project the caller's
-// credential may not write.
+// its answer list them. It leaves out an issue in a private project that the caller's credential
+// does not name (access.CredentialCovers), and each issue below it, which the plan reaches only
+// through it: it does not move or unlink those issues and names them nowhere, and the parent
+// status rule still judges the private one.
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
 // already, rather than join its keys back to issues: the planner has no estimate of a recursive

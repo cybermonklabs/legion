@@ -44,10 +44,12 @@
 #     daemon-go-race's command at 2b43effb in one 4-CPU pod with this image beside it
 #     (dispatch://INFRA-1075): internal/daemon 586.6 s with them on, 261.7 s and 281.3 s off.
 #   max_connections = 1000. The Dispatch lanes need testlimits.ServerConnections plus the
-#     superuser reserve of 3 (492 + 3 = 495 at this writing), which
-#     .github/scripts/pg-connection-ceiling.sh checks against the server in each such job. The
-#     rest is room for a job whose `go test -p` runs several package binaries against one service
-#     at once, each with pools of its own; the largest peaks the samplers read in the merge
+#     superuser reserve of 3 (980 + 3 = 983 at this writing), which
+#     .github/scripts/pg-connection-ceiling.sh checks against the server in each such job. That
+#     sum bounds what eight Dispatch processes may open; they open far fewer: cmd/dispatch with
+#     eight at once peaked at 182 and 184 client backends in one pod (and 109 and 133 with four).
+#     The rest is room for a job whose `go test -p` runs several package binaries against one
+#     service at once, each with pools of its own; the largest peaks the samplers read in the merge
 #     groups of 2026-11-25 were 121 client backends (envoy-go-race-api) and 111 (daemon-go-race).
 #     A connection slot costs the server shared memory, not a process: the read-back prints
 #     shared_memory_size so the cost of this number is in every job's log.

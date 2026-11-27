@@ -1,17 +1,19 @@
 // Oh My Pi's native modules for the tests that run the real binary under a fresh HOME
 // (omp-harness.ts's ompRoot). Oh My Pi extracts the one its CPU needs from its own binary into
 // .omp/natives/<version>-<digest prefix> (the version and the first 12 hexadecimal digits of the
-// embedded addons' digest) under any HOME that lacks it, about 124 MiB at the pin. It reads that
+// embedded addons' digest) under any HOME that lacks it, about 125 MiB at the pin. It reads that
 // directory from elsewhere only under a variable a test would have to set (getNativesDir,
 // @oh-my-pi/pi-natives native/natives-dir.js, in this order): PI_NATIVES_DIR or
 // OMP_DOWNLOAD_ROOT, which no pod or pane sets, then $XDG_CACHE_HOME/omp/natives when
 // $XDG_CACHE_HOME/omp exists, then natives under OMP_CONFIG_ROOT, which moves its whole config
 // root, else under ~/$PI_CONFIG_DIR, which is .omp unless set. Each HOME's natives are instead
-// hardlinks to one copy per binary under the user's cache directory.
+// hardlinks to one copy per binary under the user's cache directory, or symlinks to it where the
+// HOME is on another filesystem than the cache (`linkTree`).
 //
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
-// testbin.OMPHome): the same directory, name, layout, lock and fill, so a machine holds one copy per
-// pin for both languages and either fills it for the other. A change to one is a change to both.
+// testbin.OMPHome): the same directory, name, layout, lock, fill and links, so a machine holds one
+// copy per pin for both languages and either fills it for the other. A change to one is a change to
+// both.
 import {
   chmod,
   link,
@@ -22,6 +24,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import * as path from "node:path";
@@ -30,8 +33,8 @@ import * as path from "node:path";
 const caches = new Map<string, Promise<string>>();
 
 /**
- * Hardlinks `binary`'s natives into `home`'s .omp/natives from the shared copy, filling the copy
- * first if no process has. The environment the binary runs under must name no XDG_CACHE_HOME, as
+ * Links `binary`'s natives into `home`'s .omp/natives from the shared copy, filling the copy first
+ * if no process has. The environment the binary runs under must name no XDG_CACHE_HOME, as
  * omp-harness.ts's ompEnv names none: Oh My Pi keeps its natives under $XDG_CACHE_HOME/omp when
  * that directory exists.
  */
@@ -225,11 +228,26 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-/** Makes each directory under `source` at `destination` and hardlinks each file into it. */
-export async function linkTree(source: string, destination: string): Promise<void> {
+/**
+ * Makes each directory under `source` at `destination` and hardlinks each file into it. A file
+ * whose hardlink fails with EXDEV, since `destination` is on another filesystem than `source` (a
+ * TMPDIR on a data disk, the cache under $HOME), is a symlink to the cached file instead, so the
+ * HOME works wherever the machine puts the two. Oh My Pi stats a native through the link, finds it
+ * at its embedded size and loads it, and writes none. A symlink costs the HOME no bytes, where a
+ * copy would cost each HOME the whole native and a second copy on the HOME's filesystem would be
+ * one more cache that no hook of `bun test` or `go test` can remove. The cached files are
+ * read-only, so neither kind of link lets a write reach the copy, and Oh My Pi replaces a native
+ * only by renaming a file over it, which replaces the link. `hardLink` is `link(2)`, which a test
+ * replaces to fail with EXDEV on one filesystem.
+ */
+export async function linkTree(
+  source: string,
+  destination: string,
+  hardLink: (from: string, to: string) => Promise<void> = link
+): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o755 });
   for (const relative of await readdir(source, { recursive: true })) {
-    const from = path.join(source, relative);
+    const from = path.resolve(source, relative);
     const to = path.join(destination, relative);
     if ((await stat(from)).isDirectory()) {
       await mkdir(to, { recursive: true, mode: 0o755 });
@@ -237,12 +255,10 @@ export async function linkTree(source: string, destination: string): Promise<voi
     }
     await mkdir(path.dirname(to), { recursive: true, mode: 0o755 });
     try {
-      await link(from, to);
+      await hardLink(from, to);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-      throw new Error(
-        `link ${from} ${to}: the cache and the test's temporary directory are on different filesystems; point XDG_CACHE_HOME or TMPDIR so they share one`
-      );
+      await symlink(from, to);
     }
   }
 }

@@ -7,9 +7,10 @@ import { scriptFunctions } from "./script-functions";
 import { defaults } from "./stage4b-reservations";
 
 // Stage 4b's capacity reads (lib/stage4b-room.jq): the reservation an issue pod carries under the
-// run's overrides and defaults, how many of the run's pods the legion pool can place now, and
-// whether an instance type the pool allows can hold two of them, each run on fixtures shaped as
-// kubectl prints a NodePool, a node list and a pod list.
+// run's overrides and defaults, the room for the run's pods on the nodes its scheduling admits, and
+// whether one of those nodes can hold two of them, each run on fixtures shaped as kubectl prints a
+// node list and a pod list; and preflight's judgement of the room read (stage4b-sandbox-tree.sh
+// preflight_room), run as the script defines it.
 const lib = join(import.meta.dir);
 const include = 'include "stage4b-room";';
 const GiB = 1073741824;
@@ -57,15 +58,22 @@ ${call}`,
   return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() };
 }
 
-// node is a pool node NAME with ALLOCATABLE, Ready and schedulable unless EDIT says otherwise.
-function node(name: string, allocatable: { cpu: string; memory: string }, edit: object = {}) {
+// node is a node NAME with ALLOCATABLE and LABELS, Ready and schedulable unless EDIT says otherwise.
+function node(
+  name: string,
+  allocatable: { cpu: string; memory: string },
+  labels: Record<string, string> = {},
+  edit: object = {}
+) {
   return {
-    metadata: { name },
+    metadata: { name, labels },
     spec: {},
     status: { allocatable, conditions: [{ type: "Ready", status: "True" }] },
     ...edit,
   };
 }
+// tainted is EDIT for a node carrying TAINTS.
+const tainted = (...taints: object[]) => ({ spec: { taints } });
 // placed is a pod on NODE in PHASE whose containers request CONTAINERS and whose init containers
 // request INIT, each a {cpu, memory} with either side optional.
 function placed(
@@ -83,20 +91,25 @@ function placed(
     status: { phase },
   };
 }
-// requirement is one Karpenter requirement of a NodePool.
-const requirement = (key: string, operator: string, ...values: string[]) => ({
-  key,
-  operator,
-  values,
+// The labels the fixtures' nodes carry, and the run's selectors over them.
+const amd64 = { "kubernetes.io/arch": "amd64" };
+const general = { ...amd64, "example.com/class": "general" };
+// dedicated is the taint on the builds node, and the toleration that admits it.
+const dedicated = { key: "example.com/dedicated", value: "builds", effect: "NoSchedule" };
+const toleratesDedicated = { ...dedicated, operator: "Equal" };
+// gvisor is the RuntimeClass the run's pods run under, with SCHEDULING, or with none, which adds
+// nothing at admission.
+const gvisor = (scheduling?: object) => ({
+  metadata: { name: "gvisor" },
+  handler: "runsc",
+  ...(scheduling === undefined ? {} : { scheduling }),
 });
-// nodePool is a NodePool with REQUIREMENTS, LIMITS and the resources it already RUNS.
-function nodePool(requirements: object[], limits?: object, runs?: object) {
-  return {
-    spec: { template: { spec: { requirements } }, ...(limits === undefined ? {} : { limits }) },
-    status: runs === undefined ? {} : { resources: runs },
-  };
-}
-const cpuFloor = requirement("karpenter.k8s.aws/instance-cpu", "Gt", "3");
+// sandboxed is GKE Sandbox's gvisor RuntimeClass: its nodes carry its label and its taint.
+const sandboxTaint = { key: "sandbox.gke.io/runtime", value: "gvisor", effect: "NoSchedule" };
+const sandboxed = gvisor({
+  nodeSelector: { "sandbox.gke.io/runtime": "gvisor" },
+  tolerations: [{ ...sandboxTaint, operator: "Equal" }],
+});
 
 describe("issue_pod_reservation", () => {
   test("is the issue pod's one reservation, cores and bytes", () => {
@@ -129,7 +142,7 @@ describe("issue_pod_reservation", () => {
     ).toThrow("run_resources.issue.cpu is missing");
   });
 
-  test("preflight blocks a per-role reservation before the pool-room read", () => {
+  test("preflight blocks a per-role reservation before the room read", () => {
     expect(runPreflightReservation(stage4b, legacyPerRoleResources)).toEqual({
       code: 1,
       out: "CHECK preflight: BLOCKED: the run's issue pod reservation is invalid: jq: error (at <unknown>): run_resources.issue.cpu is missing\n",
@@ -182,32 +195,63 @@ describe("pod_request", () => {
   });
 });
 
-describe("pool_room", () => {
+describe("run_room", () => {
   const nodes = {
     items: [
       // 3.92 CPU and 15 GiB allocatable, a daemonset and an init-heavy pod on it: 1.92 CPU free.
-      node("small", { cpu: "3920m", memory: "15Gi" }),
+      node("small", { cpu: "3920m", memory: "15Gi" }, general),
       // Cordoned: never counted.
-      node("cordoned", { cpu: "7910m", memory: "30Gi" }, { spec: { unschedulable: true } }),
+      node("cordoned", { cpu: "7910m", memory: "30Gi" }, general, {
+        spec: { unschedulable: true },
+      }),
       // Being disrupted by Karpenter: never counted.
       node(
         "disrupted",
         { cpu: "7910m", memory: "30Gi" },
-        {
-          spec: { taints: [{ key: "karpenter.sh/disrupted", effect: "NoSchedule" }] },
-        }
+        general,
+        tainted({ key: "karpenter.sh/disrupted", effect: "NoSchedule" })
       ),
       // Not Ready: never counted.
       {
-        metadata: { name: "unready" },
+        metadata: { name: "unready", labels: general },
         spec: {},
         status: {
           allocatable: { cpu: "7910m", memory: "30Gi" },
           conditions: [{ type: "Ready", status: "False" }],
         },
       },
-      // 7.91 CPU and 60 GiB, one issue pod of another project on it and a finished one: room for two more.
-      node("large", { cpu: "7910m", memory: "60Gi" }),
+      // 7.91 CPU and 60 GiB, one issue pod of another project on it and a finished one: room for two
+      // more. Its class is not general.
+      node("large", { cpu: "7910m", memory: "60Gi" }, { ...amd64, "example.com/class": "builds" }),
+      // Tainted NoSchedule: counted only where the run tolerates the taint. The one node labelled
+      // example.com/dedicated-node.
+      node(
+        "builds",
+        { cpu: "7910m", memory: "30Gi" },
+        { ...general, "example.com/dedicated-node": "yes" },
+        tainted(dedicated)
+      ),
+      // Tainted NoExecute: counted only where the run tolerates the taint.
+      node(
+        "draining",
+        { cpu: "7910m", memory: "30Gi" },
+        general,
+        tainted({ key: "example.com/maintenance", effect: "NoExecute" })
+      ),
+      // Tainted PreferNoSchedule alone, which keeps no pod off: counted. An arm64 node.
+      node(
+        "preferred",
+        { cpu: "3920m", memory: "15Gi" },
+        { "kubernetes.io/arch": "arm64" },
+        tainted({ key: "example.com/spot", effect: "PreferNoSchedule" })
+      ),
+      // A GKE Sandbox node: counted only under a RuntimeClass that selects and tolerates it.
+      node(
+        "sandbox",
+        { cpu: "7910m", memory: "30Gi" },
+        { ...amd64, "sandbox.gke.io/runtime": "gvisor" },
+        tainted(sandboxTaint)
+      ),
     ],
   };
   const pods = {
@@ -222,106 +266,286 @@ describe("pool_room", () => {
       placed("cordoned", [{ cpu: "1", memory: "1Gi" }]),
     ],
   };
-  const room = (pool: object) =>
-    jq("pool_room($pool[0]; $nodes[0]; $pods[0]; $pod)", null, [
-      "--argjson",
-      "pool",
-      JSON.stringify([pool]),
-      "--argjson",
-      "nodes",
-      JSON.stringify([nodes]),
-      "--argjson",
-      "pods",
-      JSON.stringify([pods]),
-      "--argjson",
-      "pod",
-      JSON.stringify(defaultPod),
-    ]);
-
-  test("counts the pods that fit the Ready, schedulable, undisrupted nodes' free allocatable, and the pods the limits leave room for", () => {
-    const got = room(
-      nodePool([cpuFloor], { cpu: "16", memory: "70Gi" }, { cpu: "8", memory: "32Gi" })
+  // room is run_room under the scheduling the run's SELECTOR and TOLERATIONS carry once admitted
+  // under the RuntimeClass RUNTIME_CLASS.
+  const room = (selector: object, tolerations: object[] = [], runtimeClass: object = gvisor()) =>
+    jq(
+      "admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling | run_room($scheduling; $nodes[0]; $pods[0]; $pod)",
+      null,
+      [
+        "--argjson",
+        "selector",
+        JSON.stringify(selector),
+        "--argjson",
+        "tolerations",
+        JSON.stringify(tolerations),
+        "--argjson",
+        "runtime_class",
+        JSON.stringify(runtimeClass),
+        "--argjson",
+        "nodes",
+        JSON.stringify([nodes]),
+        "--argjson",
+        "pods",
+        JSON.stringify([pods]),
+        "--argjson",
+        "pod",
+        JSON.stringify(defaultPod),
+      ]
     );
+  const counted = (got: { free_nodes: { node: string; fits: number }[] }) =>
+    got.free_nodes.map((n) => [n.node, n.fits]);
+
+  test("with no selector, no tolerations and a RuntimeClass of no scheduling, counts every Ready, schedulable, undisrupted node with no NoSchedule or NoExecute taint, and decides nothing", () => {
+    const got = room({});
     expect(got.pod).toEqual(defaultPod);
-    expect(got.free_nodes.map((n: { node: string; fits: number }) => [n.node, n.fits])).toEqual([
+    expect(got.scheduling).toEqual({ selector: {}, tolerations: [] });
+    expect(counted(got)).toEqual([
       ["small", 0],
       ["large", 2],
+      ["preferred", 1],
     ]);
     expect(got.free_nodes[0].free.cpu).toBeCloseTo(1.92);
     expect(got.free_nodes[1].free).toEqual({ cpu: 5.91, memory: 52 * GiB });
-    // (16 - 8) / 2 and (70 - 32) GiB / 8 GiB both floor to 4.
-    expect(got.new_pods).toBe(4);
-    expect(got.room).toBe(6);
+    // It reads the nodes and decides nothing of the run: no room count, since the cluster may add
+    // nodes (preflight_room).
+    expect(Object.keys(got).sort()).toEqual(["free_nodes", "pod", "scheduling"]);
   });
 
-  test("is bounded by the tighter of the cpu and memory limits, never below 0", () => {
-    // The memory limit, (40 - 32) GiB / 8 GiB, leaves room for 1, below the cpu limit's 4.
+  test("with a selector, counts only the nodes that carry each of its labels at its value", () => {
+    expect(counted(room(amd64))).toEqual([
+      ["small", 0],
+      ["large", 2],
+    ]);
+    const got = room(general);
+    expect(counted(got)).toEqual([["small", 0]]);
+  });
+
+  test("with a selector that matches no node, keeps none, and admission refuses nothing", () => {
+    const got = room({ "kubernetes.io/arch": "s390x" });
+    expect(got.free_nodes).toEqual([]);
+    expect(got.scheduling).toEqual({
+      selector: { "kubernetes.io/arch": "s390x" },
+      tolerations: [],
+    });
+    // The one node it selects carries a taint the run does not tolerate.
+    const untolerated = room({ "example.com/dedicated-node": "yes" });
+    expect(untolerated.free_nodes).toEqual([]);
+    expect(untolerated.scheduling.conflicts).toBeUndefined();
+  });
+
+  test("counts a tainted node the run's tolerations admit, by key and value, Exists, and an empty effect", () => {
+    expect(counted(room(general, [toleratesDedicated]))).toEqual([
+      ["small", 0],
+      ["builds", 3],
+    ]);
     expect(
-      room(nodePool([cpuFloor], { cpu: "16", memory: "40Gi" }, { cpu: "8", memory: "32Gi" }))
-        .new_pods
-    ).toBe(1);
-    expect(room(nodePool([cpuFloor], { cpu: "6" }, { cpu: "8" })).new_pods).toBe(0);
-    expect(room(nodePool([cpuFloor], { cpu: "6" }, { cpu: "8" })).room).toBe(2);
+      counted(room(general, [{ key: "example.com/maintenance", operator: "Exists" }]))
+    ).toEqual([
+      ["small", 0],
+      ["draining", 3],
+    ]);
+    // Exists of no key tolerates every taint.
+    expect(counted(room(general, [{ operator: "Exists" }]))).toEqual([
+      ["small", 0],
+      ["builds", 3],
+      ["draining", 3],
+    ]);
   });
 
-  test("bounds nothing when the pool sets no limit", () => {
-    const got = room(nodePool([cpuFloor]));
-    expect(got.new_pods).toBeNull();
-    expect(got.room).toBeNull();
+  test("leaves out a tainted node a toleration of another value, key or effect does not admit", () => {
+    for (const toleration of [
+      { ...toleratesDedicated, value: "other" },
+      { ...toleratesDedicated, key: "example.com/other" },
+      { ...toleratesDedicated, effect: "NoExecute" },
+    ]) {
+      expect(counted(room(general, [toleration]))).toEqual([["small", 0]]);
+    }
+  });
+
+  test("adds the RuntimeClass's node selector to the run's, which narrows the nodes counted", () => {
+    const narrowed = room(amd64, [], gvisor({ nodeSelector: { "example.com/class": "general" } }));
+    expect(narrowed.scheduling.selector).toEqual(general);
+    expect(counted(narrowed)).toEqual([["small", 0]]);
+  });
+
+  test("where both name a label at the same value, admits the run's pods, which carry that label once", () => {
+    const got = room(
+      { "example.com/class": "general" },
+      [],
+      gvisor({ nodeSelector: { "example.com/class": "general" } })
+    );
+    expect(got.scheduling).toEqual({
+      selector: { "example.com/class": "general" },
+      tolerations: [],
+    });
+    expect(counted(got)).toEqual([["small", 0]]);
+  });
+
+  test("where both name a label at different values, admission refuses the run's pods, so it counts no node and names the conflict", () => {
+    // The run's selector alone selects the builds-class node.
+    expect(counted(room({ "example.com/class": "builds" }))).toEqual([["large", 2]]);
+    const conflict =
+      "runtimeClass.scheduling.nodeSelector[example.com/class] = general; pod.spec.nodeSelector[example.com/class] = builds";
+    const refused = room(
+      { "example.com/class": "builds" },
+      [],
+      gvisor({ nodeSelector: { "example.com/class": "general" } })
+    );
+    expect(refused.scheduling).toEqual({ conflicts: [conflict] });
+    expect(refused.free_nodes).toEqual([]);
+    // A label both name at the same value is no conflict: only the one at different values is named.
+    const mixed = room(
+      { ...amd64, "example.com/class": "builds" },
+      [],
+      gvisor({ nodeSelector: general })
+    );
+    expect(mixed.scheduling).toEqual({ conflicts: [conflict] });
+    expect(mixed.free_nodes).toEqual([]);
+  });
+
+  test("counts a tainted node the RuntimeClass's tolerations admit, beside the run's own", () => {
+    const maintenance = { key: "example.com/maintenance", operator: "Exists" };
+    const got = room(general, [maintenance], gvisor({ tolerations: [toleratesDedicated] }));
+    expect(got.scheduling.tolerations).toEqual([maintenance, toleratesDedicated]);
+    expect(counted(got)).toEqual([
+      ["small", 0],
+      ["builds", 3],
+      ["draining", 3],
+    ]);
+    // GKE Sandbox's RuntimeClass selects its tainted nodes and tolerates their taint, so they alone
+    // count, and without it none of them does.
+    expect(counted(room({}, [], sandboxed))).toEqual([["sandbox", 3]]);
+    expect(counted(room({})).map(([name]) => name)).not.toContain("sandbox");
+  });
+
+  // preflight is preflight_room, as the script defines it, judging ROOM, the read run_pod_room
+  // prints, for a run whose node_selector is SELECTOR, with the script's own blocked and note.
+  const preflight = (room: object, selector: object) => {
+    const fn = scriptFunctions(stage4b);
+    const run = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `room=$ROOM
+run_node_selector=$SELECTOR
+run_tolerations='[]'
+run_pods_at_once=4
+tree1_children=2
+check=preflight
+${fn("blocked")}
+${fn("note")}
+${fn("preflight_room")}
+preflight_room
+echo "pod_reservation=$pod_reservation admitted_scheduling=$admitted_scheduling"`,
+      ],
+      { env: { ...process.env, ROOM: JSON.stringify(room), SELECTOR: JSON.stringify(selector) } }
+    );
+    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() };
+  };
+  const noNodeNow =
+    "   [operator] no Ready, schedulable node the run's pods may use stands now, and the cluster may add one, so the run goes on: a wait whose pods a NodePool's limits starve ends BLOCKED there\n";
+
+  test("preflight notes the nodes the run's pods may use and runs on", () => {
+    const got = preflight(room(amd64), amd64);
+    expect(got.err).toBe("");
+    expect(got.code).toBe(0);
+    expect(got.out).toContain(
+      `   [operator] the 2 nodes the run's pods may use (the run's node_selector {"kubernetes.io/arch":"amd64"} and tolerations [], admitted under RuntimeClass gvisor as {"selector":{"kubernetes.io/arch":"amd64"},"tolerations":[]}), against the run's pods (2 CPU, 8 GiB each, an issue pod under this run's reservations; the free nodes bound nothing): [{"node":"small","fits":0,`
+    );
+    expect(got.out).not.toContain(noNodeNow);
+    expect(got.out).not.toContain("CHECK preflight: BLOCKED");
+    expect(got.out).toEndWith(
+      'pod_reservation=2 CPU, 8 GiB admitted_scheduling={"selector":{"kubernetes.io/arch":"amd64"},"tolerations":[]}\n'
+    );
+  });
+
+  test("preflight notes a cluster with no node the run's pods may use now and runs on, since the cluster may add one", () => {
+    // A cluster whose matching nodes are at zero: none is Ready now.
+    const selector = { "kubernetes.io/arch": "s390x" };
+    const got = preflight(room(selector), selector);
+    expect(got.err).toBe("");
+    expect(got.code).toBe(0);
+    expect(got.out).toContain("   [operator] the 0 nodes the run's pods may use");
+    expect(got.out).toContain(noNodeNow);
+    expect(got.out).not.toContain("CHECK preflight: BLOCKED");
+  });
+
+  test("preflight blocks a run whose pods admission refuses, naming the conflict, since no node the cluster has or adds takes one", () => {
+    const selector = { "example.com/class": "builds" };
+    const got = preflight(
+      room(selector, [], gvisor({ nodeSelector: { "example.com/class": "general" } })),
+      selector
+    );
+    expect(got.err).toBe("");
+    expect(got.code).toBe(1);
+    expect(got.out).toContain(
+      `CHECK preflight: BLOCKED: capacity: RuntimeClass gvisor's admission refuses every pod of the run, since its node selector names a label the run's node_selector {"example.com/class":"builds"} names at another value (runtimeClass.scheduling.nodeSelector[example.com/class] = general; pod.spec.nodeSelector[example.com/class] = builds), so no node the cluster has or adds can place the 4 pods of 2 CPU, 8 GiB the run needs at once: tree 1's root, its 2 children and tree 2's root\n`
+    );
+    expect(got.out).not.toContain("pod_reservation=");
   });
 });
 
-describe("two_pods_per_instance", () => {
-  const decide = (requirements: object[], pod = defaultPod) =>
-    jq("two_pods_per_instance($pod)", nodePool(requirements), [
-      "--argjson",
-      "pod",
-      JSON.stringify(pod),
-    ]);
-
-  test("says no node holds two when the instance-memory bound is under two pods' worth", () => {
-    const got = decide([
-      cpuFloor,
-      requirement("karpenter.k8s.aws/instance-cpu", "Lt", "9"),
-      requirement("karpenter.k8s.aws/instance-memory", "Lt", "16000"),
-    ]);
-    expect(got.fit).toBe(false);
-    expect(got.reason).toBe(
-      "the NodePool allows at most 15999 MiB an instance, under the 16384 two pods reserve, so no node holds two of the run's pods"
+describe("two_pods_per_node", () => {
+  const nodes = {
+    items: [
+      node("small", { cpu: "3920m", memory: "15Gi" }, general),
+      // Holds two pods of the default reservation, but carries a taint.
+      node("builds", { cpu: "7910m", memory: "30Gi" }, general, tainted(dedicated)),
+      // Holds two by cpu but not by memory.
+      node("narrow", { cpu: "7910m", memory: "15Gi" }, general),
+      // Holds two, but cordoned.
+      node("cordoned", { cpu: "7910m", memory: "60Gi" }, general, {
+        spec: { unschedulable: true },
+      }),
+      // Holds two; not general.
+      node("large", { cpu: "7910m", memory: "60Gi" }, amd64),
+    ],
+  };
+  const decide = (selector: object, tolerations: object[] = [], runtimeClass: object = gvisor()) =>
+    jq(
+      "admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling | two_pods_per_node($scheduling; $nodes[0]; $pod)",
+      null,
+      [
+        "--argjson",
+        "selector",
+        JSON.stringify(selector),
+        "--argjson",
+        "tolerations",
+        JSON.stringify(tolerations),
+        "--argjson",
+        "runtime_class",
+        JSON.stringify(runtimeClass),
+        "--argjson",
+        "nodes",
+        JSON.stringify([nodes]),
+        "--argjson",
+        "pod",
+        JSON.stringify(defaultPod),
+      ]
     );
+
+  test("says the pods may share a node when one of the nodes the run may use holds two in its allocatable", () => {
+    expect(decide({})).toEqual({
+      fit: true,
+      reason:
+        "node large's allocatable, 7.91 CPU and 60 GiB, holds two of the run's pods (4 CPU, 16 GiB), so the pods may share a node",
+    });
+    expect(decide(general, [toleratesDedicated])).toEqual({
+      fit: true,
+      reason:
+        "node builds's allocatable, 7.91 CPU and 30 GiB, holds two of the run's pods (4 CPU, 16 GiB), so the pods may share a node",
+    });
+    // The RuntimeClass's toleration admits the same node.
+    expect(decide(general, [], gvisor({ tolerations: [toleratesDedicated] })).fit).toBe(true);
   });
 
-  test("says no node holds two when the instance-cpu bound is under two pods' worth, an In list included", () => {
-    // No instance of the In list meets cpuFloor's Gt 3, so the NodePool carries the list alone.
-    const got = decide([requirement("karpenter.k8s.aws/instance-cpu", "In", "2", "3")]);
-    expect(got.fit).toBe(false);
-    expect(got.reason).toBe(
-      "the NodePool allows at most 3 vCPUs an instance, under the 4 two pods reserve, so no node holds two of the run's pods"
-    );
-  });
-
-  test("says the pods may share a node when both bounds hold two", () => {
-    const got = decide([
-      cpuFloor,
-      requirement("karpenter.k8s.aws/instance-cpu", "Lt", "17"),
-      requirement("karpenter.k8s.aws/instance-memory", "Lt", "65537"),
-    ]);
-    expect(got.fit).toBe(true);
-    expect(got.reason).toBe(
-      "the NodePool allows instances of up to 16 vCPUs and 65536 MiB, room for two pods (4 vCPUs, 16384 MiB) on paper, so the pods may share a node"
-    );
-  });
-
-  test("decides nothing when a dimension has no maximum", () => {
-    expect(decide([cpuFloor])).toEqual({
+  test("decides nothing, never false, when none of those nodes holds two", () => {
+    expect(decide(general)).toEqual({
       fit: null,
       reason:
-        "the NodePool bounds no maximum instance-cpu, so whether two of the run's pods (4 vCPUs, 16384 MiB) can share a node cannot be read from it",
+        "no node of the 2 the run's pods may use holds two of them (4 CPU, 16 GiB) in its allocatable, and a node the cluster adds may, so whether two of the run's pods can share a node cannot be read",
     });
-    expect(
-      decide([cpuFloor, requirement("karpenter.k8s.aws/instance-cpu", "Lt", "17")]).reason
-    ).toBe(
-      "the NodePool bounds no maximum instance-memory, so whether two of the run's pods (4 vCPUs, 16384 MiB) can share a node cannot be read from it"
-    );
+    expect(decide({ "kubernetes.io/arch": "s390x" }).fit).toBeNull();
   });
 });

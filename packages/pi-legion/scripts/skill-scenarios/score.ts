@@ -12,8 +12,25 @@
 //     legend saying what each count is. Each scenario's rule is on the function that scores it:
 //     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
 //     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+//     with its reason and left out of the counts (unscored, below). A scored scenario's run
+//     (owner-walk) is scored by the next command alone.
+//   score.ts runs <runs dir> --run <name>
+//     One run of a scored scenario (scored-runs.ts SCORED_SCENARIOS), <runs dir>/<name>, whose
+//     directory is owner-walk-<kind>-<form>-<family>-<label>-<n>. It writes model.txt (each model
+//     the run's transcript names, `<provider>/<model>`, one a line), then either the rig error of
+//     unscored, or the scenario's score (scored-runs.ts ownerWalk: score.json and judge-input.md),
+//     and the run's row.json (RunRow of scored-runs-contracts.ts: its clauses and its reach, or its
+//     rig error), which it also prints as one line of JSON. A rig error takes away the run's
+//     score.json and judge-input.md. Run it again once judgment.json is written: it reads the
+//     verdicts. Exit 0 for either row; 2 for a name of no scored scenario's run.
+//   score.ts cells <runs dir> <scenario>
+//     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
+//     each run's row.json and world.json; stderr names each run that is in no cell.
+//   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
+//     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
+//     prints: a case form's at <count>, and a control form's the control's own over every owner,
+//     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -39,7 +56,17 @@ import {
   QuestionsOutput,
   SharedRunsFile,
 } from "./judge-prompts";
+import { caseName, ownerWalkRun } from "./owner-walk";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+import {
+  caseCell,
+  cells,
+  modelProblem,
+  ownerWalk,
+  SCORED_SCENARIOS,
+  transcriptModels,
+} from "./scored-runs";
+import { RunRow, runPass } from "./scored-runs-contracts";
 import {
   CREATED,
   SessionEntry,
@@ -519,8 +546,8 @@ const FAILURE_12 = /\bcontent\s+(?:failures?\s+)?12\b|(?:^|[^\w.])12\s*\(\s*cont
 /** The gate entry outcomes that record a refusal no review stands behind (askgateReview). */
 const NOT_REVIEWS = ["unreadable", "unmarked"];
 
-/** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
- * one comment is the person's. The run's label is its profile: `off` was built with
+/** askgate: AskGate (the pi-envoy plugin's review of each gated Dispatch write) on a seeded issue
+ * whose one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
  * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
  * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with
@@ -1271,9 +1298,9 @@ function withPythonDispatch(code: string): string {
  * command ends the call, except one after `&&` that follows a shown refusal: the shell never ran
  * it.
  *
- * The refusals score does not rest on this attribution: the CLI logs each call it ran, refused or
- * not, in its ledger (refusalBlocks), and the attribution only says which command of a call a
- * ledger line belongs to. The output does not show:
+ * The refusals score does not rest on this attribution: the CLI logs each spec command it ran,
+ * refused or not, in its ledger (refusalBlocks), and the attribution only says which command of a
+ * call a ledger line belongs to. The output does not show:
  * - the end of another command's output (`cat`, `sed`, a `dispatch` command that succeeded), so a
  *   refusal after it could be that output's text;
  * - output a `$(…)` or a redirect to a file takes;
@@ -1484,11 +1511,12 @@ type LedgerLine = z.infer<typeof LedgerLine>;
  * The CLI logs every call it ran, refused or not, whatever the shell did with its output: a pipe,
  * `$(…)`, a loop or another program (Python's subprocess.run) hides nothing from it. A refusal the
  * CLI makes before the call reaches Dispatch is logged too whenever the call knows its session: a
- * refusal of a command's own arguments (`dispatch <command> was not called`, exit 1) under its
+ * refusal of a command's own arguments (`dispatch <command> was not called`, exit 2) under its
  * tool, and a usage refusal (`dispatch: …`, exit 2) under its tool, or under `dispatch` when the
- * CLI could not name the command. It logs no `--help` call that printed help and no dry run that
- * passed; a `--help` of an unknown command is a usage refusal and is logged. A run with
- * no ledger is the rig's fault: its CLI kept no record where the rig reads it. */
+ * CLI could not name the command. It logs no `--help` call that printed help, no dry run that
+ * passed and no `dispatch proxy` or `dispatch login` call; a `--help` of an unknown command is a
+ * usage refusal and is logged. A run with no ledger is the rig's fault: its CLI kept no record
+ * where the rig reads it. */
 function ledgerOf(runDir: string, session: string): LedgerLine[] {
   const state = { XDG_STATE_HOME: path.join(runDir, "home", ".local", "state") };
   const file = path.join(sessionDirectory(state, session), "results.jsonl");
@@ -1550,13 +1578,14 @@ function refusalBlocks(
   }));
   const logged = new Set<number>();
   for (const call of calls) {
-    // The commands of the call the CLI logged: every one but a `--help` that printed help, and a
-    // `--dry-run` only when the CLI refused it, whichever check did (the check of a text it reads,
-    // the argument check or the dry run's own step): the CLI logs every refusal and no dry run that
-    // passed. The CLI checks a command's name before its flags, so a help call of an unknown
-    // command is refused and logged like any usage refusal. A usage refusal (`dispatch: …`) is
-    // logged under tool `dispatch` when the CLI could not name the command, so the ledger line and
-    // the printed refusal are one refusal and match here.
+    // The commands of the call the CLI may have logged: every one but a `--help` that printed help,
+    // and a `--dry-run` only when the CLI refused it, whichever check did (the check of a text it
+    // reads, the argument check or the dry run's own step): the CLI logs every refusal and no dry
+    // run that passed. `dispatch proxy` and `dispatch login` are among them though the CLI logs
+    // neither, so no ledger line has their tool. The CLI checks a command's name before its flags,
+    // so a help call of an unknown command is refused and logged like any usage refusal. A usage
+    // refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could not name the
+    // command, so the ledger line and the printed refusal are one refusal and match here.
     const candidates = ops.flatMap((op, place) =>
       op.kind === "dispatch" &&
       op.step.id === call.step.id &&
@@ -2731,9 +2760,11 @@ const indented = (text: string, depth = 6) =>
  *     are not judged (SpecWork.unjudged: it pastes a sibling issue's spec) is printed with why, and
  *     the row is flagged `unjudged=N`: a write whose only check is one of these has no answer to
  *     whether the agent acted on what came back.
- *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's ledger,
- *     or a refusal a call's output shows that the ledger holds no line of: an `eval` cell's, whose
- *     kernel knows no session, or one the CLI made with no session) is followed by a call
+ *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's
+ *     ledger, which logs spec commands alone, or a refusal a call's output shows that the ledger
+ *     holds no line of: an `eval` cell's, whose kernel knows no session, one the CLI made with no
+ *     session, or a refusal of `dispatch login`'s arguments or of `dispatch proxy`'s session or
+ *     configuration, which the CLI logs nowhere) is followed by a call
  *     the ledger logs as a success, in a later tool call, with no skill file read between them. A
  *     call the agent made before the refusal came back is no fix: it cannot show that the agent
  *     fixed the call from the refusal alone. Each failing refusal is printed with its text.
@@ -3063,6 +3094,22 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** The error of the first turn whose model failed, or undefined: a turn is the messages from one
+ * user message to the next, and it failed when its last assistant message stopped on an error
+ * (`stopReason` "error"), so the agent got no answer it could act on. A failed request that a retry
+ * recovered from is followed by an answer in the same turn, and is no failure. */
+function modelFailure(entries: SessionEntry[]): string | undefined {
+  let last: SessionEntry["message"];
+  for (const entry of [...entries, undefined]) {
+    const role = entry?.message?.role;
+    if (role === "assistant") last = entry?.message;
+    if (entry !== undefined && role !== "user") continue;
+    if (last?.stopReason === "error") return last.errorMessage ?? "it names no error";
+    last = undefined;
+  }
+  return undefined;
+}
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3074,6 +3121,15 @@ function median(values: number[]): number {
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
+ *   - a turn of its agent ended on a model error (modelFailure), as when the model's route is down
+ *     and Oh My Pi's retries ran out. Oh My Pi writes each failed request as an assistant message,
+ *     so such a run has assistant messages and did nothing, and a score would count the route's
+ *     failure as the agent's;
+ *   - a scored scenario's run (SCORED_SCENARIOS) ran on another model than its label's: its
+ *     transcript names a model other than the `model` line of the built-from rig.sh copied into
+ *     the run, or two models, or its label's built-from names no `model` line to hold it to
+ *     (scored-runs.ts modelProblem). With SKILL_SCENARIOS_MODEL=standin, rig.sh records the model
+ *     stand-in as that line;
  *   - it compared the wrong text: a tool call of the run (its own or a subagent's) read a file under
  *     the other label's checkout, or a skill file (a path to skills/dispatch, skills/dispatch-first,
  *     skills/dispatch-writing-specs or skills/legion-worker) anywhere but `allowed`: its own run
@@ -3110,6 +3166,12 @@ function unscored(
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  const failed = modelFailure(entries);
+  if (failed !== undefined) return `a turn of the agent ended on a model error: ${failed}`;
+  if (SCORED_SCENARIOS.includes(scenario)) {
+    const problem = modelProblem(runDir, entries);
+    if (problem !== undefined) return problem;
+  }
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
@@ -3335,28 +3397,19 @@ function ranAt(dir: string, entries: SessionEntry[]): string {
     ? path.dirname(cwd)
     : dir;
 }
-function scoreRuns(runsDir: string, only: string | undefined) {
-  const rows: Row[] = [];
-  const errors: { run: string; key: string; reason: string }[] = [];
-  // Each label's checkout, as `rig.sh profile` recorded it.
+/** Each label's checkout, as `rig.sh profile` recorded it in <work>/profiles, beside the runs. */
+function labelsOf(runsDir: string): Map<string, string> {
   const profiles = path.join(path.dirname(runsDir), "profiles");
-  const labels = new Map(
+  return new Map(
     (existsSync(profiles) ? readdirSync(profiles) : [])
       .filter((label) => existsSync(path.join(profiles, label, "checkout")))
       .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
   );
-  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
-  // that does not parse is its own run's rig error, below.
-  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
-    try {
-      return [json(path.join(runsDir, run, "world.json"), World).head];
-    } catch {
-      return [];
-    }
-  });
-  // Every run's own Dispatch, keyed by its Postgres and database, with the runs that
-  // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
-  // not parse is its own run's rig error, below.
+}
+/** Every run's own Dispatch, keyed by its Postgres (the container's id, or the given server's URL
+ * with no password) and database, with the runs that name it. A run that records none is scored or
+ * not by unscored; a dispatch.json that does not parse is its own run's rig error. */
+function sharingOf(runsDir: string): Map<string, string[]> {
   const sharing = new Map<string, string[]>();
   for (const run of existsSync(runsDir) ? readdirSync(runsDir) : []) {
     let dispatch: string | undefined;
@@ -3367,6 +3420,90 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     }
     if (dispatch !== undefined) sharing.set(dispatch, [...(sharing.get(dispatch) ?? []), run]);
   }
+  return sharing;
+}
+/** The run's work directory and its own places, from the paths the run had when it ran, which its
+ * transcripts name, never those of a copy scored elsewhere (ranAt): its HOME (in its directory),
+ * its label's profile and checkout, each with a slash after it. */
+function ownPlaces(
+  dir: string,
+  label: string,
+  labels: Map<string, string>
+): { work: string; own: string[] } {
+  const ran = ranAt(dir, session(dir));
+  const work = path.dirname(path.dirname(ran));
+  const profile = path.join(work, "profiles", label);
+  return { work, own: [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`) };
+}
+
+/** `runs <runs dir> --run <name>`: one scored scenario's run, its model.txt, its score and its
+ * row.json (the header says each). */
+function scoreScoredRun(runsDir: string, name: string): void {
+  const named = ownerWalkRun(name);
+  const dir = path.join(runsDir, name);
+  if (named === undefined || !existsSync(dir)) {
+    console.error(
+      `score.ts: ${dir} is no run of a scored scenario (${SCORED_SCENARIOS.join(", ")}): its directory is owner-walk-<kind>-<form>-<family>-<label>-<n>`
+    );
+    process.exit(2);
+  }
+  const scenario = "owner-walk";
+  const common = { run: name, scenario, label: named.label, case: caseName(named.case) };
+  let row: RunRow;
+  try {
+    const labels = labelsOf(runsDir);
+    const models = transcriptModels(session(dir));
+    if (models.length > 0) writeFileSync(path.join(dir, "model.txt"), `${models.join("\n")}\n`);
+    const { own } = ownPlaces(dir, named.label, labels);
+    const reason = unscored(
+      dir,
+      scenario,
+      dispatchOf(dir),
+      named.label,
+      labels,
+      sharingOf(runsDir),
+      runCalls(dir),
+      own
+    );
+    if (reason === undefined) {
+      const score = ownerWalk(dir, name, named.label);
+      row = {
+        outcome: "scored",
+        ...common,
+        pass: runPass(score.clauses),
+        clauses: score.clauses,
+        reach: score.reach,
+      };
+    } else row = { outcome: "rig-error", ...common, error: reason };
+  } catch (error) {
+    row = {
+      outcome: "rig-error",
+      ...common,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (row.outcome === "rig-error")
+    for (const file of ["score.json", "judge-input.md"])
+      rmSync(path.join(dir, file), { force: true });
+  const text = JSON.stringify(RunRow.parse(row));
+  writeFileSync(path.join(dir, "row.json"), `${text}\n`);
+  console.log(text);
+}
+
+function scoreRuns(runsDir: string, only: string | undefined) {
+  const rows: Row[] = [];
+  const errors: { run: string; key: string; reason: string }[] = [];
+  const labels = labelsOf(runsDir);
+  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
+  // that does not parse is its own run's rig error, below.
+  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
+    try {
+      return [json(path.join(runsDir, run, "world.json"), World).head];
+    } catch {
+      return [];
+    }
+  });
+  const sharing = sharingOf(runsDir);
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
@@ -3401,13 +3538,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
-      // The paths the run had when it ran, which its transcripts name, never those of a copy
-      // scored elsewhere (ranAt).
-      const ran = ranAt(dir, session(dir));
-      const work = path.dirname(path.dirname(ran));
-      const profile = path.join(work, "profiles", label);
-      // The run's own skills: its HOME (in its directory), its label's profile and checkout.
-      const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
+      const { work, own } = ownPlaces(dir, label, labels);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
         const scored = score(dir, run, label, askCase);
@@ -3518,11 +3649,28 @@ if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
+  } else if (command === "runs" && rest.length === 3 && rest[1] === "--run") {
+    scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
+  } else if (command === "cells" && rest.length === 2) {
+    try {
+      for (const cell of cells(rest[0] ?? "", rest[1] ?? "")) console.log(JSON.stringify(cell));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  } else if (command === "cell" && rest.length === 6 && /^[1-9][0-9]*$/.test(rest[5] ?? "")) {
+    const [runsDir = "", scenario = "", stage = "", label = "", name = ""] = rest;
+    try {
+      console.log(caseCell(runsDir, scenario, stage, label, name, Number(rest[5])));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>]"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }

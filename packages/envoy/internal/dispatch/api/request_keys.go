@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -34,9 +35,10 @@ import (
 // One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
 // an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
-// and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
-// which says whether the first attempt ran. keyedWrites, which register wraps around every POST and
-// PATCH route, makes that retry safe with one request_keys row per key (migration 0137):
+// and both retry a failed fetch, a timeout, a 5xx, a 408, a 429 and a 409 KEY_IN_FLIGHT under it
+// (retriesUnderKey in packages/contracts), none of which says whether the first attempt ran.
+// keyedWrites, which register wraps around every POST and PATCH route, makes that retry safe with
+// one request_keys row per key (migration 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
@@ -345,17 +347,27 @@ type resolvedCaller struct {
 	err   error
 }
 
-// readOnlyCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
-// caller resolved and its credential is read-only (model.Credential.ReadOnly), and nil otherwise,
-// as it is for a context that carries no caller. The read-only gate (refuseReadOnlyToken) and a
-// results read (newComparisonReader) both read the caller by it: the one the gate found decided
-// or resolved itself.
-func readOnlyCredential(ctx context.Context) *model.Credential {
+// resolvedCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
+// caller resolved, and nil otherwise: for a context that carries no caller, for a caller whose
+// credential did not resolve (resolvedCaller.err), and for a caller with no credential. It is the
+// one read of the caller the two token gates share: readOnlyCredential and approveOnlyRequest.
+func resolvedCredential(ctx context.Context) *model.Credential {
 	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
-	if caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+	if caller.err != nil {
 		return nil
 	}
 	return caller.actor.Credential
+}
+
+// readOnlyCredential is the credential of the caller ctx carries where that caller resolved and
+// its credential is read-only (model.Credential.ReadOnly), and nil otherwise (resolvedCredential).
+// The read-only gate (refuseReadOnlyToken) and a results read (newComparisonReader) both read the
+// caller by it: the one the gate found decided or resolved itself.
+func readOnlyCredential(ctx context.Context) *model.Credential {
+	if credential := resolvedCredential(ctx); credential != nil && credential.ReadOnly {
+		return credential
+	}
+	return nil
 }
 
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
@@ -1454,12 +1466,12 @@ func versionNumber(version any) (int64, bool) {
 	return value, err == nil
 }
 
-// storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
-// whether the write could succeed, and a 401 (a session that lapsed mid-write), a 408 and a 429 say
-// only that this attempt was not heard: each leaves the next attempt to run the request again.
+// storedStatus reports whether an answer of this status is a key's answer. An outage
+// (httpoutage.Is: a 5xx, which says nothing of whether the write could succeed, a 408 or a 429)
+// and a 401 (a session that lapsed mid-write) say only that this attempt was not heard: each
+// leaves the next attempt to run the request again.
 func storedStatus(status int) bool {
-	return status < http.StatusInternalServerError && status != http.StatusUnauthorized &&
-		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return !httpoutage.Is(status) && status != http.StatusUnauthorized
 }
 
 // settleRequestKey records what claim's handler answered: a stored status finishes the row with

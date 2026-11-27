@@ -1065,6 +1065,7 @@ func TestIssueCreateIgnoresAMemberItDoesNotDeclare(t *testing.T) {
 // so a client that sends one is found. encoding/json matches a member to a field ignoring case, so
 // `Title` is the declared `title`, not an ignored member.
 func TestAnIgnoredMemberIsLoggedAtDebugWithItsRoute(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",

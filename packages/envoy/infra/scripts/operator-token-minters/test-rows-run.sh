@@ -58,7 +58,9 @@
 #        pass;
 #   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2;
 #   (da) no line of the check, its parts or this test's own files reads a status from a pipe into
-#        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match.
+#        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match;
+#   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
+#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -652,4 +654,25 @@ if row da; then
   [ "$found" = "$control:1 $control:3 " ] ||
     fail "quiet_pipes found ${found:-nothing} in its control, where lines 1 and 3 alone pipe into a grep that stops early"
   passed "(da) no line of the check, its parts or this test pipes into a grep that stops early (-q or -m) for its status; the control finds both forms and neither allowed one"
+fi
+
+# --- (db) A pick of the reviews to judge that fails. judge_reviews picks a cluster's allowed and
+# errored reviews out of the answer with one awk, and both its callers run it as a condition, where
+# errexit is off. A copy of the script whose pick runs under `ulimit -f 2`, as on a disk that fills,
+# has the awk killed by SIGXFSZ after 2 KiB, in a world where legion/worker is bound to cluster-admin
+# so that its allowed reviews are far more than that. The RBAC step reads UNKNOWN naming the pick,
+# the run exits 2, and the step does not pass. Run by hand, the control is judge_reviews as at
+# ac0627c8, which read no status of the awk: it judged the reviews written before the kill alone,
+# and the run exited 1 with legion/worker's findings cut short (0 had none been written). ---
+if row db; then
+  base_world
+  cluster_admin operator-cluster "$(sa_subject legion worker)"
+  script="$(script_copy db)"
+  plant "$(dirname "$script")/operator-token-minters/reviews.sh" "  awk -F\"\$US\" '\$1 != \"witness\" && " \
+    "  small_awk -F\"\$US\" '\$1 != \"witness\" && "
+  printf '%s\n' 'small_awk() { (ulimit -f 2 && exec awk "$@"); }' >>"$(dirname "$script")/operator-token-minters/reviews.sh"
+  run_script="$script" run
+  want_rbac_unknown "the reviews to judge could not be picked out of the API server's answer (awk exited " \
+    "a pick of the reviews to judge stopped by a file size limit"
+  passed "(db) a pick of the reviews to judge that stops part way reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
 fi

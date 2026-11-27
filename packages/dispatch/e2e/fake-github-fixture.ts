@@ -22,6 +22,8 @@ export interface FakePull {
    *  describes a pull request that attributes nobody. */
   readonly head_repo?: string;
   readonly base_ref?: string;
+  /** When the pull request last changed. Without it, every route answers updatedOf's default,
+   *  so a pull request read over REST and over GraphQL reads the same. */
   readonly updated_at?: string;
   /** The commit GitHub made when the pull request merged, which a merged one answers. */
   readonly merge_commit_sha?: string;
@@ -186,12 +188,17 @@ export function countCheckRunRead(repo: string, sha: string): void {
  *  repository the path names, the installation a token is minted for, and, for a GraphQL query,
  *  what it asks for: each pull request it asks by number (`acme/tools#22`), with `(absence)` where
  *  it asks the count of the repository's pull requests too, or `search` for a query that asks for
- *  no pull request by number. */
+ *  no pull request by number. A listing of an installation's repositories asks its page size
+ *  (`per_page=1`, the rate reading's; the reconcile lists 100 a page). `token` is the installation
+ *  token the call carried, and `minted` the token a mint answered: each mint answers a token of
+ *  its own, so a reader can tell which calls a mint's token served. */
 interface Call {
   readonly route: string;
   readonly repo?: string;
   readonly installation?: number;
   readonly asks?: string;
+  readonly token?: string;
+  readonly minted?: string;
 }
 
 /** The most calls the log keeps; later ones are counted in `callsDropped` alone. */
@@ -209,15 +216,28 @@ export function logCall(call: Call): void {
   else callsDropped++;
 }
 
-/** The call of `method` at `pathname`, its repository, numbers and commits written as names, and
- *  the installation of a token's mint. */
-export function callOf(method: string, pathname: string): Call {
+/** The call of `method` at `pathname`, its repository, numbers and commits written as names, the
+ *  page size a listing of an installation's repositories asks (`search`, the URL's query), the
+ *  installation token the call carried (`token`, tokenOf), and the installation of a mint the
+ *  outage answers. A mint GitHub answers is logged where it is answered, with the token it mints. */
+export function callOf(
+  method: string,
+  pathname: string,
+  search: URLSearchParams,
+  token: string | undefined
+): Call {
   const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
   const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
   const route = `${method} ${path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}")}`;
-  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route };
+  const carried = token === undefined ? {} : { token };
+  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route, ...carried };
+  if (pathname === "/installation/repositories") {
+    return { asks: `per_page=${search.get("per_page") ?? ""}`, route, ...carried };
+  }
   const minted = pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
-  return minted === null ? { route } : { installation: Number(minted[1]), route };
+  return minted === null
+    ? { route, ...carried }
+    : { installation: Number(minted[1]), route, ...carried };
 }
 
 // The status GitHub answers every call with while it is down, or undefined while it answers.

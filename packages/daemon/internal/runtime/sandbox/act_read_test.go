@@ -34,6 +34,7 @@ func readAct(g *rig, pod string) (runtime.ActState, bool, error) {
 }
 
 func TestAReplacementsRecordIsReadUnderItsPodsTurnFromTheAPIServer(t *testing.T) {
+	t.Parallel()
 	t.Run("a launch holds the pod's launch turn", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))

@@ -660,8 +660,14 @@ export function createAsk(
 }
 
 /** Every ask on the issue, whatever its state (the route's default `state=all`). */
-export function listIssueAsks(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+export async function listIssueAsks(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/asks answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function createProjectDocument(
@@ -872,16 +878,22 @@ export function getCommentHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/comments/{id}/history", { params: { id } }, options);
 }
 
-export function listComments(
+export async function listComments(
   issue: string,
   artifact: string | undefined = undefined,
   options: ApiOptions = {}
 ) {
-  return get(
+  const answered = await get(
     "/api/v1/issues/{key}/comments",
     { params: { key: issue }, query: { artifact } },
     options
   );
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/comments answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 /** One comment and its reply chain, as the server holds them now: its anchor's quote included. */
@@ -1114,8 +1126,14 @@ export function getBroadcast(id: string, options: ApiOptions = {}) {
 
 /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each with
  *  its replies, as the Conversation reads them. */
-export function listIssueMessages(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+export async function listIssueMessages(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/messages answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function getMessage(issue: string, messageID: string, options: ApiOptions = {}) {

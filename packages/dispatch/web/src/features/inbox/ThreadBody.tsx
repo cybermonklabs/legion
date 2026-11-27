@@ -6,9 +6,9 @@
  * is shown, every message rendered whole with `MarkdownBody`, laid out by the one order-and-
  * collapse rule (`threads/thread-layout.ts`), each message the reader has not read marked
  * **New**, and ending in the composer of the thread's own page, so a reply sent from here goes
- * where one sent there goes. The reading pane draws it, below 1280 px and in the drawer the card
- * draws it, and inside a document it is drawn in the slot under the block it is anchored to
- * (`ThreadPane.tsx`).
+ * where one sent there goes. The reading pane draws it - beside the list from 1280 px, in place
+ * of the list below - the drawer's card draws it, and inside a document it is drawn in the slot
+ * under the block it is anchored to (`ThreadPane.tsx`).
  *
  * What is unread is the row's own answer, never a count this module works out: a Reply row
  * carries the thread's read mark (`read_through`) and an Agent row the ids of its unread replies.

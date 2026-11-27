@@ -3,8 +3,13 @@
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
                'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
-               f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
+               f"daemon-pane.test.ts and daemon-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
+    script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
+               'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
+               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh); "
+               f"in {at('pi-legion', 'Test pi-legion')}, label-texts.test.ts runs this line with a planted go, and no row compiles the three packages",
+               DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test"),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),
@@ -62,6 +67,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
+    ("packages/pi-legion/scripts/skill-scenarios/label-texts.sh", "`packages/pi-legion/scripts/skill-scenarios/label-texts.sh#compile` runs go test -c of three daemon packages"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")

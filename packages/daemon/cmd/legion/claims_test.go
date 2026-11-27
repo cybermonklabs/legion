@@ -989,7 +989,7 @@ func TestClaimsFindsTheDaemonFromTheConfiguration(t *testing.T) {
 	d := newOperatorDaemon(t)
 	dir := t.TempDir()
 	config := filepath.Join(dir, "legion.yaml")
-	body := fmt.Sprintf("project: demo\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
+	body := fmt.Sprintf("project: DEMO\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the config: %v", err)
 	}
@@ -1048,7 +1048,9 @@ func TestClaimsRefusesAMissingFlagBeforeReachingTheDaemon(t *testing.T) {
 
 // The bearer is read by config.ReadPrivateSecretPointer's rules: a token file that cannot be read,
 // holds nothing but whitespace, is not a regular file, or that its group or others can read fails
-// the command naming the path, and nothing is sent.
+// the command, and nothing is sent. A file that was opened is named by its path; one that could not
+// be read by the flag and the system's reason alone, since the flag is where a person who pasted
+// the token itself puts it.
 func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 	t.Parallel()
 	files := map[string]func(t *testing.T) string{
@@ -1100,8 +1102,12 @@ func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 				}
 				want := "legion claims " + sub[0] + ": --operator-token-file "
 				if !strings.HasPrefix(errb, want+"names "+path+", which ") &&
-					!strings.HasPrefix(errb, want+path+" is readable by its group or others (mode 0640); chmod 0600 it") {
-					t.Fatalf("stderr = %q, want it to start %q and name the path", errb, want)
+					!strings.HasPrefix(errb, want+path+" is readable by its group or others (mode 0640); chmod 0600 it") &&
+					!strings.HasPrefix(errb, want+"names a file that could not be read: ") {
+					t.Fatalf("stderr = %q, want it to start %q and name the path or the reason", errb, want)
+				}
+				if strings.Contains(errb, "could not be read") && strings.Contains(errb, path) {
+					t.Fatalf("stderr = %q names the path of a file that could not be read", errb)
 				}
 				d.wantNothingReached()
 			})
@@ -1169,12 +1175,16 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 }
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
-// operator reading `legion claims list` does not read it as a suspension someone must lift. Every
-// other claim prints the state it is in, suspended by an operator among them. None of the three
-// is in an update round, in a tool call or refused by the leak check, so each line ends in the
-// round, head, call and leak-check cause columns' `-`, and none carries a failure record — the
-// failed one is a claim served by a daemon older than that record — so each prints `-` for the
-// cause beside its state as well (TestTheClaimsListPrintsTheCause reads a line that carries one).
+// operator reading `legion claims list` does not read it as a suspension someone must lift. A
+// claim of an agent the project's controller suspended says so too (#4065), so the operator
+// tells that suspension from its own: the controller's resume_agent lifts the controller's
+// suspension, where the operator's own is the operator's alone to lift. Every other claim prints
+// the state it is in, suspended by an operator among them. None of the four is in an update
+// round, in a tool call or refused by the leak check, so each line ends in the round, head, call
+// and leak-check cause columns' `-`, and none carries a failure record — the failed one is a
+// claim served by a
+// daemon older than that record — so each prints `-` for the cause beside its state as well
+// (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1193,6 +1203,12 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
 				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "suspended by the controller",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-211-merger", Role: "merger", Issue: "LEGION-211",
+				State: "suspended", SuspendedBy: "controller", Generation: 4, PluginContract: api.DaemonAPIVersion()},
+			want: "legion-legion-legion-211-merger merger LEGION-211 suspended:controller - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "failed",

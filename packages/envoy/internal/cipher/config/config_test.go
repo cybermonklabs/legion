@@ -1888,6 +1888,90 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 	}
 }
 
+// TestSecondPrefixSetting pins BROKER_SECRETS_SECOND_PREFIX, the prefix a store move leaves or
+// reaches. Unset or empty, Load reads none, on either store, and the broker is the one it was. A
+// Secret Manager prefix beside gcp-secret-manager, in another project or the same one, is read as
+// it is. Load refuses to start, naming the setting and the rule it breaks: any value under
+// aws-secrets-manager, saying that an AWS source is an ARN a move always changes; a value
+// secrets.ValidGCPPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
+// with BROKER_SECRETS_PREFIX, or that BROKER_SECRETS_PREFIX starts with, since a secret under the
+// longer of two such prefixes is under both.
+//
+// The named reverts: drop the store check, and the aws-secrets-manager row starts; drop the nesting
+// check, and the two nested rows start; check only that the two differ, and the nested rows start
+// too.
+func TestSecondPrefixSetting(t *testing.T) {
+	const (
+		prefix  = "projects/000000000000/secrets/agent-secrets-"
+		keyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	)
+	gcp := func() map[string]string {
+		e := validEnv()
+		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_PREFIX"] = prefix
+		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
+		e["BROKER_SECRETS_KMS_KEY_NAME"] = keyName
+		return e
+	}
+	with := func(e map[string]string, second string) map[string]string {
+		e["BROKER_SECRETS_SECOND_PREFIX"] = second
+		return e
+	}
+
+	for name, e := range map[string]map[string]string{
+		"gcp, unset":  gcp(),
+		"gcp, empty":  with(gcp(), ""),
+		"aws, unset":  validEnv(),
+		"aws, empty":  with(validEnv(), ""),
+		"gcp, absent": func() map[string]string { e := gcp(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
+	} {
+		cfg, err := Load(env(e))
+		if err != nil || cfg.SecretsSecondPrefix != "" {
+			t.Fatalf("Load(%s) = second prefix %q, %v; want none, and the broker it was", name, cfg.SecretsSecondPrefix, err)
+		}
+	}
+	for _, second := range []string{
+		"projects/111111111111/secrets/cipher-",
+		"projects/000000000000/secrets/cipher-",
+	} {
+		cfg, err := Load(env(with(gcp(), second)))
+		if err != nil || cfg.SecretsSecondPrefix != second || cfg.SecretsPrefix != prefix {
+			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q, %v; want both read as given", second, cfg.SecretsSecondPrefix, cfg.SecretsPrefix, err)
+		}
+	}
+
+	for name, row := range map[string]struct {
+		env  map[string]string
+		says []string
+	}{
+		"under aws-secrets-manager": {with(validEnv(), "projects/111111111111/secrets/cipher-"),
+			[]string{"BROKER_SECRETS_STORE=gcp-secret-manager", "aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
+		"equal to BROKER_SECRETS_PREFIX": {with(gcp(), prefix),
+			[]string{"is BROKER_SECRETS_PREFIX itself", prefix}},
+		"starting with BROKER_SECRETS_PREFIX": {with(gcp(), prefix+"old-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", prefix + "old-"}},
+		"that BROKER_SECRETS_PREFIX starts with": {with(gcp(), "projects/000000000000/secrets/agent-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", "projects/000000000000/secrets/agent-"}},
+		"that secrets.ValidGCPPrefix refuses": {with(gcp(), "projects/example-project/secrets/cipher-"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/", "projects/example-project/secrets/cipher-"}},
+		"with no trailing dash": {with(gcp(), "projects/111111111111/secrets/cipher"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/"}},
+	} {
+		cfg, err := Load(env(row.env))
+		if err == nil {
+			t.Fatalf("Load(a second prefix %s) accepted it as %q; want a refusal naming BROKER_SECRETS_SECOND_PREFIX", name, cfg.SecretsSecondPrefix)
+		}
+		if !strings.HasPrefix(err.Error(), "BROKER_SECRETS_SECOND_PREFIX") {
+			t.Fatalf("Load(a second prefix %s) = %v; want a refusal opening with BROKER_SECRETS_SECOND_PREFIX", name, err)
+		}
+		for _, said := range row.says {
+			if !strings.Contains(err.Error(), said) {
+				t.Fatalf("Load(a second prefix %s) = %v; want the refusal to say %q", name, err, said)
+			}
+		}
+	}
+}
+
 // TestLoadRefusesTheDatabasePassword pins that the broker substitutes no database password into
 // its URL: a deployment still setting BROKER_DATABASE_PASSWORD, one whose BROKER_DATABASE_URL still
 // names the ${BROKER_DATABASE_PASSWORD} placeholder, and one doing both refuse to start, naming the
@@ -2933,13 +3017,48 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}
+
+// Every issuer setting the broker reads refuses a value holding a credential, naming the setting
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
+func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	pairs := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":        "BROKER_K8S_OIDC_AUDIENCE",
+		"BROKER_EXCHANGE_GITHUB_ISSUER": "BROKER_EXCHANGE_GITHUB_AUDIENCE",
+	}
+	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
+		for shape, value := range map[string]string{
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
+		} {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				e := validEnv()
+				e[setting] = value
+				if audience, paired := pairs[setting]; paired {
+					e[audience] = "agent-secrets"
+				}
+				_, err := Load(env(e))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: ") || strings.Contains(err.Error(), user[:10]) || strings.Contains(err.Error(), secret[:10]) {
+					t.Fatalf("Load = %v, want a refusal naming %s and no part of the credential", err, setting)
+				}
+			})
 		}
 	}
 }
@@ -3441,6 +3560,54 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// TestHoldRequiresDeadlineIsAnOnOffSetting pins BROKER_HOLD_REQUIRES_DEADLINE, which an IAP
+// deployment's broker sets, read as the broker's other on/off settings are: unset, or blank, is
+// off, every spelling strconv.ParseBool reads is taken, and anything else refuses the start naming
+// the setting rather than being taken as off, which would serve an IAP deployment's people with no
+// deadline. It needs the hold it rules, which BROKER_PROJECT_ACCESS_URL builds: set true without
+// that URL, the start is refused naming both settings, since a broker that asks no Dispatch holds
+// nobody, deadline or not; set false without it, the start goes on.
+//
+// Controls: Load leaving HoldRequiresDeadline unread ("true" reads as off, and the test fails
+// naming it); Load taking it true with no BROKER_PROJECT_ACCESS_URL (the start goes on, and the
+// test fails naming the refusal it wanted).
+func TestHoldRequiresDeadlineIsAnOnOffSetting(t *testing.T) {
+	withHold := func() map[string]string {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766"
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		return e
+	}
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", false}, {"  ", false}, {"false", false}, {"0", false}, {"true", true}, {" TRUE ", true}, {"1", true}} {
+		e := withHold()
+		if c.value != "" {
+			e["BROKER_HOLD_REQUIRES_DEADLINE"] = c.value
+		}
+		cfg, err := Load(env(e))
+		if err != nil || cfg.HoldRequiresDeadline != c.want {
+			t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = (%t, %v); want %t", c.value, cfg.HoldRequiresDeadline, err, c.want)
+		}
+	}
+	e := withHold()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "required"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "must be true or false") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = %v; want a refusal naming the setting", "required", err)
+	}
+
+	e = validEnv()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "true"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=true with no BROKER_PROJECT_ACCESS_URL) = %v; want a refusal naming both settings: that broker holds nobody", err)
+	}
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "false"
+	if cfg, err := Load(env(e)); err != nil || cfg.HoldRequiresDeadline {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=false with no BROKER_PROJECT_ACCESS_URL) = (%t, %v); want the start to go on with it off", cfg.HoldRequiresDeadline, err)
 	}
 }
 

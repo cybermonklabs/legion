@@ -17,6 +17,7 @@ import (
 // controller pod's single-role launcher passes (internal/launcher's reapingShim). Without either
 // flag neither is set.
 func TestTheWorkerShimWarmsWithTheWorkspacesWarmUp(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	token := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(token, []byte("boot-token-for-the-pane"), 0o600); err != nil {
 		t.Fatal(err)

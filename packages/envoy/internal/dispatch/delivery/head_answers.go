@@ -15,13 +15,13 @@ import (
 
 // A read-only caller's read of an issue's results (api's comparisonReader, plan D32) asks GitHub
 // what a writer's read made at the same moment asks and answers what it answers, and stores
-// nothing. Its read-throughs (AnswerCommitPulls, AnswerLinkedHead) run the writer's own code
+// nothing. Its read-throughs (AnswerCommitsPulls, AnswerLinkedHead) run the writer's own code
 // (readThroughCommitPulls, refreshPullRequestHead, storePullRequestFacts) with a facts that keeps
 // each write for the request instead of the pool (HeadAnswers): every statement of that code runs
 // in a transaction of the pool that first makes the writes the request kept before it, in their
 // order, and is rolled back. A write it makes is kept, and every later read of the request, the
-// reads of the results path among them (HeadsAttributedTo, NewestPullRequestHead,
-// BaseBranchMergedFor, BaseBranchMergedIn, PullRequestsNotKnown, LinkedHeadsUnread, and the read
+// reads of the results path among them (HeadsAttributedTo, NewestPullRequestHead, MergeOfIssue,
+// MergeIn, LandingOf, MergedPullRequestOf, PullRequestsNotKnown, LinkedHeadsUnread, and the read
 // of a commit's place on a branch, Branches.ReadCommitOnBranch), runs in such a transaction too
 // (HeadAnswers.Read). So each read sees the rows a writer's read would see at that place, by the
 // writer's own statements and triggers, and no copy of any rule of the write exists to drift from
@@ -125,7 +125,7 @@ func (a *HeadAnswers) keep(
 }
 
 // facts is where one read of GitHub keeps what it learned: the pool, for every writer, and for a
-// read-only caller's results read the request's answers (AnswerCommitPulls, AnswerLinkedHead),
+// read-only caller's results read the request's answers (AnswerCommitsPulls, AnswerLinkedHead),
 // whose every statement runs in a transaction of the pool that is rolled back (HeadAnswers).
 type facts struct {
 	pool    *store.Pool

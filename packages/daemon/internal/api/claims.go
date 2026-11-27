@@ -48,11 +48,13 @@ type Supervisor interface {
 // names the launch; the registration is that launch's machine's to accept or refuse, and an
 // accepted one is issued a secret whose hash the machine has persisted before this answers — a
 // store that refuses the write is a 500 with no secret, so no agent holds a secret the daemon
-// forgot. A launch of the daemon's own controller registers as the project's controller too
-// (registerLaunchedController), and only under `controller: daemon`. A token no launch minted may
-// be the controller capability `legion controller start` fetched, which registers the project's
-// controller (registerController), and only under `controller: operator`: a daemon that launches
-// its own controller registers no other, so such a token is the unknown one it is.
+// forgot. The answer names the session the registering session replaces, if any
+// (replacedSession). A launch of the daemon's own controller registers as the project's
+// controller too (registerLaunchedController), and only under `controller: daemon`. A token no
+// launch minted may be the controller capability `legion controller start` fetched, which
+// registers the project's controller (registerController), and only under `controller:
+// operator`: a daemon that launches its own controller registers no other, so such a token is the
+// unknown one it is.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
@@ -119,7 +121,24 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		Generation:   launch.Generation,
 		Secret:       secret,
 		PromptAgents: s.promptAgentsList(),
+		Replaces:     replacedSession(c, req.SessionID),
 	})
+}
+
+// replacedSession is the session a registration of session on claim c replaces, which the answer
+// names as `replaces` (claim.RegisterResponse.Replaces): the session c abandoned when it last
+// forgot one (supervise.Claim.Abandoned), and "" where c abandoned none, where the abandoned
+// session is the one registering now (a relaunch that found no file abandoned it and its agent
+// registered it again), or where an operator's release freed its names
+// (supervise.AbandonedSession.Released), after which another claim may register that session
+// and the messages sent to it are that claim's. c is the claim as the machine left it once it
+// accepted the registration. The record stays until the claim's next forget, so each later
+// registration of the claim names the same session again.
+func replacedSession(c supervise.Claim, session string) string {
+	if a := c.Abandoned; a.Session != session && a.Released.IsZero() {
+		return a.Session
+	}
+	return ""
 }
 
 // promptAgentsList is Options.PromptAgents as the registration answers it: never nil, so a role
@@ -453,8 +472,8 @@ type ReleaseRecord struct {
 }
 
 // ResumeRecord is one wake of a released pod and what it cost: the release it ended (0 when no
-// release row is recorded for it), the role the wake was for and what woke it, when the wake
-// reached the daemon, when the replacement pod was Ready and when the woken role took its first
+// release row is recorded for it), the role the wake was for and what woke it, when the daemon
+// took the wake, when the replacement pod was Ready and when the woken role took its first
 // turn — each absent until it is observed — and whether the wake went ten minutes with no turn.
 // Pause is the project pause that held the wake (store.PodResume.Pause), absent for a wake no
 // pause held: a held wake pairs with no release, and its wait to the first turn measures the

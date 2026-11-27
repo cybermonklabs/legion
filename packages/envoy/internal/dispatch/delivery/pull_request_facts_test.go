@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,21 +50,49 @@ func (g *githubPulls) edit(number int, change func(pull map[string]any)) {
 }
 
 // serveCommitPulls answers GET /repos/{repo}/commits/{sha}/pulls with each pull request g holds
-// whose head is sha, as GitHub names the pull requests of a commit.
+// that holds sha (holdsCommit), as GitHub names the pull requests of a commit: oldest first, in
+// pages of per_page (GitHub's default 30, at most 100), the page'th of them. It counts each read
+// in g.commitPullsReads. A commit g.commitPullsRefused holds is refused with its status.
 func serveCommitPulls(t *testing.T, fake *fakeGitHub, g *githubPulls, repo string) {
 	t.Helper()
 	fake.handle("GET /repos/"+repo+"/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
+		g.commitPullsReads.Add(1)
 		g.mu.Lock()
+		if status := g.commitPullsRefused[r.PathValue("sha")]; status != 0 {
+			g.mu.Unlock()
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"Server Error"}`))
+			return
+		}
 		pulls := []any{}
 		for _, number := range slices.Sorted(maps.Keys(g.pulls)) {
 			pull := g.pulls[number]
-			if head, _ := pull["head"].(map[string]any); head["sha"] == r.PathValue("sha") {
+			if holdsCommit(pull, r.PathValue("sha")) {
 				pulls = append(pulls, maps.Clone(pull))
 			}
 		}
 		g.mu.Unlock()
-		mustEncode(t, w, pulls)
+		perPage, page := 30, 1
+		if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil {
+			perPage = min(max(asked, 1), 100)
+		}
+		if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
+			page = asked
+		}
+		from := min((page-1)*perPage, len(pulls))
+		mustEncode(t, w, pulls[from:min(from+perPage, len(pulls))])
 	})
+}
+
+// holdsCommit reports whether pull, as githubPulls holds it, holds sha: as its head, or among the
+// earlier commits of its history a test lists under the fake's own key "fake_history", which no
+// reader of GitHub's answer reads.
+func holdsCommit(pull map[string]any, sha string) bool {
+	if head, _ := pull["head"].(map[string]any); head["sha"] == sha {
+		return true
+	}
+	history, _ := pull["fake_history"].([]string)
+	return slices.Contains(history, sha)
 }
 
 // storedTexts is one pull_request_texts row as a test reads it. messagesRead is false where

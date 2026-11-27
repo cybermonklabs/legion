@@ -13,8 +13,8 @@ import (
 // acme/tools#9. The statement gives #9 to ATTR-871 from the link, so the results and the timeline
 // name one issue for it: PullRequestIssues answers ATTR-871 from external_link, HeadsAttributedTo
 // lists #9 naming acme/tools, ListPullRequestsOfIssues lists its timeline row, and
-// BaseBranchMergedIn answers the branch the merged #9 went into, where BaseBranchMergedFor, which
-// reads the issue's own repository, answers none. Two controls of the rule's other halves: #10,
+// MergeIn names the merged #9 and the branch it went into, where MergeOfIssue, which reads the
+// issue's own repository, names none. Two controls of the rule's other halves: #10,
 // whose title names ATTR-871 and which no link names, has no issue (a name is held to the pull
 // request's repository), and #11, which ATTR-872 links and whose head is in a fork, has none either.
 func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTimeline(t *testing.T) {
@@ -82,10 +82,11 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 	if !slices.ContainsFunc(timeline, func(pr DeliveryPullRequest) bool { return pr.Repo == "acme/tools" && pr.Number == 9 }) || len(timeline) != 1 {
 		t.Errorf("the timeline of ATTR-871 lists %+v; want acme/tools#9 alone, the issue the results name", timeline)
 	}
-	if branch, err := unrenamed().BaseBranchMergedIn(ctx, pool, "ATTR-871", "acme/tools", HeadAnswers{}); err != nil || branch != "release" {
-		t.Errorf("BaseBranchMergedIn(ATTR-871, acme/tools) = %q, %v; want release, the branch #9 merged into", branch, err)
+	if merged, err := unrenamed().MergeIn(ctx, pool, "ATTR-871", "acme/tools", HeadAnswers{}); err != nil || len(merged) != 1 ||
+		merged[0].Number != 9 || merged[0].BaseRef != "release" {
+		t.Errorf("MergeIn(ATTR-871, acme/tools) = %+v, %v; want #9 alone, merged into release", merged, err)
 	}
-	if branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, "ATTR-871", HeadAnswers{}); err != nil || branch != "" {
-		t.Errorf("BaseBranchMergedFor(ATTR-871) = %q, %v; want none: it reads acme/widgets, the issue's own repository, alone", branch, err)
+	if merged, err := unrenamed().MergeOfIssue(ctx, pool, "ATTR-871", HeadAnswers{}); err != nil || len(merged) != 0 {
+		t.Errorf("MergeOfIssue(ATTR-871) = %+v, %v; want none: it reads acme/widgets, the issue's own repository, alone", merged, err)
 	}
 }

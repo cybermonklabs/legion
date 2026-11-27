@@ -219,7 +219,8 @@ test("a check whose newest result failed still reads the pass that stands", asyn
 // Beside the server's answer, a recorded check names the newest result of each role at the commit
 // it compared with, pass and fail alike, oldest first, in the words `dispatch results` prints
 // (newestResultsText), so a newer fail beside a pass is never hidden behind that answer. The pair
-// is INFRA-5924's check c-wayback-runs: an implementer's pass, then a tester's newer fail.
+// is INFRA-5924's check c-wayback-runs: an implementer's pass, then a tester's newer fail at one
+// head, which the server answers unknown (pass_and_fail).
 test("a check names each role's newest result at the compared commit, a newer fail beside a pass", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check(
@@ -237,7 +238,13 @@ test("a check names each role's newest result at the compared commit, a newer fa
           role: "implementer",
         }),
       ],
-      { pass_stands: { answer: "yes", roles: ["implementer"] } }
+      {
+        pass_stands: {
+          answer: "unknown",
+          reason: "pass_and_fail",
+          results: ["2120a467-0000-4000-8000-000000000001", "9f5fd8c4-0000-4000-8000-000000000002"],
+        },
+      }
     ),
   ]);
   restore = () => {
@@ -246,7 +253,9 @@ test("a check names each role's newest result at the compared commit, a newer fa
   };
 
   await screen.findByTestId("verification-checks");
-  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("A pass stands");
+  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe(
+    "Dispatch cannot say whether a pass stands"
+  );
   expect(screen.getByTestId("verification-check-newest").textContent).toBe(
     "Newest at that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)"
   );
@@ -427,6 +436,25 @@ test("a check names a head Dispatch has not read, and a pull request it does not
   expect(facts(notKnown)).not.toContain("Heads not read");
   expect(facts(read)).not.toContain("Heads not read");
   expect(facts(read)).not.toContain("Issues not known");
+});
+
+test("a check whose work has not merged says so", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-unmerged", [], {
+      when: "after_merge",
+      compared_nothing: "not_merged",
+      compared_with: [],
+      pass_stands: { answer: "no", reason: "no_result" },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-compared-with").textContent).toBe(
+    "The work has no merge that Dispatch knows."
+  );
 });
 
 // A basis in a repository the issue links a pull request in and does not resolve to carries that
