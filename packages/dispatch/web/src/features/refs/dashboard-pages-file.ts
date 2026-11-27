@@ -29,8 +29,8 @@ import {
   buildDispatchReference,
   buildProjectPath,
   buildReferencePath,
+  CONVERSATION_REFERENCE_SEGMENT,
   ISSUE_DOCUMENT_SEGMENTS,
-  ISSUE_TAB_REFERENCE_ALIASES,
   ISSUE_TABS,
   type IssueRoute,
   type IssueTab,
@@ -127,13 +127,14 @@ export function renderDashboardPages(): string {
     if (route.kind === "spec" || referencedArtifact(route) !== undefined) {
       return [];
     }
-    // The tab's own reference segment: the alias the reader of a reference takes for it
-    // (`ISSUE_TAB_REFERENCE_ALIASES`, the conversation's `log`, which agents write), else the tab's
-    // own name. The route table writes the reference of a tab as its issue's
-    // (`buildDispatchReference`), as text cites it, and the server reads both as the issue; the
-    // agent client writes the tab's own, so that a tool that acts on a document can tell a tab
-    // from the issue's spec.
-    return [{ page: tab, reference: ISSUE_TAB_REFERENCE_ALIASES[tab] ?? tab }];
+    // The tab's own reference segment: for the conversation, `log`, which agents write and the
+    // reader of a reference takes (`CONVERSATION_REFERENCE_SEGMENT`), else the tab's own name. The
+    // route table writes the reference of a tab as its issue's (`buildDispatchReference`), as text
+    // cites it, and the server reads both as the issue; the agent client writes the tab's own, so
+    // that a tool that acts on a document can tell a tab from the issue's spec.
+    return [
+      { page: tab, reference: tab === "conversation" ? CONVERSATION_REFERENCE_SEGMENT : tab },
+    ];
   });
   const documentPages: Record<string, string[]> = {};
   for (const document of documents) {
