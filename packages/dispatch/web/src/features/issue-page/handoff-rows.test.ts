@@ -76,18 +76,18 @@ test("jsonText gives JSON.stringify no list and no object", () => {
   }
 });
 
-// A walk that recursed once a level would overflow any call stack on a value nested a million
-// deep; the loop's own stack is a list on the heap.
-test("jsonText writes a value nested a million deep", () => {
-  const depth = 1_000_000;
+// A walk that recursed once a level would overflow V8's call stack from about 4,500 levels; the
+// loop's own stack is a list on the heap. 65,000 levels is about the deepest value a body under
+// the server's 262,144-byte cap can hold (its JSON check takes 10,000), so the case holds no more
+// memory than such a body's text and its output.
+test("jsonText writes a value nested 65,000 deep, about the deepest a body under the server's cap holds", () => {
+  const depth = 65_000;
   let value: unknown = 1;
   for (let level = 0; level < depth; level += 1) value = level % 2 === 0 ? [value] : { k: value };
   const expected = `${'{"k":['.repeat(depth / 2)}1${"]}".repeat(depth / 2)}`;
   const text = jsonText(value);
   expect(text.length).toBe(expected.length);
-  expect(text === expected, "the value nested a million deep is not written as its JSON").toBe(
-    true
-  );
+  expect(text === expected, "the value nested 65,000 deep is not written as its JSON").toBe(true);
 });
 
 test("handoffRows gives the rows handoffFields gives for each captured body", () => {
