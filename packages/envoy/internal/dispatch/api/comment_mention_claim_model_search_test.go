@@ -333,8 +333,10 @@ type cmVisit struct {
 	enabled      []cmStep
 }
 
+// visit reads the run's key before its fault, since the key can fail the model.
 func (r *cmRun) visit() cmVisit {
-	return cmVisit{key: sha256.Sum256(r.key()), fault: r.fault, fresh: r.fresh, enabled: r.enabled(), trace: r.trace}
+	key := sha256.Sum256(r.key())
+	return cmVisit{key: key, fault: r.fault, fresh: r.fresh, enabled: r.enabled(), trace: r.trace}
 }
 
 // cmVisitOf replays steps in a bubble of its own, writing the run's trace when tracing.
@@ -364,9 +366,9 @@ func cmKindBits(kinds []string) uint8 {
 }
 
 // cmNode is one state the search reached: the state and its step that the shortest road a run has
-// taken to it so far ends with, which every replay of this state retraces, and that road's length,
-// always longer than its parent's, so the road ends at the start; where its steps' edges begin in
-// cmSearch.edges, how many it has, and how many of them runs have taken.
+// taken to it so far ends with, which every replay of this state retraces, and that road's length
+// when it was taken, always more than its parent's, so the road ends at the start; where its steps'
+// edges begin in cmSearch.edges, how many it has, and how many of them runs have taken.
 type cmNode struct {
 	parent       int32
 	step         cmStep
@@ -413,7 +415,7 @@ type cmSearch struct {
 func (s *cmSearch) stop(message string, fault bool, steps []cmStep, key [sha256.Size]byte) {
 	if !s.stopped {
 		s.stopped = true
-		s.failure.message, s.failure.fault, s.failure.steps, s.failure.key = message, fault, steps, key
+		s.failure.message, s.failure.fault, s.failure.steps, s.failure.key = message, fault, slices.Clone(steps), key
 	}
 	s.more.Broadcast()
 }
@@ -428,33 +430,34 @@ func (s *cmSearch) path(id int32) []cmStep {
 	return steps
 }
 
-// reach is the state of visit, which a run reached from parent by step: a state reached before
-// must have the same steps, and takes this road when it is shorter than the one it had; a new
-// one joins the queue. Every replay of a state takes its road, and every road to a state reaches
-// it, since the key is all that a run's future depends on (walk), so a shorter road is a shorter
-// replay: a state a walk reached first is often far deeper on that walk's road than on another.
-func (s *cmSearch) reach(parent int32, step cmStep, visit cmVisit) int32 {
-	var road int32
+// reach is the state of visit, which a run reached from parent by step, by the steps of road: a
+// state reached before must have the same steps, and takes this road when it is shorter than the
+// one it had; a new one joins the queue. Every replay of a state takes its road, and every road to
+// a state reaches it, since the key is all that a run's future depends on (walk), so a shorter road
+// is a shorter replay: a state a walk reached first is often far deeper on that walk's road than
+// on another. A run that breaks either rule stops the search, with road for its traced replay.
+func (s *cmSearch) reach(parent int32, step cmStep, visit cmVisit, road []cmStep) int32 {
+	var length int32
 	if parent >= 0 {
-		road = s.nodes[parent].road + 1
+		length = s.nodes[parent].road + 1
 	}
 	if id, ok := s.ids[visit.key]; ok {
 		if int(s.nodes[id].steps) != len(visit.enabled) {
 			s.stop("the model is not deterministic: two runs at one state may take different steps", false,
-				append(s.path(parent), step), visit.key)
+				road, visit.key)
 		}
-		if node := &s.nodes[id]; road < node.road {
-			node.parent, node.step, node.road = parent, step, road
+		if node := &s.nodes[id]; length < node.road {
+			node.parent, node.step, node.road = parent, step, length
 		}
 		return id
 	}
 	if len(visit.enabled) > 255 {
 		s.stop(fmt.Sprintf("a state has %d steps, more than the search counts", len(visit.enabled)), false,
-			append(s.path(parent), step), visit.key)
+			road, visit.key)
 	}
 	id := int32(len(s.nodes))
 	s.ids[visit.key] = id
-	s.nodes = append(s.nodes, cmNode{parent: parent, step: step, edges: int32(len(s.edges)), road: road,
+	s.nodes = append(s.nodes, cmNode{parent: parent, step: step, edges: int32(len(s.edges)), road: length,
 		steps: uint8(len(visit.enabled))})
 	for range visit.enabled {
 		s.edges = append(s.edges, cmEdge{to: -1})
@@ -505,13 +508,15 @@ func (s *cmSearch) next() (int32, int, bool) {
 	return 0, 0, false
 }
 
-// work walks from the oldest state with a step no run has taken until no state has one.
+// work walks from the oldest state with a step no run has taken until no state has one. It holds
+// the search's lock except while it walks, and takes no deferred unlock: a walk that panics, as a
+// bubble that deadlocks does, would have it unlock a mutex it does not hold and hide the panic.
 func (s *cmSearch) work() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for {
 		from, j, ok := s.next()
 		if !ok {
+			s.mu.Unlock()
 			return
 		}
 		steps := s.path(from)
@@ -567,7 +572,11 @@ func (s *cmSearch) walk(from int32, steps []cmStep, j int) {
 				s.mu.Unlock()
 				return
 			}
-			to := s.reach(cur, step, visit)
+			to := s.reach(cur, step, visit, road)
+			if s.stopped {
+				s.mu.Unlock()
+				return
+			}
 			s.edges[s.nodes[cur].edges+int32(j)] = cmEdge{to: to, fresh: cmKindBits(visit.fresh)}
 			next, ok := s.take(to)
 			s.mu.Unlock()
@@ -621,7 +630,7 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	}
 	s := &cmSearch{t: t, v: v, periods: periods, ids: map[[sha256.Size]byte]int32{}}
 	s.more.L = &s.mu
-	s.reach(-1, cmStep{}, root)
+	s.reach(-1, cmStep{}, root, nil)
 	var workers sync.WaitGroup
 	for range min(runtime.GOMAXPROCS(0), 16) {
 		workers.Go(s.work)
