@@ -81,8 +81,15 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, bus.ErrUnacknowledged) {
 			t.Fatalf("a publish under an ended context = %v, want the context's error and no ErrUnacknowledged", err)
 		}
-		if stored := storedOn(t, topic); stored != 0 {
-			t.Fatalf("the stream holds %d messages on %s, want none", stored, topic)
+		// One read of the stream right after the call can run before the stream has stored what the
+		// call sent, and pass a bus that sent a message. So a live publish on the same topic follows,
+		// on the same connection, and once the stream has acknowledged it the topic must hold that
+		// marker alone: anything the publish under the ended context sent reached the server first.
+		if _, err := client.PublishAckWithin(testwait.Context(t), unacknowledgedEnvelope(topic)); err != nil {
+			t.Fatalf("the live publish after it on %s: %v", topic, err)
+		}
+		if stored := storedOn(t, topic); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s once it acknowledged the live publish after the ended one, want that publish alone: the publish under an ended context sent a message", stored, topic)
 		}
 	})
 
