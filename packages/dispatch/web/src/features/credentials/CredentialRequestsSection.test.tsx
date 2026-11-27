@@ -76,7 +76,7 @@ function renderSection(
 // The machine row links to `/credentials/machine` only where this deployment serves that page,
 // which the credential capabilities say (`useMachineCodePage`, GET
 // /api/v1/credentials/capabilities), so the row's link is there once that answer is in.
-test("renders every pending credential request, linking a secret row to its broker page and a machine row to /credentials/machine", async () => {
+test("renders every pending credential request, linking a secret row to its broker page in a new tab and a machine row to /credentials/machine", async () => {
   const machineRow: CredentialPendingRow = {
     identifiers: ["worker-7.example.com"],
     kind: "launcher_credential",
@@ -97,13 +97,17 @@ test("renders every pending credential request, linking a secret row to its brok
   expect(screen.getByText("Machine login")).toBeDefined();
   expect(screen.getByText("ANTHROPIC_API_KEY")).toBeDefined();
   expect(screen.getByText("worker-7.example.com")).toBeDefined();
-  const secret = screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s });
+  const secret = screen.getByRole("link", {
+    name: /Secret request.*ANTHROPIC_API_KEY.*\(opens in a new tab\)$/s,
+  });
   expect(secret).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
-  expect(secret.getAttribute("target")).toBeNull();
+  expect(secret).toHaveAttribute("target", "_blank");
+  expect(secret).toHaveAttribute("rel", "noreferrer");
   const machine = await screen.findByRole("link", {
     name: /Machine login.*worker-7\.example\.com/s,
   });
   expect(machine).toHaveAttribute("href", "/credentials/machine");
+  expect(machine.getAttribute("target")).toBeNull();
   expect(screen.getAllByText("No session named.")).toHaveLength(2);
 });
 

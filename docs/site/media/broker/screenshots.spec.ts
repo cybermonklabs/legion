@@ -52,15 +52,16 @@ test("the pages a person approves broker requests on", async ({ browser }) => {
   const row = dispatch.inboxRequest(page);
   await expect(row).toHaveAttribute("href", request.approveUrl);
   await page.screenshot({ path: join(assets, "inbox-credential-request.png") });
-  await row.click();
-  await expect(page).toHaveURL(request.approveUrl);
-  await expect(broker.requestReason(page)).toBeVisible();
-  await expect(page.locator(`#record-${request.recordId}`)).toBeVisible();
-  await page.screenshot({ path: join(assets, "credential-request.png") });
-  await broker.approve(page).click();
-  await expect(broker.requestGranted(page)).toBeVisible();
+  // The row opens the broker's page in a new tab; the Inbox stays where it was.
+  const [brokerTab] = await Promise.all([context.waitForEvent("page"), row.click()]);
+  await expect(brokerTab).toHaveURL(request.approveUrl);
+  await expect(broker.requestReason(brokerTab)).toBeVisible();
+  await expect(brokerTab.locator(`#record-${request.recordId}`)).toBeVisible();
+  await brokerTab.screenshot({ path: join(assets, "credential-request.png") });
+  await broker.approve(brokerTab).click();
+  await expect(broker.requestGranted(brokerTab)).toBeVisible();
   await waitForOutput(request, printed.keyReached, "the command's output");
-  await page.screenshot({ path: join(assets, "credential-request-approved.png") });
+  await brokerTab.screenshot({ path: join(assets, "credential-request-approved.png") });
 
   // The grant that approval made, approved by alice, under Settings' Live grants: live while the
   // session that asked is open.

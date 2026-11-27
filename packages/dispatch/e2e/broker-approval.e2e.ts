@@ -21,10 +21,11 @@ import { asUser } from "./users";
 // broker, and Dispatch's Inbox only links there. These rows cross that boundary for real: each
 // request is made on the REAL broker (e2e/run-broker.sh) by pods the seeding step enrolls through
 // the dev issuer's tokens, and the fake broker Dispatch's server relays lists it for alice with
-// the real record's `approve_url`, so a click on the Inbox row lands on the real broker's page,
-// whose sign-in goes to the dev issuer. The broker's cookies are `__Host-` and Secure on plain
-// http://127.0.0.1, which Chromium keeps because it treats loopback as a secure context; Dispatch
-// and the broker share that host, so the two keep their cookies under different names in one jar.
+// the real record's `approve_url`, so a click on the Inbox row opens the real broker's page in a
+// new tab, whose sign-in goes to the dev issuer, while the Inbox stays where it was. The broker's
+// cookies are `__Host-` and Secure on plain http://127.0.0.1, which Chromium keeps because it
+// treats loopback as a secure context; Dispatch and the broker share that host, so the two keep
+// their cookies under different names in one jar.
 
 /** The broker's session cookie, and both its cookies, which a lapsed session has lost. */
 const sessionCookie = "__Host-broker-session";
@@ -62,19 +63,33 @@ function inboxRow(page: Page, approveUrl: string) {
     .locator(`a[href="${approveUrl}"]`);
 }
 
+/** Clicks the Inbox row of the request whose page is `approveUrl` and returns the tab it opens.
+ *  The Inbox tab stays at the address it had. */
+async function openFromInbox(page: Page, approveUrl: string): Promise<Page> {
+  const inbox = page.url();
+  const [broker] = await Promise.all([
+    page.context().waitForEvent("page"),
+    inboxRow(page, approveUrl).click(),
+  ]);
+  await expect(broker).toHaveURL(approveUrl);
+  expect(page.url()).toBe(inbox);
+  return broker;
+}
+
 /** The broker page's block for one record, and its Approve button. */
 function recordOn(page: Page, request: SeededRequest) {
   const record = page.locator(`#record-${request.record_id}`);
   return { approve: record.getByRole("button", { exact: true, name: "Approve" }), record };
 }
 
-/** Every URL `page` requests from now on, and every document its main frame navigates to. */
-function recordTraffic(page: Page): { requests: string[]; documents: string[] } {
+/** Every URL a page of `context` requests from now on, and every page it navigates to: none of
+ *  these pages draws a frame, and a new tab's first navigations have no frame to compare. */
+function recordTraffic(context: BrowserContext): { requests: string[]; documents: string[] } {
   const requests: string[] = [];
   const documents: string[] = [];
-  page.on("request", (request) => {
+  context.on("request", (request) => {
     requests.push(request.url());
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+    if (request.isNavigationRequest()) {
       documents.push(request.url());
     }
   });
@@ -134,19 +149,17 @@ test("from the Inbox, a live broker session lands on the record's page with no s
     });
 
     await page.goto("/");
-    const row = inboxRow(page, request.approve_url);
-    await expect(row).toContainText(aliceSecret);
-    const traffic = recordTraffic(page);
-    await row.click();
-    const { approve, record } = recordOn(page, request);
-    await expect(page).toHaveURL(request.approve_url);
+    await expect(inboxRow(page, request.approve_url)).toContainText(aliceSecret);
+    const traffic = recordTraffic(alice);
+    const broker = await openFromInbox(page, request.approve_url);
+    const { approve, record } = recordOn(broker, request);
     await expect(approve).toBeVisible();
     await expect(record).toContainText("a pod enrollment");
     expect(traffic.documents).toEqual([request.approve_url]);
     expect(traffic.requests.filter((url) => url.startsWith(devIssuerOrigin()))).toEqual([]);
 
     await approve.click();
-    await expect(page.locator(".outcomes")).toContainText(
+    await expect(broker.locator(".outcomes")).toContainText(
       `${aliceSecret}: granted (approved by ${aliceBrokerLogin} at`
     );
     expect(await states(state)).toEqual(["granted with a grant"]);
@@ -176,12 +189,11 @@ test("from the Inbox, a lapsed broker session signs in once and returns to the s
 
     await page.goto("/");
     await queueSignIn(aliceBrokerLogin);
-    const traffic = recordTraffic(page);
-    await inboxRow(page, request.approve_url).click();
-    const { approve } = recordOn(page, request);
-    await expect(page).toHaveURL(request.approve_url);
+    const traffic = recordTraffic(alice);
+    const broker = await openFromInbox(page, request.approve_url);
+    const { approve } = recordOn(broker, request);
     await expect(approve).toBeVisible();
-    await expect(signedInAs(page, aliceBrokerLogin)).toBeVisible();
+    await expect(signedInAs(broker, aliceBrokerLogin)).toBeVisible();
     // One pass: the record's page, the issuer's sign-in, the broker's callback, the page again.
     const signIns = traffic.documents.filter((url) =>
       url.startsWith(`${devIssuerOrigin()}/authorize?`)
@@ -220,14 +232,13 @@ test("three pending requests are approved by one click on Approve all 3 shown", 
     await page.goto("/");
     // A browser with no session is sent to sign in naming nobody, so the issuer is told who.
     await queueSignIn(aliceBrokerLogin);
-    await inboxRow(page, first.approve_url).click();
-    await expect(page).toHaveURL(first.approve_url);
+    const broker = await openFromInbox(page, first.approve_url);
     for (const request of requests) {
-      await expect(recordOn(page, request).approve).toBeVisible();
+      await expect(recordOn(broker, request).approve).toBeVisible();
     }
 
-    await page.getByRole("button", { exact: true, name: "Approve all 3 shown" }).click();
-    const outcomes = page.locator(".outcomes li");
+    await broker.getByRole("button", { exact: true, name: "Approve all 3 shown" }).click();
+    const outcomes = broker.locator(".outcomes li");
     await expect(outcomes).toHaveCount(3);
     // The count of three above waited for every outcome line, so one read lists them all.
     for (const outcome of await outcomes.all()) {
@@ -387,18 +398,17 @@ test("signed in as another person, the record's page offers only the switch, whi
     // The issuer signs Bob in at the first sign-in; only the later account switch names Alice.
     await queueSignIn(bobBrokerLogin);
     await page.goto("/");
-    await inboxRow(page, request.approve_url).click();
-    await expect(page).toHaveURL(request.approve_url);
-    await expect(signedInAs(page, bobBrokerLogin)).toBeVisible();
-    const { approve, record } = recordOn(page, request);
+    const broker = await openFromInbox(page, request.approve_url);
+    await expect(signedInAs(broker, bobBrokerLogin)).toBeVisible();
+    const { approve, record } = recordOn(broker, request);
     await expect(record).toContainText(`Only ${aliceBrokerLogin} may decide this request`);
-    await expect(page.getByRole("button", { name: /^Approve/ })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Deny" })).toHaveCount(0);
+    await expect(broker.getByRole("button", { name: /^Approve/ })).toHaveCount(0);
+    await expect(broker.getByRole("button", { name: "Deny" })).toHaveCount(0);
 
-    const traffic = recordTraffic(page);
+    const traffic = recordTraffic(alice);
     await record.getByRole("link", { exact: true, name: "Sign in as someone else" }).click();
-    await expect(page).toHaveURL(request.approve_url);
-    await expect(signedInAs(page, aliceBrokerLogin)).toBeVisible();
+    await expect(broker).toHaveURL(request.approve_url);
+    await expect(signedInAs(broker, aliceBrokerLogin)).toBeVisible();
     await expect(approve).toBeVisible();
     const signIn = traffic.documents.find((url) =>
       url.startsWith(`${devIssuerOrigin()}/authorize?`)
