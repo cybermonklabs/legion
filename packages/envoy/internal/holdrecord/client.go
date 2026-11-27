@@ -43,6 +43,7 @@ package holdrecord
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -62,13 +63,15 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/natsgrant"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // Config is the client's configuration. BrokerURL is the secrets broker's base URL, which every
 // command that reaches the broker takes from its `--broker-url` flag. Token gives the operator's
 // ServiceAccount token, with the audience `BROKER_NATS_K8S_AUDIENCE`. SigningKey is the private
 // half of the operator's hold signing key, kept in memory only, and nil for a command that only
-// reads. VerifyKeys are `BROKER_NATS_HOLD_SIGNING_KEYS`.
+// reads. VerifyKeys are `BROKER_NATS_HOLD_SIGNING_KEYS`. HTTP is the client the requests go
+// through, with redirects refused on a copy of it; nil is http.DefaultClient.
 type Config struct {
 	BrokerURL  string
 	Token      func(context.Context) (string, error)
@@ -83,6 +86,9 @@ type Client struct {
 	cfg Config
 	// broker is BrokerURL as New parsed it, which each route is joined onto (urljoin.JoinURL).
 	broker *url.URL
+	// http is Config.HTTP as every request goes through it: following no redirect, and keeping the
+	// record of each request, which the answer's words print with (New).
+	http *http.Client
 	// seenMu guards seenGen, the highest gen of a hold row this client has verified, read or
 	// written: the row floor it has seen, which bounds the restore_gen RestoreRow follows.
 	seenMu  sync.Mutex
@@ -167,6 +173,12 @@ func (e *RouteError) Error() string {
 // absolute URL is refused printed through redact.URL, which prints it only when it is a plain
 // http(s) URL with no place a credential can sit: a password in its user info, or the operator's
 // token pasted where the URL goes, reaches no error.
+//
+// Every request carries the operator's token, and a DELETE the operator's signature in its query,
+// so the client follows no redirect (redirects.Refused): a redirect's Location is the answering
+// party's words, and net/http keeps the Authorization header on a redirect to the same host name.
+// It keeps the record of each request (redact.RefusalClient), so the answer's words print with the
+// credentials the request carried redacted.
 func New(cfg Config) (*Client, error) {
 	switch {
 	case cfg.BrokerURL == "":
@@ -185,7 +197,7 @@ func New(cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("holdrecord: verify key %d is %d bytes, not an Ed25519 public key's %d", i+1, len(key), ed25519.PublicKeySize)
 		}
 	}
-	return &Client{cfg: cfg, broker: broker}, nil
+	return &Client{cfg: cfg, broker: broker, http: redact.RefusalClient(redirects.Refused(cmp.Or(cfg.HTTP, http.DefaultClient)))}, nil
 }
 
 // VerifyKeys answers a copy of the keys the client verifies every answer under
@@ -697,7 +709,8 @@ func jsonFailure(err error) string {
 // query after the URL's own, and the URL's fragment dropped, so a broker URL with a path, a query
 // or a fragment still names the route. No error it answers carries the request's URL: a DELETE's
 // query holds the operator's signature, and net/http's *url.Error quotes the URL whole
-// (withoutURL).
+// (withoutURL). A redirect is the broker's answer, refused by its status, and its Location is
+// asked nothing (New).
 func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
 	ref := path
 	if len(query) > 0 {
@@ -727,15 +740,14 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	client := c.cfg.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if redirects.Status(resp.StatusCode) {
+		return 0, nil, fmt.Errorf("holdrecord: %s %s answered %d, a redirect, which this client never follows", method, path, resp.StatusCode)
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if err != nil {
 		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
