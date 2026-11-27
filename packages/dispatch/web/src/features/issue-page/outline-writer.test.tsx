@@ -2,12 +2,12 @@ import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { CommentWithTrees } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { buildIssueTree } from "./issue-tree";
+import { readComment } from "./outline-fixtures";
 import {
   type OutlineWriter,
   OutlineWriterProvider,
@@ -85,22 +85,9 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
 /** A person's comment of CORE-1 that mentioned `mentions`, as its own read answers it. */
 function personsComment(id: string, mentions: readonly string[]): CommentWithTrees {
   return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
+    ...readComment(id, 0),
     body: "Ship it.",
-    created_at: "2026-11-05T01:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: "CORE-1",
     mentions: mentions.map((target) => ({ target }) as never),
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
   };
 }
 

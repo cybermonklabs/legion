@@ -4304,7 +4304,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
 const TRANSPARENT = "rgba(0, 0, 0, 0)";
 
 /** The ids of the rows the outline marks as taking typing, `[data-editable]` (`useNodeEditing.ts`'s
- *  `nodeEditable`), in the order they are drawn. */
+ *  `nodeTakesTyping` with `NodeRow`'s `useDocumentReadOnly`), in the order they are drawn. */
 function editableRows(page: Page): Promise<string[]> {
   return issuePage(page)
     .locator("[data-node-row][data-editable]")

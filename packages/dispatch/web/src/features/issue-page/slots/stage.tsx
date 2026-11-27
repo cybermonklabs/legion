@@ -15,7 +15,7 @@ import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
-import { useFollowing } from "./following";
+import { useDroppedAddress, useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { LandsItself, useLandsItself, ViewGraphSlot } from "./view-graph";
 import { ViewPlanSlot } from "./view-plan";
@@ -118,6 +118,7 @@ export function StageSlot({
   // landing for the first focus, which it takes itself once the address has lost the node
   // (`ViewStage`).
   const landsItself = beside && preset === "graph";
+  const dropped = useDroppedAddress();
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
       <DocumentStages>
@@ -132,7 +133,7 @@ export function StageSlot({
           </StageBox>
         ) : (
           <LandsItself.Provider value={landsItself}>
-            <ViewStage box={viewBox} key={preset}>
+            <ViewStage box={viewBox} dropped={dropped} key={preset}>
               <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
             </ViewStage>
           </LandsItself.Provider>
@@ -238,17 +239,22 @@ const SLOT_TREE = '[role="tree"]';
  * would land on the tree's first row. The take is done once something holds the focus - the
  * node's row, or a control the reader pressed. Where the address loses its node first - the body
  * replaces an address whose node no read holds with the address without it (`addressView`) - the
- * stage's next look, at the tree the body draws in the replaced address's place, takes the focus
- * as for any address naming no node, so the address opens with the focus where that address
- * puts it.
+ * stage takes no focus at that address, which names no id the reader asked for
+ * (`DROPPED_ADDRESS`): the page opens there with the focus on no row, since the tree's first row
+ * is not the node the address named (decision 553 (1)). A focus on the tree itself still starts
+ * the take, as below.
  */
 export function ViewStage({
   box: given,
   children,
+  dropped: droppedNow = false,
 }: {
   /** The box's element, for a caller that reads it too (`StageSlot`); else the stage's own. */
   box?: RefObject<HTMLDivElement | null>;
   children: ReactNode;
+  /** Whether the address is one the body opened in place of one it dropped
+   *  (`DROPPED_ADDRESS`), where the stage takes no focus; never, where none is given. */
+  dropped?: boolean;
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
@@ -256,6 +262,9 @@ export function ViewStage({
   // it: the take runs from an effect of the stage's first draw, and reads it whenever it runs.
   const landsItself = useRef(false);
   landsItself.current = useLandsItself();
+  // Whether the address is one the body dropped, as the stage last drew it, read the same way.
+  const dropped = useRef(false);
+  dropped.current = droppedNow;
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -327,6 +336,9 @@ export function ViewStage({
       // take is done once something holds the focus (above), and goes on below to take it once
       // the address has lost its node.
       if (landsItself.current) return false;
+      // An address the body opened in place of one it dropped opens with the focus on no row,
+      // unless a focus on the tree itself started the take again (`bring`).
+      if (dropped.current && !bring) return true;
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);

@@ -57,8 +57,7 @@ import {
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
-import { markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, subscribeTreeFreshness, type TreeAnswer } from "../tree-read/tree-read";
+import { outlineQuery, subscribeTreeFreshness } from "../tree-read/tree-read";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -66,6 +65,7 @@ import {
   answeredAsk,
   ask,
   closing,
+  commentsTree,
   decision,
   decisionNode,
   decisionsRead,
@@ -291,17 +291,6 @@ function publishedStatements(root: TreeNode): PublishedReferences {
       statements.flatMap(({ reference }) => (reference === undefined ? [] : [reference]))
     ),
   };
-}
-
-/** Conversation's tree read of the issue holding `comments` under the issue, where the read
- *  hangs a comment of a decision it holds no node for: each Change is found by its quote, with
- *  its author's corrections as a correction writes them into the answer the cache holds
- *  (`api/corrected-post.ts`). */
-function commentsTree(comments: readonly Comment[]): TreeAnswer {
-  return treeAnswer([
-    treeNode(KEY, "issue", null),
-    ...comments.map((comment) => markedCommentNode(comment, KEY)),
-  ]);
 }
 
 /** The body over the issue whose tree holds `children`, with `asks`, the decisions read of

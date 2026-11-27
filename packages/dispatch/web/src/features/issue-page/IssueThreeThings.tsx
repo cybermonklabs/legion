@@ -12,7 +12,7 @@ import {
 import { wordsOf } from "../refs/tree-fragment";
 import { useCountsAfterDrawing } from "./counts-after-drawing";
 import { drawnLine, firstLineOf, firstSentenceLength, LEADING_LABEL } from "./first-line";
-import { presetPath } from "./issue-address";
+import { type IssueAddress, presetPath } from "./issue-address";
 import { isCheck, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { type LineNames, referenceStandIns } from "./one-line";
@@ -25,7 +25,6 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   type NodeState,
-  type Preset,
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals, type PresetSignal, presetView } from "./presets";
@@ -68,10 +67,10 @@ export interface BriefCounts {
  * names too (`namesHeld`): a read still out leaves nodes out of the tree, and the names give a
  * plan task its words, so a count taken sooner would read 0 for what the page has not read yet.
  * The rows wait as it does, and send no request of their own. Under Conversation and each filter
- * (`preset`) they wait for Plan's view read too: Conversation's read holds no plan task, so there
- * the plan's tasks are that view's, which the load sends with the page (`tree-read/view-read.tsx`'
- * `sentWithLoad`), and until it answers the plan would read as holding none. Graph's read holds
- * them itself.
+ * (`address.preset`) they wait for Plan's view read too: Conversation's read holds no plan task,
+ * so there the plan's tasks are that view's, which the load sends with the page
+ * (`tree-read/view-read.tsx`' `sentWithLoad`), and until it answers the plan would read as holding
+ * none. Graph's read holds them itself.
  *
  * "How it gets done" takes the Plan control's own signal. "What you will be shown" counts the
  * checks the Verification view draws, each once however many statements it serves, each in the
@@ -83,10 +82,10 @@ export interface BriefCounts {
  */
 export function briefCounts(
   reads: { namesHeld: boolean; readsHeld: boolean; root: TreeNode },
-  query: string,
-  preset: Preset
+  address: Pick<IssueAddress, "filter" | "preset">
 ): BriefCounts | undefined {
   const { namesHeld, readsHeld, root } = reads;
+  const { filter: query, preset } = address;
   const filtered = queryTyped(query);
   if (!readsHeld || planTasksOut(root, preset) || (filtered && !namesHeld)) return undefined;
   const inState = new Map<NodeState, number>();
@@ -136,7 +135,10 @@ export function useDeferredBriefCounts(
   const { namesHeld, readsHeld, root, warm } = reads;
   const ready = readsHeld && (!queryTyped(query) || namesHeld);
   const count = useMemo(
-    () => (ready ? () => briefCounts({ namesHeld, readsHeld, root }, query, preset) : undefined),
+    () =>
+      ready
+        ? () => briefCounts({ namesHeld, readsHeld, root }, { filter: query, preset })
+        : undefined,
     [namesHeld, preset, query, readsHeld, ready, root]
   );
   return useCountsAfterDrawing(root, count, warm);

@@ -209,8 +209,8 @@ export function IssueTree({
    *  draws a row that reads what its page asks for. */
   published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
-   *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
-   *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
+   *  does: the tree read and the five reads beside it - the coverage, the decisions, the results,
+   *  the asks and the messages (`outline-reads.ts`'s `readsHeld`). Until then a
    *  node the tree lacks may not have arrived yet, so a tree with no node draws no `emptyLine`,
    *  and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names are no part
    *  of it: the page gives no `emptyLine` that reads the nodes' words until they are held
@@ -230,8 +230,10 @@ export function IssueTree({
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the view left it. */
   root: TreeNode;
-  /** Whether no filter is on (`presets.ts`'s `PresetView.rootRow`): the conversation, which the
-   *  page opens on what waits on the reader. */
+  /** Whether the page opens on what waits on the reader (below): where no filter is on
+   *  (`presets.ts`'s `PresetView.rootRow`), the conversation, and the address names nothing the
+   *  page draws no row and no line of - an id it dropped, or a message Conversation draws no row
+   *  of - where the page opens with the focus on no row (`slots/body.tsx`, decision 553 (1)). */
   rootRow: boolean;
   /** The node an address roots the tree at, as a zoom the reader made, by its id: Graph's
    *  address `/graph/<node id>` (R10). The tree is zoomed to it as it is drawn and as the address
@@ -351,12 +353,22 @@ export function IssueTree({
   const pathHold = useRef<{ readonly landing?: string; readonly places: readonly string[] }>({
     places: [],
   });
+  // Each read builds the tree again, every node of it a new object, so the rows are drawn from
+  // the tree shared with the one built before (`sharedTree`), once each time it is built: a node
+  // that holds what it held keeps the object it was, and its row is not drawn again (`NodeRow`'s
+  // `memo`). Everything else the tree draws or does reads `root` itself.
+  const heldTree = useRef<TreeNode | undefined>(undefined);
+  const shared = useMemo(() => {
+    const tree = sharedTree(heldTree.current, root);
+    heldTree.current = tree;
+    return tree;
+  }, [root]);
   // A reader who zoomed into a node reads the tree from there: the node is the tree's root, the
   // path above it the breadcrumb, and everything below it folded as they left it.
-  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
-    root,
-  ];
-  const rooted = rootedPath.at(-1) ?? root;
+  const rootedPath = (zoom === undefined || zoom === root.id
+    ? undefined
+    : pathTo(shared, zoom)) ?? [shared];
+  const rooted = rootedPath.at(-1) ?? shared;
   // The node the rows are drawn from where that is not the issue: the zoom's own row, which is
   // drawn open by definition. Undefined where the tree is drawn from the issue, which is no row.
   const zoomRoot = rooted.id === root.id ? undefined : rooted.id;
@@ -396,19 +408,10 @@ export function IssueTree({
   // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
   // is the node the reader reads from there.
   const head = drawn[0];
-  // Each read builds the tree again, every node of it a new object, so each row is the one the
-  // render before drew under its key wherever the two hold the same values (`keptRows`): a row
-  // whose node holds what it held is given the same node, and is not drawn again (`NodeRow`'s
-  // `memo`).
-  const heldRows = useRef<ReadonlyMap<string, DrawnRow>>(NO_ROWS);
-  const rows = placed
-    ? keptRows(
-        heldRows,
-        head?.kind === "node" && head.node.id === root.id
-          ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
-          : drawn
-      )
-    : NO_DRAWN_ROWS;
+  const rows =
+    head?.kind === "node" && head.node.id === root.id
+      ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
+      : drawn;
   // The rows are drawn a screen around the anchor first, and the others in slices after it
   // (`TreeRows.tsx`, `drawn-in-slices.ts`). The anchor is the node the address names, else the
   // open question the page opens on, by the opening's own rule (below), else none: the first
@@ -1427,33 +1430,37 @@ export const LANDING_WAIT_MS = 10_000;
 /** No place has been let go from the address path's hold (`released`). */
 const NO_FOLDS: ReadonlySet<string> = new Set();
 
-/** No row drawn and no thread marked yet: what the tree holds before its first render. */
-const NO_ROWS: ReadonlyMap<string, DrawnRow> = new Map();
+/** No thread marked yet: what the tree holds before its first render. */
 const NO_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
 
 /** No row, while the reads that place the rows are out (`IssueTree`'s `placed`): the same
  *  empty list on every render, so what reads the rows sees one value meanwhile. */
 const NO_DRAWN_ROWS: readonly DrawnRow[] = [];
 
-/** `rows`, each the row `held` holds under its key (`rowKeyOf`) where that one holds the same
- *  values, as TanStack Query's `replaceEqualDeep` compares two answers of a read
- *  (`api/queries.ts`), with `held` set to the rows answered, by their keys, for the next render.
- *  A node holds its children, so a change anywhere under a node is a change of its row too. */
-function keptRows(
-  held: RefObject<ReadonlyMap<string, DrawnRow>>,
-  rows: readonly DrawnRow[]
-): DrawnRow[] {
-  const before = held.current;
-  const now = new Map<string, DrawnRow>();
-  const kept = rows.map((row) => {
-    const key = rowKeyOf(row);
-    const was = before.get(key);
-    const one = was !== undefined && replaceEqualDeep(was, row) === was ? was : row;
-    now.set(key, one);
-    return one;
-  });
-  held.current = now;
-  return kept;
+/**
+ * `now`, sharing with `was`, the tree as last built, each node that holds the same values, as
+ * TanStack Query's `replaceEqualDeep` shares two answers of a read (`api/queries.ts`). A node's
+ * children are matched to the ones `was` held under it by their ids, and a node keeps the object
+ * it was where its own values pass `replaceEqualDeep` and its children are the same ids in the
+ * same order, each kept, so a change anywhere under a node is a change of the node too. A child is
+ * matched by its id though its parent changed: a page that puts nodes before the others - an
+ * older comments page under the issue - draws its parent's row again and no row it moved. A row is
+ * keyed by that same path of ids (`rowKeyOf`), so each row is drawn from the node the row under
+ * its key was drawn from wherever the two hold the same values.
+ */
+function sharedTree(was: TreeNode | undefined, now: TreeNode): TreeNode {
+  if (was === undefined || was === now) return now;
+  const before = new Map(was.children.map((child) => [child.id, child]));
+  const children = now.children.map((child) => sharedTree(before.get(child.id), child));
+  if (
+    children.length === was.children.length &&
+    children.every((child, at) => child === was.children[at])
+  ) {
+    const { children: _wasChildren, ...wasOwn } = was;
+    const { children: _nowChildren, ...nowOwn } = now;
+    if (replaceEqualDeep(wasOwn, nowOwn) === wasOwn) return was;
+  }
+  return children.every((child, at) => child === now.children[at]) ? now : { ...now, children };
 }
 
 /** The keys of the node rows, in drawing order. */

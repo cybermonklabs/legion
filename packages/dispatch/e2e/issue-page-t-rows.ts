@@ -19,12 +19,12 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import {
-  dashboardOrigin,
   getIssue,
   getIssueCoverage,
   getIssueEvents,
   listComments,
   listIssueAsks,
+  syncArchitectureSources,
 } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle, presetToggles } from "./issue-page";
@@ -822,9 +822,12 @@ const EVENT_PAGE = 200;
 const EDIT_NOTICE_QUIET_MS = 30_000;
 const EDIT_NOTICE_SWEEP_MS = 5_000;
 
+/** The margin `editNoticesSent` waits past the quiet window and one sweep. */
+const EDIT_NOTICES_MARGIN_MS = 25_000;
+
 /** How long `editNoticesSent` waits: the quiet window and one sweep after a person's last
  *  version, which may be written just before the wait starts, and a margin. */
-const EDIT_NOTICES_WAIT_MS = 60_000;
+const EDIT_NOTICES_WAIT_MS = EDIT_NOTICE_QUIET_MS + EDIT_NOTICE_SWEEP_MS + EDIT_NOTICES_MARGIN_MS;
 
 /** Every event of issue `key`, oldest first: its event log read a page at a time, each page after
  *  the last event's `seq`, until a page comes back short. */
@@ -905,8 +908,8 @@ export async function editNoticesSent(key: string, traffic: ApiRequests): Promis
 }
 
 /**
- * Imports every architecture source of issue `key`'s project now, through the signed-in page's
- * own request context (`POST /api/v1/projects/{key}/architecture-sources/sync`), so that each
+ * Imports every architecture source of issue `key`'s project now, signed in as the reader
+ * (`syncArchitectureSources`: `POST /api/v1/projects/{key}/architecture-sources/sync`), so each
  * holds what the server's own import pass would find, and that pass sends no event while a row
  * counts what the page sends. The pass re-imports every enabled source about every 5 minutes,
  * the first at a moment drawn within 5 minutes of the server's start (`SyncInterval` and
@@ -920,11 +923,9 @@ export async function editNoticesSent(key: string, traffic: ApiRequests): Promis
  * finds the same one and sends nothing; the event this import sends is in the log before its
  * answer, and lands before the load (`seedEventsLanded`).
  */
-export async function architectureSettled(page: Page, key: string): Promise<void> {
+export async function architectureSettled(key: string): Promise<void> {
   const { project } = await getIssue(key);
-  const path = `/api/v1/projects/${encodeURIComponent(project)}/architecture-sources/sync`;
-  const response = await page.request.post(path, { headers: { Origin: dashboardOrigin } });
-  expect(response.ok(), `POST ${path} answers ${response.status()}`).toBe(true);
+  await syncArchitectureSources(project);
 }
 
 /** Turns `filter` on and waits for its rows to hold still. */

@@ -106,7 +106,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     owedUnless(await treeReadGate(page, seeded.key));
     // The seed's architecture source holds now what the server's own import pass would find, so
     // that pass sends no event the page answers with reads while this row counts them.
-    await architectureSettled(page, seeded.key);
+    await architectureSettled(seeded.key);
     const views = {
       plan: viewAnswerOf(page, "plan"),
       spec: viewAnswerOf(page, "spec"),
@@ -128,6 +128,31 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load sends one tree read with no view"
     ).toBe(1);
     expect(blocksReads(load), "the first load sends no blocks read").toEqual([]);
+    // The load's one asks read is the outline's, `asks?thread=1`, and no plain asks read stands
+    // beside it (R5, decision 441).
+    const asksReads = load.flatMap((request) => {
+      const url = new URL(request.path, "http://requests.invalid");
+      return request.method === "GET" && url.pathname === `/api/v1/issues/${seeded.key}/asks`
+        ? [url]
+        : [];
+    });
+    expect(
+      asksReads.filter((url) => url.searchParams.get("thread") === "1").length,
+      "the first load sends one asks read with thread=1"
+    ).toBe(1);
+    expect(
+      asksReads.flatMap((url) =>
+        url.searchParams.has("thread") ? [] : [`${url.pathname}${url.search}`]
+      ),
+      "the first load sends no plain asks read"
+    ).toEqual([]);
+    // Each read of the load is sent once: the fixture's count leaves room for requests the page
+    // no longer sends, so it does not catch a read sent twice, the coverage's among them.
+    const sent = load.map((request) => `${request.method} ${request.path}`);
+    expect(
+      sent.filter((one, at) => sent.indexOf(one) !== at),
+      "the first load sends no request twice"
+    ).toEqual([]);
     expect(
       load.length,
       `the first load sends at most ${LOAD_BOUND} requests under /api/`

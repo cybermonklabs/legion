@@ -5,9 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { Profiler, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueDetails } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -33,10 +32,9 @@ import { useOutlineEditing } from "./IssuePresetPanels";
 import { IssueTree } from "./IssueTree";
 import { readComment, waitInAct } from "./outline-fixtures";
 import { Publisher, publishedTree } from "./projection-fixture";
-import * as rowText from "./RowText";
+import { recordRowDraws, treeOfComments } from "./row-draw-fixtures";
 import { drawStage, stubReads, treeOf } from "./slots/stage-fixtures";
 import * as treeRows from "./TreeRows";
-import { commentNode } from "./tree-read/tree-fixtures";
 import type { OnEditing } from "./useNodeEditing";
 
 /**
@@ -48,13 +46,11 @@ import type { OnEditing } from "./useNodeEditing";
  * stand-in for its export, which `IssueTree.tsx`'s import reads from then on), each commit in
  * which anything under the tree rendered (a `Profiler` around it), and each commit that draws a
  * row's words again (`RowText` under a `Profiler` of its own, named by the row's node, as
- * `row-redraws.test.tsx` records them). A row that is not edited draws its words again whenever it
- * is drawn again, since `RowText` is no `memo`.
+ * `row-draw-fixtures.tsx`'s `recordRowDraws` records them). A row that is not edited draws its
+ * words again whenever it is drawn again, since `RowText` is no `memo`.
  */
 
-/** `RowText` and `TreeRows` as their modules define them, read before a case's spies stand in for
- *  the exports. */
-const RowTextItself = rowText.RowText;
+/** `TreeRows` as its module defines it, read before a case's spy stands in for the export. */
 const TreeRowsItself = treeRows.TreeRows;
 
 /** What the outline drew again since a case began counting. */
@@ -70,28 +66,17 @@ interface Draws {
  *  `restore`. */
 function countDraws(): Draws {
   let trees = 0;
-  const drawn: string[] = [];
-  const rowSpy = spyOn(rowText, "RowText").mockImplementation(function RecordedRowText(props) {
-    return (
-      <Profiler id={props.source?.id ?? props.markdown} onRender={(id) => drawn.push(id)}>
-        <RowTextItself {...props} />
-      </Profiler>
-    );
-  });
+  const rowDraws = recordRowDraws();
   const treeSpy = spyOn(treeRows, "TreeRows").mockImplementation(function CountedTreeRows(props) {
     trees += 1;
     return <TreeRowsItself {...props} />;
   });
   return {
     restore: () => {
-      rowSpy.mockRestore();
+      rowDraws.restore();
       treeSpy.mockRestore();
     },
-    rows: () => {
-      const counts: Record<string, number> = {};
-      for (const id of drawn) counts[id] = (counts[id] ?? 0) + 1;
-      return counts;
-    },
+    rows: () => rowDraws.since(0),
     trees: () => trees,
   };
 }
@@ -298,7 +283,7 @@ test("naming the document a row is edited in draws the editor and not the body",
 
 // An answer of the decisions and of the asks that holds what the read held, in objects that are all
 // new, builds the tree again: the page's nodes are new objects, though no row holds anything new.
-// No row is drawn again (`NodeRow`'s `memo`, `IssueTree.tsx`'s kept rows). The cases that count
+// No row is drawn again (`NodeRow`'s `memo`, `IssueTree.tsx`'s `sharedTree`). The cases that count
 // rows here would have every row of a long issue drawn again at the base, where each of those
 // answers was one more whole-outline render.
 test("an answer of the decisions and the asks that changes nothing for a row draws no row", async () => {
@@ -308,13 +293,7 @@ test("an answer of the decisions and the asks that changes nothing for a row dra
     readComment("reply-a", 2, "head-a"),
     readComment("head-b", 3),
   ];
-  const readings = new Map<string, DisplayTree | undefined>();
-  const tree = treeOf(
-    comments.map((comment) => {
-      if (!readings.has(comment.body)) readings.set(comment.body, displayTree(comment.body));
-      return { ...commentNode(comment), text_tree: readings.get(comment.body) };
-    })
-  );
+  const tree = treeOfComments(comments);
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockImplementation(async () =>
     decisionsRead([])
   );
@@ -322,7 +301,6 @@ test("an answer of the decisions and the asks that changes nothing for a row dra
   stubs.push(
     getIssueDecisions,
     listIssueAskThreads,
-    spyOn(api, "listComments").mockImplementation(async () => [...comments]),
     spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) =>
       query.view === undefined ? tree : treeOf([])
     )

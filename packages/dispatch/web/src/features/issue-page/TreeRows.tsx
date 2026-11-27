@@ -24,6 +24,7 @@ import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-wo
 import { rowSelectorOf } from "./tree-focus";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+import { nodeTakesTyping } from "./useNodeEditing";
 
 /**
  * The rows of the issue's tree, drawn.
@@ -190,7 +191,7 @@ export function TreeRows({
             {...(place === undefined ? {} : { document: place.artifact })}
             // Each row reads its own document's room admission (`useDocumentReadOnly`) and
             // whether it is being edited (`useEditedRow`), so neither draws every row again.
-            editable={!isClosed && place !== undefined}
+            editable={nodeTakesTyping(place, isClosed)}
             expanded={row.expanded}
             focused={focused === key}
             foldable={!(row.level === 1 && row.node.id === zoomRoot)}
