@@ -987,14 +987,28 @@ func (b *Broker) loginWait(ctx context.Context, d time.Duration, da *oauth2.Devi
 // fraction, an exponent or past an int64, reading neither its token nor its error, where
 // devicePoll reads both: a 403 access_denied with such an expires_in is a denial here.
 //
-// The poll goes out under a RefusalClient over client, and its answer is read through
-// redact.ReadAnswer, as far as the limit where it runs past it, as the limit always cut it. A JSON
-// body is decoded through redact.Answer.Decode, with the extras machineFileFrom reads
-// (credential_id and credential_expires_at) as the token's; a form or text body is read from the
-// bytes Answer.StreamTo hands it, as x/oauth2 reads them. The broker's answer crosses the boundary
-// (redact.OAuth2) before it is handed on: the *oauth2.RetrieveError it unwraps to holds the
-// answer's status and Retry-After and the rule's reading of the broker's words, read with the
-// poll's record, and its code is read as it came (redact.RefusalCode), never from its ErrorCode.
+// The poll goes out under a RefusalClient over client, so every answer and every failed hop
+// carries the record of the requests it came of. A poll that got no answer prints as
+// redact.Unanswered names it: net/http's operation, the URL the poll asked (its scheme, host and
+// path, never the user information or query the configured broker URL can carry) and the
+// failure's own transport words or its class, never net/http's text, which quotes that URL whole.
+// A token endpoint URL net/url refuses, which the address's join can still write (Broker.request's
+// reparsed address), prints that way too: the class "not a valid URL" and no part of the URL,
+// which net/url's own error quotes whole, user information, query and all.
+// An answer is read through redact.ReadAnswer, as far as the limit where it runs past it, as the
+// limit always cut it. A JSON body is decoded through redact.Answer.Decode, with the extras
+// machineFileFrom reads (credential_id and credential_expires_at) as the token's; a form or text
+// body is read from the bytes Answer.StreamTo hands it, as x/oauth2 reads them. The broker's
+// error code and description are held as redact.RemoteText with the answer's record
+// (Answer.Said) as they are read, so no word of the answer is ever kept as it came, and the
+// refusal is x/oauth2's own type holding the rule's reading of those two alone
+// (redact.NewRetrieveError) over the answer itself, which the boundary (redact.OAuth2) reads with
+// the poll's record and then rebuilds: what the caller sees holds the status with its standard
+// phrase, the Retry-After the answer named and the rule's reading of the code and the
+// description, and no other header, no status line the broker wrote and no body. Its code is read
+// as it came (redact.RefusalCode), never from the ErrorCode it holds. An answer's error_uri is
+// read nowhere: x/oauth2 prints it beside the code and the description, and the refusal this
+// builds carries those two alone.
 func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
 	form := url.Values{
 		"client_id":   {cfg.ClientID},
@@ -1006,12 +1020,12 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, redact.Unanswered(err, nil, "")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := redact.RefusalClient(client).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redact.Unanswered(err, req, "")
 	}
 	defer resp.Body.Close()
 	read, err := redact.ReadAnswer(resp, 1<<20)
@@ -1020,12 +1034,13 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 	}
 	var body bytes.Buffer
 	_, _ = read.StreamTo(&body)
-	answer := &oauth2.RetrieveError{Response: resp, Body: body.Bytes()}
+	// code and description stay empty where the body does not parse or names no error.
+	var code, description redact.RemoteText
 	// tok stays nil where the body does not parse.
 	var tok *oauth2.Token
 	if content, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); content == "application/x-www-form-urlencoded" || content == "text/plain" {
 		if vals, err := url.ParseQuery(body.String()); err == nil {
-			answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = vals.Get("error"), vals.Get("error_description"), vals.Get("error_uri")
+			code, description = read.Said(vals.Get("error")), read.Said(vals.Get("error_description"))
 			tok = (&oauth2.Token{AccessToken: vals.Get("access_token"), TokenType: vals.Get("token_type"), RefreshToken: vals.Get("refresh_token")}).WithExtra(vals)
 			if seconds, _ := strconv.Atoi(vals.Get("expires_in")); seconds > 0 {
 				tok.Expiry = time.Now().Add(time.Duration(seconds) * time.Second)
@@ -1041,10 +1056,9 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 			CredentialExpiresAt string      `json:"credential_expires_at"`
 			Error               string      `json:"error"`
 			Description         string      `json:"error_description"`
-			URI                 string      `json:"error_uri"`
 		}
 		if read.Decode(&fields) == nil {
-			answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = fields.Error, fields.Description, fields.URI
+			code, description = read.Said(fields.Error), read.Said(fields.Description)
 			tok = (&oauth2.Token{AccessToken: fields.AccessToken, TokenType: fields.TokenType, RefreshToken: fields.RefreshToken}).WithExtra(map[string]any{
 				oauthwire.ExtraCredentialID: fields.CredentialID, oauthwire.ExtraCredentialExpiresAt: fields.CredentialExpiresAt,
 			})
@@ -1053,8 +1067,13 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 			}
 		}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 || answer.ErrorCode != "" {
-		return redact.OAuth2[*oauth2.Token](nil, answer)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 || !code.IsEmpty() {
+		refusal := redact.NewRetrieveError(resp.StatusCode, code, description)
+		// The answer itself, for the boundary alone: it reads the record of the poll's requests
+		// off it and keeps the Retry-After it parses as, and the answer it hands back holds
+		// neither it nor any other header.
+		refusal.Response = resp
+		return redact.OAuth2((*oauth2.Token)(nil), refusal)
 	}
 	if tok == nil || tok.AccessToken == "" {
 		return nil, errors.New("the broker's 2xx answer to a device code poll holds no access_token")
