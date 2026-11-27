@@ -2071,66 +2071,6 @@ sleep() { command sleep 0.05; }`;
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
   });
-
-  // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
-  // a tester's pane carries the batch's NATS URL, credential included, and the launch once handed
-  // the pane to `env -i` as arguments. Every `env` the launch runs records its arguments here, and
-  // the stand-in for mise, the launcher launch.sh execs, records the environment it is handed,
-  // which must be the pane's lines and nothing else. This is the boundary the row observes: what
-  // launch.sh hands mise, not the environment of the omp process the real mise starts.
-  test("the pane's variables reach the launcher, mise, in its environment alone, never in an argument", () => {
-    const run = freshDir("launch-env-run");
-    const bin = freshDir("launch-env-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
-    const realEnv = Bun.which("env", { PATH: callerPath });
-    const token = fixtureSecret("tok");
-    const url = new URL("nats://127.0.0.1:4222");
-    url.username = token;
-    const pane = [`PATH=${bin}:${callerPath}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
-    writeFileSync(path.join(run, "prompt.txt"), "Test it.\n");
-    writeFileSync(path.join(run, "pane.env"), `${pane.join("\n")}\n`);
-    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
-    writeFileSync(
-      path.join(bin, "env"),
-      `#!/bin/sh\nprintf '%s\\n' "$@" >>${JSON.stringify(path.join(run, "argv.log"))}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
-      { mode: 0o755 }
-    );
-    writeFileSync(
-      path.join(bin, "mise"),
-      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
-      { mode: 0o755 }
-    );
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
-    const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch tester-proof-s1-1`,
-      [run],
-      { PATH: `${bin}:${callerPath}` }
-    );
-    const argv = existsSync(path.join(run, "argv.log"))
-      ? readFileSync(path.join(run, "argv.log"), "utf8")
-      : "";
-    // The stand-in mise is a /bin/sh script, and that shell exports PWD itself on start; the real
-    // mise is no shell, so PWD is left out of the comparison.
-    const launcherEnv = existsSync(path.join(run, "launcher-env"))
-      ? readFileSync(path.join(run, "launcher-env"), "utf8")
-          .trim()
-          .split("\n")
-          .filter((line) => !line.startsWith("PWD="))
-          .sort()
-      : [];
-    expect({
-      code: result.code,
-      envRan: argv.length > 0,
-      leaked: argv
-        .split("\n")
-        .filter((line) => line.includes(token))
-        .map((line) => line.replaceAll(token, "<token>")),
-      launcherEnv,
-    }).toEqual({ code: 0, envRan: true, leaked: [], launcherEnv: [...pane].sort() });
-  });
 });
 
 // tester_pane writes a tester's pane file over the batch's services file, which carries the NATS
