@@ -71,10 +71,11 @@ func (s *KnownSessions) Read(ctx context.Context, sessionID string) (KnownSessio
 // session as another principal, whose admission cleared this principal or whose own write
 // recorded its own; by a registration of this session that was admitted after this one; by an
 // interest change or a clean stop - and this registration writes nothing and is
-// ErrPrincipalUnrecorded, which the registration route answers 503 with Retry-After: 1. The
-// client registers again, and that registration's admission reads the record again. So a
-// registration whose write is delayed past another registration's admission can never put back a
-// principal that admission cleared, or write over the principal the other registration recorded.
+// ErrPrincipalUnrecorded and ErrRecordWrittenSince, which the registration route answers 503 with
+// Retry-After: 1. The client registers again, and that registration's admission reads the record
+// again. So a registration whose write is delayed past another registration's admission can never
+// put back a principal that admission cleared, or write over the principal the other registration
+// recorded.
 //
 // The refresh-age skip of an unchanged record holds for a registration only where the record its
 // admission read at the bucket's leader names this principal, recorded (Admission), and the
@@ -85,13 +86,16 @@ func (s *KnownSessions) Read(ctx context.Context, sessionID string) (KnownSessio
 // the leader does not confirm is the compare-and-swap write instead, which a record written since
 // the admission refuses as above.
 //
-// Any other write that failed is ErrPrincipalUnrecorded unless the bucket's leader confirms the
-// record it holds is one the handover gate reads rightly (principalMayDiffer): one naming this
-// registration's principal, recorded, one naming none recorded, or none at all, which the gate
-// refuses or cannot judge, so that failure costs only the record's topics and last_seen and is
-// the plain error. A record naming another principal, and a leader that did not answer, leave the
-// gate reading a principal this session did not last register as, or one nobody confirmed it
-// did, so the registration route answers 503 and the client registers again.
+// Any other write that failed is read against the record the bucket's leader holds after it
+// (leaderRecordOf), and is one of three errors, each wrapping the write's own failure. Where the
+// leader holds the session's record naming this registration's principal, recorded, it is
+// ErrRecordStands: the failure cost the record only its topics and last_seen. Where the leader
+// holds a record naming another principal, recorded, or did not answer, it is
+// ErrPrincipalUnrecorded: the handover gate would read a principal this session did not last
+// register as, or one nobody confirmed it did. Where the leader holds no record of the session,
+// or one naming no recorded principal, it is the plain error: the gate refuses or cannot judge
+// such a record, and nothing records the session as this principal. How the registration route
+// answers each is its own (cmd/listener's answerRegistration).
 //
 // A registration admitted while the store's bucket was not open (Admission.notOpen) writes
 // nothing and is ErrKnownSessionsUnavailable, as its admission was, whether or not the bucket
@@ -106,7 +110,13 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, admission 
 	}
 	record.PrincipalRecorded = true
 	err := s.writeWithin(ctx, record, true, &admission)
-	if err != nil && !errors.Is(err, ErrPrincipalUnrecorded) && s.principalMayDiffer(ctx, record.SessionID, record.Principal) {
+	if err == nil || errors.Is(err, ErrPrincipalUnrecorded) {
+		return err
+	}
+	switch s.leaderRecordOf(ctx, record.SessionID, record.Principal) {
+	case leaderNamesPrincipal:
+		return fmt.Errorf("%w: %w", ErrRecordStands, err)
+	case leaderMayNameAnother:
 		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, err)
 	}
 	return err
@@ -248,24 +258,53 @@ func (s *KnownSessions) clearPrincipal(ctx context.Context, watcher *kvwatch.Wat
 // ErrPrincipalUnrecorded wraps a registration the known-session record may name another principal
 // for: one AdmitRegistration could not read or clear the record of before the registration was
 // admitted; one whose own write found the record written since its admission (another
-// registration's admission or write among them) and wrote nothing (RecordRegistrationWithin); and
-// a registration's write that failed while the bucket's leader names another principal, recorded,
-// than the one the session just registered as, or did not answer. The registration route answers
-// it 503 with Retry-After: 1 rather than 200, so the client registers again until the record
-// names its principal.
+// registration's admission or write among them) and wrote nothing (RecordRegistrationWithin,
+// ErrRecordWrittenSince); and a registration's write that failed while the bucket's leader names
+// another principal, recorded, than the one the session just registered as, or did not answer.
+// The registration route answers it 503 rather than 200, so the client registers again until the
+// record names its principal.
 var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record may name another")
 
-// principalMayDiffer reports whether sessionID's record, as the bucket's leader holds it, names a
-// recorded principal other than principal, and whether the leader did not answer within ctx,
-// which confirms nothing: this listener's copy can be behind the leader, so it is not asked. A
-// record past the retention, a key that holds none, and a record whose principal no registration
-// of this build recorded name none.
-func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, principal string) bool {
+// ErrRecordWrittenSince wraps, beside ErrPrincipalUnrecorded, a registration's write that wrote
+// nothing because the record was written since the registration's admission: the bucket answered
+// it, and refused the compare-and-swap (RecordRegistrationWithin).
+var ErrRecordWrittenSince = errors.New("the known-session record was written since this registration was admitted")
+
+// ErrRecordStands wraps a registration's write that failed while the bucket's leader holds the
+// session's record naming that registration's principal, recorded (RecordRegistrationWithin): the
+// failure cost the record only its topics and last_seen, and the session stays recorded as the
+// principal it registers as.
+var ErrRecordStands = errors.New("session: the known-session record was not written, and the record the bucket holds names this registration's principal")
+
+// leaderRecord is what the bucket's leader holds of a session's record after a registration's
+// write of it failed (leaderRecordOf).
+type leaderRecord int
+
+const (
+	// leaderNamesNone: no record, one past the retention, or one whose principal no registration
+	// of this build recorded.
+	leaderNamesNone leaderRecord = iota
+	// leaderNamesPrincipal: a record naming the registration's principal, recorded.
+	leaderNamesPrincipal
+	// leaderMayNameAnother: a record naming another principal, recorded, or a leader that did not
+	// answer within ctx, which confirms nothing.
+	leaderMayNameAnother
+)
+
+// leaderRecordOf reads sessionID's record as the bucket's leader holds it and says which principal
+// it names against principal (leaderRecord). This listener's copy can be behind the leader, so it
+// is not asked.
+func (s *KnownSessions) leaderRecordOf(ctx context.Context, sessionID, principal string) leaderRecord {
 	stored, found, err := s.Read(ctx, sessionID)
-	if err != nil {
-		return true
+	switch {
+	case err != nil:
+		return leaderMayNameAnother
+	case !found || !stored.PrincipalRecorded:
+		return leaderNamesNone
+	case stored.Principal == principal:
+		return leaderNamesPrincipal
 	}
-	return found && stored.PrincipalRecorded && stored.Principal != principal
+	return leaderMayNameAnother
 }
 
 // leaderAt reports whether the bucket's leader holds sessionID's newest message at revision, the

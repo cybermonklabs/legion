@@ -3875,8 +3875,8 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			}
 		}
 		// The answer goes through answerRegistration, which writes the session's known-session
-		// record first, fenced on the admission above, and answers 200 only once it is written;
-		// its comment says why every 200 of this route is answered there and no refusal is.
+		// record first, fenced on the admission above; its comment states the rule every answer
+		// of this route keeps, and why every 200 is answered there and no refusal is.
 		answerRegistration(w, r, d, admission, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,
@@ -3899,28 +3899,19 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 const knownRecordWriteTimeout = 1 * time.Second
 
 // answerRegistration is the one place subscribeHandler answers a registration it accepted: it
-// writes record, the session's known-session record with the topics the registration stored, and
-// answers answer with 200 only once that write has landed. The record is what a send to the
-// session is stored on once its entry is gone, which a released Legion pod's session is (the send
-// route's `200 stopped` with `recipient_state: gone`, sendHandler). A registration answered 200 that
-// left no record would make the next such send the 404 of a session no store knows, and a session
-// whose pod is released before its next heartbeat - which would write the record, since this
-// listener's copy holds none - is then not stored for at all. Under 32 busy loops the store work
-// before this write can spend the whole budget, and a write that shared it would then never be
-// sent (bus.Bounded starts no call on a context that has ended) while the registration is answered
-// 200 (dispatch://INFRA-3149).
+// writes record, the session's known-session record with the topics the registration stored and
+// the principal it presented, and answers answer.
 //
-// So the write is bounded on its own (knownRecordWriteTimeout), and a write that does not land in
-// that bound is answered as the store error it is: the bus-unavailable 503 with Retry-After: 1
-// (writeBusUnavailable, recordWriteUnanswered), which every client retries. envoy-client's
-// transport makes a second attempt of any status at or past 500, and each plugin's heartbeat then
-// buys one extra call and asks again at every heartbeat after it (pi-envoy's ensureHeartbeat,
-// claude-envoy's heartbeat). Nothing the registration stored is undone: its interest row, entry
-// and consumer stand, and the retry is a registration like any other, which writes the record
-// because this listener's copy holds none. A write the bucket answered and refused, where its
-// leader confirms the record it holds names this registration's principal, none recorded, or
-// nothing, is the write's WARN beside the 200: a retry meets the same refusal, and the record that
-// stands is one the handover gate reads rightly.
+// The rule: a registration is answered 200 only once that write has landed, with two exceptions
+// below. The record is what a send to the session is stored on once its entry is gone, which a
+// released Legion pod's session is (the send route's `200 stopped` with `recipient_state: gone`,
+// sendHandler). A registration answered 200 that left no record would make the next such send
+// the 404 of a session no store knows, and a session whose pod is released before its next
+// heartbeat - which would write the record, since this listener's copy holds none - is then not
+// stored for at all. Under 32 busy loops the store work before this write can spend the whole
+// budget, and a write that shared it would then never be sent (bus.Bounded starts no call on a
+// context that has ended) while the registration is answered 200 (dispatch://INFRA-3149), so the
+// write is bounded on its own (knownRecordWriteTimeout).
 //
 // The record names the principal of the credential this registration presented
 // (requestPrincipal), none included, which a claim naming this session as the one it replaces is
@@ -3932,25 +3923,42 @@ const knownRecordWriteTimeout = 1 * time.Second
 // (session.KnownSessions.RecordRegistrationWithin): a record written since - by another
 // registration of this session, through any listener, whose admission cleared this principal or
 // whose write recorded its own, or by an interest change or a stop - is left as it is, so this
-// registration can never put back a principal another registration's admission cleared. That
-// fenced write, which wrote nothing, and a failed write after which the bucket's leader does not
-// confirm the record names this registration's principal, none recorded, or nothing, or does not
-// answer, are session.ErrPrincipalUnrecorded: the handover gate would read another principal, or
-// none, as the one this session last registered as, so it is answered 503 with Retry-After: 1, and
-// the client registers again until the record names the principal it registers as; everything this
-// registration wrote before it stands, and its next attempt, admitted afresh, writes the same again.
+// registration can never put back a principal another registration's admission cleared.
 //
-// That is the rule with two exceptions, and both are deliberate: a registration answered with
-// success has written the session's known-session record, except where the bucket refused the
-// write and confirms a record the handover gate reads rightly (above), and except while this
-// listener's known-session store is not open. A registration admitted while the bucket was not
-// open writes nothing, whether or not the bucket opened since (session.ErrKnownSessionsUnavailable),
-// and is answered 200 with knownBucketNotOpenWarning, logged at most once a minute
-// (warnKnownBucketNotOpen); no store at all writes nothing and answers nil, so it is answered 200
-// as well. Such a listener is the listener the known-session store's comment describes, which
-// knows no session past its entry. A 503 there would refuse every registration for as long as the
-// bucket stays shut, live sessions' heartbeats among them, which costs more than the 404 a send
-// meets for a session whose process is already gone.
+// A write that did not land is answered by what the bucket's leader holds after it, as
+// RecordRegistrationWithin reads it:
+//
+//   - session.ErrPrincipalUnrecorded that the bucket answered - the compare-and-swap a record
+//     written since the admission beat (session.ErrRecordWrittenSince), or a write the bucket
+//     refused after which its leader names another principal - is answered 503 with Retry-After:
+//     1 naming it: the handover gate would read another principal as the one this session last
+//     registered as, so the client registers again until the record names the principal it
+//     registers as.
+//   - session.ErrRecordStands, a write that failed while the bucket's leader holds the session's
+//     record naming this registration's principal, recorded, is the first exception: the write's
+//     WARN beside the 200. The session is recorded as the principal it registers as, and the
+//     failure cost the record only its topics and last_seen; a retry of a write the bucket
+//     refused meets the same refusal.
+//   - Every other failure is answered as the store error it is (writeStoreError): a write, or a
+//     leader read after it, that nothing answered, an ErrPrincipalUnrecorded among them, is the
+//     bus-unavailable 503 with Retry-After: 1; a write the bucket refused while its leader holds
+//     no record of the session, or one naming no recorded principal, is the store's own refusal.
+//     The session would otherwise be told it is registered with no record of it.
+//
+// envoy-client's transport makes a second attempt of any status at or past 500, and each plugin's
+// heartbeat then buys one extra call and asks again at every heartbeat after it (pi-envoy's
+// ensureHeartbeat, claude-envoy's heartbeat). Nothing the registration stored before the write is
+// undone: its interest row, entry and consumer stand, and the retry is a registration like any
+// other, admitted afresh, which writes the record because this listener's copy holds none.
+//
+// The second exception is a listener whose known-session store is not open. A registration
+// admitted while the bucket was not open writes nothing, whether or not the bucket opened since
+// (session.ErrKnownSessionsUnavailable), and is answered 200 with knownBucketNotOpenWarning,
+// logged at most once a minute (warnKnownBucketNotOpen); no store at all writes nothing and
+// answers nil, so it is answered 200 as well. Such a listener is the listener the known-session
+// store's comment describes, which knows no session past its entry. A 503 there would refuse every
+// registration for as long as the bucket stays shut, live sessions' heartbeats among them, which
+// costs more than the 404 a send meets for a session whose process is already gone.
 //
 // Every 200 this route answers is answered here, and nothing else is: a branch that accepts a
 // registration, the registration that asked for no consumer and is given one
@@ -3967,47 +3975,22 @@ func answerRegistration(w http.ResponseWriter, r *http.Request, d *listenerDeps,
 	case errors.Is(err, session.ErrKnownSessionsUnavailable):
 		answer.Warnings = append(answer.Warnings, knownBucketNotOpenWarning)
 		warnKnownBucketNotOpen(logger, record.SessionID)
-	case recordWriteUnanswered(ctx, err):
-		logger.Warn("listener known-session record not written; the registration is refused for its client to retry",
+	case errors.Is(err, session.ErrRecordStands):
+		logger.Warn("listener known-session record not written; the record that stands names this registration's principal",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
-		writeBusUnavailable(w, err)
-		return
-	case errors.Is(err, session.ErrPrincipalUnrecorded):
-		logger.Warn("listener known-session record not written",
+	case errors.Is(err, session.ErrPrincipalUnrecorded) && (errors.Is(err, session.ErrRecordWrittenSince) || storeAnswered(ctx, err)):
+		logger.Warn("listener known-session record not written; the record may name another principal",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	default:
-		logger.Warn("listener known-session record not written",
+		logger.Warn("listener known-session record not written; the registration is refused for its client to retry",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
+		writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
+		return
 	}
 	writeJSON(w, http.StatusOK, answer)
-}
-
-// recordWriteUnanswered reports whether err, the failed write of a registration's known-session
-// record within ctx, is one the bus did not answer: ctx ended, or err is no answer of the store's
-// (storeAnswer). A session.ErrPrincipalUnrecorded is unanswered where the failure it wraps is: the
-// registration's write wraps its own failure where the bucket's leader did not confirm the record
-// (session.KnownSessions.RecordRegistrationWithin), and the compare-and-swap that a record written
-// since the admission beat wraps none, since the bucket answered it.
-func recordWriteUnanswered(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return true
-	}
-	if !errors.Is(err, session.ErrPrincipalUnrecorded) {
-		return !storeAnswer(err)
-	}
-	var wrapped interface{ Unwrap() []error }
-	if !errors.As(err, &wrapped) {
-		return false
-	}
-	for _, cause := range wrapped.Unwrap() {
-		if !errors.Is(cause, session.ErrPrincipalUnrecorded) && !storeAnswer(cause) {
-			return true
-		}
-	}
-	return false
 }
 
 // registerV1Routes builds the /v1 routes over the listener's dependencies, which main hands over

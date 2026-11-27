@@ -795,20 +795,17 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // answer for, is the registration's compare-and-swap write instead.
 //
 // A registration's write is one compare-and-swap at its admission's revision: a write another one
-// beat writes nothing and is ErrPrincipalUnrecorded (RecordRegistrationWithin). A write that keeps
-// the stored principal reads the record from the bucket's leader, writes the principal the leader
-// holds over that very revision, and reads the leader again after a write another one beat, up to
-// knownKeepAttempts times.
+// beat writes nothing and is ErrPrincipalUnrecorded and ErrRecordWrittenSince
+// (RecordRegistrationWithin). A write that keeps the stored principal reads the record from the
+// bucket's leader, writes the principal the leader holds over that very revision, and reads the
+// leader again after a write another one beat, up to knownKeepAttempts times.
 //
-// Only a registration fails its request over this answer (cmd/listener's answerRegistration). It is
-// answered 200 only once its record is written: a send to a session with no record cannot be stored
-// once its entry is gone. A write that did not land refuses it with the bus-unavailable 503 its
-// client retries, and a write that leaves another principal recorded, or wrote nothing over a
-// record written since its admission (ErrPrincipalUnrecorded), with a 503 and Retry-After: 1; a
-// write the bucket refused, where the leader confirms the record, is a WARN beside the 200, since a
-// retry meets the same refusal. A subscription change (RecordWithin) and a clean stop (TouchWithin)
-// each answer whatever the write did, and the error is for the call site's WARN. A nil answer is no
-// promise of a record: a store whose bucket is not open writes none.
+// It answers nil for a record written, a skip, a store whose bucket is not open and a record that
+// names no session, so a nil answer is no promise of a record; and otherwise the write's failure.
+// RecordRegistrationWithin says what a registration's failure is read as, and cmd/listener's
+// answerRegistration how the registration route answers it. A subscription change (RecordWithin)
+// and a clean stop (TouchWithin) each answer whatever the write did, and the error is for the call
+// site's WARN.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool, admission *Admission) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
@@ -850,7 +847,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 		if !written.Stored {
 			// The message names no principal: the route answers it to the registering caller.
-			return fmt.Errorf("%w: the known-session record of %s was written since this registration was admitted at its revision %d, and nothing is written over it, so register again", ErrPrincipalUnrecorded, record.SessionID, admission.revision)
+			return fmt.Errorf("%w: %w (session %s, revision %d), and nothing is written over it, so register again", ErrPrincipalUnrecorded, ErrRecordWrittenSince, record.SessionID, admission.revision)
 		}
 		return nil
 	}
