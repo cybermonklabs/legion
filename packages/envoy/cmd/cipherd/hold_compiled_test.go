@@ -168,12 +168,12 @@ func newHoldRig(t *testing.T) *holdRig {
 		if proxy != "" {
 			tags += `, "proxy": "` + proxy + `"`
 		}
-		return `{"name": "` + testSecretsPrefix + slug + `", "kms_key_id": "` + testSecretsKMSKeyARN +
+		return `{"name": "` + testSecretsPrefix + slug +
 			`", "tags": {` + tags + `}, "value": "` + value + `"}`
 	}
 	// Each airlock secret is behind the proxy by its proxy tag, which names its kind of the
 	// profiles file below (policy.TagProxy).
-	r.f.secrets = writeTempFile(t, "fake-secrets.json", []byte(`{"secrets": [`+strings.Join([]string{
+	r.f.secrets = writeTempFile(t, "memory-secrets.json", []byte(`{"secrets": [`+strings.Join([]string{
 		secret("ada-deploy-key", ada, "human", "", "ada-deploy-value"),
 		secret("bob-deploy-key", bob, "human", "", "bob-deploy-value"),
 		secret("ada-airlock", ada, "agent", "adaairlock", "ada-airlock-value"),
