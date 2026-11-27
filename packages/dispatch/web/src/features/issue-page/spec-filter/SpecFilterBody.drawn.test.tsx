@@ -2776,6 +2776,228 @@ test("a press past an atom that ends a statement's block puts the caret after it
   }
 });
 
+/**
+ * Presses statement r1's words in the blank space past the end of the line that the element
+ * `marked` finds in them ends, and waits for the caret to stand in the run of places `caret` sets
+ * `between` to in the editor's paragraph, which holds no text. The words are `text`, drawn from
+ * the server's reading with `names` as the page's batched read named its references, and the
+ * stage's editable holds `held`, a plain paragraph standing in for the editor's drawing. The
+ * browser answers the point with the end of the element's last text, as Chromium answers a point
+ * past the end of the line a marked element ends; happy-dom lays nothing out, so the element is
+ * given one box, on the press's line, that the press stands right of.
+ */
+async function pressPastLineEnd({
+  caret,
+  held,
+  marked,
+  names,
+  text,
+}: {
+  caret: (paragraph: HTMLElement, between: Range) => void;
+  held: ReactNode;
+  marked: (words: HTMLElement) => Element | null;
+  names?: ReadonlyMap<string, string>;
+  text: string;
+}): Promise<void> {
+  const user = userEvent.setup();
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <p>{held}</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text, tree: displayTree(text) })]),
+    [],
+    { editor, names, onEditing }
+  );
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  const ownRects = HTMLElement.prototype.getClientRects;
+  // The element's one line, 40 to 200 px across and 140 to 160 px down: the press at (260, 150)
+  // stands on it, 60 px past its end.
+  const line = new DOMRect(40, 140, 160, 20);
+  let element: Element | null = null;
+  const rects = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === element ? ([line] as unknown as DOMRectList) : ownRects.call(this);
+  });
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const found = await waitFor(() => {
+      const words = row.querySelector<HTMLElement>("[data-node-words]");
+      const mark = words === null ? null : marked(words);
+      if (mark === null) throw new Error("the statement draws no element the line ends with");
+      return mark;
+    });
+    element = found;
+    const walker = document.createTreeWalker(found, NodeFilter.SHOW_TEXT);
+    let last: Node | null = null;
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) last = node;
+    const end = last;
+    if (end === null || found.parentElement === null) {
+      throw new Error("the element the line ends with draws no text");
+    }
+    const point = mock(() => ({ offsetNode: end, offset: end.textContent?.length ?? 0 }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    await user.pointer({
+      keys: "[MouseLeft]",
+      target: found.parentElement,
+      coords: { x: 260, y: 150 },
+    });
+    await waitFor(() => {
+      const paragraph = row.querySelector<HTMLElement>('[data-block-id="r1"] p');
+      const anchor = window.getSelection()?.anchorNode;
+      if (paragraph == null || anchor == null) {
+        throw new Error("the editor's paragraph holds no caret");
+      }
+      const between = document.createRange();
+      caret(paragraph, between);
+      expect(
+        between.comparePoint(anchor, window.getSelection()?.anchorOffset ?? 0),
+        "the caret stands off the place past the element, on its line"
+      ).toBe(0);
+    });
+    expect(point).toHaveBeenCalledWith(260, 150);
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    rects.mockRestore();
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+}
+
+// A press in the blank space past the end of a line that a reference ends, with a hard break
+// after it, is a press at the end of that line. The browser answers the point with a place inside
+// the reference's link, read as right after the reference (`pressInWords`' `pastAtomEnd`); the
+// editor holds the reference as written, as text, so the caret goes to the end of that text, on
+// the reference's line, before the break. Counted on to the text after the break, the press
+// would put the caret at the start of the line after it.
+test("a press past a reference that a hard break follows puts the caret after the reference, before the break", async () => {
+  const cited = "dispatch://CORE-2";
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const written = paragraph.querySelector("span[hidden]")?.firstChild;
+      const br = paragraph.querySelector("br");
+      if (written == null || br === null) {
+        throw new Error("the editor holds no reference as written and no break");
+      }
+      between.setStart(written, cited.length);
+      between.setEndBefore(br);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        <br />
+        {"Second line."}
+      </>
+    ),
+    // The link pass leaves a text with no characters after the link, before the break.
+    marked: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextElementSibling?.nodeName).toBe("BR");
+      expect(link?.parentElement?.textContent).toBe("Read CORE-2 The other issueSecond line.");
+      return link;
+    },
+    names: new Map([[cited, "The other issue"]]),
+    text: `Read ${cited}\\\nSecond line.`,
+  });
+});
+
+// The same press past inline HTML that a hard break follows: the editor holds the HTML as an atom
+// with no text, so the count after it is also the count before it, and the press says it fell
+// past an atom; the caret goes after the atom, on its line, before the break.
+test("a press past inline HTML that a hard break follows puts the caret after it, before the break", async () => {
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const atom = paragraph.querySelector('[data-type="html"]');
+      const br = paragraph.querySelector("br");
+      if (atom === null || br === null) {
+        throw new Error("the editor holds no inline HTML and no break");
+      }
+      between.setStartAfter(atom);
+      between.setEndBefore(br);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        <br />
+        {"Second line."}
+      </>
+    ),
+    marked: (words) => {
+      const atom = words.querySelector('[data-type="html"]');
+      expect(atom?.textContent).toBe("<name>");
+      expect(atom?.nextElementSibling?.nodeName).toBe("BR");
+      expect(atom?.parentElement?.textContent).toBe("Kept by <name>Second line.");
+      return atom;
+    },
+    text: "Kept by <name>\\\nSecond line.",
+  });
+});
+
+// A press past the end of the words, whose last line, after a hard break, is inline HTML alone,
+// says it fell past an atom, and the caret goes after that last atom, where the block ends: before
+// only the separator and the break ProseMirror draws after an atom that ends a paragraph. The hard
+// break counts as one character in both readings, so the count after the last atom is not the
+// count after the atom that ends the line before the break, and the caret goes on the last line.
+test("a press past an atom that ends the last line, after a hard break, puts the caret after it", async () => {
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const atoms = paragraph.querySelectorAll('[data-type="html"]');
+      const last = atoms[atoms.length - 1];
+      const separator = paragraph.querySelector(".ProseMirror-separator");
+      if (atoms.length !== 2 || last === undefined || separator === null) {
+        throw new Error("the editor holds no two atoms and no separator after them");
+      }
+      between.setStartAfter(last);
+      between.setEndBefore(separator);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        <br />
+        <span contentEditable={false} data-type="html">
+          {"<role>"}
+        </span>
+        <img alt="" className="ProseMirror-separator" />
+        <br className="ProseMirror-trailingBreak" />
+      </>
+    ),
+    marked: (words) => {
+      const atoms = words.querySelectorAll('[data-type="html"]');
+      const last = atoms[atoms.length - 1];
+      expect([...atoms].map((atom) => atom.textContent)).toEqual(["<name>", "<role>"]);
+      expect(last?.previousElementSibling?.nodeName).toBe("BR");
+      expect(last?.parentElement?.textContent).toBe("Kept by <name><role>");
+      return last ?? null;
+    },
+    text: "Kept by <name>\\\n<role>",
+  });
+});
+
 // The caret after an atom that ends a statement's last line stands at a place between two
 // elements, where the browser draws a collapsed range no box, so the line it is read on is the
 // atom's last line: Down there is refused, as at the end of the block's text, and the caret stays
