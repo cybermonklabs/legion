@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"slices"
@@ -20,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsimages"
@@ -166,7 +164,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused JetStream API publish", func() bool {
 					var serverLog string
-					serverLog, serverLogErr = readDaemonGrantServerLogs(server)
+					serverLog, serverLogErr = server.Logs(context.Background())
 					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
 					return serverLine != ""
 				})
@@ -337,7 +335,7 @@ func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) 
 	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
+func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *testnats.Container, string) {
 	t.Helper()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -365,23 +363,13 @@ func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissi
 	return daemonSeed, admin, js, server, uri
 }
 
-func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {
+func daemonGrantServerLogs(t *testing.T, server *testnats.Container) string {
 	t.Helper()
-	text, err := readDaemonGrantServerLogs(server)
+	text, err := server.Logs(context.Background())
 	if err != nil {
 		t.Fatalf("read the server log: %v", err)
 	}
 	return text
-}
-
-func readDaemonGrantServerLogs(server *tcnats.NATSContainer) (string, error) {
-	logs, err := server.Logs(context.Background())
-	if err != nil {
-		return "", err
-	}
-	defer logs.Close()
-	text, err := io.ReadAll(logs)
-	return string(text), err
 }
 
 func matchingLogLine(text string, terms ...string) string {

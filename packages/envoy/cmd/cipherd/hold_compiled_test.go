@@ -24,6 +24,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
@@ -148,8 +149,8 @@ type holdRig struct {
 	airlock         []string
 	upstream        *holdUpstream
 	client          *ciphertest.Client
-	pods            ciphertest.Pods
-	launcher        ciphertest.Launcher
+	pods            podclient.Pods
+	launcher        podclient.Launcher
 	broker          *brokerProcess
 	proxyAddr       string
 	made            int
