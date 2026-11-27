@@ -8,11 +8,11 @@ import (
 )
 
 // TestTheHubForgetsAReaderWhoseLastViewHasGone: a generation of the delivery hub keeps, by each
-// reader's part of a view key, the unfetchable count that reader's views last read and the
-// freshness verdict last sent to its pages. Once a reader's last view has gone, the generation
-// keeps nothing of that reader, however long it runs on for others. alice and carol, who see other
-// projects, each hold a timeline on one socket: carol's sub ends, and the generation holds
-// alice's entries alone; alice's ends, and it holds none.
+// reader's part of a view key, the unfetchable count that reader's views last read, whether that
+// reader reads the deployment, and the freshness verdict last sent to its pages. Once a reader's
+// last view has gone, the generation keeps nothing of that reader, however long it runs on for
+// others. alice and carol, who see other projects, each hold a timeline on one socket: carol's sub
+// ends, and the generation holds alice's entries alone; alice's ends, and it holds none.
 //
 // Control: leaveLocked drops a view and keeps its reader's entries; carol's stay once her sub has
 // ended, and the test fails naming them.
@@ -56,6 +56,9 @@ func TestTheHubForgetsAReaderWhoseLastViewHasGone(t *testing.T) {
 		for key := range g.unfetchable {
 			entries = append(entries, "unfetchable "+key)
 		}
+		for key := range g.readsDeployment {
+			entries = append(entries, "readsDeployment "+key)
+		}
 		for key := range g.sent {
 			entries = append(entries, "sent "+key)
 		}
@@ -65,7 +68,7 @@ func TestTheHubForgetsAReaderWhoseLastViewHasGone(t *testing.T) {
 	of := func(keys ...string) []string {
 		var entries []string
 		for _, key := range keys {
-			entries = append(entries, "unfetchable "+key, "sent "+key)
+			entries = append(entries, "unfetchable "+key, "readsDeployment "+key, "sent "+key)
 		}
 		slices.Sort(entries)
 		return entries

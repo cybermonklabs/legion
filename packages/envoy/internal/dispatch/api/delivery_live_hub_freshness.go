@@ -31,13 +31,19 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 }
 
 // verdictLocked is the freshness verdict as of now for the reader whose part of a view key is
-// viewer: the row's freshness, which every reader shares, and that reader's unfetchable count.
+// viewer: the row's freshness, which every reader shares but for its last_error, told only to a
+// reader that reads the deployment's rows (readsTheDeployment), as the reads' own freshness is
+// (deliveryPopulation.lastErrorOf), and that reader's unfetchable count.
 func (g *hubGeneration) verdictLocked(now time.Time, viewer string) deliveryFreshnessVerdict {
 	stale := []string{}
 	if last := g.fresh.lastReconcileAt; last != nil && now.Sub(*last) > deliveryStaleAfter {
 		stale = append(stale, deliveryReconciledSources...)
 	}
-	return deliveryFreshnessVerdict{lastError: g.fresh.lastError, stale: stale, unfetchable: g.unfetchable[viewer]}
+	var lastError *string
+	if g.readsDeployment[viewer] {
+		lastError = g.fresh.lastError
+	}
+	return deliveryFreshnessVerdict{lastError: lastError, stale: stale, unfetchable: g.unfetchable[viewer]}
 }
 
 // judgeLocked sends each reader's open pages a freshness frame when that reader's verdict changed

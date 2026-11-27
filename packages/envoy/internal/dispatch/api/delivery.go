@@ -305,6 +305,11 @@ type deliveryPopulation struct {
 	components map[string]delivery.DeliveryComponentView
 	// unfetchable is how many population pull requests can no longer be fetched from GitHub.
 	unfetchable int
+	// readsDeployment is whether the reader reads the deployment's own rows (readsTheDeployment),
+	// GET /api/v1/settings/delivery among them: the freshness's last_error is a column of that row,
+	// the reconcile's failure, which can name any repository it read, so a reader refused the row
+	// is answered none (lastErrorOf).
+	readsDeployment bool
 	// shipsShown is, for a reader that does not see every object, whether the reader is shown one
 	// of the pull requests each run read first shipped, by run, a run that shipped none holding no
 	// entry, and unnamedShown is whether that reader is shown a run that names no pull request it
@@ -383,13 +388,15 @@ func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor,
 // counted: every count, facet, measure and title is derived from what is left. A session group is
 // answered only when every session it holds passes access.SessionClause (groupsShown), so the
 // Parent agents are computed from the groups shown. The unfetchable count and the unowned P0 list
-// take the same rules in their own statements. A reader that sees every object (seesEveryObject)
-// is shown everything, and nothing is read for the rule (R9).
+// take the same rules in their own statements. The freshness's last_error, a column of the
+// deployment's settings row, is answered only to a reader that reads that row, an open viewer
+// (lastErrorOf). A reader that sees every object (seesEveryObject) is shown everything, and
+// nothing is read for the rule (R9).
 func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	viewer := refs.VisibilityArg(reader)
 	everything := seesEveryObject(reader)
-	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
+	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}, readsDeployment: readsTheDeployment(reader.Viewer)}
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
 	// statement on the pool, so each already read its own snapshot), so running them at once
@@ -765,10 +772,20 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 		sessionTitles:   sessionTitles,
 		sessionPRCounts: sessionPRCounts,
 		freshness: delivery.DeliveryFreshnessView{
-			LastEventAt: settings.LastEventAt, LastReconcileAt: settings.LastReconcileAt, LastError: settings.LastError,
+			LastEventAt: settings.LastEventAt, LastReconcileAt: settings.LastReconcileAt, LastError: p.lastErrorOf(settings),
 			UnfetchableCount: p.unfetchable,
 		},
 	}
+}
+
+// lastErrorOf is the settings row's last_error as the reader the population was read for is
+// answered it: the row's text for a reader that reads the deployment's rows, and none for any other
+// (deliveryPopulation.readsDeployment).
+func (p deliveryPopulation) lastErrorOf(settings delivery.DeliverySettings) *string {
+	if !p.readsDeployment {
+		return nil
+	}
+	return settings.LastError
 }
 
 // narrowedTo is the population for [from', to') with from' at or after the start it was read for.

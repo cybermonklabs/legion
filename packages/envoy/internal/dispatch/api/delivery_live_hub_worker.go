@@ -227,6 +227,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			g.known = true
 		}
 		g.unfetchable[spec.viewer] = read.unfetchable
+		g.readsDeployment[spec.viewer] = readsTheDeployment(spec.reader.Viewer)
 		if _, told := g.sent[spec.viewer]; !told {
 			// A reader's first verdict is set silently too, from its first read.
 			g.sent[spec.viewer] = g.verdictLocked(now, spec.viewer)

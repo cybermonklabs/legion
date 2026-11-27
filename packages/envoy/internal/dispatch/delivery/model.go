@@ -310,6 +310,8 @@ type DeliveryRunView struct {
 // processed a GitHub event, when the five-minute reconcile last *completed successfully*, (when
 // the most recent pass failed) why, and how many population pull requests can no longer be
 // fetched from GitHub at all (a permanent 404/410 -- store.go's unfetchable_at/unfetchable_reason).
+// The why is told only to a reader that reads the deployment's settings row it is a column of, an
+// open viewer; any other reader is answered null (api's deliveryPopulation.lastErrorOf).
 type DeliveryFreshnessView struct {
 	LastEventAt      *time.Time `json:"last_event_at"`
 	LastReconcileAt  *time.Time `json:"last_reconcile_at"`

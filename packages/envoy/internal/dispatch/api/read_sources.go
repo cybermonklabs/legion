@@ -317,16 +317,27 @@ func scopeReadRefusal(scopes []string, holds func(string) bool) *readRefusal {
 const codeDeploymentReadRefused = "DEPLOYMENT_READ_REFUSED"
 
 // deploymentReadRefusal is the refusal of a read of a row of the deployment (readclass.Deployment
-// among classes) to a viewer that is not open, or nil: 403 DEPLOYMENT_READ_REFUSED, naming the
-// row, which withinReadScope answers over HTTP and the live socket as a view's error frame. A nil
-// viewer is the closed one, which is not open.
+// among classes) to a viewer that does not read the deployment (readsTheDeployment), or nil: 403
+// DEPLOYMENT_READ_REFUSED, naming the row, which withinReadScope answers over HTTP and the live
+// socket as a view's error frame.
 func deploymentReadRefusal(method, pattern string, classes []readclass.Class, viewer *model.Viewer) *readRefusal {
-	if !slices.Contains(classes, readclass.Deployment) || (viewer != nil && viewer.Open) {
+	if !slices.Contains(classes, readclass.Deployment) || readsTheDeployment(viewer) {
 		return nil
 	}
 	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
 		"%s %s reads the whole deployment, which a restricted member, and a credential acting for one, does not read",
 		method, pattern)}
+}
+
+// readsTheDeployment reports whether viewer reads the deployment's own rows: an open viewer. A
+// viewer that is not open - a restricted member, or a credential acting for one - is refused a
+// row of the deployment (deploymentReadRefusal), and is answered none of such a row's text that
+// another read carries either: the delivery freshness's last_error, the reconcile's failure, which
+// can name any repository it read (deliveryPopulation.lastErrorOf, and the live hub's
+// verdictLocked). The freshness's times name nothing, and every reader's stale verdict reads them,
+// so they stay every reader's. A nil viewer is the closed one, which is not open.
+func readsTheDeployment(viewer *model.Viewer) bool {
+	return viewer != nil && viewer.Open
 }
 
 // readsForAViewer reports whether a read of class answers what its caller may see, so needs the

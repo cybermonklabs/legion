@@ -309,10 +309,11 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	}
 }
 
-// forgetReaderLocked drops the unfetchable count and the verdict last sent of the reader whose part
-// of a view key is viewer once no view of g is that reader's, so a generation keeps nothing of a
-// reader whose pages have all gone, however many come and go while it runs. A reader that comes
-// back is one g never saw: its first read sets its verdict silently again (recompute).
+// forgetReaderLocked drops the unfetchable count, whether the reader reads the deployment, and the
+// verdict last sent of the reader whose part of a view key is viewer once no view of g is that
+// reader's, so a generation keeps nothing of a reader whose pages have all gone, however many come
+// and go while it runs. A reader that comes back is one g never saw: its first read sets its
+// verdict silently again (recompute).
 func (g *hubGeneration) forgetReaderLocked(viewer string) {
 	for _, view := range g.views {
 		if view.spec.viewer == viewer {
@@ -320,6 +321,7 @@ func (g *hubGeneration) forgetReaderLocked(viewer string) {
 		}
 	}
 	delete(g.unfetchable, viewer)
+	delete(g.readsDeployment, viewer)
 	delete(g.sent, viewer)
 }
 
@@ -430,14 +432,16 @@ type hubGeneration struct {
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard; known is false until the first recompute sets it,
-	// silently. unfetchable is the unfetchable count each reader's views last read and sent the
-	// verdict last sent to that reader's pages, both by the reader's part of a view key
-	// (deliveryLiveSpec.viewer): a reader is counted only the pull requests it sees, so its verdict
-	// is its own, set silently by its first read.
-	fresh       deliveryFreshnessHeard
-	unfetchable map[string]int
-	sent        map[string]deliveryFreshnessVerdict
-	known       bool
+	// silently. unfetchable is the unfetchable count each reader's views last read, readsDeployment
+	// whether that reader reads the deployment's rows (readsTheDeployment), which decides whether
+	// it is told the row's last_error, and sent the verdict last sent to that reader's pages, each
+	// by the reader's part of a view key (deliveryLiveSpec.viewer): a reader is counted only the
+	// pull requests it sees, so its verdict is its own, set silently by its first read.
+	fresh           deliveryFreshnessHeard
+	unfetchable     map[string]int
+	readsDeployment map[string]bool
+	sent            map[string]deliveryFreshnessVerdict
+	known           bool
 }
 
 // hubClock is the hub's clock: what time it is, and a timer that calls f once the clock reaches
@@ -622,13 +626,14 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
-		barrier:     make(chan chan struct{}),
-		feeds:       make(chan hubEventFeed),
-		views:       map[string]*deliveryView{},
-		conns:       map[deliveryLiveConn]map[string]*deliverySub{},
-		p0:          map[string]struct{}{},
-		unfetchable: map[string]int{},
-		sent:        map[string]deliveryFreshnessVerdict{},
+		barrier:         make(chan chan struct{}),
+		feeds:           make(chan hubEventFeed),
+		views:           map[string]*deliveryView{},
+		conns:           map[deliveryLiveConn]map[string]*deliverySub{},
+		p0:              map[string]struct{}{},
+		unfetchable:     map[string]int{},
+		readsDeployment: map[string]bool{},
+		sent:            map[string]deliveryFreshnessVerdict{},
 	}
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
