@@ -2744,18 +2744,36 @@ TAG_RUN_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 TAG_RUN_FLAGS = (re.compile(r"(?<![\w-])-tags\b"), re.compile(r"(?<![\w-])-run\b"))
 
 
+def step_script_text(document: dict, job: dict, step: dict) -> str:
+    """What a run: step runs, as text: its run:, and, where that run: is one line whose first word
+    is a file of this repository read from the step's own directory, that script's text after it.
+    So a check of the go test lines a step runs sees those of a step that hands them to a script
+    (envoy-infra-go's natslive step runs packages/envoy/infra/scripts/natslive.sh) rather than
+    finding none: read from the run: alone, such a step runs no tagged go test, and neither side of
+    TAG_RUNS could see it."""
+    run = str(step.get("run", ""))
+    lines = [line for line in script_lines(run) if line.strip()]
+    if len(lines) == 1:
+        first = lines[0].split()[0]
+        path = Path(step_workdir(document, job, step)) / first
+        if path.is_file():
+            return f"{run}\n{path.read_text()}"
+    return run
+
+
 def tag_run_steps(documents: dict) -> list:
     """Every run: step of ci.yaml and the workflows it calls whose script holds a line running
     `go test` with both -tags and
     -run, as (the workflow file, the job, the step). Read with script_lines, so a comment is no
     trigger and both
-    flags must be on the go test line itself, as every such step of ci.yaml writes them."""
+    flags must be on the go test line itself, as every such step of ci.yaml writes them; a step
+    whose run: is a script is read through that script (step_script_text)."""
     found = []
     for path, document in documents.items():
         for name, job in (document.get("jobs") or {}).items():
             for step in (job or {}).get("steps") or []:
                 if any(TAG_RUN_TEST.search(line) and all(flag.search(line) for flag in TAG_RUN_FLAGS)
-                       for line in script_lines(str(step.get("run", "")))):
+                       for line in script_lines(step_script_text(document, job or {}, step))):
                     found.append((path, name, step))
     return found
 
@@ -2805,7 +2823,10 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names step \"{entry.step}\" of "
                                                                       f"job {entry.job}, which is not one run: step of it; update or remove the entry"))
             continue
-        if "-run" not in str(steps[0]["run"]):
+        # The step's own run: and, for a step that runs a script, that script's lines, without
+        # comments: a -run the script's header mentions selects nothing.
+        ran = script_lines(step_script_text(documents.get(entry.workflow) or {}, job, steps[0]))
+        if not any("-run" in line for line in ran):
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names {where}, which passes no "
                                                                       f"-run, so it runs the package's untagged tests itself; drop the entry"))
             continue

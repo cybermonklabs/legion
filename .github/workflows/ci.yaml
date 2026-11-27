@@ -699,6 +699,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
   envoy-infra-go:
     needs: changes
+    # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
     if: needs.changes.outputs.envoy_infra_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     permissions:
       contents: read

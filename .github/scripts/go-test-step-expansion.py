@@ -114,8 +114,7 @@ How it reads a step:
     `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`,
-    `packages/envoy/infra/scripts/race-unit.sh` and `packages/envoy/infra/scripts/natslive.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names; a legs step whose run: is `set -o pipefail` and a lister piped to `xargs

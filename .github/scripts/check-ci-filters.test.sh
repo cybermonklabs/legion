@@ -3106,6 +3106,38 @@ replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." \
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
+# A step whose run: is a script of the repository is read through that script, on both sides of
+# the rule: envoy-infra-go's natslive step runs packages/envoy/infra/scripts/natslive.sh, whose
+# go test lines carry -tags and -run, and read from the run: alone such a step runs no tagged go
+# test at all. The script's own comments select nothing.
+tagged_script() { # tagged_script <root> <the go test line the script runs>
+  mkdir -p "$1/scripts"
+  printf '#!/bin/sh\n# a header that mentions -run selects nothing\n%s\n' "$2" >"$1/scripts/live.sh"
+  chmod +x "$1/scripts/live.sh"
+  replace "$1/.github/workflows/ci.yaml" "        run: go build ./..." "        run: scripts/live.sh"
+}
+echo "case: a step that runs a script passing -run, named by an entry"
+root=$(fixture tag-run-script)
+tagged_script "$root" 'go test -tags live -count=1 -run TestLive ./...'
+tag_run "$root" "$entry"
+run_check "$root"
+check "the entry stands: no refusal of its -run" \
+  "$(is "$(grep -c 'which passes no -run' <<<"$out" || true)" 0)"
+echo "case: a step that runs a script passing -run, which TAG_RUNS does not name"
+root=$(fixture tag-run-script-undeclared)
+tagged_script "$root" 'go test -tags live -count=1 -run TestLive ./...'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, read through its script" "$(contains "$out" 'image step "Build"')"
+echo "case: a step that runs a script passing no -run, named by an entry"
+root=$(fixture tag-run-script-no-run-flag)
+tagged_script "$root" 'go test -tags live -count=1 ./...'
+tag_run "$root" "$entry"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step: a -run in the script's comment is no -run" \
+  "$(contains "$out" 'TAG_RUNS names image step "Build", which passes no -run, so it runs the package.s untagged tests itself')"
+
 # A job that calls a reusable workflow keeps its gate in ci.yaml and gives its steps away, so a
 # why cites the step in the file that holds it. ci.yaml's docs job does that with docs-site.yaml.
 echo "case: a why cites a step of another workflow file"
