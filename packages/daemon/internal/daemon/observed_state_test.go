@@ -110,8 +110,9 @@ func observedClaim(t *testing.T, issue, tree string, role claim.Role, state supe
 // awaiting_children), a parent held before its retro for the child at work beneath it
 // (LEGION-195 over LEGION-196, children_before_retro) and a root whose task was stopped in its
 // merge (LEGION-197, task_stopped). Its second part is a running tree, LEGION-300, whose members
-// stand in the phases the first part leaves out — planning, testing, reviewing, accepting, retro
-// and held — and its third the phases rows, pull requests and claims both views of the state
+// stand in the phases the first part leaves out — planning, testing, reviewing, accepting, retro,
+// verifying (LEGION-307, a merged child whose close waits for its checks) and held — and its
+// third the phases rows, pull requests and claims both views of the state
 // read: rows of several roles whose claims stand, a row whose claim is gone, claims no row names,
 // an architect, claims on issues the workflow does not record, and the daemon's own controller's
 // claim.
