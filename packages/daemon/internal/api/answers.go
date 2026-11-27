@@ -231,14 +231,6 @@ var frozenAnswers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-<<<<<<< 7fa22de66d
-	// version.go's 206: what a live role's claim owes now (`api.OwedResponse`), which the
-	// end-of-turn reminder renders. The route arrives with the answer at the contract of the
-	// repository correction, so no contract below it records either. version.go's 212 added
-	// `wait` and `hold` to it, which a caller below that contract is served without (shaping.go's
-	// withoutOwedWaitAndHold).
-	{ID: AnswerOwed, Routes: []string{"POST /legion/v1/claims/owed"}, Since: repositoryCorrectionContract},
-=======
 	// version.go's 219: the plan register_plan took (`api.PlanRegisterResponse`). The route
 	// arrives with the answer, so no contract below 219 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
@@ -249,7 +241,6 @@ var frozenAnswers = []Answer{
 	// version.go's 228: the ids the controller's discard of the intake's give-ups closed
 	// (`api.IntakeDiscardResponse`), arrived with its route as the replay's answer did.
 	{ID: AnswerIntakeDiscard, Routes: []string{"POST /legion/v1/intake/discard"}, Since: intakeGiveUpsContract},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -324,13 +315,8 @@ type EnumeratedValue struct {
 // them.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
-<<<<<<< 7fa22de66d
-// enumeratedFields is every row the table holds: the state's own, the record's taken from them,
-// the registration's and the owed answer's, in that order.
-=======
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
 // from them, the registration's and the replay's, in that order.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 //
 // The record's rows are taken rather than written, because the record route answers the very
 // value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
@@ -361,18 +347,7 @@ func withIssueRecordRows(rows []EnumeratedField) []EnumeratedField {
 		}
 		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values})
 	}
-<<<<<<< 7fa22de66d
-	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
-	// registration answers `controller` under a `z.literal` and is no row.
-	fields = append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
-	// `step` of the owed answer's hold, the gated step whose row of the closed design gate holds
-	// the asking merger (api.OwedResponse.Hold, record.DesignStep). It arrived with `hold` at
-	// waitContract and is served down below that contract with the whole key (shaping.go's
-	// withoutOwedWaitAndHold), so no body below 212 carries a value of it, as on the state.
-	return append(fields, EnumeratedField{Answer: AnswerOwed, KeyPath: "hold.step", Values: holdSteps})
-=======
 	return fields
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // issueKeyPath is the path the whole-project body writes one issue's fields under. The record

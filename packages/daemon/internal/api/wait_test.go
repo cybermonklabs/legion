@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -191,9 +192,9 @@ func waitRows(t *testing.T, h *harness, token claim.Token) []record.ClaimWait {
 func waitStands(t *testing.T, h *harness, c liveClaim) bool {
 	t.Helper()
 	var stands bool
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		_, stands, err = workflow.WaitStandsNow(context.Background(), tx, record.NewStore(), config.DesignGateRootIssues.Steps(), c.token)
+		_, stands, err = workflow.WaitStandsNow(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), c.token)
 		return err
 	}); err != nil {
 		t.Fatalf("read whether the wait of %s stands: %v", c.token, err)
@@ -208,8 +209,8 @@ func (h *waitHarness) putGate(t *testing.T, version int, open bool) {
 	if open {
 		gate.ApprovedVersion, gate.EverOpened = &version, true
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutGate(context.Background(), tx, gate)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutGate(ctx, tx, gate)
 	}); err != nil {
 		t.Fatalf("put the spec gate of LEGION-208: %v", err)
 	}
@@ -436,8 +437,8 @@ func TestEachWaitRefusalAnswersItsCodeAndRecordsNothing(t *testing.T) {
 		{
 			name: "a completed phases row", at: phase.Implementing, role: claim.RoleImplementer,
 			then: func(t *testing.T, h *waitHarness) {
-				if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-					return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-208",
+				if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+					return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208",
 						Role: claim.RoleImplementer, Claim: "implementer-claim", Entry: 3, CompletedAt: waitNow.Add(-time.Minute)})
 				}); err != nil {
 					t.Fatalf("complete the implementer's row: %v", err)
@@ -565,11 +566,20 @@ func TestWaitAndTheGateClosingAppliedAtOnceLeaveNoWaitStandingUnderTheHold(t *te
 		t.Cleanup(h.second.letGo)
 		return h, c
 	}
-	// apply runs on a goroutine of its own, so it reports and never fails the test itself.
+	// apply runs on a goroutine of its own, so it reports and never fails the test itself. It
+	// applies the fact inside a transaction of its own, which ApplyFact joins and so takes no turn
+	// of the pool (store.Pool.FactTurn): the closing then waits on the fact lock, as the fact of a
+	// second daemon process on the same database does, where waitsForTheLock reads the wait, and
+	// never on this process's turn, which the declaration's route takes and which nothing reads.
 	apply := func(h *waitHarness, id string, fact intake.Fact) <-chan error {
 		done := make(chan error, 1)
 		go func() {
-			result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", id, fact, h.handlers()...)
+			var result intake.Result
+			err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				result, err = intake.ApplyFact(ctx, h.store.Pool(), "dispatch", id, fact, h.handlers()...)
+				return err
+			})
 			if err == nil && result.Refusal != nil {
 				err = fmt.Errorf("%s was refused %s: %s", id, result.Refusal.Code, result.Refusal.Message)
 			}

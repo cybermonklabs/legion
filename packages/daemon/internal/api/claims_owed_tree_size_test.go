@@ -57,11 +57,13 @@ func (c *statementCount) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBa
 func (*statementCount) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // serveOwedOver has h's server read the records through records over pool, with the workflow's
-// table of which role works each phase (workflow.RoleFor), as the daemon wires the owed route.
+// table of which role works each phase (workflow.RoleFor) and its rules for a wait and a hold
+// (workflow.WaitStandsNow, workflow.HoldsNow), as the daemon wires the owed route.
 func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: pool, Record: records, RoleFor: workflow.RoleFor,
+		WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow,
 	}).Handler
 }
 
@@ -143,7 +145,7 @@ func milliseconds(d time.Duration) float64 {
 }
 
 // The owed route reads the claim's tree for the architect that owns it on every ask
-// (owningArchitect), and the worker's end-of-turn reminder waits OWED_READ_BOUND_MS, 3 s, for the
+// (owedStandingOf), and the worker's end-of-turn reminder waits OWED_READ_BOUND_MS, 3 s, for the
 // answer before it nudges with "could not read the record" (packages/pi-shared/src/phase-reminder.ts),
 // so a read that grew with the tree would nudge at every turn's end on a large one. The owner walk
 // reads the tree's issues in one statement and their architects' claims in another

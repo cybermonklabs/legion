@@ -253,12 +253,12 @@ func recordedContractAtOrBelow(n int) int {
 // controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
 // and placedByPod places the caller of a registration that carries the key by its pod.
 //
-// One more row takes keys off, below waitContract, which added `wait` and `hold` to the owed
-// answer as it added them to each claim view of the state and the record: the owed answer's row
-// serves it without the two (withoutOwedWaitAndHold). It follows strip, as every band does. Its
-// caller states its contract in pluginContractHeader, since the answer arrived with its route at
-// repositoryCorrectionContract and every plugin from shapedAnswersContract on states it, so
-// placedByPod does not name it.
+// The owed answer's row takes off `wait` and `hold`, the two keys the wait entry
+// (contract_20261127164432_wait.go) added to the owed answer as it added them to each claim view
+// of the state and the record, below that entry's number (entryNumber(waitContract),
+// withoutOwedWaitAndHold). It follows strip, as every band does. Its caller states its contract in
+// pluginContractHeader, since the answer arrived with its route at the repository correction's
+// entry and every plugin from shapedAnswersContract on states it, so placedByPod does not name it.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
@@ -269,12 +269,8 @@ func recordedContractAtOrBelow(n int) int {
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
 // one application it makes, and every other row reports nothing, the record's, the release
-<<<<<<< 7fa22de66d
-// records', the refusal's and the owed answer's included: the log holds a line for the state
-=======
-// records', the refusal's and the two registrations' included: the log holds a line for the state
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
-// alone (recordShaping), so those routes record nothing.
+// records', the refusal's, the two registrations' and the owed answer's included: the log holds a
+// line for the state alone (recordShaping), so those routes record nothing.
 func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	var took tookOff
 	switch id {
@@ -322,30 +318,6 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
-<<<<<<< 7fa22de66d
-	case AnswerOwed:
-		owed, isOwed := body.(OwedResponse)
-		if !isOwed {
-			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
-		}
-		if strip < waitContract {
-			owed = withoutOwedWaitAndHold(owed)
-		}
-		return owed, took
-	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
-		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerWait, AnswerWaitNews:
-		// The identity, one row each: every contract this daemon serves one of these answers
-		// reads the body it writes. No key has arrived on any of them since that answer arrived.
-		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
-		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerWait and AnswerWaitNews arrived whole at waitContract, so no older contract
-		// records any of those five at all.
-		return body, took
-=======
 	case AnswerRegister:
 		registration, isRegistration := body.(claim.RegisterResponse)
 		if !isRegistration {
@@ -364,7 +336,15 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			registration.Replaces = ""
 		}
 		return registration, took
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	case AnswerOwed:
+		owed, isOwed := body.(OwedResponse)
+		if !isOwed {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(waitContract) {
+			owed = withoutOwedWaitAndHold(owed)
+		}
+		return owed, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
 		// contract describes a shape for them (writeUnparsedAnswer).
@@ -2377,32 +2357,20 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 }
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
-<<<<<<< 7fa22de66d
-// by the claims of its pod: true for the release records and for a refusal whose body is a
-// PauseFailure, and false for every other answer. Those two answers' shapes moved at
-// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
-// claims for them (placingClaims). Every other answer writeAnswer writes but one is the identity
-// at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the
-// claims for one of them would decide nothing. A serving-down added to one of them reaches the
-// caller of a pod only once this answers true for it. The one is the owed answer, whose shape
-// moved at waitContract (withoutOwedWaitAndHold): it arrived at repositoryCorrectionContract, and
-// the pod's reading counts no claim at shapedAnswersContract or above (podContracts), so no pod
-// can place a caller below waitContract and only the header it states does. The state and the
-// record are no question for it: their routes hand in their own snapshot's claims
-// (writeAnswerFrom).
-=======
 // by the claims of its pod: true for the release records, for a refusal whose body is a
 // PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
 // carries `replaces`, and false for every other answer. Those answers' shapes moved at
 // pauseContract, at OwnerPlanContract and at the replaces entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
 // that replaces no session is the same body at every contract, so it reads none. Every other
-// answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
-// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
+// answer writeAnswer writes but one is the identity at every contract, and so is a plain refusal
+// (a claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
 // serving-down added to one of them reaches the caller of a pod only once this answers true for
-// it. The state and the record are no question for it: their routes hand in their own snapshot's
-// claims (writeAnswerFrom).
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// it. The one is the owed answer, whose shape moved at the wait entry (withoutOwedWaitAndHold):
+// it arrived at the repository correction's entry, above shapedAnswersContract, and the pod's
+// reading counts no claim at shapedAnswersContract or above (podContracts), so no pod can place
+// a caller below the wait entry and only the header it states does. The state and the record are
+// no question for it: their routes hand in their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords:

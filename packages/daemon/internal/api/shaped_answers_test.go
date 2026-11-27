@@ -1302,17 +1302,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-<<<<<<< 7fa22de66d
-// Each row is handed a body its own route could write, because the five rows whose shape has
-// moved shape a State, an Issue, the release records, a refusal and the owed answer and panic on
-// anything else: a row handed the wrong type would fail here as an answer with no row does, and
-// never serve that body unshaped.
-=======
-// Each row is handed a body its own route could write, because the six rows whose shape has
-// moved shape a State, an Issue, the release records, a refusal and the two registrations and
-// panic on anything else: a row handed the wrong type would fail here as an answer with no row
-// does, and never serve that body unshaped.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// Each row is handed a body its own route could write, because the seven rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal, the two registrations and the
+// owed answer and panic on anything else: a row handed the wrong type would fail here as an
+// answer with no row does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers() {
@@ -1367,17 +1360,6 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
-<<<<<<< 7fa22de66d
-			case AnswerOwed:
-				owed := owedWaitingAndHeld(record.DesignStepSpec)
-				body, _ := shapeAnswer(AnswerOwed, owed, waitContract-1, waitContract-1)
-				shaped, isOwed := body.(OwedResponse)
-				if !isOwed {
-					t.Fatalf("the owed answer was shaped to %T, want an OwedResponse", body)
-				}
-				if shaped.Wait != nil || shaped.Hold != nil {
-					t.Errorf("the owed answer served below waitContract carries `wait` or `hold`, which that contract added: %+v", shaped)
-=======
 			case AnswerRegister:
 				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
 				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
@@ -1394,7 +1376,20 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				}
 				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
 					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+				}
+			case AnswerOwed:
+				owed := owedWaitingAndHeld(record.DesignStepSpec)
+				below := entryNumber(waitContract) - 1
+				body, _ := shapeAnswer(AnswerOwed, owed, below, below)
+				shaped, isOwed := body.(OwedResponse)
+				if !isOwed {
+					t.Fatalf("the owed answer was shaped to %T, want an OwedResponse", body)
+				}
+				if shaped.Wait != nil || shaped.Hold != nil {
+					t.Errorf("the owed answer served below the wait entry carries `wait` or `hold`, which that entry added: %+v", shaped)
+				}
+				if at, _ := shapeAnswer(AnswerOwed, owed, entryNumber(waitContract), entryNumber(waitContract)); at != any(owed) {
+					t.Errorf("the owed answer was shaped to %+v at the wait entry's number, want the body it was given", at)
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
@@ -1406,11 +1401,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The six rows that shape a body of their own panic on a body of another type, as a row that
+// The seven rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController, AnswerOwed} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

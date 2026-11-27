@@ -35,7 +35,7 @@ package api
 // `packages/contracts/src/legion-api.ts` mirrors the two bodies as `LegionOwedRequest` and
 // `LegionOwedResponse`, and `packages/contracts/fixtures/daemon-api/owed.json` is the answer's
 // golden. The answer is the row `AnswerOwed` this entry adds to answers.go's Answers, which
-// arrives with its route at this entry and is the identity at every contract that records it,
+// arrives with its route at this entry and is the identity at every contract below the wait entry,
 // and the request is a row this entry's test file adds to the request gate's table
 // (pluginRequests), so this entry's fixture holds its three fields and a later type that stops
 // reading one of them is red.
@@ -107,10 +107,11 @@ func init() {
 		answers: []Answer{
 			// This change's entry: what a live role's claim owes now (`api.OwedResponse`), which the
 			// end-of-turn reminder renders. The route arrives with the answer at this entry, so no
-			// contract below it records either.
+			// contract below it records either. It was an identity answer of this entry until the
+			// wait entry (contract_20261127164432_wait.go) added `wait` and `hold` to it: it has a
+			// row of its own in shapeAnswer now, which serves it without the two below that entry.
 			{ID: AnswerOwed, Routes: []string{"POST /legion/v1/claims/owed"}, Since: repositoryCorrectionContract},
 		},
-		identityAnswers: []AnswerID{AnswerOwed},
 	})
 }
 

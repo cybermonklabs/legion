@@ -79,6 +79,11 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The registrations' replaced session", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(replacesContract)"),
 	}},
+	// The wait entry's row of shapeAnswer (contract_20261127164432_wait.go), which takes `wait` and
+	// `hold` off the owed answer; the Design's table predates the entry.
+	{row: "The owed answer's wait and hold", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(waitContract)"),
+	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
 		comparedIn("internal/api/shaping.go", "restoreContract", "n < ServingFloor"),

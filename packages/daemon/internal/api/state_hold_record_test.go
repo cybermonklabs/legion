@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -29,9 +30,9 @@ const (
 	// from which that pod's plugin asks for the state.
 	holdPodUID  = "5c3a9e71-2b48-4d06-9f13-7a8e0c4d2b65"
 	holdPodAddr = "10.1.24.9"
-	// beforeTheHold is a contract below 212, the daemon contract that added each merger's `hold`
-	// (version.go's 212), and below 193 as well, which added `updateState` and `wake`: a plugin on
-	// it is served no hold key, and the two bands compose.
+	// beforeTheHold is a contract below the wait entry's number, the entry that added each
+	// merger's `hold` (contract_20261127164432_wait.go), and below 193 as well, which added
+	// `updateState` and `wake`: a plugin on it is served no hold key, and the two bands compose.
 	beforeTheHold = 169
 )
 
@@ -54,6 +55,13 @@ func (s holdSource) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 		Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Claims: s.claims, Holds: holds, Now: waitNow,
 	})
 	return state, s.claims, err
+}
+
+// ObservedState is the observed view of the same record, read as projectedSource reads it
+// (waiting_reported_test.go). No read of this file asks for that view.
+func (s holdSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	return observed, nil, err
 }
 
 // heldRecord is the issue record `read_record` hands the session for key, read from a state body
@@ -142,7 +150,7 @@ func TestReadRecordCarriesTheHoldOfAMergerTheClosedGateHolds(t *testing.T) {
 		}
 		seedWaitIssue(t, st, records, issue, seed.key == seed.tree)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// The held tree: a person approved version 2 of its spec, and version 3 is with the
 		// reviewer. The open tree: a person approved its spec at the version Dispatch holds.
 		heldApproval, openApproval := 2, 4
@@ -190,7 +198,7 @@ func TestReadRecordCarriesTheHoldOfAMergerTheClosedGateHolds(t *testing.T) {
 	stateFor := func(remote string, contract int) []byte {
 		t.Helper()
 		server := api.NewServer("127.0.0.1", 8437, api.Options{
-			Steps: steps, State: holdSource{records: records, steps: steps, claims: claimsAt(contract)}, StateTransactions: st,
+			Steps: steps, State: holdSource{records: records, steps: steps, claims: claimsAt(contract)}, StateTransactions: st.Pool(),
 			CallerPod: func(addr netip.Addr) (string, bool) {
 				return holdPodUID, addr == netip.MustParseAddr(holdPodAddr)
 			},
@@ -210,7 +218,7 @@ func TestReadRecordCarriesTheHoldOfAMergerTheClosedGateHolds(t *testing.T) {
 		remote   string
 		contract int
 	}{
-		"the merger's own pod, at this contract": {remote: holdPodAddr + ":41000", contract: api.DaemonAPIVersion},
+		"the merger's own pod, at this contract": {remote: holdPodAddr + ":41000", contract: api.DaemonAPIVersion()},
 		"the operator's own, from no pod":        {remote: "192.0.2.1:41000", contract: beforeTheHold},
 	} {
 		t.Run(name, func(t *testing.T) {

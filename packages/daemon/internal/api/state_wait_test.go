@@ -72,15 +72,15 @@ func claimKeyServed(t *testing.T, body []byte, key string) map[string]json.RawMe
 
 // `GET /legion/v1/state` — the body `read_record` reads an issue's record from — shows each wait
 // that stands on the claim whose worker declared it: its id, what it waits on, when its time comes
-// and when the daemon recorded the declaration, to the microsecond. A plugin below waitContract is
-// served no claim view carrying `wait`: one built before sjawhar/legion#2788 reads the state with
-// a strict schema and would refuse the whole body for a key it does not name, and one built after
-// strips the key, so the strip is what keeps it from a caller that did not ask for it. A caller is
-// placed by the contract it states, else by its pod's claims (contractsFor): one that states a
-// contract below this one, or whose pod's claims record a contract below shapedAnswersContract,
-// is served the wait on no claim, and one that states this contract, whose pod records it, or the
-// operator's own `legion state` from no pod is served it on the implementer alone, in the same
-// reading of the same state.
+// and when the daemon recorded the declaration, to the microsecond. A plugin below the wait
+// entry's number (entryNumber(waitContract)) is served no claim view carrying `wait`: one built
+// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
+// for a key it does not name, and one built after strips the key, so the strip is what keeps it
+// from a caller that did not ask for it. A caller is placed by the contract it states, else by its
+// pod's claims (contractsFor): one that states a contract below the entry's, or whose pod's claims
+// record a contract below shapedAnswersContract, is served the wait on no claim, and one that
+// states the entry's number, whose pod records it, or the operator's own `legion state` from no
+// pod is served it on the implementer alone, in the same reading of the same state.
 func TestTheStateServesAStandingWaitOnlyToACallerAtTheWaitContract(t *testing.T) {
 	want := `{"id":"5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685","waitingOn":"the review of LEGION-207's pull request",` +
 		`"wakeAt":"2026-11-14T08:00:00Z","declaredAt":"2026-11-14T06:00:00.123456Z"}`
@@ -103,10 +103,11 @@ func TestTheStateServesAStandingWaitOnlyToACallerAtTheWaitContract(t *testing.T)
 	}
 }
 
-// waitKeys is the two keys waitContract added to each claim view, as the wire names them.
+// waitKeys is the two keys the wait entry (waitContract) added to each claim view, as the wire
+// names them.
 var waitKeys = []string{"wait", "hold"}
 
-// waitBandCaller is one caller of the state that the band of waitContract places: where it asks
+// waitBandCaller is one caller of the state that the wait entry's band places: where it asks
 // from, the claims of its pod, the contract it states in its header (0 for none) and whether it
 // is served the two keys of that band, `wait` and `hold`.
 type waitBandCaller struct {
@@ -118,29 +119,25 @@ type waitBandCaller struct {
 }
 
 // waitBandCallers is every caller the two tests of that band read the state as. A pod's claims
-// place a caller only below shapedAnswersContract (podContracts), so a caller below waitContract
-// is a caller that states it, or a pod placed below that; a caller that states waitContract is
-// served the keys whatever its pod records.
+// place a caller only below shapedAnswersContract (podContracts), so a caller below the wait
+// entry's number is a caller that states it, or a pod placed below that; a caller that states the
+// entry's number is served the keys whatever its pod records.
 func waitBandCallers() []waitBandCaller {
+	added := entryNumber(waitContract)
 	return []waitBandCaller{
-		{name: "a caller that states the contract before this one", remote: "192.0.2.1:4100", claims: podClaims(waitContract), stated: waitContract - 1},
+		{name: "a caller that states the contract before this one", remote: "192.0.2.1:4100", claims: podClaims(added), stated: added - 1},
 		{name: "a pod whose claims record a contract the pod reading places", remote: statePodAddr + ":4100", claims: podClaims(shapedAnswersContract - 1)},
-		{name: "a caller that states this contract from that pod", remote: statePodAddr + ":4100", claims: podClaims(shapedAnswersContract - 1), stated: waitContract, served: true},
-		{name: "a pod at the contract", remote: statePodAddr + ":4100", claims: podClaims(waitContract), served: true},
-		{name: "the operator's own, from no pod", remote: "192.0.2.1:4100", claims: podClaims(waitContract), served: true},
+		{name: "a caller that states this contract from that pod", remote: statePodAddr + ":4100", claims: podClaims(shapedAnswersContract - 1), stated: added, served: true},
+		{name: "a pod at the contract", remote: statePodAddr + ":4100", claims: podClaims(added), served: true},
+		{name: "the operator's own, from no pod", remote: "192.0.2.1:4100", claims: podClaims(added), served: true},
 	}
 }
 
-// waitContract is the contract whose entry in version.go added the key, and this daemon's own
-// contract is never below it: a caller at this contract is served the wait.
-func TestWaitContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedWait = 212
-	if waitContract != addedWait {
-		t.Fatalf("waitContract = %d, want %d, the contract whose entry in version.go added each claim view's wait",
-			waitContract, addedWait)
-	}
-	if waitContract > DaemonAPIVersion {
-		t.Fatalf("waitContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			waitContract, DaemonAPIVersion)
+// This daemon's own contract is never below the number it gives the wait entry, the entry that
+// added each claim view's `wait` and `hold`: a caller at this contract is served the keys.
+func TestTheWaitEntryIsNumberedAtOrBelowThisDaemonsContract(t *testing.T) {
+	if added := entryNumber(waitContract); added > DaemonAPIVersion() {
+		t.Fatalf("the wait entry is numbered %d, above DaemonAPIVersion %d: no caller could be served the keys",
+			added, DaemonAPIVersion())
 	}
 }

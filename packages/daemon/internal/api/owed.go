@@ -45,8 +45,8 @@ type OwedRequest struct {
 // with a row of its own (workflow.HeldByDesignGate). It is absent once that gate opens, and on a
 // tree with no registered gate row. Each is named as Architect is, whether or not the claim owes,
 // so a reminder can tell a worker that waits, or a merger the gate holds, from a worker that
-// stopped. A caller below waitContract is served the answer without either key (shapeAnswer's
-// row of AnswerOwed).
+// stopped. A caller below the wait entry's number (entryNumber(waitContract)) is served the answer
+// without either key (shapeAnswer's row of AnswerOwed).
 type OwedResponse struct {
 	Owes      bool        `json:"owes"`
 	Work      string      `json:"work"`
@@ -163,7 +163,6 @@ type owedStanding struct {
 // notices about a phase worker take (workflowRuntime.owningArchitect in
 // internal/daemon/specs.go): the issue's own architect while its claim holds its role, else the
 // nearest one above it that does, else the tree root's. It reads the tree's issues and their
-<<<<<<< 7fa22de66d
 // architect claims, so it grows with the tree and not with the deployment.
 //
 // The wait and the hold are each read by the one rule every reader of it asks, which the daemon
@@ -176,14 +175,7 @@ type owedStanding struct {
 // (record.Issue.Project).
 func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue record.Issue) (owedStanding, error) {
 	var standing owedStanding
-	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-=======
-// architect claims, so it grows with the tree and not with the deployment, in a read-only
-// transaction of its own, which the completion route, sharing handoffPosition, does not pay for.
-func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
-	var owner claim.Token
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, s.project, issue.Tree)
 		if err != nil {
 			return err
@@ -260,43 +252,26 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
 // reading. A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
-<<<<<<< 7fa22de66d
-// ServingCheck, and the completion route with it, read here. The relaunch's delivery
-// (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
-// let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
-// by the record, and by what it was left serving.
+// ServingCheck reads here. The relaunch's delivery (supervise.HoldsTask) carries no run, no entry
+// and no look, only the sentence of what the last let-go ended, so a claim holding it, confirmed
+// or not, is answered as one holding nothing is: by the record, and by what it was left serving.
 //
 // The wait and the hold say nothing of what is owed. A held merger whose pull request is not
 // merged still owes the merge, which the hold tells it not to make yet, and a waiting worker still
 // owes its phase, which it waits to go on with: each key tells the reader why the owed work does
 // not move, and the answer carries it as standing read it.
 func owedBy(c supervise.Claim, position completionPosition, standing owedStanding, roleFor func(phase.Phase) claim.Role) OwedResponse {
-=======
-// ServingCheck reads here. The relaunch's delivery (supervise.HoldsTask) carries no run, no entry
-// and no look, only the sentence of what the last let-go ended, so a claim holding it, confirmed
-// or not, is answered as one holding nothing is: by the record, and by what it was left serving.
-func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	issue := position.issue
 	if issue == nil {
 		return OwedResponse{}
 	}
 	answer := OwedResponse{Architect: standing.owner, Wait: standing.wait, Hold: standing.hold}
 	if look := c.ServingCheck(); look.Look > 0 {
-<<<<<<< 7fa22de66d
-		check := position.check
-		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
-			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
-			return answer
-		}
-		answer.Owes, answer.Work = true, "the production check of "+issue.Key
-		return answer
-=======
 		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
 			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
-			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
+			answer.Owes, answer.Work = true, "the production check of "+issue.Key
+			return answer
 		}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
 		return answer

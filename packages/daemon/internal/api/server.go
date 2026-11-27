@@ -200,13 +200,9 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-<<<<<<< 7fa22de66d
-	// from, and the moment a declared wait is recorded at (the wait route); nil is time.Now, and a
-	// test pins it.
-=======
-	// from, and the clock that spaces the state route's warning for a `view` other than exactly
-	// one `observed` (otherViewWarnings); nil is time.Now, and a test pins it.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	// from, the clock that spaces the state route's warning for a `view` other than exactly one
+	// `observed` (otherViewWarnings), and the moment a declared wait is recorded at (the wait
+	// route); nil is time.Now, and a test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time

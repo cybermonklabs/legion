@@ -28,13 +28,13 @@ func holdState() State {
 
 // `GET /legion/v1/state` — the body `read_record` reads an issue's record from — shows each hold
 // that stands on the merger it holds: the gated step, the document registered for that step and
-// the version of it that is with its reviewer. A plugin below waitContract, the contract that
-// added the key beside the wait, is served no claim view carrying `hold`: one built before
-// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
-// key it does not name, and one built after strips the key. The callers are the wait's
-// (waitBandCallers): each one that the band places below waitContract is served the hold on no
-// claim, and each other one is served it on the merger alone, in the same reading of the same
-// state.
+// the version of it that is with its reviewer. A plugin below the wait entry's number
+// (entryNumber(waitContract)), the entry that added the key beside the wait, is served no claim
+// view carrying `hold`: one built before sjawhar/legion#2788 reads the state with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key.
+// The callers are the wait's (waitBandCallers): each one that the band places below that number
+// is served the hold on no claim, and each other one is served it on the merger alone, in the same
+// reading of the same state.
 func TestTheStateServesAHoldOnlyToACallerAtTheHoldContract(t *testing.T) {
 	want := `{"step":"spec","artifactId":"d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093","version":7}`
 	for _, tc := range waitBandCallers() {

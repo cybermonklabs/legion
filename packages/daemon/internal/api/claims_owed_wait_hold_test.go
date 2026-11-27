@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // owedServed is the owed answer c's own session is served, raw by its top-level keys, asked with
@@ -62,9 +63,9 @@ func (h *waitHarness) applyGateFact(t *testing.T, id string, fact intake.Fact) {
 func (h *waitHarness) specGate(t *testing.T) record.DesignGate {
 	t.Helper()
 	var gates map[record.DesignStep]record.DesignGate
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		gates, err = record.NewStore().GatesOf(context.Background(), tx, "LEGION-208")
+		gates, err = record.NewStore().GatesOf(ctx, tx, "LEGION-208")
 		return err
 	}); err != nil {
 		t.Fatalf("read the gates of LEGION-208: %v", err)
@@ -205,8 +206,8 @@ func TestNoRowHoldsNoMergerInTheOwedAnswer(t *testing.T) {
 	}
 
 	criteria := record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: "criteria-208", LatestVersion: 2}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutGate(context.Background(), tx, criteria)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutGate(ctx, tx, criteria)
 	}); err != nil {
 		t.Fatalf("register the criteria step of LEGION-208: %v", err)
 	}
@@ -216,15 +217,17 @@ func TestNoRowHoldsNoMergerInTheOwedAnswer(t *testing.T) {
 	}
 }
 
-// The owed answer arrived at repositoryCorrectionContract, and waitContract added `wait` and
-// `hold` to it, so a caller below waitContract is served the answer without either key, exactly
-// as it is served every claim view of the state (shaping.go's withoutOwedWaitAndHold), and the
-// keys it does read are as a caller at waitContract reads them. A caller states its contract in
-// pluginContractHeader: every plugin that knows the route does.
+// The owed answer arrived at the repository correction's entry, and the wait entry added `wait`
+// and `hold` to it, so a caller below the wait entry's number (entryNumber(waitContract)) is served
+// the answer without either key, exactly as it is served every claim view of the state
+// (shaping.go's withoutOwedWaitAndHold), and the keys it does read are as a caller at that number
+// reads them. A caller states its contract in pluginContractHeader: every plugin that knows the
+// route does.
 func TestClaimOwedServesACallerBelowTheWaitContractNoWaitAndNoHold(t *testing.T) {
+	added := entryNumber(waitContract)
 	for _, tc := range []struct {
 		name string
-		// key is the key the claim is served at waitContract.
+		// key is the key the claim is served at the wait entry's number.
 		key     string
 		arrange func(t *testing.T, h *waitHarness) liveClaim
 	}{
@@ -244,19 +247,19 @@ func TestClaimOwedServesACallerBelowTheWaitContractNoWaitAndNoHold(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			h := newWaitHarness(t)
 			c := tc.arrange(t, h)
-			at := c.owedServed(t, waitContract)
+			at := c.owedServed(t, added)
 			if _, served := at[tc.key]; !served {
-				t.Fatalf("the caller at %d is served %v, want `%s`: the case's own premise", waitContract, at, tc.key)
+				t.Fatalf("the caller at %d is served %v, want `%s`: the case's own premise", added, at, tc.key)
 			}
-			below := c.owedServed(t, waitContract-1)
+			below := c.owedServed(t, added-1)
 			for _, key := range waitKeys {
 				if _, served := below[key]; served {
-					t.Errorf("the caller at %d is served `%s` (%s), want no such key", waitContract-1, key, below[key])
+					t.Errorf("the caller at %d is served `%s` (%s), want no such key", added-1, key, below[key])
 				}
 			}
 			for _, key := range []string{"owes", "work", "architect"} {
 				if string(below[key]) != string(at[key]) {
-					t.Errorf("the caller at %d is served `%s` as %s, want %s, as the caller at %d is", waitContract-1, key, below[key], at[key], waitContract)
+					t.Errorf("the caller at %d is served `%s` as %s, want %s, as the caller at %d is", added-1, key, below[key], at[key], added)
 				}
 			}
 		})

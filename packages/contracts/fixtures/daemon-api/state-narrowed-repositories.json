@@ -64,11 +64,7 @@
       },
       {
         "issue": "LEGION-215",
-<<<<<<< 7fa22de66d
-        "reason": "design_gate",
-=======
         "reason": "ancestry",
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
         "heldBy": [
           "LEGION-208"
         ]
@@ -654,49 +650,6 @@
       },
       "treeMovedAt": "2126-09-22T08:30:00Z",
       "quietHours": 0.8
-    },
-    "LEGION-215": {
-      "key": "LEGION-215",
-      "generation": 1,
-      "phase": "merging",
-      "status": "retro",
-      "tree": "LEGION-208",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "workers": {
-        "merger": {
-          "claim": {
-            "session": "ses_merger_215",
-            "state": "suspended",
-            "pluginContract": 0
-          },
-          "pass": 0,
-          "rounds": 0
-        }
-      },
-      "memoryGroup": "memory",
-      "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z",
-      "phaseEntry": 1,
-      "givenEntry": 1,
-      "entryQueuedAt": "2026-09-22T08:40:02Z",
-      "entryConfirmedAt": "2026-09-22T08:40:37Z",
-      "treeMovedAt": "2026-09-22T09:17:12Z",
-      "quietHours": 0.013333333333333334,
-      "assignments": [
-        {
-          "experiment": "memory",
-          "variant": "memory",
-          "mode": "random",
-          "drawnAt": "2026-09-20T11:04:05Z"
-        },
-        {
-          "experiment": "plan-length",
-          "variant": "short",
-          "mode": "random",
-          "drawnAt": "2026-09-21T18:42:11Z"
-        }
-      ]
     },
     "LEGION-218": {
       "key": "LEGION-218",

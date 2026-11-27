@@ -540,19 +540,8 @@ func withoutClaimViewKey(t *testing.T, body []byte, key string) []byte {
 	}
 	for _, issue := range served["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
-<<<<<<< 7fa22de66d
-		views := []any{issue["architect"]}
-		for _, worker := range issue["workers"].(map[string]any) {
-			views = append(views, worker.(map[string]any)["claim"])
-		}
-		for _, view := range views {
-			if view, ok := view.(map[string]any); ok {
-				delete(view, key)
-			}
-=======
 		for _, view := range decodedClaimViews(issue) {
-			delete(view, "leakCheckCause")
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+			delete(view, key)
 		}
 	}
 	encoded, err := json.Marshal(served)
@@ -675,41 +664,27 @@ func withRepositoriesAt152(t *testing.T, body []byte) []byte {
 }
 
 // servedAt is a state body with the shapes applied that a caller at contract is served beside the
-// keys a row of the table below names column by column: each claim view without the two keys
-// waitContract added (api's withoutWaitAndHold) where contract is below it, without the two keys
-// shapedAnswersContract added (api's withoutClaimRoundReport) where contract is below that, and
-// what servedShape applies. It serves the table as withoutQuietKeys does: a row's baseline is the
-// full state with exactly the keys that row's own contract holds back taken out of it.
+// keys a row of the table below names column by column: each claim view without the two keys the
+// wait entry added (api's withoutWaitAndHold) where contract is below its number
+// (entryNumber(waitContract)), without the two keys shapedAnswersContract added (api's
+// withoutClaimRoundReport) where contract is below that, and what servedShape applies. It serves
+// the table as withoutQuietKeys does: a row's baseline is the full state with exactly the keys
+// that row's own contract holds back taken out of it.
 func servedAt(t *testing.T, body []byte, contract int) []byte {
 	t.Helper()
 	var served map[string]any
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
-<<<<<<< 7fa22de66d
 	for _, issue := range served["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
-		views := []any{issue["architect"]}
-		for _, worker := range issue["workers"].(map[string]any) {
-			views = append(views, worker.(map[string]any)["claim"])
-		}
-		for _, view := range views {
-			view, ok := view.(map[string]any)
-			if !ok {
-				continue
-			}
-			if contract < waitContract {
+		for _, view := range decodedClaimViews(issue) {
+			if contract < entryNumber(waitContract) {
 				for _, key := range waitKeys {
 					delete(view, key)
 				}
 			}
 			if contract < shapedAnswersContract {
-=======
-	if contract < shapedAnswersContract {
-		for _, issue := range served["issues"].(map[string]any) {
-			issue := issue.(map[string]any)
-			for _, view := range decodedClaimViews(issue) {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 				for _, key := range roundReportKeys {
 					delete(view, key)
 				}
@@ -734,33 +709,20 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 // views' step record, the places in the admission line, the workers' counts of the moves back,
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
-<<<<<<< 7fa22de66d
-// experiment assignments, the two times of each issue's entry task, each repository's `apps`,
-// the four keys of a correction of an issue's repository, each claim view's wait and each
-// merger's hold among the keys it is served without, and its repositories block in the shape
-// contract 152 gave it, since such a pod is below every row of stateNarrowings. The measure of
-// a tree that has stopped is read in finer grain by quiet_time_test.go, the two times by
-// architect_handshake_test.go, the wait by state_wait_test.go and the hold by
-// state_hold_test.go. A pod at this contract, and a caller in no pod — the operator's `legion
-// state`, whose open-rounds line reads both fields, whose queue line reads those wakes, whose
-// tool-call line reads the step records, whose waits line reads the waits and whose holds line
-// reads the holds — are served everything. The claims are the state snapshot's own, so there
-// is no readable state whose caller's contract is unknown: a snapshot without them is no state,
-// and the route refuses it.
-=======
 // experiment assignments, the two times of each issue's entry task, each repository's `apps`, the
 // project's pause, each root's `treeRuns`, the gated steps of a root on an ancestor's basis, the
 // four keys of a correction of an issue's repository, the daemon block's `stateSeq`, the
-// repository caches' word for the source of their capability row and the intake's give-ups among
-// the keys it is served without, and its repositories block in the shape contract 152 gave it,
-// since such a pod is below every row of stateNarrowings and of valueStrips. The measure of a tree
-// that has stopped is read in finer grain by quiet_time_test.go, the two times by
-// architect_handshake_test.go and the sequence by state_seq_test.go. A pod at this contract, and a
-// caller in no pod — the operator's `legion state`, whose open-rounds line reads both fields,
-// whose queue line reads those wakes and whose tool-call line reads the step records — are served
+// repository caches' word for the source of their capability row, the intake's give-ups, each
+// claim view's wait and each merger's hold among the keys it is served without, and its
+// repositories block in the shape contract 152 gave it, since such a pod is below every row of
+// stateNarrowings and of valueStrips. The measure of a tree that has stopped is read in finer
+// grain by quiet_time_test.go, the two times by architect_handshake_test.go, the sequence by
+// state_seq_test.go, the wait by state_wait_test.go and the hold by state_hold_test.go. A pod at
+// this contract, and a caller in no pod — the operator's `legion state`, whose open-rounds line
+// reads both fields, whose queue line reads those wakes, whose tool-call line reads the step
+// records, whose waits line reads the waits and whose holds line reads the holds — are served
 // everything. The claims are the state snapshot's own, so there is no readable state whose
 // caller's contract is unknown: a snapshot without them is no state, and the route refuses it.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -1027,24 +989,6 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
-<<<<<<< 7fa22de66d
-			// The mark of contract 75 and the fleet's lowest plugin contract are the two keys a
-			// full body and the baseline part on (withoutLowestContract): the baseline is asked
-			// from no pod and is told the daemon's number as its caller's, where a caller at a
-			// contract is told its own (TestANarrowedBodySaysSo), and the lowest contract reports
-			// the snapshot's claims, which are this row's own. The rest of the body is compared
-			// whole, against the baseline without the keys this row's own contract holds back: a
-			// pod at a band's contract is served every key of that band and of the bands below it,
-			// and every key a later row of stateNarrowings adds is held back.
-			// Every row of a pod is below repositoriesLiveContract too, which no pod's claims
-			// place a caller at (callerKind.reaches), so each is served the repositories block
-			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152),
-			// and only the three rows served this daemon's own body the block that contract
-			// writes.
-			// None of these pods is served a claim view's `wait` or `hold`, the two keys of
-			// waitContract, which is above every contract a pod's claims place a caller at
-			// (podContracts), so servedAt takes both off every row's want.
-=======
 			// The mark of contract 75 and the fleet's lowest plugin contract are the two keys a full body
 			// and the baseline part on (withoutLowestContract): the baseline is asked from no pod and is
 			// told the daemon's number as its caller's, where a caller at a contract is told its own
@@ -1081,7 +1025,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// keys and `daemon.stateSeq`. Every row but the three served this daemon's own body is served
 			// the repositories block in contract 152's shape before any key of it is taken out
 			// (withRepositoriesAt152); those three are served the block repositoriesLiveContract writes.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+			// None of these pods is served a claim view's `wait` or `hold`, the two keys of the wait
+			// entry, which is above every contract a pod's claims place a caller at (podContracts), so
+			// servedAt takes both off every row's want.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
@@ -1188,13 +1134,6 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with the repositories block in contract 152's shape, the block
 			// repositoriesLiveContract replaced (withoutRepositoriesLive), with `apps` gone from
 			// every entry of `repositories.mapped` and `repositories.refused`, the key
-<<<<<<< 7fa22de66d
-			// repositoryAppsContract added (withoutRepositoryApps), with the project's pause
-			// gone, the `paused` contract 178 added (withoutPause), with the four keys of a
-			// repository correction gone, which a pod below repositoryCorrectionContract is served
-			// without (withoutRepositoryCorrection), and with each claim view's `wait` and `hold`
-			// gone, the two keys waitContract added (withoutWaitAndHold).
-=======
 			// repositoryAppsContract added (withoutRepositoryApps), with the four keys of a
 			// repository correction gone, which a pod below repositoryCorrectionContract is served
 			// without (withoutRepositoryCorrection), with the repository caches' capability row
@@ -1203,9 +1142,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `treeRuns` gone, the key gateBasisContract added beside the gated steps of a root on an
 			// ancestor's basis, which go with `gatedSteps` itself for a caller this far back
 			// (withoutGateBasis), with `dispatchCredential` gone, the key dispatchCredentialContract
-			// added (withoutDispatchCredential), and with `daemon.stateSeq`, `daemon.stateId` and
-			// `daemon.stateRun` gone, the keys stateSeqContract added (withoutStateSeq).
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+			// added (withoutDispatchCredential), with `daemon.stateSeq`, `daemon.stateId` and
+			// `daemon.stateRun` gone, the keys stateSeqContract added (withoutStateSeq), and with each
+			// claim view's `wait` and `hold` gone, the two keys the wait entry added
+			// (withoutWaitAndHold).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -1272,11 +1212,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					// Every row that reaches here is below waitContract, below shapedAnswersContract,
-					// below leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the two keys waitContract added to a claim view, the two
-					// contract 193 added, the `leakCheckCause` contract 87 added or the six the decided
-					// record added.
+					// Every row that reaches here is below the wait entry's number, below
+					// shapedAnswersContract, below leakCheckCauseContract and below
+					// recordFieldsContract too, so none of its callers is served the two keys the wait
+					// entry added to a claim view, the two contract 193 added, the `leakCheckCause`
+					// contract 87 added or the six the decided record added.
 					for _, key := range waitKeys {
 						delete(view, key)
 					}

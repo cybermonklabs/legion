@@ -297,10 +297,10 @@ func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing
 		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
 	}
-	if got, want := owedBy(tester, check(&closed), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+	if got, want := owedBy(tester, check(&closed), owedStanding{}, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
 		t.Errorf("a tester whose served look's check closed, holding a confirmed testing task in testing, owes %+v, want %+v", got, want)
 	}
-	if got, want := owedBy(tester, check(nil), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+	if got, want := owedBy(tester, check(nil), owedStanding{}, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
 		t.Errorf("a tester whose served look the check still holds open owes %+v, want %+v", got, want)
 	}
 }
@@ -362,15 +362,7 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 	h := newHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-<<<<<<< 7fa22de66d
-	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: unreadableIssues{record.NewStore()}, RoleFor: workflow.RoleFor,
-		WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow,
-	}).Handler
-=======
 	serveOwedOver(h, h.store.Pool(), unreadableIssues{record.NewStore()})
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("owed on a daemon whose issue read fails = %d, want 500; body %s", recorder.Code, recorder.Body)

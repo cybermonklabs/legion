@@ -1,0 +1,203 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "architect.hold",
+        "architect.hold.artifactId",
+        "architect.hold.step",
+        "architect.hold.version",
+        "architect.wait",
+        "architect.wait.declaredAt",
+        "architect.wait.id",
+        "architect.wait.waitingOn",
+        "architect.wait.wakeAt",
+        "workers.*.claim.hold",
+        "workers.*.claim.hold.artifactId",
+        "workers.*.claim.hold.step",
+        "workers.*.claim.hold.version",
+        "workers.*.claim.wait",
+        "workers.*.claim.wait.declaredAt",
+        "workers.*.claim.wait.id",
+        "workers.*.claim.wait.waitingOn",
+        "workers.*.claim.wait.wakeAt"
+      ],
+      "addValues": {
+        "architect.hold.step": [
+          "criteria",
+          "decisions",
+          "spec"
+        ],
+        "workers.*.claim.hold.step": [
+          "criteria",
+          "decisions",
+          "spec"
+        ]
+      }
+    },
+    {
+      "answer": "owed",
+      "addKeyPaths": [
+        "hold",
+        "hold.artifactId",
+        "hold.step",
+        "hold.version",
+        "wait",
+        "wait.declaredAt",
+        "wait.id",
+        "wait.waitingOn",
+        "wait.wakeAt"
+      ],
+      "addValues": {
+        "hold.step": [
+          "criteria",
+          "decisions",
+          "spec"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.architect.hold",
+        "issues.*.architect.hold.artifactId",
+        "issues.*.architect.hold.step",
+        "issues.*.architect.hold.version",
+        "issues.*.architect.wait",
+        "issues.*.architect.wait.declaredAt",
+        "issues.*.architect.wait.id",
+        "issues.*.architect.wait.waitingOn",
+        "issues.*.architect.wait.wakeAt",
+        "issues.*.workers.*.claim.hold",
+        "issues.*.workers.*.claim.hold.artifactId",
+        "issues.*.workers.*.claim.hold.step",
+        "issues.*.workers.*.claim.hold.version",
+        "issues.*.workers.*.claim.wait",
+        "issues.*.workers.*.claim.wait.declaredAt",
+        "issues.*.workers.*.claim.wait.id",
+        "issues.*.workers.*.claim.wait.waitingOn",
+        "issues.*.workers.*.claim.wait.wakeAt"
+      ],
+      "addValues": {
+        "issues.*.architect.hold.step": [
+          "criteria",
+          "decisions",
+          "spec"
+        ],
+        "issues.*.workers.*.claim.hold.step": [
+          "criteria",
+          "decisions",
+          "spec"
+        ]
+      }
+    },
+    {
+      "answer": "wait",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "wait",
+        "wait.declaredAt",
+        "wait.id",
+        "wait.waitingOn",
+        "wait.wakeAt"
+      ]
+    },
+    {
+      "answer": "wait-news",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "ended",
+        "updateAsk"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/wait",
+      "change": "add",
+      "addFieldPaths": [
+        "claimToken",
+        "secret",
+        "sessionId",
+        "waitingOn",
+        "wakeAt"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/wait-news",
+      "change": "add",
+      "addFieldPaths": [
+        "claimToken",
+        "deliveryKey",
+        "secret",
+        "sessionId",
+        "waitId"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "wait",
+      "routes": [
+        "POST /legion/v1/claims/wait"
+      ],
+      "noBody": false
+    },
+    {
+      "id": "wait-news",
+      "routes": [
+        "POST /legion/v1/claims/wait-news"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.hold.step",
+      "values": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.hold.step",
+      "values": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    },
+    {
+      "answer": "owed",
+      "keyPath": "hold.step",
+      "values": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.hold.step",
+      "values": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.hold.step",
+      "values": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    }
+  ]
+}

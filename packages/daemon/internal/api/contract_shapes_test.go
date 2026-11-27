@@ -361,19 +361,12 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // The values are written here, and not read from the table: a value the table gains with no body
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
 // here too. Issue i of the body carries value i of each list, and a list shorter than the longest
-<<<<<<< 7fa22de66d
-// starts again at its first value, so the twelve issues carry every value of every list. Each
+// starts again at its first value, so the thirteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause, a held task, a wait and a hold, as a
 // worker does. No other body carries them on an architect, so without this body no record
 // describes those keys at their architect paths, and the value comparison reads no value there.
 // Each hold's `step` takes a design step, the architect's value i and the worker's value i+1, so
-// the twelve issues carry every step at both key paths of `hold.step`. Each issue also carries
-=======
-// starts again at its first value, so the thirteen issues carry every value of every list. Each
-// issue's architect carries a failure, a pending cause and a held task, as a worker does. No
-// other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// the thirteen issues carry every step at both key paths of `hold.step`. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the thirteen issues carry all eight words at both key paths. A gated step on an
 // ancestor's basis carries the `basis` its status writes it with. Every issue of the line is held,
@@ -469,16 +462,12 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		// The architect's task is queued for the phase after the one the issue was held from, and
 		// the worker's for that phase itself, so each view carries every phase over the thirteen.
 		// The worker's cause starts three words further along the list than the architect's.
-<<<<<<< 7fa22de66d
 		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)],
 			stepWords[i%len(stepWords)])
-=======
-		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)])
 		step := GatedStepView{Step: stepWords[i%len(stepWords)], Status: statusWords[i%len(statusWords)]}
 		if step.Status == GatedStepOpenOnBasis || step.Status == GatedStepPendingOnBasis {
 			step.Basis = &GatedStepBasis{Issue: "VALUES-100", ArtifactID: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58", Version: 2}
 		}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		issues[key] = Issue{
 			Key:           key,
 			Generation:    1,
@@ -773,27 +762,6 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-<<<<<<< 7fa22de66d
-		// The two owed goldens' own values (owed.json and owed-wait-hold.json,
-		// claims_owed_test.go): a claim that owes its phase, named with the architect that owns
-		// it, and the merger's answer with a wait and a hold, which between them carry every key of
-		// an OwedResponse. The hold is written once on each step the table declares for it
-		// (answers.go's holdSteps), so the bodies carry every value of `hold.step`.
-		AnswerOwed: {roots: typesOf(OwedResponse{}), bodies: owedFixtureBodies()},
-		// The wait golden's own value (TestWaitResponseGolden): the wait as the daemon recorded it,
-		// whose four keys are always written.
-		AnswerWait: {roots: typesOf(WaitResponse{}), bodies: []any{WaitResponse{Wait: WaitView{
-			ID: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68", WaitingOn: "the review of LEGION-207's pull request",
-			WakeAt:     time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC),
-			DeclaredAt: time.Date(2026, 11, 14, 6, 0, 0, 123456000, time.UTC),
-		}}}},
-		// The two goldens of the news report (TestWaitNewsResponseGolden): a report that ended its
-		// wait, and the claim's own update ask, which ended nothing and says so under `updateAsk`.
-		// Between them they carry every key this answer writes.
-		AnswerWaitNews: {roots: typesOf(WaitNewsResponse{}), bodies: []any{
-			WaitNewsResponse{Ended: true}, WaitNewsResponse{UpdateAsk: true},
-		}},
-=======
 		// The plan-register golden's own value (TestOwnerPlanRouteGoldens): one task with the
 		// steps its block names.
 		AnswerPlanRegister: {roots: typesOf(PlanRegisterResponse{}), bodies: []any{PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
@@ -805,7 +773,6 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 	for _, rows := range entriesTestRows() {
 		if rows.answers == nil {
@@ -820,29 +787,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 	return fixtures
 }
 
-<<<<<<< 7fa22de66d
-// owedFixtureBodies is the owed answer's fixture bodies (answerFixtures): the first golden's value,
-// and the second golden's on each step of holdSteps in turn (owedWaitingAndHeld).
-func owedFixtureBodies() []any {
-	bodies := []any{OwedResponse{
-		Owes: true, Work: "the testing phase of LEGION-208", Architect: "legion-legion-legion-208-architect",
-	}}
-	for _, step := range holdSteps {
-		bodies = append(bodies, owedWaitingAndHeld(record.DesignStep(step.Value)))
-	}
-	return bodies
-}
-
-// controllerPause is the goldens' pause (goldenPause) begun by the controller from its session
-// rather than by the operator, and ended by the controller as the goldens' is, so a view of it
-// names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and the
-// operator's pause names no session at `by`.
-=======
 // controllerPause is the goldens' pause (apifixture.Pause) begun by the controller from its
 // session rather than by the operator, and ended by the controller as the goldens' is, so a view
 // of it names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and
 // the operator's pause names no session at `by`.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 func controllerPause(ended bool) store.Pause {
 	p := apifixture.Pause(ended)
 	p.By = store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
