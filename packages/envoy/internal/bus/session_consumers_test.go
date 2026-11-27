@@ -194,8 +194,9 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 
 // A relay frame is a stored message's bytes with the relay's headers, so a message that fits the
 // server's max payload alone can make a frame past it. Publish refuses it before sending, as
-// ErrTooLarge, an ErrRefused, in the words of every size refusal (sizeText): the frame's size,
-// headers included, and the limit. The connection stays up and still sends a frame at the limit.
+// ErrTooLarge, an ErrRefused, in the words of a refusal made on a message's own data and headers
+// (pastMaxPayload, sizeText): the frame's size, headers included, and the limit. The connection
+// stays up and still sends a frame at the limit.
 func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
 	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)

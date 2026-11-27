@@ -321,10 +321,14 @@ its messages from a NATS subscription of its own, so a message published while t
 running, was restarting or had lost its connection, or while its listener restarted, reaches the
 session once when it is back, up to 72 hours later.
 The one exception is a message so close to the NATS payload limit (1 MiB by default) that its
-delivery, the message with the listener's headers, is past that limit. The listener marks such a
-message delivered without sending it, logs a warning that names the session and the event, and
-goes on to the session's next message: the session does not receive that message, and it does not
-hold back the messages after it.
+delivery, the message with the listener's headers, is past that limit. The listener sends the
+session a notice in that message's place, under the same headers and reply subject, naming the
+message's event id, topic, stream sequence and size, and logs a warning that names the session and
+the event. The session answers the notice as it would the message: its `done` marks the message
+delivered, and a `nak` has the message sent again, and so the notice again. The listener marks
+nothing delivered on its own, so a notice that could not be sent leaves the message to be sent
+again rather than delivered unseen. The session does not receive that message itself, and it does
+not hold back the messages after it.
 A session registers no port of its own, and the listener opens no connection to a session: a
 registration naming a port above 0 is refused `400` naming the `port` field, and the answer's
 `port` is always 0.

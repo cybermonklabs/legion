@@ -144,8 +144,9 @@ func sizedPayload(t *testing.T, topic string, size int) string {
 	return strings.Repeat("p", size-fixed)
 }
 
-// sizeText is the text every size refusal of a message of size bytes, headers included, against
-// maxPayload carries.
+// sizeText is the text of a refusal made on a message's own data and headers (pastMaxPayload): a
+// message of size bytes, headers included, against maxPayload. The refusal of a relay frame
+// carries frameText instead.
 func sizeText(size, maxPayload int) string {
 	return fmt.Sprintf("a message of %d bytes, its headers included, against the server's max payload of %d bytes", size, maxPayload)
 }

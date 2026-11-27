@@ -35,7 +35,7 @@ func sendTextOfSize(t *testing.T, sessionID string, size int) string {
 
 // storeSized stores an envelope of exactly size bytes on subject, which must be the session's own
 // agent subject or a topic its consumer filters, and returns it with its stream sequence. It is a
-// publish of the stream's own, under no message id, so it stores what no route would accept: a
+// publish of the stream's own, under no message id, so it can store what no route would accept: a
 // message in the band whose frame the relay cannot publish.
 func storeSized(t *testing.T, rig *relayRig, subject string, size int) (contracts.Envelope, uint64) {
 	t.Helper()

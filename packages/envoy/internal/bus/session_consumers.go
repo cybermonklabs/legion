@@ -401,8 +401,7 @@ type SessionConsumerStart struct {
 	// acked for days is recreated from AckFloor+1 and not from StartSeq (the listener restores a
 	// consumer a delete took, sessionDelivery.deleteConsumer). A restart that keeps the consumer
 	// it found (RestartAtFloor's keepAtFloor, KeepListed) answers the sequence after that floor as
-	// StartSeq, so there too AckFloor is StartSeq-1. A registration keeps the floor its call read
-	// (cmd/listener sessionDelivery's ackFloor) to restore a consumer a delete took at it.
+	// StartSeq, so there too AckFloor is StartSeq-1.
 	AckFloor uint64
 }
 
