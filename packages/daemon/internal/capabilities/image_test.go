@@ -568,6 +568,16 @@ func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T)
 // returned, so no load can pass it before that check has answered. Chromium runs until a signal
 // ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
 //
+// Main's caller context also carried a deadline a run could read, 2 s away, nearer than
+// commandTimeout, so each command's attempt took the caller's deadline for its own
+// (context.WithTimeoutCause keeps the earlier of the two): a run that read its timeout from the
+// clock against its attempt's deadline, not from the cause its own budget recorded, read the
+// caller's end as its own timeout and left the browser missing, timed out, in the error. The
+// stand-in's parent carries a real deadline too, callerDeadline, nearer than commandTimeout and far
+// past the fact (Chromium starts within answerBudget or the row fails), and the stand-in reports
+// the parent's deadline until it passes and the moment it passed from then, so that run fails here
+// as on main.
+//
 // Main's 2 s caller deadline also bounded the checks before the browser: a check that took 2 s or
 // more before it answered left eval-python unanswered. That bound stays, as main's 2 s, but on the
 // product's own time and no stand-in's: the row's Oh My Pi (eval-python's command) writes the
@@ -581,7 +591,13 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, started, held, bound, ran := passedOnceStarted(t, context.DeadlineExceeded)
+	const callerDeadline = 2 * answerBudget
+	if callerDeadline >= commandTimeout {
+		t.Fatalf("the caller's deadline, %s, is not nearer than commandTimeout, %s: no command's attempt would take it for its own", callerDeadline, commandTimeout)
+	}
+	parent, cancelParent := context.WithTimeout(context.Background(), callerDeadline)
+	t.Cleanup(cancelParent)
+	ctx, started, held, bound, ran := passedOnceStarted(t, parent, context.DeadlineExceeded)
 	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(started)+"\nwhile [ ! -e "+shellprefix.Literal(held)+" ] && kill -0 "+strconv.Itoa(os.Getpid())+" 2>/dev/null; do "+shellprefix.Literal(sleep)+" 0.01; done\n")
 	const checkBound = 2 * time.Second
 	ompMark, marked := filepath.Join(t.TempDir(), "ompmark"), filepath.Join(t.TempDir(), "omp")
@@ -842,19 +858,28 @@ func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGro
 // after the run, and the row fails. One whose write went through was os/exec's inside Wait, and so
 // was one whose child the grace's SIGKILL ended before its trap wrote, or one that came before the
 // child had set its traps: such a run is not judged, and the row runs the command again, within
-// its minute. A run in which no SIGTERM reached the child by the run's return, which the child's
-// own beat past that return shows, is judged as main judged it.
+// its minute. Only the budget's own stop leaves such a run, so it is not judged only where the
+// command ran its first act, the start mark it writes (testexec.MarkStart), and runWithin reported
+// that budget's timeout and nothing else, no sooner than the budget after the call. A runWithin that
+// never started the command, or did not start it until its budget had passed, or answered anything
+// else, fails as main's row failed it; the one machine hold that counts against it is a command
+// whose shell the machine kept from its first line for the whole budget, which main's row failed
+// too. A run in which no SIGTERM reached the child by the run's return, which the child's own beat
+// past that return shows, is judged as main judged it.
 func TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput(t *testing.T) {
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
-	command := testkernel.ChildCommand("echo 1.2.3")
+	// The command's $4 is where it writes its start mark, its first act; $1 to $3 are its child's.
+	command := testkernel.ChildCommand(testexec.MarkStart(`"$4"`) + "; echo 1.2.3")
+	timedOut := "timed out after " + budget.String()
 	for runs := 1; ; runs++ {
 		child := testkernel.NewChild(t)
+		mark := filepath.Join(t.TempDir(), "started")
 		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
 		started := time.Now()
-		r := img.runWithin(context.Background(), budget, "sh", append([]string{"-c", command, "sh"}, child.Args()...)...)
+		r := img.runWithin(context.Background(), budget, "sh", append(append([]string{"-c", command, "sh"}, child.Args()...), mark)...)
 		elapsed := time.Since(started)
 		returned := testexec.SinceBoot(t)
 		seen := child.After(t, returned, until)
@@ -865,11 +890,17 @@ func TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsIt
 			t.Fatalf("run %d: the command's group was stopped after the run was over: the child in the group took a SIGTERM (its trap ran %s from the run's return) after os/exec had closed the command's output pipe, so runWithin stopped the group after the command's own exit (run = exit %d, error %v, stdout %q after %s)", runs, seen.At-returned, r.exit, r.err, r.stdout, elapsed)
 		}
 		if !seen.None {
-			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: %s (run = exit %d, error %v)", runs, seen.Unjudged, r.exit, r.err)
-				continue
+			if !time.Now().Before(until) {
+				t.Fatalf("no run of %d over %s was judged: in the last, %s (run = exit %d, error %v, stdout %q after %s)", runs, within, seen.Unjudged, r.exit, r.err, r.stdout, elapsed)
 			}
-			t.Fatalf("no run of %d over %s was judged: in the last, %s (run = exit %d, error %v, stdout %q after %s)", runs, within, seen.Unjudged, r.exit, r.err, r.stdout, elapsed)
+			if _, err := testexec.ReadStartMark(mark); err != nil {
+				t.Fatalf("run %d: the command never ran its first act (its start mark: %v): runWithin did not start it, or not before its %s budget had passed, or the machine kept its shell from its first line for that whole budget, which main's row failed too; so the run shows no budget's stop of a command that ran (%s; run = exit %d, error %v after %s)", runs, err, budget, seen.Unjudged, r.exit, r.err, elapsed)
+			}
+			if r.err == nil || r.err.Error() != timedOut || elapsed < budget {
+				t.Fatalf("run %d = exit %d, error %v after %s; want the error %q, no sooner than its %s budget after the call: %s, and only that budget's stop explains it", runs, r.exit, r.err, elapsed, timedOut, budget, seen.Unjudged)
+			}
+			t.Logf("run %d is not judged: %s (run = exit %d, error %v)", runs, seen.Unjudged, r.exit, r.err)
+			continue
 		}
 		if elapsed < budget {
 			t.Fatalf("run %d returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", runs, elapsed, budget)
@@ -910,16 +941,17 @@ func watchReaped(leaderFile string, bound time.Duration) <-chan time.Time {
 // attempt they measured was about 8 s, at a load average of 1,200 on 288 CPUs.
 const answerBudget = 20 * time.Second
 
-// passedOnceStarted is a caller's context whose deadline passes with cause once the command a row
-// runs has written the file started, as a budget passes at a fact (testwait.StandInDeadline), and
-// never before. The command waits for the file held, which the row's cleanup writes. ran answers
-// whether the command started within bound.
-func passedOnceStarted(t *testing.T, cause error) (ctx context.Context, started, held string, bound time.Duration, ran <-chan bool) {
+// passedOnceStarted is a caller's context under parent whose deadline passes with cause once the
+// command a row runs has written the file started, as a budget passes at a fact
+// (testwait.StandInDeadline), and never before, unless parent ends first. The command waits for
+// the file held, which the row's cleanup writes. ran answers whether the command started within
+// bound.
+func passedOnceStarted(t *testing.T, parent context.Context, cause error) (ctx context.Context, started, held string, bound time.Duration, ran <-chan bool) {
 	t.Helper()
 	dir := t.TempDir()
 	started, held = filepath.Join(dir, "started"), filepath.Join(dir, "held")
 	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
+	ctx, pass, cancel := testwait.StandInDeadline(parent)
 	t.Cleanup(cancel)
 	bound = testwait.Bounded(t, answerBudget, time.Second)
 	startedWithin := make(chan bool, 1)
@@ -973,7 +1005,7 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	})
 
 	t.Run("a budget that passes once the command runs", func(t *testing.T) {
-		ctx, started, held, bound, ran := passedOnceStarted(t, errCommandTimeout)
+		ctx, started, held, bound, ran := passedOnceStarted(t, context.Background(), errCommandTimeout)
 		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
 		r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
