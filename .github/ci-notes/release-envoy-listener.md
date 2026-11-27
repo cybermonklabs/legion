@@ -74,19 +74,19 @@ and nothing this workflow publishes compiles it in.
 ## What the targets job reads and derives, and why it is a build job
 
 The targets job reads the architectures the archives are built for: .github/go-release-targets.json,
-the list the pull request's notices check reads too. A full checkout to read one tracked file is
-more than the targets job needs, but it's what every other job of this workflow that reads the tree
-(and the wider CI config) does regardless of how much of the tree it touches; a sparse or shallow
-checkout in targets alone would be the inconsistency.
+the list the pull request's notices check reads too. A whole-tree checkout to read one tracked file
+is more than the targets job needs, but it's what every other job of this workflow that reads the
+tree (and the wider CI config) does regardless of how much of the tree it touches; a sparse checkout
+in targets alone would be the inconsistency.
 
-It also derives the image every later job pushes, tags, attests or reads back, from
-$GITHUB_REPOSITORY (.github/scripts/repo-paths.sh), so moving the repository to another owner or
-name moves the image with it instead of leaving a literal in five places. It is derived in targets
-and read everywhere else through its output because each of those jobs holds packages: write,
-contents: write, id-token or attestations: write, and a job holding a credential runs no script of
-this repository but release-push.sh (.github/scripts/check-release-credentials.sh). The targets job
-holds contents: read alone, so it may run one - which makes it a build job, hence the tripwire last,
-as in build, docker and release_build.
+It also derives the image docker, image_index, attest and release_publish push, tag, attest or read
+back, from $GITHUB_REPOSITORY (.github/scripts/repo-paths.sh), so moving the repository to another
+owner or name moves the image with it instead of leaving a literal in five places. It is derived in
+targets and read everywhere else through its output because attest and release_publish hold
+credentials (contents: write, id-token or attestations: write), and a job holding a credential runs
+no script of this repository but release-push.sh (.github/scripts/check-release-credentials.sh), and
+image_index runs no code of the checkout. The targets job holds contents: read alone, so it may run
+one - which makes it a build job, hence the tripwire last, as in build, docker and release_build.
 
 ## What the envoy archive holds, and why the binary is stamped
 
@@ -132,9 +132,10 @@ this build's layers from the same builder: the job builds the image once.
 ## What the smoke test's 5-minute bound covers
 
 5m bounds only what the test does: start both containers behind the test's own 60 s health wait, and
-assert. The docker job pre-pulls nothing, so unlike envoy-smoke it also pulls NATS (testnats.Image),
-unretried. envoy-smoke has measured 1.82 s, 3.16 s and 1.88 s, and a loaded devbox 2.2–20.7 s across
-four runs; the bound is deliberate headroom over those plus that pull, not a build budget.
+assert. The docker job pre-pulls nothing, so unlike envoy-smoke it also pulls NATS
+(testnats.HubImage), unretried. envoy-smoke has measured 1.82 s, 3.16 s and 1.88 s, and a loaded
+devbox 2.2–20.7 s across four runs; the bound is deliberate headroom over those plus that pull, not
+a build budget.
 
 ## What mode=min provenance attaches, and what the two env settings drop
 
@@ -300,8 +301,10 @@ In release_publish, packages: write moves the `latest` tag to the newest already
 (`docker buildx imagetools create`, in Advance latest image); contents: write creates and uploads
 the GitHub release (`release-push.sh release`); id-token and attestations: write are for the
 agent-secrets provenance attestation; actions: write lists this workflow's runs and starts a new one
-when another run took the version (`release-push.sh restart`). The git tag push uses the deploy key,
-held only by the "Tag release" step's env, not any of these scopes.
+when another run took the version (`release-push.sh restart`), and lets the Fill the cache of the
+earlier Dispatch builds with this release step dispatch ci-caches.yaml with `gh workflow run`. The
+git tag push uses the deploy key, held only by the "Tag release" step's env, not any of these
+scopes.
 
 ## How Confirm the version decides, and what a lost race does
 
@@ -368,4 +371,4 @@ already names another commit) leaves no attestation for archives no release carr
 release_build's entries become the release body's one "## Changelog" section, below the fixed
 sentence the release step writes. release-section replaces a section that heading already holds, and
 says there why the write is a replace and not an append. The artifact holds the one file fold-notes
-wrote, under the name the build job gave it.
+wrote, under the name release_build gave it, `envoy-release-notes`.

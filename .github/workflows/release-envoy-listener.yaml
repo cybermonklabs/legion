@@ -48,8 +48,8 @@ concurrency:
   group: release-envoy-listener-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: false
 
-# Every job declares its own permissions. The build jobs hold no secret and end in a tripwire;
-# attest and release_publish hold the credentials and run no dependency code.
+# Every job declares its own permissions. The build jobs hold no secret but docker's package-push
+# token, and end in a tripwire; attest and release_publish hold the credentials.
 # why: .github/ci-notes/release-envoy-listener.md#why-the-workflow-level-permissions-are-empty-and-the-three-kinds-of-job
 permissions: {}
 
@@ -83,8 +83,8 @@ jobs:
           if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
           echo "main=$main" >> "$GITHUB_OUTPUT"
 
-  # The archives' architectures, and the image every later job reads, derived here because a job
-  # holding a credential runs no script to derive it.
+  # The archives' architectures, and the image docker, image_index, attest and release_publish use,
+  # derived here because the jobs holding credentials may run no script to derive it.
   # why: .github/ci-notes/release-envoy-listener.md#what-the-targets-job-reads-and-derives-and-why-it-is-a-build-job
   targets:
     runs-on: ubuntu-24.04
@@ -166,7 +166,8 @@ jobs:
   docker:
     name: docker (${{ matrix.arch }})
     # targets as well as build: `needs` carries direct dependencies only, so a job reading
-    # needs.targets.outputs.envoy_image must name targets itself.
+    # needs.targets.outputs.envoy_image must name targets itself, however far back it already
+    # reaches through build.
     needs: [build, targets]
     strategy:
       fail-fast: true
@@ -185,8 +186,9 @@ jobs:
     env:
       # The listener image the smoke test runs against, built by the step below.
       ENVOY_SMOKE_IMAGE: legion-envoy-smoke:${{ github.sha }}
-      # The VM is discarded after the job, so testcontainers' Ryuk reaper cleans up nothing, and its
-      # image (testcontainers/ryuk, on Docker Hub) is one more pull the smoke test could fail on.
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
+      # pull the smoke test could fail on.
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -250,7 +252,8 @@ jobs:
           # why: .github/ci-notes/release-envoy-listener.md#what-modemin-provenance-attaches-and-what-the-two-env-settings-drop
           BUILDX_METADATA_PROVENANCE: disabled
           DOCKER_BUILD_SUMMARY: "false"
-        # No BuildKit layer cache across runs: each new commit runs the build stage again anyway.
+        # No BuildKit layer cache across runs: each commit rebuilds the build stage, and a registry
+        # cache could feed main's attested build (GHSA-f2v9-hprr-32q3).
         # why: .github/ci-notes/release-envoy-listener.md#why-the-image-build-keeps-no-layer-cache
         with:
           context: .
@@ -281,8 +284,8 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
-  # Joins the legs' images into the envoy:<sha> index. It holds packages: write and runs no
-  # dependency code, so it checks each digest it reads or writes.
+  # Joins the legs' images into the envoy:<sha> index. Its inputs come from the docker legs, which
+  # ran dependency code, so it checks each digest it reads or writes.
   # why: .github/ci-notes/release-envoy-listener.md#what-image_index-does-and-why-it-checks-each-digest
   image_index:
     # targets as well as docker: this job holds packages: write, so it runs no script of its own to
@@ -350,8 +353,9 @@ jobs:
     needs: [image_index, targets]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # id-token: write is the OIDC token Sigstore certifies; attestations: write stores the
-    # attestation with GitHub, not the registry, so this job needs no packages scope.
+    # id-token: write is the OIDC token Sigstore issues the signing certificate for; attestations:
+    # write stores the attestation with GitHub. The attestation stays with GitHub, not the
+    # registry, so this job needs no packages scope.
     permissions:
       id-token: write
       attestations: write
@@ -671,7 +675,7 @@ jobs:
             "$IMAGE@$DIGEST"
 
       # The version computed again inside the group. If another run took it, nothing is published,
-      # and on exit 4 release-push.sh restart sees that a run releases this commit.
+      # and on exit 4 release-push.sh restart sees to it that a run releases this commit.
       # why: .github/ci-notes/release-envoy-listener.md#how-confirm-the-version-decides-and-what-a-lost-race-does
       - name: Confirm the version
         id: confirm
@@ -694,8 +698,9 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: steps.confirm.outputs.release == 'true'
         with:
-          # legion-envoy-* alone: the *.dockerbuild attestation artifact build-push-action adds is
-          # unused and hung in Azure downloads (releases #607, #608). agent-secrets: release_build.
+          # legion-envoy-* alone: the *.dockerbuild build record hung in Azure blob downloads and
+          # failed releases #607 and #608, and DOCKER_BUILD_SUMMARY=false no longer uploads it. The
+          # agent-secrets binaries come from release_build, below.
           pattern: legion-envoy-*
           merge-multiple: true
           path: assets
@@ -740,8 +745,9 @@ jobs:
             printf 'assets/%s\n' "${archives[@]}" SHA256SUMS
             echo "FILES"
           } >> "$GITHUB_OUTPUT"
-      # The one step holding the deploy key: push-tag writes it to its own directory, pushes the tag
-      # over SSH to pinned host keys and removes it. A lightweight tag has no tagger: no git user.
+      # The only step that holds the deploy key. release-push.sh push-tag writes it to a directory
+      # of its own, pushes the tag over SSH to GitHub's pinned host keys, and removes the key again.
+      # A lightweight tag has no tagger, so no git user is configured.
       - name: Tag release
         if: steps.confirm.outputs.release == 'true'
         env:
