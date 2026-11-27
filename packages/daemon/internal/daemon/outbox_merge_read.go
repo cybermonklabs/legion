@@ -141,7 +141,90 @@ type mergeReader struct {
 // answer is applied. A failed request is tried at most three times, a minute and then five
 // minutes apart, or later where GitHub's rate limit asks.
 func (r *outbox) mergeRead(ctx context.Context, row record.OutboxRow, payload record.MergeRead) error {
-	return nil
+	if r.dispatch == nil {
+		return errors.New("merge read executor has no Dispatch client")
+	}
+	now := r.now().UTC()
+	var issue *record.Issue
+	var history record.MergeHistoryRow
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = r.records.Issue(ctx, tx, row.Issue); err != nil || issue == nil {
+			return err
+		}
+		history, err = r.records.MergeHistoryOf(ctx, tx, row.Issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the record of %s for its merge read: %w", row.Issue, err)
+	}
+	if issue == nil || issue.Generation != payload.Generation {
+		r.log.Info("outbox merge read finished without reading: its issue's generation moved", "row", row.ID, "issue", row.Issue,
+			"generation", payload.Generation)
+		return nil
+	}
+	recorded, err := issue.Repository()
+	if err != nil {
+		return fmt.Errorf("read the repository of %s for its merge read: %w", row.Issue, err)
+	}
+	reader := mergeReader{dispatch: r.dispatch, github: func(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, error) {
+		return implementClient(ctx, r.tokens, r.githubAPI, r.repositories.serving(repository))
+	}}
+	progress := payload.Progress
+	if progress.Reserved {
+		// An attempt whose answer no turn saved: it was sent, or may have been. It stays spent.
+		progress = mergeReadFailed(progress, errors.New("a request whose answer was never saved: the daemon stopped after it was reserved"), now, true)
+		return r.saveMergeRead(ctx, row, progress, false, now)
+	}
+	request, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress)
+	if done {
+		if merge.Merged() {
+			return r.answerMergeRead(ctx, row, payload, merge, progress, now)
+		}
+		return r.saveMergeRead(ctx, row, progress, false, now)
+	}
+	if !progress.RetryAt.IsZero() && progress.RetryAt.After(now) {
+		return wait.Until(progress.RetryAt, fmt.Sprintf("the merge read of %s tries its stage again at %s", row.Issue, progress.RetryAt.Format(time.RFC3339)))
+	}
+	slot, taken, err := r.pool.TakeMergeReadSlot(ctx)
+	if err != nil {
+		return err
+	}
+	if !taken {
+		return wait.Until(now.Add(mergeReadSlotWait), fmt.Sprintf("the merge read of %s waits for the database's one merge read slot", row.Issue))
+	}
+	// The pass is read and spent under the slot, which every request of this daemon takes, so two
+	// lanes never both spend its last attempt.
+	if next, ok := r.mergeReads.peek(now); !ok {
+		slot.Release(ctx)
+		return wait.Until(next, fmt.Sprintf("the merge read of %s waits for the next pass: this one spent its %d GETs", row.Issue, mergeReadPassGETs))
+	}
+	consumed := progress.Refresh && request.stage == mergeStageLinks
+	progress.Attempts++
+	progress.Reserved = true
+	reserved, err := checkpointMergeRead(ctx, slot.Transact, row, progress, false)
+	if err != nil || !reserved {
+		slot.Release(ctx)
+		if err == nil {
+			err = fmt.Errorf("reserve an attempt of the merge read of %s: %w", row.Issue, record.ErrOutboxLeaseLost)
+		}
+		return err
+	}
+	r.mergeReads.spend(now)
+	sending, cancel := context.WithTimeout(ctx, mergeReadStageBound)
+	answer, sendErr := reader.send(sending, payload.Issue, progress, request)
+	cancel()
+	slot.Release(ctx)
+	progress.Reserved = false
+	if sendErr != nil {
+		progress = mergeReadFailed(progress, sendErr, now, false)
+		// A refresh whose read failed stays asked, and is tried again as its stage is.
+		return errors.Join(r.saveMergeRead(ctx, row, progress, false, now), mergeReadLimit(sendErr))
+	}
+	progress = applyMergeAnswer(payload.Issue, recorded, progress, request, answer)
+	if _, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress); done && merge.Merged() {
+		return r.answerMergeRead(ctx, row, payload, merge, progress, now)
+	}
+	return r.saveMergeRead(ctx, row, progress, consumed, now)
 }
 
 // peek says whether the pass has an attempt left at now, without spending it, and else when the
