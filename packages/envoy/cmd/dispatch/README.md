@@ -5056,7 +5056,10 @@ The reasons, which `asof.AbsentFields` gives for each member:
   Everywhere else it leaves out both and keeps the check's `version`: where the block index holds another digest of the check or none, a later version, or no version, as for a document owed its index.
   A version that this build's renderer writes back as it is stored is no exception: that shows the digest this renderer gives, not the digest that a re-index before the cut wrote.
 
-- Part ids and revisions stand only for an ask that did not change after the cut, and whose wording at the cut a record gives.
+- An ask's part ids and revision come from the block index now, which raises the revision with no event when it re-indexes the ask's parts.
+  So they stand only for an ask that did not change after the cut, whose wording at the cut a record gives, and whose newest event at the cut, as the event log stores it, holds that same revision and the part id of each of its options and of its answer (`asof.AskPartsAtTheCutStatement`).
+  This holds for every answer that gives an ask, and for an event log's ask events, whose payloads a read fills with the ask's parts now.
+  No writer stores a revision or a part id in an ask's event yet, so an answer at a cut leaves out the parts of every ask.
 
 - The person an ask waits on comes from a project default from before the first event of that default.
 
@@ -5064,7 +5067,11 @@ The reasons, which `asof.AbsentFields` gives for each member:
 
 - The body of a post that its author deleted after the cut, and a body that its event cut at 32,000 UTF-16 units and that an edit replaced after the cut, before `post_body_history` began.
 
-- The block that a reply names, where the item that holds the block changed after the cut: its text, whether it is removed, and the tree of its text, which an answer carries for a request that sends `Dispatch-Trees: 1`.
+- The block that a reply names: its text, whether it is removed, and the tree of its text, which an answer carries for a request that sends `Dispatch-Trees: 1`.
+  The block index keeps no record of the blocks of a comment or a message at the cut, and the block-index reconciliation rewrites them with no event (`refs.IndexOwedItemBlocks`), dated by the post's own last edit.
+  So these three are left out for a reply to a comment or a message, whether or not the post changed after the cut.
+  The block of a post deleted at any time reads removed with no text, and none of the three is left out.
+  A part of an ask is given where the ask's part ids and revision are given (above).
 
 - A GitHub read now: what each check is compared with, whether a pass stands, the CI result, and where a result's commit stands.
 

@@ -164,29 +164,6 @@ func anchorBlocksNotGiven(table, types string) string {
 		and nullif((case when n.type is null then x.anchor else n.anchor end)->>'block_id', '') is not null`
 }
 
-// ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
-// that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete
-// after the cut, or an ask that AsksChangedAfterStatement answers, which is one with an event of
-// its state after the cut or one whose wording at the cut no record gives. Only a change of its
-// item rewrites an item's blocks (refs.PlanItemIndex, refs.PlanAskParts; the restore of a decided
-// ask's wording indexes its parts again), so the present rows of comment_blocks, message_blocks
-// and ask_blocks give a block's text, and whether it is removed, as they stood at the cut for an
-// item that did not change after it. The block index keeps no earlier state with its time, so for
-// an item that changed, the answer leaves both out. The statement names public.events and
-// public.asks by their schema, so the store's binding at a cut does not read a shadow in their
-// place (Bind). It reads each kind of item through the partial index of its types
-// (events_comment_state, events_message_state, events_ask_state), one part of a union each: one
-// list of the types of every kind implies no index's predicate. The union answers each id once.
-var ItemsChangedAfterStatement = `select e.payload->>'id' from public.events e
-	where e.payload->>'id' = any($1::text[]) and e.type in ` + commentRewriteList + `
-		and e.created_at > $2::timestamptz
-	union
-	select e.payload->>'id' from public.events e
-	where e.payload->>'id' = any($1::text[]) and e.type in ` + messageRewriteList + `
-		and e.created_at > $2::timestamptz
-	union
-	select changed.id from (` + AsksChangedAfterStatement + `) changed`
-
 // CommentHistoryRowsAtCut and MessageHistoryRowsAtCut are SQL expressions for the history read of
 // one post at a cut (decision 17). Each is the number of post_body_history rows that the post had
 // at the cut, for the post whose row the alias p names: one row for each edit or delete event of

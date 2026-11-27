@@ -113,23 +113,11 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			index:     "events_created_at",
 		},
 		{
-			// Which posts and asks of a thread changed after the cut (api/post_as_of.go): each
-			// kind of item through the index of its own types.
-			name:      "the comments changed after the cut",
-			statement: asof.ItemsChangedAfterStatement,
-			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
-			index:     "events_comment_state",
-		},
-		{
-			name:      "the messages changed after the cut",
-			statement: asof.ItemsChangedAfterStatement,
-			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
-			index:     "events_message_state",
-		},
-		{
-			name:      "the asks changed after the cut",
-			statement: asof.ItemsChangedAfterStatement,
-			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
+			// The part state that each ask's newest state event at the cut stored (api's
+			// askPartsAtTheCut): each ask's events through the index of its types.
+			name:      "the asks' stored parts at the cut",
+			statement: asof.AskPartsAtTheCutStatement,
+			arguments: []any{[]string{"ask-7"}, cut.Time()},
 			index:     "events_ask_state",
 		},
 		{

@@ -20,7 +20,9 @@ import (
 // reach and the holder's liveness, which only the route roster gives, now; it leaves out its
 // design gates and its backlink count, which keep no history; and of its two open asks, the one
 // answered after the cut leaves out its revision and its options' part ids, which the present
-// tables give as they stand after its answer, while the one that did not change gives both.
+// tables give as they stand after its answer, while the one that did not change gives both: its
+// newest event at the cut stores them as the present tables hold them (storeAskParts, since no
+// writer stores them yet).
 // Progress counts the task items of the spec's version at the cut, not those of the version a
 // write after the cut stored a count for (decision 9). The present read gives every one of those
 // members, so the test cannot pass on an answer that leaves out nothing. A refusal at the cut, of
@@ -51,6 +53,8 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 	kept := decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
 		map[string]any{"question": "Does this ask stay as it was?", "options": options})).ID
 	settle()
+	keptParts := askPartsNow(t, handler, kept)
+	storeAskParts(t, database, kept, keptParts)
 	cut := databaseCut(t, database)
 	time.Sleep(5 * time.Millisecond)
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+answered+"/answer", map[string]any{"selected": []string{"Yes"}}, "alice")
@@ -125,8 +129,9 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 		switch {
 		case id == answered && (revision || ids > 0):
 			t.Errorf("open ask %s, answered after the cut, gives its revision (%t) or %d option part ids at the cut: its parts are the present's", id, revision, ids)
-		case id == kept && (!revision || ids != len(askOptions)):
-			t.Errorf("open ask %s, unchanged since the cut, gives revision %t and %d of %d option part ids at the cut, want them all", id, revision, ids, len(askOptions))
+		case id == kept && !partsShownBy(ask).same(keptParts):
+			t.Errorf("open ask %s, unchanged since the cut, gives the parts %+v at the cut, want %+v, which its newest event at the cut stored",
+				id, partsShownBy(ask), keptParts)
 		}
 	}
 

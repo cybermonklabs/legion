@@ -176,7 +176,12 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 // place at(index) names in the answer (decision 5):
 //   - referenced_by_count, which the reference graph gives now (reason G);
 //   - revision, each option's id and the answer's id, the ask's parts as the present tables hold
-//     them, for an ask that changed after the cut (reason P, asof.AsksChangedAfterStatement);
+//     them (reason P), unless the ask did not change after the cut (asof.AsksChangedAfterStatement)
+//     and its newest state event at the cut, as public.events stores it, holds that revision and
+//     those part ids (asof.AskPartsAtTheCutStatement, askPartsThen.confirms). The read gives each
+//     ask the revision and the part ids of the present tables, at a cut too (queueAskDetails), so
+//     what the stored event confirms is what the answer shows. The stored parts are read only for
+//     the asks that did not change and to which the read gives a revision;
 //   - the question, the options, multiple and the urgency, and the question's tree where the
 //     answer carries display trees (trees), for an ask whose wording at the cut no record gives:
 //     a restore changed it with no event, at a time no record gives (reason E,
@@ -215,6 +220,18 @@ func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at fun
 	if err != nil {
 		return nil, fmt.Errorf("read which asks changed after the cut: %w", err)
 	}
+	var unchanged []string
+	for index := range asks {
+		if !changed[asks[index].ID] && asks[index].Revision > 0 {
+			unchanged = append(unchanged, asks[index].ID)
+		}
+	}
+	var stored map[string]askPartsThen
+	if len(unchanged) > 0 {
+		if stored, err = s.askPartsAtTheCut(ctx, unchanged, cut); err != nil {
+			return nil, fmt.Errorf("read the parts that the asks' events at the cut stored: %w", err)
+		}
+	}
 	var undatedBlocks map[string]bool
 	if len(unpinned) > 0 {
 		if undatedBlocks, err = s.idsReadAtTheCut(ctx, asof.AskAnchorBlocksNotGivenStatement, unpinned, cut); err != nil {
@@ -224,7 +241,7 @@ func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at fun
 	for index, ask := range asks {
 		place := at(index)
 		leaveOut(ctx, place+"/"+model.ReferencedByCountKey)
-		if changed[ask.ID] {
+		if changed[ask.ID] || !stored[ask.ID].confirms(ask) {
 			leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
 		}
 		if wordingUnknown[ask.ID] {

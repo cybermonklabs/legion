@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -38,6 +40,122 @@ func (s *server) asksChangedAfterTheCut(ctx context.Context, ids []string, cut a
 		}
 	}
 	return changed, wordingUnknown, rows.Err()
+}
+
+// askPartsThen is the part state that the newest state event of an ask at a cut stored, as
+// public.events holds it (asof.AskPartsAtTheCutStatement): its revision, 0 where the payload holds
+// no whole number, and its options and its answer with the part id that the event's write stored
+// in each, never one that a read adds from the present tables (attachAskEventFields).
+type askPartsThen struct {
+	revision int
+	options  []model.AskOption
+	answer   *model.AskAnswer
+}
+
+// confirms reports whether then, the part state that the ask's newest state event at the cut
+// stored, is the part state of shown, the ask as a read shows it, with the revision and the part
+// ids that the block index holds now (refs.AskPartIDs): the same positive revision, as many
+// options with the same part id each, and an answer where shown holds one, with the same part id
+// (reason P). An option or an answer to which the index gives no part id confirms nothing, and
+// neither does one whose id the event does not store. An ask with no option and no answer stands
+// on its revision alone, which counts its question's part too.
+func (then askPartsThen) confirms(shown model.Ask) bool {
+	if then.revision <= 0 || then.revision != shown.Revision || len(then.options) != len(shown.Options) ||
+		(then.answer == nil) != (shown.Answer == nil) {
+		return false
+	}
+	for index, option := range shown.Options {
+		if option.ID == "" || then.options[index].ID != option.ID {
+			return false
+		}
+	}
+	return shown.Answer == nil || shown.Answer.ID != "" && then.answer.ID == shown.Answer.ID
+}
+
+// askPartsAtTheCut reads, of the asks ids names, the part state that the newest state event of
+// each at cut stored (asof.AskPartsAtTheCutStatement), by ask id, in one statement over every id.
+// An ask with no state event at the cut is not in it, and neither is one whose payload holds
+// options or an answer that this build cannot read: no record gives such an ask's parts.
+func (s *server) askPartsAtTheCut(ctx context.Context, ids []string, cut asof.Cut) (map[string]askPartsThen, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, asof.AskPartsAtTheCutStatement, ids, cut.Time())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stored := map[string]askPartsThen{}
+	for rows.Next() {
+		var id string
+		var revision, options, answer []byte
+		if err := rows.Scan(&id, &revision, &options, &answer); err != nil {
+			return nil, err
+		}
+		var then askPartsThen
+		if number, err := strconv.Atoi(string(revision)); err == nil {
+			then.revision = number
+		}
+		if options != nil && json.Unmarshal(options, &then.options) != nil ||
+			answer != nil && json.Unmarshal(answer, &then.answer) != nil {
+			continue
+		}
+		stored[id] = then
+	}
+	return stored, rows.Err()
+}
+
+// askPartsGivenAtTheCut reads, of the asks ids names, the ones whose parts a past-time answer that
+// holds no read of the ask itself gives from the present tables: an event page, whose payloads a
+// read fills with the ask's present parts (attachAskEventFields), and the block of a reply that
+// names a part of an ask. An ask's parts are given where its newest state event at cut stored a
+// revision and the part ids that the block index holds now for that event's options and answer,
+// matched as a read matches an event payload's (askEventShell, attachAskPartIDs), and where the
+// ask did not change after the cut (asof.AsksChangedAfterStatement, which counts an ask whose
+// wording at the cut no record gives). Each statement is sent for the asks that the one before it
+// leaves, so a cut whose events store no revision sends one statement.
+func (s *server) askPartsGivenAtTheCut(ctx context.Context, ids []string, cut asof.Cut) (map[string]bool, error) {
+	stored, err := s.askPartsAtTheCut(ctx, ids, cut)
+	if err != nil {
+		return nil, err
+	}
+	shown := make([]*model.Ask, 0, len(stored))
+	for id, then := range stored {
+		if then.revision <= 0 {
+			continue
+		}
+		// The read below writes the present ids into the ask it reads, so it reads copies: then
+		// keeps the ids that the event stored.
+		ask := &model.Ask{ID: id, Options: slices.Clone(then.options)}
+		if then.answer != nil {
+			answer := *then.answer
+			ask.Answer = &answer
+		}
+		shown = append(shown, ask)
+	}
+	if len(shown) == 0 {
+		return nil, nil
+	}
+	if err := attachAskPartIDs(ctx, s.deps.Store.Pool, shown); err != nil {
+		return nil, err
+	}
+	var confirmed []string
+	for _, ask := range shown {
+		if stored[ask.ID].confirms(*ask) {
+			confirmed = append(confirmed, ask.ID)
+		}
+	}
+	if len(confirmed) == 0 {
+		return nil, nil
+	}
+	changed, _, err := s.asksChangedAfterTheCut(ctx, confirmed, cut)
+	if err != nil {
+		return nil, err
+	}
+	given := make(map[string]bool, len(confirmed))
+	for _, id := range confirmed {
+		if !changed[id] {
+			given[id] = true
+		}
+	}
+	return given, nil
 }
 
 // leaveOutAskWording names the wording of the ask at place, which no record gives at the cut

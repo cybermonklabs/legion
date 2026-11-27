@@ -29,6 +29,17 @@ body: |-
   comment or one ask its `anchor_block` too, and names them in `Dispatch-As-Of-Absent`; where it
   names none, the answer keeps the unpinned anchor from the event at the cut.
 
+  At a cut, a reply to a comment or a message leaves out the `text` and `removed` of the block it
+  names, and its `text_tree` under `Dispatch-Trees: 1`, and names them in
+  `Dispatch-As-Of-Absent`, whether or not the post changed after the cut: the block index keeps
+  no record of a post's blocks at the cut, and its reconciliation rewrites them with no event. A
+  reply to a post deleted at any time still reads the block removed with no text. An ask's
+  `revision`, and the `id` of each of its options and of its answer, in every answer that gives
+  the ask and in an event log's ask events, are given at a cut only where the ask did not change
+  after the cut and its newest event at the cut stores that same revision and those ids; so is
+  the block of a reply to a part of the ask. No event stores them yet, so an answer at a cut
+  leaves them out for every ask.
+
   Dispatch now serves reads at a past time to a read-only token that carries a cut, which #4557's
   entry "Dispatch puts every GET route of its route table in a read class" says it refuses until
   then. Each route that answers `as_of` answers such a token as of its cut, whatever `as_of` the

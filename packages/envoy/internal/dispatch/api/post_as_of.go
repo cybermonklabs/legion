@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -86,8 +87,8 @@ func (s *server) idsReadAtTheCut(ctx context.Context, statement string, ids []st
 //     comment whose body at the cut no record holds (reason T,
 //     asof.CommentBodiesNotGivenStatement). The shadow gives each of them the empty body;
 //   - the text of the block that the comment replies to, whether it is removed and, where the
-//     answer carries display trees (trees), the text's tree, where the item that holds the block
-//     changed after the cut (replyBlocksAtTheCut);
+//     answer carries display trees (trees), the text's tree, unless the records at the cut give
+//     the block (replyBlocksAtTheCut);
 //   - the members of each delivery attempt that no event at the cut dates (undatedCommentAttempt);
 //   - whether the mark of the comment's anchor was gone, where the shadow gives the anchor as not
 //     orphaned and a write with no event that dates it may have orphaned the anchor before the cut
@@ -172,11 +173,11 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 // place that at(index) names in the answer ("" for an answer that is one thread): of its root
 // (/message) and of each reply (/replies/<n>), the body of a message that its author deleted
 // after the cut (deletedSinceTheCut), the text of the block that the message replies to, whether
-// it is removed and, where the answer carries display trees (trees), the text's tree, where its
-// message changed after the cut (replyBlocksAtTheCut), and the members of each delivery attempt
-// that no event at the cut dates (undatedMessageAttempt). The records give the body of every
-// other message at the cut (asof.CommentBodiesNotGivenStatement says why). A request at no cut
-// leaves out nothing.
+// it is removed and, where the answer carries display trees (trees), the text's tree, which no
+// record gives at the cut but of a deleted message (replyBlocksAtTheCut), and the members of each
+// delivery attempt that no event at the cut dates (undatedMessageAttempt). The records give the
+// body of every other message at the cut (asof.CommentBodiesNotGivenStatement says why). A
+// request at no cut leaves out nothing.
 func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at func(index int) string, trees bool) error {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut {
@@ -204,43 +205,58 @@ func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at f
 
 // replyBlocksAtTheCut names, of each post whose reply block is blocks[index] (nil for a post that
 // replies to no block) at the place at(index), the block's text, whether it is removed and, where
-// the answer carries display trees (trees), the tree of its text (newReplyBlockRead), where the
-// item that holds the block changed after the cut (asof.ItemsChangedAfterStatement): the change
-// rewrote the item's blocks, and the block index keeps no state of them with its time (reason
-// E). The tree is read from the text the index holds now, so it goes out with the text. The
-// block of an item that did not change after the cut reads as the index holds it now, which is
-// how it stood at the cut. The block of a post deleted at any time reads removed with no text,
-// as the post reads deleted at the cut (decision 14). The block's node, id and reference are the
-// reply's own, which no write changes, and its post's edit time and delete mark are the shadow's.
+// the answer carries display trees (trees), the tree of its text (newReplyBlockRead), unless the
+// records at the cut give them. No record gives a block of a comment or of a message at the cut,
+// whether or not an event of the post follows the cut: the block index keeps no state of the
+// blocks with its time, and the block-index reconciliation rewrites them with no event, dating
+// what it writes from the post's own last edit (refs.IndexOwedItemBlocks), so a re-index after the
+// cut of a post that no event changed after it reads as written before the cut. Nor does any
+// record give the block of a node of no shape this build reads (reason E). A part of an
+// ask is given where the ask's parts are (askPartsGivenAtTheCut): its newest state event at the
+// cut stored the revision and the part ids that the index holds now, and the ask did not change
+// after the cut, so the index holds the part as it stood at the cut. The tree is read from the
+// text the index holds now, so it goes out with the text. The block of a post deleted at any time
+// reads removed with no text, as the post reads deleted at the cut (decision 14), and nothing of
+// it is left out. The block's node, id and reference are the reply's own, which no write changes,
+// and its post's edit time and delete mark are the shadow's. Only the blocks of asks send a
+// statement.
 func (s *server) replyBlocksAtTheCut(ctx context.Context, cut asof.Cut, blocks []*model.ReplyBlock, at func(index int) string, trees bool) error {
-	items := make([]string, 0, len(blocks))
+	// askOf is the id of the ask that block is a part of, and "" for a block of any other item.
+	askOf := func(block *model.ReplyBlock) string {
+		if kind, item, _, ok := refs.ParseItemBlockNode(block.Node); ok && kind == refs.ItemAsk {
+			return item
+		}
+		return ""
+	}
+	var asks []string
 	for _, block := range blocks {
 		if block == nil || block.DeletedAt != nil {
 			continue
 		}
-		if _, item, _, ok := refs.ParseItemBlockNode(block.Node); ok {
-			items = append(items, item)
+		if ask := askOf(block); ask != "" {
+			asks = append(asks, ask)
 		}
 	}
-	var changed map[string]bool
-	if len(items) > 0 {
+	var given map[string]bool
+	if len(asks) > 0 {
+		// Several replies can name parts of one ask; each statement reads each ask once.
+		slices.Sort(asks)
 		var err error
-		if changed, err = s.idsReadAtTheCut(ctx, asof.ItemsChangedAfterStatement, items, cut); err != nil {
-			return fmt.Errorf("read which items of reply blocks changed after the cut: %w", err)
+		if given, err = s.askPartsGivenAtTheCut(ctx, slices.Compact(asks), cut); err != nil {
+			return fmt.Errorf("read which asks of reply blocks stored their parts at the cut: %w", err)
 		}
 	}
 	for index, block := range blocks {
 		if block == nil || block.DeletedAt != nil {
 			continue
 		}
-		// A node of no shape this build reads names no item it can check, so its block is left
-		// out as an item's that changed.
-		if _, item, _, ok := refs.ParseItemBlockNode(block.Node); !ok || changed[item] {
-			place := at(index) + "/reply_block"
-			leaveOut(ctx, place+"/text", place+"/removed")
-			if trees {
-				leaveOut(ctx, place+"/text_tree")
-			}
+		if ask := askOf(block); ask != "" && given[ask] {
+			continue
+		}
+		place := at(index) + "/reply_block"
+		leaveOut(ctx, place+"/text", place+"/removed")
+		if trees {
+			leaveOut(ctx, place+"/text_tree")
 		}
 	}
 	return nil

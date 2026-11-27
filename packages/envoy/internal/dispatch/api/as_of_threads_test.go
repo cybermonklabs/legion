@@ -3,19 +3,22 @@
 // (as_of_equality_test.go) does not write: a post deleted after the cut in every thread a route
 // shows, a message edited before and after the cut, a post's history at a cut, an older build's
 // long edit, a delivery attempt no event dates, the inbox's asks at a cut, an answers poll later
-// than the cut, the block a reply names, an anchored block's place, an ask's route reach, an old
-// approval request's documents and its turn after a version moved it, and a direct thread's session
-// rule.
+// than the cut, the block a reply names, a post's block that a re-index rewrote with no event, an
+// ask's parts that its newest event at the cut stored or did not, an anchored block's place, an
+// ask's route reach, an old approval request's documents and its turn after a version moved it,
+// and a direct thread's session rule.
 package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +26,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // asOfThreadWorld is a server for one test of this file, with its project and issue written.
@@ -146,6 +151,158 @@ func stringsHolding(doc any, words ...string) []string {
 	}
 	walk(doc, "")
 	return held
+}
+
+// requireNamedAbsent fails t unless an answer at the cut, whose Dispatch-As-Of-Absent pointers are
+// absent, leaves out each of members of its object at place and names it there. A member is a
+// pointer below the object, without its leading slash.
+func requireNamedAbsent(t *testing.T, place string, object map[string]any, absent []string, members ...string) {
+	t.Helper()
+	for _, member := range members {
+		if value, held := memberOf(object, strings.Split(member, "/")...); held {
+			t.Errorf("%s/%s at the cut is %s, which no record at the cut gives: the answer leaves it out", place, member, abbreviateValue(value))
+		}
+		if !namedAbsent(absent, place+"/"+member) {
+			t.Errorf("the answer at the cut names %v absent, want %s", absent, place+"/"+member)
+		}
+	}
+}
+
+// replyBlockIn is the reply_block of the one post id that doc holds, with its pointer. The block
+// must be blockID, with its node.
+func replyBlockIn(t *testing.T, doc any, id, blockID string) (string, map[string]any) {
+	t.Helper()
+	posts := postsByID(doc)[id]
+	if len(posts) != 1 {
+		t.Fatalf("the answer holds the reply %s %d times, want once: %s", id, len(posts), abbreviateValue(doc))
+	}
+	block, _ := posts[0].object["reply_block"].(map[string]any)
+	if block == nil || block["block_id"] != blockID || block["node"] == nil {
+		t.Fatalf("%s/reply_block is %s, want the block %s the reply names, with its node",
+			posts[0].path, abbreviateValue(posts[0].object["reply_block"]), blockID)
+	}
+	return pointerJoin(posts[0].path, "reply_block"), block
+}
+
+// shownAskParts is an ask's part state as an answer shows it: its revision, the part id of each of
+// its options and the part id of its answer, 0 and "" where the answer shows none.
+type shownAskParts struct {
+	revision int
+	options  []string
+	answer   string
+}
+
+// same reports whether parts and other are one part state.
+func (parts shownAskParts) same(other shownAskParts) bool {
+	return parts.revision == other.revision && slices.Equal(parts.options, other.options) && parts.answer == other.answer
+}
+
+// partsShownBy is the part state that ask, an ask object of a decoded answer, shows.
+func partsShownBy(ask map[string]any) shownAskParts {
+	var parts shownAskParts
+	if revision, given := ask["revision"]; given {
+		parts.revision, _ = strconv.Atoi(fmt.Sprint(revision))
+	}
+	options, _ := ask["options"].([]any)
+	for _, element := range options {
+		option, _ := element.(map[string]any)
+		id, _ := option["id"].(string)
+		parts.options = append(parts.options, id)
+	}
+	if answer, _ := ask["answer"].(map[string]any); answer != nil {
+		parts.answer, _ = answer["id"].(string)
+	}
+	return parts
+}
+
+// askPartsNow is the part state that the present read of ask id gives: its revision and the part
+// id of each of its options and of its answer, each of which it must give.
+func askPartsNow(t *testing.T, handler http.Handler, id string) shownAskParts {
+	t.Helper()
+	target := "/api/v1/asks/" + id
+	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET %s at the present: status=%d body=%s", target, response.Code, response.Body.String())
+	}
+	read, _ := decodeAnswer(t, target, response).(map[string]any)
+	ask, _ := read["ask"].(map[string]any)
+	parts := partsShownBy(ask)
+	if _, answered := ask["answer"].(map[string]any); parts.revision <= 0 || slices.Contains(parts.options, "") || answered && parts.answer == "" {
+		t.Fatalf("the present read of ask %s shows the parts %+v, want its revision and each part id: %s", id, parts, abbreviateValue(ask))
+	}
+	return parts
+}
+
+// storeAskParts writes parts into the payload of the newest state event of ask id
+// (asof.AskStateTypes) in the event log, as a writer that stores an ask's part state would: the
+// revision where it is not 0, the id of each option that parts names, and the id of the answer
+// where it is not "". No writer of this build stores them (asof.AskPartsAtTheCutStatement), so a
+// test whose answer at a cut gives an ask's parts writes them here, before the cut.
+func storeAskParts(t *testing.T, database *store.Store, id string, parts shownAskParts) {
+	t.Helper()
+	ctx := context.Background()
+	var event int64
+	var payload map[string]any
+	if err := database.Pool.QueryRow(ctx, `
+		select e.id, e.payload from public.events e
+		where e.payload->>'id' = $1 and e.type = any($2::text[])
+		order by e.id desc limit 1
+	`, id, asof.AskStateTypes()).Scan(&event, &payload); err != nil {
+		t.Fatalf("read the newest state event of ask %s: %v", id, err)
+	}
+	if parts.revision != 0 {
+		payload["revision"] = parts.revision
+	}
+	options, _ := payload["options"].([]any)
+	if len(parts.options) > len(options) {
+		t.Fatalf("the newest state event of ask %s holds %d options, fewer than the %d ids to store", id, len(options), len(parts.options))
+	}
+	for index, optionID := range parts.options {
+		if option, _ := options[index].(map[string]any); option != nil && optionID != "" {
+			option["id"] = optionID
+		}
+	}
+	if parts.answer != "" {
+		answer, _ := payload["answer"].(map[string]any)
+		if answer == nil {
+			t.Fatalf("the newest state event of ask %s holds no answer to store the id %s in", id, parts.answer)
+		}
+		answer["id"] = parts.answer
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode the newest state event of ask %s: %v", id, err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `update events set payload = $2::jsonb where id = $1`, event, encoded); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("store the parts of ask %s in its event %d: %s, %v", id, event, tag, err)
+	}
+}
+
+// askObjects is each ask object of doc, by its id, with its pointer: an object that holds a string
+// id and a question, as an ask's read, a list of asks, the issue read's open asks, the inbox's
+// rows and the payload of an ask event each do.
+func askObjects(doc any) map[string][]postAt {
+	found := map[string][]postAt{}
+	var walk func(value any, path string)
+	walk = func(value any, path string) {
+		switch node := value.(type) {
+		case map[string]any:
+			if id, _ := node["id"].(string); id != "" {
+				if _, ask := node["question"]; ask {
+					found[id] = append(found[id], postAt{path: path, object: node})
+				}
+			}
+			for key, member := range node {
+				walk(member, pointerJoin(path, key))
+			}
+		case []any:
+			for index, element := range node {
+				walk(element, pointerJoin(path, strconv.Itoa(index)))
+			}
+		}
+	}
+	walk(doc, "")
+	return found
 }
 
 // TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread: a post its author deletes after the cut
@@ -696,14 +853,18 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 }
 
 // TestAReplyBlockAtACutReadsTheBlockThen: the block a reply names reads at the cut as the block
-// index holds it now where the item that holds it did not change after the cut, which is how it
-// stood at the cut: its text and that it is not removed. Where the item changed after the cut (a
-// comment or a message edited, an ask answered), the change rewrote the item's blocks and no
-// record keeps them at the cut, so every route that shows the reply leaves out the block's text
-// and whether it is removed, and names both absent (reason E). A read with display trees leaves
-// out the tree of that text too, and names it absent, so no word written after the cut reaches
-// the answer through the tree; a read with none gives no tree and names none. The block's node
-// and id are the reply's own, and are given.
+// index holds it now only where a record at the cut gives it: a part of an ask that did not
+// change after the cut and whose newest event at the cut stores the revision and the part ids
+// that the index holds now, which is how the part stood at the cut: its text and that it is not
+// removed. The block index keeps no record of the blocks of a comment or a message at the cut,
+// and no record keeps the parts of an ask that changed after the cut (an ask answered), so every
+// route that shows a reply to such a block leaves out the block's text and whether it is removed,
+// and names both absent (reason E), for a comment or a message edited after the cut and for a
+// comment that was not. A read with display trees leaves out the tree of that text too, and names
+// it absent, so no word written after the cut reaches the answer through the tree; a read with
+// none gives no tree and names none. The block's node and id are the reply's own, and are given.
+// No writer stores an ask's part state in its events yet, so the test stores the kept ask's in
+// its newest event as such a writer would (storeAskParts).
 func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOB")
 	handler := world.handler
@@ -717,6 +878,12 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 		"question": "Which day do we ship?", "options": []map[string]string{{"label": "Monday"}, {"label": "Tuesday"}},
 	})).ID
 	onAsk := world.comment(t, map[string]any{"body": "Monday works.", "ask_id": ask, "reply_to_block": "b2"})
+	keptAsk := decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks", map[string]any{
+		"question": "Which day do we freeze?", "options": []map[string]string{{"label": "Thursday"}, {"label": "Friday"}},
+	})).ID
+	onKeptAsk := world.comment(t, map[string]any{"body": "Thursday works.", "ask_id": keptAsk, "reply_to_block": "b2"})
+	world.settle(t)
+	storeAskParts(t, world.served.deps.Store, keptAsk, askPartsNow(t, handler, keptAsk))
 	cut := takeCut()
 	time.Sleep(5 * time.Millisecond)
 	asOfWrite(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "Alpha.\n\nBeta, rewritten after the cut."}, "alice")
@@ -724,43 +891,33 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{"selected": []string{"Monday"}}, "alice")
 	world.settle(t)
 
-	replyBlock := func(t *testing.T, doc any, id string) (string, map[string]any) {
-		t.Helper()
-		posts := postsByID(doc)[id]
-		if len(posts) != 1 {
-			t.Fatalf("the answer holds the reply %s %d times, want once: %s", id, len(posts), abbreviateValue(doc))
-		}
-		block, _ := posts[0].object["reply_block"].(map[string]any)
-		if block == nil || block["block_id"] != "b2" || block["node"] == nil {
-			t.Fatalf("%s/reply_block is %s, want the block b2 the reply names, with its node", posts[0].path, abbreviateValue(posts[0].object["reply_block"]))
-		}
-		return pointerJoin(posts[0].path, "reply_block"), block
-	}
 	issue := "/api/v1/issues/" + world.issue
 	for _, read := range []struct {
-		target              string
-		changed, changeless []string
+		target         string
+		leftOut, given []string
 	}{
-		{issue + "/comments", []string{onEdited, onAsk}, []string{onKept}},
+		{issue + "/comments", []string{onEdited, onKept, onAsk}, []string{onKeptAsk}},
 		{"/api/v1/comments/" + onEdited, []string{onEdited}, nil},
 		{"/api/v1/comments/" + edited, []string{onEdited}, nil},
-		{"/api/v1/comments/" + kept, nil, []string{onKept}},
+		{"/api/v1/comments/" + kept, []string{onKept}, nil},
 		{"/api/v1/comments/" + onAsk, []string{onAsk}, nil},
+		{"/api/v1/comments/" + onKeptAsk, nil, []string{onKeptAsk}},
 		{issue + "/messages", []string{onMessage}, nil},
 		{issue + "/messages/" + onMessage, []string{onMessage}, nil},
 		{"/api/v1/messages/" + message, []string{onMessage}, nil},
 		{"/api/v1/asks/" + ask, []string{onAsk}, nil},
-		{issue + "/asks?thread=1", []string{onAsk}, nil},
-		{"/api/v1/inbox", []string{onAsk}, nil},
+		{"/api/v1/asks/" + keptAsk, nil, []string{onKeptAsk}},
+		{issue + "/asks?thread=1", []string{onAsk}, []string{onKeptAsk}},
+		{"/api/v1/inbox", []string{onAsk}, []string{onKeptAsk}},
 	} {
 		t.Run(read.target, func(t *testing.T) {
 			doc, absent := world.readAt(t, read.target, cut)
 			treesDoc, treesAbsent := world.readTreesAt(t, read.target, cut)
-			for _, id := range read.changed {
-				place, block := replyBlock(t, doc, id)
+			for _, id := range read.leftOut {
+				place, block := replyBlockIn(t, doc, id, "b2")
 				for _, member := range []string{"text", "removed"} {
 					if value, given := block[member]; given {
-						t.Errorf("%s/%s at the cut is %s, and the item that holds the block changed after the cut: the answer leaves it out",
+						t.Errorf("%s/%s at the cut is %s, and no record gives the block at the cut: the answer leaves it out",
 							place, member, abbreviateValue(value))
 					}
 					if !namedAbsent(absent, pointerJoin(place, member)) {
@@ -771,10 +928,10 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 					t.Errorf("the answer at the cut without display trees names %v absent, want no %s: it gives no tree",
 						absent, pointerJoin(place, "text_tree"))
 				}
-				place, block = replyBlock(t, treesDoc, id)
+				place, block = replyBlockIn(t, treesDoc, id, "b2")
 				for _, member := range []string{"text", "removed", "text_tree"} {
 					if value, given := block[member]; given {
-						t.Errorf("%s/%s at the cut with display trees is %s, and the item that holds the block changed after the cut: the answer leaves it out",
+						t.Errorf("%s/%s at the cut with display trees is %s, and no record gives the block at the cut: the answer leaves it out",
 							place, member, abbreviateValue(value))
 					}
 					if !namedAbsent(treesAbsent, pointerJoin(place, member)) {
@@ -782,22 +939,352 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 					}
 				}
 			}
-			for _, id := range read.changeless {
-				place, block := replyBlock(t, doc, id)
-				_, present := replyBlock(t, world.readNow(t, read.target), id)
-				// The header names a pointer for every reply of a list at once, so the block of an
-				// unchanged item shows that it is given by carrying both members.
-				if block["text"] != present["text"] || block["removed"] != false {
-					t.Errorf("%s at the cut is %s, want the block as its unchanged item holds it, %s", place, abbreviateValue(block), abbreviateValue(present))
+			for _, id := range read.given {
+				place, block := replyBlockIn(t, doc, id, "b2")
+				_, present := replyBlockIn(t, world.readNow(t, read.target), id, "b2")
+				// The header names a pointer for every reply of a list at once, so the block of a
+				// part that the ask's stored parts give shows that it is given by carrying both members.
+				text, _ := present["text"].(string)
+				if text == "" || block["text"] != text || block["removed"] != false {
+					t.Errorf("%s at the cut is %s, want the part as the kept ask's stored parts give it, %s", place, abbreviateValue(block), abbreviateValue(present))
 				}
-				place, block = replyBlock(t, treesDoc, id)
-				if tree := block["text_tree"]; tree == nil || len(stringsHolding(tree, "Delta.")) == 0 {
-					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the text its unchanged item holds, Delta.",
-						place, abbreviateValue(tree))
+				place, block = replyBlockIn(t, treesDoc, id, "b2")
+				if tree := block["text_tree"]; tree == nil || len(stringsHolding(tree, text)) == 0 {
+					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the text the part holds, %s",
+						place, abbreviateValue(tree), text)
 				}
 			}
 			for _, held := range append(stringsHolding(doc, "rewritten after the cut"), stringsHolding(treesDoc, "rewritten after the cut")...) {
 				t.Errorf("%s at the cut holds words written after the cut", held)
+			}
+		})
+	}
+}
+
+// TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt: the block index keeps no record of
+// the blocks of a comment or a message at a cut, and the block-index reconciliation rewrites them
+// with no event, dating what it writes from the post's own last edit, which is before the cut
+// here (refs.IndexOwedItemBlocks). So a reply to a block of a comment or of a message reads at the
+// cut with no text of the block, no word of whether it is removed and, with display trees, no
+// tree of the text, and the answer names the three absent, though no event of the post follows
+// the cut. Each post here is the post as an older build that cut its excerpts another way leaves
+// it, which the reconciliation re-indexes after the cut: the read at the cut gave the older
+// excerpt, and the present read gives the new one. The block's node, id and reference are the
+// reply's own, and read at the cut as the read at the cut gave them. A reply to a post deleted
+// after the cut reads its block removed with no text, as the post reads deleted at the cut
+// (decision 14), and the answer names none of the three absent.
+func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOX")
+	handler, database := world.handler, world.served.deps.Store
+	ctx := context.Background()
+	target := world.comment(t, map[string]any{"body": "Alpha.\n\nBeta."})
+	onTarget := world.comment(t, map[string]any{"body": "On beta.", "reply_to": target, "reply_to_block": "b2"})
+	withdrawn := world.comment(t, map[string]any{"body": "Gamma.\n\nDelta."})
+	onWithdrawn := world.comment(t, map[string]any{"body": "On delta.", "reply_to": withdrawn, "reply_to_block": "b2"})
+	message := world.message(t, map[string]any{"body": "One.\n\nTwo."}, "alice").ID
+	onMessage := world.message(t, map[string]any{"body": "On two.", "in_reply_to": message, "in_reply_to_block": "b2"}, "bob").ID
+	world.settle(t)
+	// What an older build that cut its excerpts another way leaves of each post: the block's
+	// excerpt, and a sum of the post's body that this build does not write, so the block index
+	// re-indexes the post (refs.PlanItemIfOwed).
+	posts := []struct {
+		kind                          refs.ItemKind
+		id, blocks, state, key, older string
+	}{
+		{refs.ItemComment, target, "comment_blocks", "comment_block_state", "comment_id", "Beta, as an older build cut it."},
+		{refs.ItemMessage, message, "message_blocks", "message_block_state", "message_id", "Two, as an older build cut it."},
+	}
+	for _, post := range posts {
+		if tag, err := database.Pool.Exec(ctx, `update `+post.blocks+` set excerpt = $2 where `+post.key+` = $1::uuid and block_id = 'b2'`,
+			post.id, post.older); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("write b2 of %s %s as an older build cut it: %s, %v", post.kind, post.id, tag, err)
+		}
+		if tag, err := database.Pool.Exec(ctx, `update `+post.state+` set body_sha256 = 'an older build''s sum' where `+post.key+` = $1::uuid`,
+			post.id); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("write the sum of %s %s as an older build wrote it: %s, %v", post.kind, post.id, tag, err)
+		}
+	}
+	issue := "/api/v1/issues/" + world.issue
+	reads := []struct {
+		target  string
+		replies []string
+	}{
+		{issue + "/comments", []string{onTarget, onWithdrawn}},
+		{"/api/v1/comments/" + target, []string{onTarget}},
+		{"/api/v1/comments/" + onTarget, []string{onTarget}},
+		{"/api/v1/comments/" + onWithdrawn, []string{onWithdrawn}},
+		{issue + "/messages", []string{onMessage}},
+		{"/api/v1/messages/" + message, []string{onMessage}},
+		{issue + "/messages/" + onMessage, []string{onMessage}},
+	}
+	then := map[string]any{}
+	for _, read := range reads {
+		then[read.target] = world.readNow(t, read.target)
+	}
+	cut := takeCut()
+	time.Sleep(5 * time.Millisecond)
+	for _, post := range posts {
+		if tag, err := database.Pool.Exec(ctx, `update `+post.state+` set owed_at = now() where `+post.key+` = $1::uuid`, post.id); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("owe %s %s its block index: %s, %v", post.kind, post.id, tag, err)
+		}
+		if indexed, err := refs.IndexOwedItemBlocks(ctx, database.Pool, refs.OwedItemBlock{Kind: post.kind, ID: post.id}, "https://dispatch.example"); err != nil || !indexed {
+			t.Fatalf("the reconciliation indexed %s %s = %v (%v), want it indexed", post.kind, post.id, indexed, err)
+		}
+		// The re-index rewrote the block's excerpt and dated nothing after the cut: the block
+		// keeps the time of the post's own write.
+		var excerpt string
+		var changedAt time.Time
+		if err := database.Pool.QueryRow(ctx, `select excerpt, changed_at from `+post.blocks+` where `+post.key+` = $1::uuid and block_id = 'b2'`,
+			post.id).Scan(&excerpt, &changedAt); err != nil {
+			t.Fatalf("read b2 of %s %s: %v", post.kind, post.id, err)
+		}
+		if excerpt == post.older || changedAt.After(cut.Time()) {
+			t.Fatalf("the re-index left b2 of %s %s with the excerpt %q, changed at %s; want the excerpt rewritten, changed before the cut %s",
+				post.kind, post.id, excerpt, changedAt, cut)
+		}
+	}
+	asOfWrite(t, handler, http.MethodDelete, "/api/v1/comments/"+withdrawn, nil, "alice")
+	world.settle(t)
+
+	for _, read := range reads {
+		t.Run(read.target, func(t *testing.T) {
+			doc, absent := world.readAt(t, read.target, cut)
+			treesDoc, treesAbsent := world.readTreesAt(t, read.target, cut)
+			present := world.readNow(t, read.target)
+			for _, id := range read.replies {
+				place, block := replyBlockIn(t, doc, id, "b2")
+				_, before := replyBlockIn(t, then[read.target], id, "b2")
+				_, now := replyBlockIn(t, present, id, "b2")
+				for _, member := range []string{"node", "block_id", "ref"} {
+					if block[member] != before[member] {
+						t.Errorf("%s/%s at the cut is %v, and the read at the cut gave %v: it is the reply's own", place, member, block[member], before[member])
+					}
+				}
+				if id == onWithdrawn {
+					if block["removed"] != true || block["text"] != "" {
+						t.Errorf("%s at the cut is %s, want the block of a post deleted after the cut, removed with no text", place, abbreviateValue(block))
+					}
+					// A list names a pointer for every reply at once; a read of the reply alone names
+					// none of its block.
+					for _, member := range []string{"text", "removed"} {
+						if len(read.replies) == 1 && namedAbsent(absent, place+"/"+member) {
+							t.Errorf("the answer at the cut names %v absent, %s among them, which the block of a deleted post gives", absent, place+"/"+member)
+						}
+					}
+					continue
+				}
+				if text, _ := now["text"].(string); text == "" || text == before["text"] || now["removed"] != false {
+					t.Errorf("%s at the present is %s, and the read at the cut gave %s: want the text that the re-index wrote, not removed",
+						place, abbreviateValue(now), abbreviateValue(before))
+				}
+				requireNamedAbsent(t, place, block, absent, "text", "removed")
+				if namedAbsent(absent, place+"/text_tree") {
+					t.Errorf("the answer at the cut without display trees names %v absent, want no %s: it gives no tree", absent, place+"/text_tree")
+				}
+				treesPlace, treesBlock := replyBlockIn(t, treesDoc, id, "b2")
+				requireNamedAbsent(t, treesPlace, treesBlock, treesAbsent, "text", "removed", "text_tree")
+			}
+		})
+	}
+}
+
+// TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem: an ask's revision and the part
+// ids of its options and of its answer come from the block index now, which keeps no earlier
+// state with its time and raises the revision with no event when the block-index reconciliation
+// re-indexes the ask's parts (refs.IndexOwedItemBlocks). So an answer at a cut gives them only
+// where the ask did not change after the cut and its newest state event at the cut, as the event
+// log stores it, holds the same positive revision and the same part id of each option and of the
+// answer; an ask with no option and no answer stands on its revision alone. The parts of every
+// other ask are left out and named absent: from each route that gives the ask (its own read, the
+// issue's ask list, the issue read's open asks and the inbox) and from each of its events in the
+// issue's event log, whose payloads the read fills with the present parts. So is the text of the
+// block of a reply to one of its parts, whether the block is removed and, with display trees, the
+// text's tree. No writer stores an ask's part state in its events yet, so the test stores it as
+// such a writer would (storeAskParts): an event that stores none, the revision alone, another id
+// of an option, or no id of the answer gives nothing, and neither does an ask whose revision a
+// re-index raised after the cut. A re-index after the cut that changes nothing keeps the parts
+// given. No write changed a wording with no event, so each ask's read gives its wording.
+func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOK")
+	handler, database := world.handler, world.served.deps.Store
+	ctx := context.Background()
+	issue := "/api/v1/issues/" + world.issue
+	open := func(question string, options ...string) string {
+		t.Helper()
+		body := map[string]any{"question": question}
+		if len(options) > 0 {
+			labels := make([]map[string]string, len(options))
+			for index, label := range options {
+				labels[index] = map[string]string{"label": label}
+			}
+			body["options"] = labels
+		}
+		return decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, issue+"/asks", body)).ID
+	}
+	stored := open("Which day do we ship?", "Monday", "Tuesday")
+	unstored := open("Which day do we test?", "Monday", "Tuesday")
+	revisionOnly := open("Which day do we plan?", "Monday", "Tuesday")
+	otherID := open("Which day do we demo?", "Monday", "Tuesday")
+	reindexed := open("Which day do we freeze?", "Monday", "Tuesday")
+	questionOnly := open("Do we ship this week?")
+	answered := open("Which day do we review?", "Monday", "Tuesday")
+	answerUnnamed := open("Which day do we close?", "Monday", "Tuesday")
+	all := []string{stored, unstored, revisionOnly, otherID, reindexed, questionOnly, answered, answerUnnamed}
+	given := map[string]bool{stored: true, questionOnly: true, answered: true}
+	// A reply to a part of each ask: its first option, b2, or the question, b1, of the ask that has
+	// no option.
+	replies, parts := map[string]string{}, map[string]string{}
+	for _, id := range all {
+		parts[id] = "b2"
+		if id == questionOnly {
+			parts[id] = "b1"
+		}
+		replies[id] = world.comment(t, map[string]any{"body": "On one of its parts.", "ask_id": id, "reply_to_block": parts[id]})
+	}
+	for _, id := range []string{answered, answerUnnamed} {
+		asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+id+"/answer", map[string]any{"selected": []string{"Monday"}}, "alice")
+	}
+	world.settle(t)
+
+	// What the newest event of each ask at the cut stores of its parts: all of them, nothing, the
+	// revision alone, another id of an option, or no id of the answer.
+	before := map[string]shownAskParts{}
+	for _, id := range all {
+		before[id] = askPartsNow(t, handler, id)
+	}
+	other := before[otherID]
+	other.options = []string{other.options[0], "b9"}
+	unnamed := before[answerUnnamed]
+	unnamed.answer = ""
+	for id, stores := range map[string]shownAskParts{
+		stored:        before[stored],
+		revisionOnly:  {revision: before[revisionOnly].revision},
+		otherID:       other,
+		reindexed:     before[reindexed],
+		questionOnly:  {revision: before[questionOnly].revision},
+		answered:      before[answered],
+		answerUnnamed: unnamed,
+	} {
+		storeAskParts(t, database, id, stores)
+	}
+	cut := takeCut()
+	time.Sleep(5 * time.Millisecond)
+	// Two re-indexes by the block-index reconciliation after the cut, neither of which appends an
+	// event: of the stored ask, owed an index as rebuild-refs owes every ask one, which changes
+	// nothing; and of the reindexed ask, whose parts an older build summed another way, which
+	// raises the revision and keeps every part id.
+	for _, reindex := range []struct{ id, statement string }{
+		{stored, `update ask_block_state set owed_at = now() where ask_id = $1::uuid`},
+		{reindexed, `update ask_block_state set owed_at = now(), body_sha256 = 'an older build''s sum' where ask_id = $1::uuid`},
+	} {
+		if tag, err := database.Pool.Exec(ctx, reindex.statement, reindex.id); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("owe ask %s its block index: %s, %v", reindex.id, tag, err)
+		}
+		if indexed, err := refs.IndexOwedItemBlocks(ctx, database.Pool, refs.OwedItemBlock{Kind: refs.ItemAsk, ID: reindex.id}, "https://dispatch.example"); err != nil || !indexed {
+			t.Fatalf("the reconciliation indexed ask %s = %v (%v), want it indexed", reindex.id, indexed, err)
+		}
+	}
+	world.settle(t)
+	present := map[string]shownAskParts{}
+	for _, id := range all {
+		present[id] = askPartsNow(t, handler, id)
+	}
+	if !present[stored].same(before[stored]) {
+		t.Fatalf("a re-index that changed nothing moved the parts of ask %s from %+v to %+v", stored, before[stored], present[stored])
+	}
+	if present[reindexed].revision <= before[reindexed].revision || !slices.Equal(present[reindexed].options, before[reindexed].options) {
+		t.Fatalf("the re-index of parts an older build summed moved the parts of ask %s from %+v to %+v, want a later revision and the same part ids",
+			reindexed, before[reindexed], present[reindexed])
+	}
+
+	// requireParts holds object, the ask id at place in an answer at the cut whose
+	// Dispatch-As-Of-Absent names absent, to the rule: the present parts where the ask's are
+	// given, and none of them, each named absent, where they are not.
+	requireParts := func(t *testing.T, id, place string, object map[string]any, absent []string) {
+		t.Helper()
+		_, holdsAnswer := object["answer"].(map[string]any)
+		if given[id] {
+			want := present[id]
+			// An event written before the answer holds none.
+			if !holdsAnswer {
+				want.answer = ""
+			}
+			if shown := partsShownBy(object); !shown.same(want) {
+				t.Errorf("%s at the cut shows the parts %+v of ask %s, want %+v: its newest event at the cut stored them, and the index holds them now",
+					place, shown, id, want)
+			}
+			return
+		}
+		members := []string{"revision"}
+		options, _ := object["options"].([]any)
+		for index := range options {
+			members = append(members, "options/"+strconv.Itoa(index)+"/id")
+		}
+		if holdsAnswer {
+			members = append(members, "answer/id")
+		}
+		requireNamedAbsent(t, place, object, absent, members...)
+	}
+	var askReads []string
+	for _, id := range all {
+		askReads = append(askReads, "/api/v1/asks/"+id)
+	}
+	for _, target := range append([]string{issue + "/asks", issue, "/api/v1/inbox", issue + "/events"}, askReads...) {
+		t.Run(target, func(t *testing.T) {
+			doc, absent := world.readAt(t, target, cut)
+			objects := askObjects(doc)
+			if id, alone := strings.CutPrefix(target, "/api/v1/asks/"); alone {
+				if len(objects[id]) != 1 || objects[id][0].object["question"] == "" {
+					t.Fatalf("the read of ask %s at the cut holds it %d times: %s", id, len(objects[id]), abbreviateValue(doc))
+				}
+				for _, member := range []string{"/ask/question", "/ask/options", "/ask/multiple", "/ask/urgency"} {
+					if namedAbsent(absent, member) {
+						t.Errorf("the read of ask %s at the cut names %v absent, %s among them: no write changed its wording with no event", id, absent, member)
+					}
+				}
+				if given[id] && (namedAbsent(absent, "/ask/revision") || namedAbsent(absent, "/ask/options/0/id") || namedAbsent(absent, "/ask/answer/id")) {
+					t.Errorf("the read of ask %s at the cut names %v absent, which its newest event at the cut stored", id, absent)
+				}
+			} else if len(objects[stored]) == 0 || len(objects[unstored]) == 0 {
+				t.Fatalf("the answer at the cut holds the asks %v, want both open asks %s and %s among them", slices.Sorted(maps.Keys(objects)), stored, unstored)
+			}
+			for _, id := range all {
+				for _, ask := range objects[id] {
+					requireParts(t, id, ask.path, ask.object, absent)
+				}
+			}
+		})
+	}
+
+	for _, target := range append([]string{issue + "/comments"}, askReads...) {
+		t.Run(target+" reply blocks", func(t *testing.T) {
+			doc, absent := world.readAt(t, target, cut)
+			treesDoc, treesAbsent := world.readTreesAt(t, target, cut)
+			current := world.readNow(t, target)
+			alone := strings.HasPrefix(target, "/api/v1/asks/")
+			for _, id := range all {
+				reply := replies[id]
+				if alone && len(postsByID(doc)[reply]) == 0 {
+					continue
+				}
+				place, block := replyBlockIn(t, doc, reply, parts[id])
+				_, now := replyBlockIn(t, current, reply, parts[id])
+				treesPlace, treesBlock := replyBlockIn(t, treesDoc, reply, parts[id])
+				if !given[id] {
+					requireNamedAbsent(t, place, block, absent, "text", "removed")
+					requireNamedAbsent(t, treesPlace, treesBlock, treesAbsent, "text", "removed", "text_tree")
+					continue
+				}
+				text, _ := now["text"].(string)
+				if text == "" || block["text"] != text || block["removed"] != false {
+					t.Errorf("%s at the cut is %s, want the part of ask %s as its stored parts give it, %s", place, abbreviateValue(block), id, abbreviateValue(now))
+				}
+				if tree := treesBlock["text_tree"]; tree == nil || len(stringsHolding(tree, text)) == 0 {
+					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the part's text, %s", treesPlace, abbreviateValue(tree), text)
+				}
+				if alone && (namedAbsent(absent, place+"/text") || namedAbsent(treesAbsent, treesPlace+"/text_tree")) {
+					t.Errorf("the read of ask %s at the cut names %v absent, and with display trees %v: its reply's block is given", id, absent, treesAbsent)
+				}
 			}
 		})
 	}

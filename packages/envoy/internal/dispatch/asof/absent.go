@@ -32,7 +32,8 @@ const (
 	reasonSessionPublication = "An event in the window names the session's topic, but the outbox did not settle it by the cut. " +
 		"No event records when the outbox reached that topic."
 	// E, for the block that a reply names.
-	reasonReplyBlock = "The item that holds this block changed after the cut. Dispatch keeps no record of the blocks of the item at the cut."
+	reasonReplyBlock = "Dispatch keeps no record of the blocks of a comment or a message at the cut: the block index rewrites them with no event. " +
+		"It gives a part of an ask only where the ask did not change after the cut and its newest event at the cut stores the revision and the part ids that the block index holds now."
 	// E, for the place of an anchored block.
 	reasonAnchorBlock = "A stored document version records the id of a typed block only. " +
 		"No record gives the place of this block in the document at the cut."
@@ -60,7 +61,8 @@ const (
 	reasonAskWording = "The restore of a decided ask's wording changes this field with no event. " +
 		"No record gives the time of the restore, so no record gives the wording at the cut."
 	// P
-	reasonParts = "Dispatch gives part ids and revisions only for an item that did not change after the cut."
+	reasonParts = "Dispatch gives an ask's revision and part ids only where the ask did not change after the cut " +
+		"and its newest event at the cut stores the revision and the part ids that the block index holds now."
 	// D
 	reasonProjectDefault = "The person comes from a project default from before the first event of that default."
 	// B
@@ -134,8 +136,9 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/events/log":            eventLogFields(),
 
 	// A post gives no ask's wording: a comment gives only the id of the ask whose thread holds it.
-	// The text of a reply's block, which can be an ask's, is left out where its ask changed after
-	// the cut, which an ask whose wording is unknown did (ItemsChangedAfterStatement).
+	// The text of a reply's block is left out but where the block is a part of an ask whose parts
+	// the records at the cut give, and an ask whose wording is unknown gives none
+	// (AskPartsAtTheCutStatement, AsksChangedAfterStatement).
 	"GET /api/v1/issues/{key}/comments":   commentFields("/*"),
 	"GET /api/v1/artifacts/{id}/comments": commentFields("/*"),
 	"GET /api/v1/comments/{id}": slices.Concat(commentFields("/comment"), commentFields("/replies/*"), []AbsentField{
@@ -241,7 +244,7 @@ var (
 
 // commentFields are the fields of a comment at prefix: of a comment route's comment, and of each
 // reply of an ask's thread. Not in the plan's list: the text of the block that the reply names,
-// which an item changed after the cut rewrote as it rewrote whether the block is removed, and the
+// which the block index rewrites with no event as it rewrites whether the block is removed, and the
 // tree of that text, which an answer carries for a request with display trees; the delivery mode
 // and the session of an attempt, which a send resolves with no event, so for an attempt that no
 // event at the cut dates they are absent too (decision 5); and whether the mark of the comment's
