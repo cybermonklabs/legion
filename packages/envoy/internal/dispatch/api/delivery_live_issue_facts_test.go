@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"maps"
 	"math"
@@ -124,17 +123,9 @@ func TestAnIssueFilingsChangeRecomputesNoView(t *testing.T) {
 // fallback for an unknown kind.
 func TestTouchedByHasAnArmForEveryChangeKind(t *testing.T) {
 	t.Parallel()
-	parse := func(path string) *ast.File {
-		t.Helper()
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return file
-	}
 	kinds := map[string]bool{}
 	for _, path := range packageGoFiles(t, "../delivery") {
-		for _, decl := range parse(path).Decls {
+		for _, decl := range parseAPIFile(t, path).Decls {
 			block, ok := decl.(*ast.GenDecl)
 			if !ok || block.Tok != token.CONST {
 				continue
@@ -152,7 +143,7 @@ func TestTouchedByHasAnArmForEveryChangeKind(t *testing.T) {
 		t.Fatal("found no delivery.ChangeKind constants")
 	}
 	explicit := map[string]bool{}
-	for _, decl := range parse("delivery_live_hub_intake.go").Decls {
+	for _, decl := range parseAPIFile(t, "delivery_live_hub_intake.go").Decls {
 		f, ok := decl.(*ast.FuncDecl)
 		if !ok || (f.Name.Name != "touchedBy" && f.Name.Name != "touchedByDeliveryRow") {
 			continue
@@ -366,6 +357,7 @@ func recomputeOfView(t *testing.T, frame DeliveryLiveView) func(deliveryHubNote)
 // any other view: the hub recomputes every view when its event feed is taken again, which no
 // write of this test caused, so another recompute here is a mark this row did not ask for.
 func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	seedLegionProjects(t, rig.handler, "INFRA")
@@ -401,7 +393,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 		if _, sent := delta.Maps["issues"][issue]; !sent {
 			t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
 		}
-		board.none(t, viewMaxWait, "the delta of the facts write of "+issue+", which carries no freshness verdict")
+		rig.requireNothingSent(t, board, "the delta of the facts write of "+issue+", which carries no freshness verdict")
 		boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
 		if allRecomputes := rig.count(shown, recomputeBegin(deliveryCauseChange)); boardRecomputes != 1 || allRecomputes != 1 {
 			t.Errorf("the facts write of %s recomputed the board %d times and %d views in all, want the board once and no other view",
@@ -414,19 +406,18 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	writeIssueFacts(t, rig.database, "INFRA", "INFRA-98", "INFRA-98", workedAt, workedAt.Add(time.Hour), new(workedAt.Add(2*time.Hour)))
 	rig.hub.catchUpNow()
 	rig.waitFor(t, unshown, "a recompute of the board of INFRA-98's project", recomputeOfView(t, boardFrame))
-	board.none(t, viewMaxWait, "the facts write of INFRA-98, of a tree the board does not show")
+	rig.requireNothingSent(t, board, "the facts write of INFRA-98, of a tree the board does not show")
 	if n := rig.count(unshown, recomputeOfView(t, boardFrame)); n != 1 {
 		t.Errorf("the facts write of INFRA-98 recomputed the board %d times, want once", n)
 	}
-	timeline.none(t, viewMaxWait, "the facts writes of issues the timeline does not show")
+	timeline.empty(t, "the facts writes of issues the timeline does not show")
 
 	// A row of a project no open view shows leaves the hub idle and tells no page anything.
 	idle := rig.mark()
 	writeIssueFacts(t, rig.database, "OPS", "OPS-1", "OPS-1", workedAt, workedAt.Add(time.Hour), nil)
 	rig.hub.catchUpNow()
-	rig.waitNoRecompute(t, viewMaxWait)
-	board.none(t, time.Second, "the facts write of a project no view shows")
-	timeline.none(t, time.Second, "the facts write of a project no view shows")
+	rig.requireNothingSent(t, board, "the facts write of a project no view shows")
+	timeline.empty(t, "the facts write of a project no view shows")
 	if n := rig.count(idle, recomputeBegin(deliveryCauseChange)); n != 0 {
 		t.Errorf("the facts write of another project recomputed %d views, want none", n)
 	}
@@ -447,6 +438,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 // view; the write of its facts row recomputes the board once and sends it one delta carrying the
 // issue's entry.
 func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
@@ -476,12 +468,10 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	// horizon, and the board's answer carries no title of an issue on no card.
 	renamed := rig.mark()
 	patchHubIssue(t, rig.handler, issue, map[string]any{"title": "An issue in backlog, renamed"})
-	rig.waitForEventCursor(t, eventHead(t, rig.database), "the rename of "+issue)
-	rig.waitNoRecompute(t, viewMaxWait)
+	rig.requireNothingSent(t, board, "the rename of "+issue+", on no card")
 	if n := rig.count(renamed, recomputeBegin("")); n != 0 {
 		t.Errorf("the rename of %s, on no card, recomputed %d views, want none", issue, n)
 	}
-	board.none(t, time.Second, "the rename of "+issue+", on no card")
 
 	// The write of its facts row, which is what moves its entry.
 	written := rig.mark()
@@ -492,7 +482,7 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	if _, sent := delta.Maps["issues"][issue]; !sent {
 		t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
 	}
-	board.none(t, viewMaxWait, "the one delta of the facts write of "+issue)
+	rig.requireNothingSent(t, board, "the one delta of the facts write of "+issue)
 	if boardRecomputes, all := rig.count(written, recomputeOfView(t, boardFrame)), rig.count(written, recomputeBegin("")); boardRecomputes != 1 || all != 1 {
 		t.Errorf("the facts write of %s recomputed the board %d times and %d views in all, want the board once and no other view",
 			issue, boardRecomputes, all)
@@ -549,6 +539,7 @@ func writeFactsBatch(t *testing.T, database *store.Store, project string, count 
 // of them and the batch rewrites rows the board already shows, which is what a build's whole
 // read of a project that already holds rows writes, and the delta carries every entry it moved.
 func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
+	t.Parallel()
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
@@ -582,7 +573,7 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 			len(changed), logged, batchRows)
 	}
 	rig.hub.catchUpNow()
-	conn.none(t, 2*viewQuiet, "a batch of facts rows the clock has not moved past")
+	rig.requireNothingSent(t, conn, "a batch of facts rows the clock has not moved past")
 	if n := rig.count(start, recomputeBegin(deliveryCauseChange)); n != 0 {
 		t.Fatalf("recomputes before the batch's quiet passed = %d, want 0", n)
 	}
@@ -591,7 +582,7 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 	clock.Advance(viewQuiet)
 	delta := conn.delta(t, "b")
 	took := time.Since(started)
-	conn.none(t, viewMaxWait, "the batch's one delta")
+	rig.requireNothingSent(t, conn, "the batch's one delta")
 	recomputes := rig.count(start, recomputeBegin(deliveryCauseChange))
 	if recomputes != 1 {
 		t.Errorf("a batch of %d changed rows cost the board %d recomputes, want the one its marks coalesce into",
@@ -606,59 +597,6 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 // (metrics' round), and a page closes the value the read rounded, so the two differ by at most
 // one unit of the fourth decimal.
 const storedPrecision = 1e-4
-
-// writeGrowingLegionFacts writes three open rows of seedLegionBoard's project, each closed at a
-// moment before now with the growth the computation would store: INFRA-4, the child in a turn,
-// grows its work time, its slot hours, its implementing hours and the end of its open bar, and
-// facts the board does not carry (its hours in backlog or icebox, its implementer's bar, its
-// reviewer's idle hours); INFRA-8, the unstarted child, grows hours in the queue column it holds
-// none in yet; and INFRA-3, the design root, grows only its hours in backlog or icebox while it
-// waits for a child, a fact the board does not carry, so every value of its entry stands still.
-func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time) {
-	t.Helper()
-	childAsOf, queuedAsOf, rootAsOf := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-5*time.Hour)
-	childFirst, queuedFirst := now.Add(-6*time.Hour), now.Add(-4*time.Hour)
-	rows := []legionfacts.Row{{
-		Project: "INFRA", Issue: "INFRA-4", UpdatedAt: now.Add(-2 * time.Minute),
-		ClosedFacts: metrics.ClosedFacts{
-			IssueFacts: metrics.IssueFacts{
-				OpenedAt:   now.Add(-9 * time.Hour),
-				PhaseHours: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
-				WorkHours:  4.75, ReviewRounds: 2, Tree: "INFRA-3", TreeDepth: 1, SlotHours: 4,
-				WorkFirstAt: &childFirst, WorkLastAt: &childAsOf,
-			},
-			AsOf: childAsOf,
-			Growth: metrics.Growth{
-				"work_hours": 1, "slot_hours": 1, "phase_hours.implementing": 1, "work_last_at": 1,
-				"backlog_or_icebox_hours": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
-			},
-		},
-	}, {
-		Project: "INFRA", Issue: "INFRA-8", UpdatedAt: now.Add(-3 * time.Minute),
-		ClosedFacts: metrics.ClosedFacts{
-			IssueFacts: metrics.IssueFacts{
-				OpenedAt: now.Add(-7 * time.Hour), PhaseHours: map[string]float64{}, Tree: "INFRA-3", TreeDepth: 1,
-				WorkFirstAt: &queuedFirst, WorkLastAt: &queuedAsOf,
-			},
-			AsOf:   queuedAsOf,
-			Growth: metrics.Growth{"phase_hours.queue": 1},
-		},
-	}, {
-		Project: "INFRA", Issue: "INFRA-3", WaitingReason: "waiting for a child", UpdatedAt: now.Add(-4 * time.Minute),
-		ClosedFacts: metrics.ClosedFacts{
-			IssueFacts: metrics.IssueFacts{
-				OpenedAt: now.Add(-12 * time.Hour), PhaseHours: map[string]float64{"design": 2},
-				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
-			},
-			AsOf:   rootAsOf,
-			Growth: metrics.Growth{"backlog_or_icebox_hours": 1},
-		},
-	}}
-	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
-		legionfacts.ProjectWrite{Project: "INFRA", Rows: rows, Whole: true}); err != nil {
-		t.Fatalf("write the growing stored facts of INFRA: %v", err)
-	}
-}
 
 // closeLegionEntry is entry given at the clock at, as a page that holds it gives it: each value
 // that grows plus its rate times the hours from the entry's as_of to at (legionBoardGrowth), and
@@ -722,13 +660,14 @@ func checkLegionEntry(t *testing.T, key string, got, want legionBoardFacts) {
 // The hub's clock runs an hour behind the wall clock, which the GET route reads, so the GET is
 // later than every answer the hub sent and every growing value has grown by an hour since.
 func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
+	t.Parallel()
 	clock := &fakeHubClock{offset: -time.Hour}
 	rig := newClockedHubRig(t, clock)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	seeded := clock.Now().Truncate(time.Microsecond)
 	seedLegionBoard(t, rig.database, "INFRA", seeded)
-	writeGrowingLegionFacts(t, rig.database, seeded)
+	writeLegionFacts(t, rig.database, seeded)
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
@@ -760,7 +699,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 		},
 	}
 	if keys := slices.Sorted(maps.Keys(snapped.Issues)); !slices.Equal(keys, slices.Sorted(maps.Keys(wantSnapshot))) {
-		t.Fatalf("snapshot issues = %v, want all three hand-written rows", keys)
+		t.Fatalf("snapshot issues = %v, want the three hand-written rows the board serves", keys)
 	}
 	for key, want := range wantSnapshot {
 		checkLegionEntry(t, key, snapped.Issues[key], want)

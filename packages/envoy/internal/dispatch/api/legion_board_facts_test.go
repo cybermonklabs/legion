@@ -20,47 +20,73 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// writeLegionFacts writes the stored facts of three issues of the project, as the facts consumer
-// would have written them, and answers the oldest updated_at of the rows the board of
-// seedLegionBoard serves. The third row, which that board does not serve, is the oldest of the
-// three, so a header that counted it would read an older facts_updated_at than the one answered.
-// The rows are written by hand rather than computed, so a check reads the numbers it wrote: the
-// board serves stored rows and computes none of them, which is the whole of what these tests hold
-// it to.
-func writeLegionFacts(t *testing.T, database *store.Store, project string, now time.Time) time.Time {
+// writeLegionFacts writes the stored facts of four issues of seedLegionBoard's project INFRA, as
+// the facts consumer would have written them, and answers the oldest updated_at of the rows that
+// board serves. Each open row is closed at a moment before now with the growth the computation
+// would store: INFRA-4, the child in a turn, grows its work time, its slot hours, its implementing
+// hours and the end of its open bar, and facts the board does not carry (its hours in backlog or
+// icebox, its implementer's bar, its reviewer's idle hours); INFRA-8, the unstarted child, grows
+// hours in the queue column it holds none in yet; and INFRA-3, the design root, grows only its
+// hours in backlog or icebox while it waits for a child, a fact the board does not carry, so every
+// value of its entry stands still. The fourth row, which the board does not serve, is the oldest
+// of the four, so a header that counted it would read an older facts_updated_at than the one
+// answered. The rows are written by hand rather than computed, so a check reads the numbers it
+// wrote: the board serves stored rows and computes none of them, which is the whole of what these
+// tests hold it to.
+func writeLegionFacts(t *testing.T, database *store.Store, now time.Time) time.Time {
 	t.Helper()
 	oldest := now.Add(-4 * time.Minute)
 	closed := now.Add(-2 * time.Hour)
-	first, last := now.Add(-6*time.Hour), now.Add(-time.Hour)
+	childAsOf, queuedAsOf, rootAsOf := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-5*time.Hour)
+	childFirst, queuedFirst := now.Add(-6*time.Hour), now.Add(-4*time.Hour)
 	rows := []legionfacts.Row{{
-		Project: project, Issue: project + "-4", WaitingReason: "", UpdatedAt: now.Add(-2 * time.Minute),
-		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
-			OpenedAt:   now.Add(-9 * time.Hour),
-			PhaseHours: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
-			WorkHours:  4.75, ReviewRounds: 2, Tree: project + "-3", TreeDepth: 1,
-			SlotHours: 4, WorkFirstAt: &first, WorkLastAt: &last,
-		}},
+		Project: "INFRA", Issue: "INFRA-4", UpdatedAt: now.Add(-2 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt:   now.Add(-9 * time.Hour),
+				PhaseHours: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
+				WorkHours:  4.75, ReviewRounds: 2, Tree: "INFRA-3", TreeDepth: 1, SlotHours: 4,
+				WorkFirstAt: &childFirst, WorkLastAt: &childAsOf,
+			},
+			AsOf: childAsOf,
+			Growth: metrics.Growth{
+				"work_hours": 1, "slot_hours": 1, "phase_hours.implementing": 1, "work_last_at": 1,
+				"backlog_or_icebox_hours": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
+			},
+		},
 	}, {
-		Project: project, Issue: project + "-3", WaitingReason: "waiting for a child", UpdatedAt: oldest,
-		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
-			OpenedAt:   now.Add(-12 * time.Hour),
-			PhaseHours: map[string]float64{"design": 2},
-			WorkHours:  2, ReviewRounds: 0, Root: true, Tree: project + "-3", TreeDepth: 0,
-			SlotHours: 6,
-		}},
+		Project: "INFRA", Issue: "INFRA-8", UpdatedAt: now.Add(-3 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: now.Add(-7 * time.Hour), PhaseHours: map[string]float64{}, Tree: "INFRA-3", TreeDepth: 1,
+				WorkFirstAt: &queuedFirst, WorkLastAt: &queuedAsOf,
+			},
+			AsOf:   queuedAsOf,
+			Growth: metrics.Growth{"phase_hours.queue": 1},
+		},
+	}, {
+		Project: "INFRA", Issue: "INFRA-3", WaitingReason: "waiting for a child", UpdatedAt: oldest,
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: now.Add(-12 * time.Hour), PhaseHours: map[string]float64{"design": 2},
+				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
+			},
+			AsOf:   rootAsOf,
+			Growth: metrics.Growth{"backlog_or_icebox_hours": 1},
+		},
 	}, {
 		// A closed issue of a tree no card stands in (seedLegionBoard's finished issue), which
 		// carries no entry and moves no facts_updated_at, though it is the oldest row: the board
 		// serves the facts of the open issues and of the issues it shows alone.
-		Project: project, Issue: project + "-7", UpdatedAt: now.Add(-5 * time.Minute),
+		Project: "INFRA", Issue: "INFRA-7", UpdatedAt: now.Add(-5 * time.Minute),
 		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
 			OpenedAt: now.Add(-30 * time.Hour), ClosedAt: &closed, PhaseHours: map[string]float64{}, WorkHours: 0,
-			Root: true, Tree: project + "-7",
+			Root: true, Tree: "INFRA-7",
 		}},
 	}}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
-		legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
-		t.Fatalf("write the stored facts of %s: %v", project, err)
+		legionfacts.ProjectWrite{Project: "INFRA", Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the stored facts of INFRA: %v", err)
 	}
 	return oldest
 }
@@ -148,6 +174,7 @@ func TestEveryStoredColumnIsReadOrNamedAsNotRead(t *testing.T) {
 // tree the row holds as of the moment of the read, because the board serves the row and computes
 // nothing but the close of each open part at its own clock (legionfacts.Row.At).
 func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	// Five trees, because this issue's check k4 counts at least twenty entries and fails below
@@ -267,12 +294,13 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 // The push and GET use different clocks. Compare fields other than computed_at and issues as
 // written, then grow the push's issues entries to the GET's moment before comparing the map.
 func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
+	t.Parallel()
 	rig := newClockedHubRig(t, &fakeHubClock{offset: -time.Hour})
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	now := rig.clock.Now().Truncate(time.Microsecond)
 	seedLegionBoard(t, rig.database, "INFRA", now)
-	writeGrowingLegionFacts(t, rig.database, now)
+	writeLegionFacts(t, rig.database, now)
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
@@ -342,6 +370,7 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 // The header's facts_updated_at is the oldest updated_at of the rows the answer serves, so a row
 // the board does not serve, the oldest of the project's, moves it not at all.
 func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -425,6 +454,7 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 // null and facts_cursor_age_seconds is an age. A project whose consumer has never run has no
 // cursor row at all, and the age is null for every project of that deployment.
 func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	for _, project := range []string{"INFRA", "LINUX"} {
@@ -434,7 +464,7 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 	// come back as they went in.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	seedLegionBoard(t, database, "INFRA", now)
-	oldest := writeLegionFacts(t, database, "INFRA", now)
+	oldest := writeLegionFacts(t, database, now)
 
 	// No pass has ever committed: neither project's board knows an age, and the project with
 	// stored rows still names the oldest of them.
@@ -538,6 +568,7 @@ func legionCardHeld(board legionBoardResponse, key string) (legionBoardCard, boo
 // the line and out of the Queue, and both readers answer `blocked` for it: on the open child the
 // block names, and on none where no block was read.
 func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t *testing.T) {
+	t.Parallel()
 	// child is the key of the unstarted child, which carries no card and whose stored row must
 	// say it waits for nothing, and above is the card that counts it. They are the same two
 	// issues in both cases below, because neither admission block names either of them. parent
@@ -588,14 +619,9 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 				seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, hourAgo)
 				seedLegionHandoff(t, database, key, "plan", hourAgo)
 			}
-			// The rig puts its root back in `accepting` at hour 48 of its history and closes it at
-			// hour 56, four hours ago, so the daemon's stand-in reports it in `awaiting_children`
-			// again after that, as the state of the moment the card and the row are read.
-			tree := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: 1, IssueOffset: 10, Now: now, AwaitingChildren: true})
-			if tree.Roots[0] != parent || tree.Open[0] != openChild {
-				t.Fatalf("the rig's tree has the root %s and the open child %s, want %s and %s", tree.Roots[0], tree.Open[0], parent, openChild)
+			if root, open := seedAwaitingChildrenTree(t, database, now, now.Add(-30*time.Minute)); root != parent || open != openChild {
+				t.Fatalf("the rig's tree has the root %s and the open child %s, want %s and %s", root, open, parent, openChild)
 			}
-			seedLegionObservation(t, database, "INFRA", parent, legion.FieldPhase, `"`+legion.PhaseAwaitingChildren+`"`, now.Add(-30*time.Minute))
 			if test.admission != "" {
 				seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, test.admission, hourAgo)
 			}

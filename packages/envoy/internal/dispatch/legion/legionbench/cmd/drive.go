@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legionbench"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -166,7 +167,7 @@ func drive(args []string) error {
 	}
 	defer database.Pool.Close()
 	pool := database.Pool
-	build, err := serverBuild(ctx, o.url)
+	build, err := legionbench.ServerBuild(ctx, o.url)
 	if err != nil {
 		return err
 	}
@@ -526,25 +527,22 @@ var phaseRoles = map[string]string{
 	legion.PhaseTesting: "tester", legion.PhaseReviewing: "reviewer", legion.PhaseMerging: "merger",
 }
 
-// appended is one event the drive appended: its issue, the moment it sent the request, the moment
-// the answer came, and the status it answered.
+// appended is one event the drive appended: its issue and the moment it sent the request.
 type appended struct {
-	Key      string    `json:"key"`
-	Sent     time.Time `json:"sent"`
-	Answered time.Time `json:"answered"`
-	Status   int       `json:"status"`
+	Key  string    `json:"key"`
+	Sent time.Time `json:"sent"`
 }
 
 // appendEvents appends total issue events, one each 1/rate seconds from start, on the cards in
-// order, round and round, and answers each with its times. Each is an issue.updated: a PATCH of the
-// card's title, which the board shows, so the live hub recomputes the view at main's tip as at this
-// head (an issue.updated of an issue a view names marks it, where a comment marks no view) and the
-// recompute has a change to push. Each is written by a session of its own, titled as the Legion
-// role the card's phase belongs to works the issue (`Legion <role> · <KEY>`): the facts read each
-// session's first event of an issue as a role event (metrics' readRoleEvents), so the edit is a new
-// input of the issue's facts and moves its stored row at this head; a second event by a session
-// already in the history would move nothing. A write the server refuses is a FAIL line, and is no
-// event of the judgement.
+// order, round and round, and answers each with the moment it sent it. Each is an issue.updated: a
+// PATCH of the card's title, which the board shows, so the live hub recomputes the view at main's
+// tip as at this head (an issue.updated of an issue a view names marks it, where a comment marks no
+// view) and the recompute has a change to push. Each is written by a session of its own, titled as
+// the Legion role the card's phase belongs to works the issue (`Legion <role> · <KEY>`): the facts
+// read each session's first event of an issue as a role event (metrics' readRoleEvents), so the
+// edit is a new input of the issue's facts and moves its stored row at this head; a second event
+// by a session already in the history would move nothing. A write the server refuses is a FAIL
+// line, and is no event of the judgement.
 func appendEvents(ctx context.Context, r *report, o driveOptions, token string, order []card, total int, start time.Time) []appended {
 	interval := time.Duration(float64(time.Second) / o.rate)
 	var events []appended
@@ -559,21 +557,13 @@ func appendEvents(ctx context.Context, r *report, o driveOptions, token string, 
 		if role == "" {
 			role = "implementer"
 		}
-		type origin struct {
-			SessionTitle string `json:"session_title"`
-		}
-		type actor struct {
-			Kind   string `json:"kind"`
-			ID     string `json:"id"`
-			Origin origin `json:"origin"`
-		}
 		payload, err := json.Marshal(struct {
-			Title string `json:"title"`
-			Actor actor  `json:"actor"`
+			Title string      `json:"title"`
+			Actor model.Actor `json:"actor"`
 		}{
 			Title: fmt.Sprintf("%s · bench edit %d", target.Title, index+1),
-			Actor: actor{Kind: "session", ID: fmt.Sprintf("s-%s-%s-bench-%d", role, target.Key, index+1),
-				Origin: origin{SessionTitle: "Legion " + role + " · " + target.Key}},
+			Actor: model.Actor{Kind: "session", ID: fmt.Sprintf("s-%s-%s-bench-%d", role, target.Key, index+1),
+				Origin: &model.ActorOrigin{SessionTitle: "Legion " + role + " · " + target.Key}},
 		})
 		if err != nil {
 			r.fail("event %d on %s: %v", index+1, target.Key, err)
@@ -588,14 +578,12 @@ func appendEvents(ctx context.Context, r *report, o driveOptions, token string, 
 		request.Header.Set("Content-Type", "application/json")
 		event := appended{Key: target.Key, Sent: time.Now()}
 		response, err := http.DefaultClient.Do(request)
-		event.Answered = time.Now()
 		if err != nil {
 			r.fail("event %d on %s: %v", index+1, target.Key, err)
 			continue
 		}
 		answer, _ := io.ReadAll(response.Body)
 		_ = response.Body.Close()
-		event.Status = response.StatusCode
 		if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 			r.fail("event %d on %s answered %d: %s", index+1, target.Key, response.StatusCode, oneLine(answer))
 			continue
@@ -738,6 +726,14 @@ func readRecomputes(path string, from, to int64) ([]recompute, error) {
 	defer file.Close()
 	scanner := bufio.NewScanner(io.NewSectionReader(file, from, to-from))
 	scanner.Buffer(make([]byte, 1<<20), 16<<20)
+	// A line cut at to ends with no newline, and its elapsed_ms may be cut short: the scanner
+	// answers complete lines alone and drops the fragment after the last newline.
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if atEOF && bytes.IndexByte(data, '\n') < 0 {
+			return len(data), nil, nil
+		}
+		return bufio.ScanLines(data, atEOF)
+	})
 	var lines []recompute
 	for scanner.Scan() {
 		match := recomputeLine.FindSubmatch(scanner.Bytes())

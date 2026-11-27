@@ -5,12 +5,10 @@ package legionbench
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"math"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,16 +126,15 @@ func TestFarmChangeLockHolds(t *testing.T) {
 	if err != nil {
 		r.fail("the server did not serve: %v (its log: %s)", err, server.log)
 	}
-	readEnded, wrote, err := waitWholeRead(ctx, setup.Pool, build, o.readTimeout)
+	readEnded, wrote, err := waitWholeRead(ctx, setup.Pool, server, build, o.readTimeout)
 	if err != nil {
 		r.fail("whole read: %v", err)
-		readEnded = time.Now()
 	} else {
 		r.result("whole_read build=%s rows=%d seconds_from_server_start=%.1f", build, wrote, readEnded.Sub(server.started).Seconds())
-	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Until(readEnded.Add(o.after))):
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Until(readEnded.Add(o.after))):
+		}
 	}
 	stopDrive()
 	drivers.Wait()
@@ -185,13 +182,6 @@ func farmOptionsFromEnv(t *testing.T) farmOptions {
 	}
 	if !slices.Contains([]string{"stated", "recorded", "sleep"}, o.gate) {
 		t.Fatalf("LEGIONBENCH_GATE is stated, recorded or sleep, not %q", o.gate)
-	}
-	if value := os.Getenv("LEGIONBENCH_PORT"); value != "" {
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			t.Fatalf("LEGIONBENCH_PORT: %v", err)
-		}
-		o.port = port
 	}
 	if value := os.Getenv("LEGIONBENCH_RATE"); value != "" {
 		rate, err := strconv.ParseFloat(value, 64)
@@ -292,13 +282,6 @@ const (
 	// the write, as a run's jobs listing that intake writes complete has.
 	farmRunAge = 10 * time.Minute
 )
-
-// farmDeployJobs are a deploy run's eight jobs; planFarmDrive puts the settings' first production
-// job name at farmProductionIndex.
-var farmDeployJobs = []string{"build / image", "build / assets", "migrate / check", "staging-release / apply",
-	"staging-e2e / run", "production-release / plan", "", "notify / release"}
-
-const farmProductionIndex = 6
 
 // farmPlan is the drive: the delivery settings, the moment it starts and the time between two runs,
 // the next run id, the pull requests the deploy runs ship, and the session groups the group writes
@@ -458,8 +441,13 @@ func (p *farmPlan) writeRun(r *farmReport, writers map[string]*farmWriter, index
 	var names []string
 	if deploy {
 		run.Kind, run.HeadBranch, run.Event = delivery.DeliveryRunKindDeploy, new("main"), new("push")
-		names = slices.Clone(farmDeployJobs)
-		names[farmProductionIndex] = p.settings.ProductionJobNames[0]
+		// A deploy run's eight jobs are the loaded history's (deployStages), its production job the
+		// settings' first.
+		names = make([]string, len(deployStages))
+		for i, stage := range deployStages {
+			names[i] = stage.name
+		}
+		names[productionStage] = p.settings.ProductionJobNames[0]
 	} else {
 		number := p.shipped[int(index)%len(p.shipped)]
 		run.Kind, run.PRNumber, run.HeadBranch, run.Event = delivery.DeliveryRunKindPRChecks, &number,
@@ -697,7 +685,7 @@ func (s *farmServer) waitHealthy(ctx context.Context, timeout time.Duration) (st
 			return "", errors.New("the server exited before it served")
 		default:
 		}
-		build, err := serverCommit(ctx, s.url)
+		build, err := ServerBuild(ctx, s.url)
 		if err == nil {
 			return build, nil
 		}
@@ -710,29 +698,6 @@ func (s *farmServer) waitHealthy(ctx context.Context, timeout time.Duration) (st
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-}
-
-// serverCommit is /healthz's commit.
-func serverCommit(ctx context.Context, url string) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/healthz", nil)
-	if err != nil {
-		return "", err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	var health struct {
-		Commit string `json:"commit"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return "", err
-	}
-	if health.Commit == "" {
-		return "", errors.New("the server answers no commit: build it stamped (-ldflags -X main.buildCommit=<commit>)")
-	}
-	return health.Commit, nil
 }
 
 // stop stops the server with SIGTERM and waits for it to exit.
@@ -748,11 +713,16 @@ func (s *farmServer) stop() {
 	})
 }
 
-// waitWholeRead waits until the server has read INFRA whole under build and drained every change
-// the read put in the outbox, and answers when it saw that and how many rows the read wrote.
-func waitWholeRead(ctx context.Context, pool *store.Pool, build string, timeout time.Duration) (time.Time, int64, error) {
+// waitWholeRead waits until server has read INFRA whole under build and drained every change the
+// read put in the outbox, and answers when it saw that and how many rows the read wrote. It fails
+// at once for an empty build, the build of a server that did not serve, and once the server has
+// exited, so a server that cannot make the read fails the arm then rather than at timeout.
+func waitWholeRead(ctx context.Context, pool *store.Pool, server *farmServer, build string, timeout time.Duration) (time.Time, int64, error) {
+	if build == "" {
+		return time.Time{}, 0, errors.New("the server named no build, so no read is its whole read")
+	}
 	deadline := time.Now().Add(timeout)
-	for {
+	for exited := false; ; {
 		var computed string
 		var rows, pending int64
 		err := pool.QueryRow(ctx, `
@@ -762,8 +732,12 @@ func waitWholeRead(ctx context.Context, pool *store.Pool, build string, timeout 
 		if err != nil {
 			return time.Time{}, 0, err
 		}
-		if build != "" && computed == build && pending == 0 {
+		if computed == build && pending == 0 {
 			return time.Now(), rows, nil
+		}
+		if exited {
+			return time.Time{}, 0, fmt.Errorf("the server exited with %s's record naming build %q, not %q, and %d rows in the outbox (its log: %s)",
+				Project, computed, build, pending, server.log)
 		}
 		if time.Now().After(deadline) {
 			return time.Time{}, 0, fmt.Errorf("after %s %s's record names build %q, not %q, and the outbox holds %d rows",
@@ -772,6 +746,10 @@ func waitWholeRead(ctx context.Context, pool *store.Pool, build string, timeout 
 		select {
 		case <-ctx.Done():
 			return time.Time{}, 0, ctx.Err()
+		case <-server.done:
+			// One more read after the exit, so a read the server finished just before it is still its
+			// whole read.
+			exited = true
 		case <-time.After(250 * time.Millisecond):
 		}
 	}

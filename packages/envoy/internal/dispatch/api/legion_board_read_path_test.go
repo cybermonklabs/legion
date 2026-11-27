@@ -47,23 +47,18 @@ import (
 // legion_board_payload_test.go builds (boardAtInfraSize): one project of the rig's 252 issues, the
 // facts consumer run over it once and then stopped.
 
-// ranStatement is one statement a traced pool ran, with the arguments it was given, which is
-// what lets a plan be taken of the statement the request itself made rather than of a copy of it.
-type ranStatement struct {
-	sql  string
-	args []any
-}
-
-// statementLog records every statement run on the pool it traces (storetest.Traced).
+// statementLog records every statement run on the pool it traces (storetest.Traced), with the
+// arguments it was given, which is what lets a plan be taken of the statement the request itself
+// made rather than of a copy of it.
 type statementLog struct {
 	mutex sync.Mutex
-	ran   []ranStatement
+	ran   []sentStatement
 }
 
 func (l *statementLog) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	l.ran = append(l.ran, ranStatement{sql: data.SQL, args: slices.Clone(data.Args)})
+	l.ran = append(l.ran, sentStatement{sql: data.SQL, args: slices.Clone(data.Args)})
 	return ctx
 }
 
@@ -77,7 +72,7 @@ func (l *statementLog) reset() {
 }
 
 // statements is every statement the log has recorded, in the order they started.
-func (l *statementLog) statements() []ranStatement {
+func (l *statementLog) statements() []sentStatement {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	return slices.Clone(l.ran)
@@ -97,55 +92,9 @@ const (
 	otherFactsRows     = 210
 )
 
-// explainedBoardRead is one plan of one statement: the statement, the plan as JSON, and the plan
-// as text, which the record prints.
-type explainedBoardRead struct {
-	sql  string
-	plan json.RawMessage
-	text string
-}
-
-// explainBoardRead runs one statement under `explain (analyze, buffers)` twice, once as JSON for
-// the checks and once as text for the record, in a transaction it rolls back, under the settings
-// each of the board's reads of the stored facts runs with (legionfacts.BoardReadSettings), so the
-// test and the read cannot differ in them.
-func explainBoardRead(t *testing.T, database *store.Store, ran ranStatement) explainedBoardRead {
-	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the explain: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, legionfacts.BoardReadSettings); err != nil {
-		t.Fatalf("set the board read's settings: %v", err)
-	}
-	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+ran.sql, ran.args...).Scan(&planJSON); err != nil {
-		t.Fatalf("explain %s: %v", ran.sql, err)
-	}
-	rows, err := tx.Query(ctx, "explain (analyze, buffers) "+ran.sql, ran.args...)
-	if err != nil {
-		t.Fatalf("explain %s as text: %v", ran.sql, err)
-	}
-	defer rows.Close()
-	lines := []string{}
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			t.Fatalf("scan a plan line: %v", err)
-		}
-		lines = append(lines, line)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("explain %s as text: %v", ran.sql, err)
-	}
-	return explainedBoardRead{sql: ran.sql, plan: explaintest.OnePlan(t, planJSON), text: strings.Join(lines, "\n")}
-}
-
 // boardFactsReads is every statement of the recorded request that reads the issue_facts table.
-func boardFactsReads(ran []ranStatement) []ranStatement {
-	reads := []ranStatement{}
+func boardFactsReads(ran []sentStatement) []sentStatement {
+	reads := []sentStatement{}
 	for _, statement := range ran {
 		if factsTableRead.MatchString(statement.sql) {
 			reads = append(reads, statement)
@@ -180,6 +129,7 @@ func boardFactsReads(ran []ranStatement) []ranStatement {
 // table every row of which is wanted is the right plan for that table, so the second is the one
 // held to reading by index.
 func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
+	t.Parallel()
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
 	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
@@ -207,35 +157,36 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 		}
 		openReads := 0
 		for _, read := range reads {
-			explained := explainBoardRead(t, database, read)
+			plan := customBoardRead(t, database, read)
+			text := explaintest.Outline(t, plan)
 			examined++
-			relations := planRelations(explained.plan)
+			relations := planRelations(plan)
 			t.Logf("over %s (%d rows in issue_facts), the board's read\n%s\nplans as:\n%s",
-				population, rows, strings.TrimSpace(read.sql), explained.text)
+				population, rows, strings.TrimSpace(read.sql), text)
 			for _, forbidden := range []string{"events", "legion_observations"} {
 				if slices.Contains(relations, forbidden) {
-					t.Errorf("the board's read of the stored facts reads %s:\n%s", forbidden, explained.text)
+					t.Errorf("the board's read of the stored facts reads %s:\n%s", forbidden, text)
 				}
 			}
-			scans := explaintest.IndexScans(t, explained.plan)
+			scans := explaintest.IndexScans(t, plan)
 			if population != "ten projects' rows" {
 				continue
 			}
-			if explaintest.SeqScansRelation(t, explained.plan, "issue_facts") {
-				t.Errorf("over ten projects' rows the board's read of the stored facts scans issue_facts:\n%s", explained.text)
+			if explaintest.SeqScansRelation(t, plan, "issue_facts") {
+				t.Errorf("over ten projects' rows the board's read of the stored facts scans issue_facts:\n%s", text)
 			}
-			if unkeyed := explaintest.ScansWithoutIndexCond(t, explained.plan); len(unkeyed) > 0 {
+			if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 				t.Errorf("over ten projects' rows the board's read of the stored facts reads %v under no index condition:\n%s",
-					unkeyed, explained.text)
+					unkeyed, text)
 			}
 			for _, scan := range scans {
 				if !strings.Contains(scan.Cond, "project_key") {
 					t.Errorf("over ten projects' rows the board's read takes %s keyed by %q, which names no project: it reads more than the board's project:\n%s",
-						scan, scan.Cond, explained.text)
+						scan, scan.Cond, text)
 				}
 				t.Logf("the read takes %s, keyed by %s", scan, scan.Cond)
 			}
-			openReads += openRowsTestNoList(t, explained.plan, explained.text)
+			openReads += openRowsTestNoList(t, plan, text)
 		}
 		if population == "ten projects' rows" && openReads == 0 {
 			t.Errorf("over ten projects' rows no read of the board's request reads the open rows under a condition naming closed_at IS NULL")
@@ -297,26 +248,15 @@ func planMilliseconds(t *testing.T, plan json.RawMessage) float64 {
 	return node.Total
 }
 
-// customBoardRead runs the statement the board's request ran with its arguments under the
-// settings the read runs with (legionfacts.BoardReadSettings), analyzed, and answers its plan. An
-// EXPLAIN that binds its own arguments is planned for their values whatever the plan cache's mode,
-// so this is the plan with the values, beside the generic plan the read itself runs.
-func customBoardRead(t *testing.T, database *store.Store, ran ranStatement) json.RawMessage {
+// customBoardRead runs the statement the board's request ran, with its arguments, under
+// `explain (analyze, buffers)` in a transaction it rolls back, under the settings each of the
+// board's reads of the stored facts runs with (legionfacts.BoardReadSettings), so the test and the
+// read cannot differ in them, and answers its plan. An EXPLAIN that binds its own arguments is
+// planned for their values whatever the plan cache's mode, so this is the plan with the values,
+// beside the generic plan the read itself runs.
+func customBoardRead(t *testing.T, database *store.Store, ran sentStatement) json.RawMessage {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan with the values' transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, legionfacts.BoardReadSettings); err != nil {
-		t.Fatalf("set the board read's settings: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+ran.sql, ran.args...).Scan(&raw); err != nil {
-		t.Fatalf("explain %s: %v", ran.sql, err)
-	}
-	return explaintest.OnePlan(t, raw)
+	return explaintest.AnalyzedPlanUnder(t, t.Context(), database.Pool, ran.sql, []string{legionfacts.BoardReadSettings}, ran.args...)
 }
 
 // boardReadLiterals is a board read's arguments, written as the literals an EXECUTE of the
@@ -361,6 +301,8 @@ func boardReadLiterals(t *testing.T, database *store.Store, args []any) (types, 
 // machine's noise hides, so a bound would trip on load and never on the shape. k14 measures the
 // two reads' time at root R14's size.
 func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
+	// Not parallel: the medians it records compare the wall-clock cost of the two plan modes, which
+	// the package's parallel tests would share the machine with.
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
 	ctx := t.Context()
@@ -443,13 +385,14 @@ var (
 // the stored facts and the event log, or the stored facts and the daemon's observations,
 // together.
 //
-// The board answers two things: the stored facts, which this issue adds, and the cards, which
-// the daemon's state draws (dispatch://INFRA-1077). The card half reads the daemon's
+// The board answers two things: the stored facts, which it reads from issue_facts, and the cards,
+// which the daemon's state draws (dispatch://INFRA-1077). The card half reads the daemon's
 // observations, and the tree walk's phase-work read reads the event log, so the request does
 // reach both tables. This records every statement it ran and holds the two halves apart: a
 // statement that read a fact out of the event log would be a fact computed on the request path,
 // and there is none.
 func TestTheBoardsFactsReadStandsApartFromItsCardReads(t *testing.T) {
+	t.Parallel()
 	log := &statementLog{}
 	handler, _, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
 
@@ -524,6 +467,7 @@ func seedOtherProjectsFacts(t *testing.T, database *store.Store, except string) 
 // the two clocks, so the test waits for no clock to pass; at least one open issue must grow, or
 // the two reads compare nothing the clock moves.
 func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *testing.T) {
+	t.Parallel()
 	_, database, fixture := boardAtInfraSize(t, testServerOptions{})
 	rates := map[string]float64{}
 	rows, err := database.Pool.Query(t.Context(),
@@ -531,15 +475,14 @@ func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *tes
 	if err != nil {
 		t.Fatalf("read the stored growth: %v", err)
 	}
-	for rows.Next() {
-		var key string
-		var rate float64
-		if err := rows.Scan(&key, &rate); err != nil {
-			t.Fatalf("read the stored growth: %v", err)
-		}
+	var key string
+	var rate float64
+	if _, err := pgx.ForEachRow(rows, []any{&key, &rate}, func() error {
 		rates[key] = rate
+		return nil
+	}); err != nil {
+		t.Fatalf("read the stored growth: %v", err)
 	}
-	rows.Close()
 	written := func() (count int64, newest time.Time) {
 		t.Helper()
 		if err := database.Pool.QueryRow(t.Context(),
@@ -622,6 +565,8 @@ const boardWarmReads = 10
 // bound: one sample of each after a loaded machine's other work says nothing of the order of
 // either, and k14 measures the read's time at root R14's size.
 func TestAFreshProcessFirstBoardReadIsAsFastAsAWarmOne(t *testing.T) {
+	// Not parallel: it records the wall-clock time of a warm read and of a fresh process's first
+	// read, which the package's parallel tests would share the machine with.
 	warmLog, freshLog := &statementLog{}, &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), warmLog)})
 	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
@@ -775,6 +720,7 @@ var (
 // search over code that does hold what the search looks for, so finding nothing on the read path
 // is a reading and not an empty answer.
 func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
+	t.Parallel()
 	files := boardReadPathFiles(t)
 	t.Logf("the board's read path: %d files, %s", len(files), strings.Join(files, ", "))
 	// 1. A call that computes a fact.
@@ -794,13 +740,17 @@ func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	t.Logf("search 1's control read %d lines and matched %d", controlLines, len(control))
 
 	// 2. Elapsed time added to a stored value, anywhere but the close.
-	hits, lines = searchSource(t, files, elapsedTime, storedValue)
-	for _, hit := range hits {
+	elapsed, lines := searchSource(t, files, elapsedTime, nil)
+	hits = nil
+	for _, hit := range elapsed {
+		if !storedValue.MatchString(hit.text) {
+			continue
+		}
+		hits = append(hits, hit)
 		if !slices.Contains(boardCloseFiles, hit.file) {
 			t.Errorf("the board's read path adds elapsed time to a stored value outside the close: %s", hit)
 		}
 	}
-	elapsed, _ := searchSource(t, files, elapsedTime, nil)
 	t.Logf("search 2, elapsed time on a line that names a stored fact (%s, with %s): %d lines read, %d lines make a length at all, %d of them name a stored fact",
 		elapsedTime, storedValue, lines, len(elapsed), len(hits))
 	closing := 0

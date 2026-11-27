@@ -18,25 +18,26 @@
 //     rework, and over the last 200 days 20 deploy runs a day of 8 jobs and 60 pull-request runs
 //     a day of 40 jobs, ten times as many runs under TenTimes (delivery.go).
 //
-// It writes no other project and no eval reading, and reads no eval table, so it loads a
-// database `main`'s tip migrated as it loads one this head migrated: of the consumer tables it
-// resets (resetConsumers) it touches only those the database holds (ExistingTables).
+// It writes no other project, and of the consumer tables it resets (resetConsumers) it touches
+// only those the database holds (existingTables), so it loads a database `main`'s tip migrated as
+// it loads one this head migrated.
 //
 // Scale multiplies every count (issues, events, pull requests, runs a day) and keeps every span
 // of days and the shape of each row, so a small load in a pod exercises every table and every
 // read the full one does.
 //
-// The loader, the history's shape and the delivery history are evals/evalbench's of
-// cybermonklabs/legion#3976 (Load, infra.go and delivery.go), whose calls of its fixture package
-// are this package's own code here: a file of it that is not a test imports no seeder of the test
-// rigs (internal/textcheck's TestOnlyTestFilesImportTheDeliveryAndLegionSeeders).
+// A file of this package that is not a test imports no seeder of the test rigs, so the loader
+// writes the history with code of its own (internal/textcheck's
+// TestOnlyTestFilesImportTheDeliveryAndLegionSeeders).
 package legionbench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -68,9 +69,9 @@ const (
 	observedDays = 120
 )
 
-// Repos are INFRA's three repositories, the deploy repository first: the one whose runs Dispatch
+// repos are INFRA's three repositories, the deploy repository first: the one whose runs Dispatch
 // reads and whose pull requests a deploy ships.
-var Repos = []string{"acme/infra-platform", "acme/infra-api", "acme/infra-web"}
+var repos = []string{"acme/infra-platform", "acme/infra-api", "acme/infra-web"}
 
 // actor is the actor every row this package writes that records one names.
 var actor = model.Actor{Kind: "system", ID: "legionbench"}
@@ -142,12 +143,12 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	spec.Now = spec.Now.UTC()
 	pool := database.Pool
 	if spec.FirstRead {
-		held, err := ExistingTables(ctx, pool, []string{"issue_facts", "issue_facts_computed"})
+		held, err := existingTables(ctx, pool, []string{"issue_facts", "issue_facts_computed"})
 		if err != nil {
 			return nil, err
 		}
 		if len(held) != 2 {
-			return nil, fmt.Errorf("-first-read loads for the server's first whole read of the Legion facts, and this database holds only %v of issue_facts and issue_facts_computed", held)
+			return nil, fmt.Errorf("a FirstRead load is for the server's first whole read of the Legion facts, and this database holds only %v of issue_facts and issue_facts_computed", held)
 		}
 	}
 	if err := checkEmpty(ctx, pool); err != nil {
@@ -166,7 +167,7 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		return nil, err
 	}
 	step("INFRA's delivery history")
-	if err := SettleNumbers(ctx, pool, []string{Project}); err != nil {
+	if err := settleNumbers(ctx, pool, []string{Project}); err != nil {
 		return nil, err
 	}
 	if err := resetConsumers(ctx, pool); err != nil {
@@ -183,7 +184,7 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		return nil, err
 	}
 	if spec.FirstRead && (counts["issue_facts"] != 0 || counts["issue_facts_computed"] != 0) {
-		return nil, fmt.Errorf("-first-read leaves issue_facts empty and no build in issue_facts_computed, and the load ends with %d and %d rows",
+		return nil, fmt.Errorf("a FirstRead load leaves issue_facts empty and no build in issue_facts_computed, and the load ends with %d and %d rows",
 			counts["issue_facts"], counts["issue_facts_computed"])
 	}
 	return counts, nil
@@ -211,7 +212,7 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 // reset logs no change of its own. It then writes the keyword fill's cursor as caught up with the
 // loaded log (keywordFillCaughtUp).
 func resetConsumers(ctx context.Context, pool *store.Pool) error {
-	held, err := ExistingTables(ctx, pool, consumerTables)
+	held, err := existingTables(ctx, pool, consumerTables)
 	if err != nil {
 		return err
 	}
@@ -234,7 +235,7 @@ func resetConsumers(ctx context.Context, pool *store.Pool) error {
 // the stated rate, beside every recompute and every hold the Jobs measure. A database without the
 // fill is left alone.
 func keywordFillCaughtUp(ctx context.Context, pool *store.Pool) error {
-	held, err := ExistingTables(ctx, pool, []string{"search_text_versions_fill"})
+	held, err := existingTables(ctx, pool, []string{"search_text_versions_fill"})
 	if err != nil || len(held) == 0 {
 		return err
 	}
@@ -250,9 +251,9 @@ func keywordFillCaughtUp(ctx context.Context, pool *store.Pool) error {
 	return nil
 }
 
-// SettleNumbers moves each project's next issue number past every issue it holds, so the next
+// settleNumbers moves each project's next issue number past every issue it holds, so the next
 // issue the server creates in it takes a number no loaded issue holds.
-func SettleNumbers(ctx context.Context, pool *store.Pool, projects []string) error {
+func settleNumbers(ctx context.Context, pool *store.Pool, projects []string) error {
 	if _, err := pool.Exec(ctx, `
 		update projects p
 		set next_number = greatest(p.next_number, (select coalesce(max(i.number), 0) + 1 from issues i where i.project_key = p.key))
@@ -263,9 +264,9 @@ func SettleNumbers(ctx context.Context, pool *store.Pool, projects []string) err
 	return nil
 }
 
-// ExistingTables is those of tables the database holds in its search path, in the order tables
+// existingTables is those of tables the database holds in its search path, in the order tables
 // names them: what the load reads a database's head by.
-func ExistingTables(ctx context.Context, pool *store.Pool, tables []string) ([]string, error) {
+func existingTables(ctx context.Context, pool *store.Pool, tables []string) ([]string, error) {
 	rows, err := pool.Query(ctx, `
 		select name from unnest($1::text[]) with ordinality as given(name, position)
 		where to_regclass(name) is not null order by position`, tables)
@@ -286,7 +287,7 @@ func ExistingTables(ctx context.Context, pool *store.Pool, tables []string) ([]s
 
 // count reads how many rows each of countedTables holds, those the database has.
 func count(ctx context.Context, pool *store.Pool) (Counts, error) {
-	held, err := ExistingTables(ctx, pool, countedTables)
+	held, err := existingTables(ctx, pool, countedTables)
 	if err != nil {
 		return nil, err
 	}
@@ -310,4 +311,28 @@ func (c Counts) Lines() []string {
 		}
 	}
 	return lines
+}
+
+// ServerBuild is the build the server at url says it is (/healthz's commit), which its Legion facts
+// consumer records against the project it reads whole.
+func ServerBuild(ctx context.Context, url string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/healthz", nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("read the server's health: %w", err)
+	}
+	defer response.Body.Close()
+	var health struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		return "", fmt.Errorf("read the server's health: %w", err)
+	}
+	if health.Commit == "" {
+		return "", errors.New("the server answers no commit: build it with -ldflags \"-X main.buildCommit=<commit>\", since an unstamped binary is a build of its own process and its record of the whole read names no commit")
+	}
+	return health.Commit, nil
 }

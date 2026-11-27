@@ -287,9 +287,6 @@ var liveLegionAt = liveFrom.Add(48 * time.Hour)
 // written again, its values now growing, and ACME-4's row went, so the oldest row the board
 // serves, and the header with it, moved.
 func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
-	moment := func(when time.Time) *time.Time { return &when }
-	number := func(n int) *int { return &n }
-	text := func(s string) *string { return &s }
 	grown := at.Sub(liveLegionAt).Hours()
 	growing := func(column string) *legionBoardGrowth {
 		return &legionBoardGrowth{HoursByPhase: map[string]float64{column: 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1}
@@ -297,57 +294,57 @@ func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
 	issues := map[string]legionBoardFacts{
 		"ACME-1": {
 			OpenedAt: liveLegionAt.Add(-8 * time.Hour), HoursByPhase: map[string]float64{"design": 2}, WorkHours: 2,
-			RootKey: "ACME-1", WaitingReason: legion.WaitingBlocked, WorkFirstAt: moment(liveLegionAt.Add(-8 * time.Hour)),
-			WorkLastAt: moment(liveLegionAt.Add(-4 * time.Hour)), UpdatedAt: liveLegionAt.Add(-20 * time.Minute),
+			RootKey: "ACME-1", WaitingReason: legion.WaitingBlocked, WorkFirstAt: new(liveLegionAt.Add(-8 * time.Hour)),
+			WorkLastAt: new(liveLegionAt.Add(-4 * time.Hour)), UpdatedAt: liveLegionAt.Add(-20 * time.Minute),
 		},
 		"ACME-2": {
 			OpenedAt: liveLegionAt.Add(-6 * time.Hour), HoursByPhase: map[string]float64{"design": 1.5, "implementing": 3 + grown},
 			WorkHours: 4.5 + grown, RootKey: "ACME-1", TreeDepth: 1, SlotHours: 3 + grown,
-			WorkFirstAt: moment(liveLegionAt.Add(-5 * time.Hour)), WorkLastAt: moment(at),
-			UpdatedAt: liveLegionAt.Add(-10 * time.Minute), AsOf: moment(at), Growth: growing(legion.ColumnImplementing),
+			WorkFirstAt: new(liveLegionAt.Add(-5 * time.Hour)), WorkLastAt: new(at),
+			UpdatedAt: liveLegionAt.Add(-10 * time.Minute), AsOf: new(at), Growth: growing(legion.ColumnImplementing),
 		},
 		"ACME-3": {
 			OpenedAt: liveLegionAt.Add(-3 * time.Hour), HoursByPhase: map[string]float64{}, RootKey: "ACME-3",
 			WaitingReason: legion.WaitingReady, UpdatedAt: liveLegionAt.Add(-15 * time.Minute),
 		},
 		"ACME-4": {
-			OpenedAt: liveLegionAt.Add(-30 * time.Hour), ClosedAt: moment(liveLegionAt.Add(-6 * time.Hour)),
+			OpenedAt: liveLegionAt.Add(-30 * time.Hour), ClosedAt: new(liveLegionAt.Add(-6 * time.Hour)),
 			HoursByPhase: map[string]float64{"implementing": 5, "reviewing": 1.25}, WorkHours: 6.25, ReviewRounds: 1,
-			RootKey: "ACME-1", TreeDepth: 1, SlotHours: 5, WorkFirstAt: moment(liveLegionAt.Add(-29 * time.Hour)),
-			WorkLastAt: moment(liveLegionAt.Add(-6 * time.Hour)), UpdatedAt: liveLegionAt.Add(-6 * time.Hour),
+			RootKey: "ACME-1", TreeDepth: 1, SlotHours: 5, WorkFirstAt: new(liveLegionAt.Add(-29 * time.Hour)),
+			WorkLastAt: new(liveLegionAt.Add(-6 * time.Hour)), UpdatedAt: liveLegionAt.Add(-6 * time.Hour),
 		},
 	}
 	cards := map[string][]legionBoardCard{
 		legion.ColumnImplementing: {{
-			Key: "ACME-2", Title: "The implementer's child", Priority: number(1), Phase: legion.PhaseImplementing,
-			PhaseSince: moment(liveLegionAt.Add(-3 * time.Hour)), Slot: number(0), Roles: []string{"implementer"},
-			BlockedBy: []string{}, SlotUse: text(legion.SlotUseWorking), Tree: "ACME-1",
+			Key: "ACME-2", Title: "The implementer's child", Priority: new(1), Phase: legion.PhaseImplementing,
+			PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Slot: new(0), Roles: []string{"implementer"},
+			BlockedBy: []string{}, SlotUse: new(legion.SlotUseWorking), Tree: "ACME-1",
 		}},
 		legion.ColumnAwaitingChildren: {{
-			Key: "ACME-1", Title: "The parent waiting on its child", Priority: number(1), Phase: legion.PhaseAwaitingChildren,
-			PhaseSince: moment(liveLegionAt.Add(-4 * time.Hour)), Roles: []string{}, BlockedBy: []string{"ACME-2"},
-			Waiting: &legionBoardWaiting{Reason: legion.WaitingBlocked, Since: moment(liveLegionAt.Add(-4 * time.Hour)), BlockedBy: []string{"ACME-2"}},
+			Key: "ACME-1", Title: "The parent waiting on its child", Priority: new(1), Phase: legion.PhaseAwaitingChildren,
+			PhaseSince: new(liveLegionAt.Add(-4 * time.Hour)), Roles: []string{}, BlockedBy: []string{"ACME-2"},
+			Waiting: &legionBoardWaiting{Reason: legion.WaitingBlocked, Since: new(liveLegionAt.Add(-4 * time.Hour)), BlockedBy: []string{"ACME-2"}},
 			Tree:    "ACME-1",
 		}},
 	}
 	queued := legionBoardCard{
-		Key: "ACME-3", Title: "The queued root", Priority: number(2), Phase: legion.PhaseAdmitted,
-		PhaseSince: moment(liveLegionAt.Add(-3 * time.Hour)), Roles: []string{}, BlockedBy: []string{}, Tree: "ACME-3",
+		Key: "ACME-3", Title: "The queued root", Priority: new(2), Phase: legion.PhaseAdmitted,
+		PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Roles: []string{}, BlockedBy: []string{}, Tree: "ACME-3",
 	}
 	slots, cursorAge := 1, 12
 	if started {
 		issues["ACME-3"] = legionBoardFacts{
 			OpenedAt: liveLegionAt.Add(-3 * time.Hour), HoursByPhase: map[string]float64{"design": 0.25}, WorkHours: 0.25,
-			RootKey: "ACME-3", SlotHours: 0.25, WorkFirstAt: moment(at.Add(-15 * time.Minute)), WorkLastAt: moment(at),
-			UpdatedAt: at.Add(-time.Minute), AsOf: moment(at), Growth: growing(legion.ColumnDesign),
+			RootKey: "ACME-3", SlotHours: 0.25, WorkFirstAt: new(at.Add(-15 * time.Minute)), WorkLastAt: new(at),
+			UpdatedAt: at.Add(-time.Minute), AsOf: new(at), Growth: growing(legion.ColumnDesign),
 		}
 		delete(issues, "ACME-4")
-		queued.Slot, queued.Roles, queued.SlotUse = number(1), []string{"architect"}, text(legion.SlotUseWorking)
+		queued.Slot, queued.Roles, queued.SlotUse = new(1), []string{"architect"}, new(legion.SlotUseWorking)
 		cards[legion.ColumnDesign] = []legionBoardCard{queued}
 		slots, cursorAge = 2, 7
 	} else {
-		queued.WaitingPlace = number(1)
-		queued.Waiting = &legionBoardWaiting{Reason: legion.WaitingReady, Since: moment(liveLegionAt.Add(-3 * time.Hour)), BlockedBy: []string{}}
+		queued.WaitingPlace = new(1)
+		queued.Waiting = &legionBoardWaiting{Reason: legion.WaitingReady, Since: new(liveLegionAt.Add(-3 * time.Hour)), BlockedBy: []string{}}
 		cards[legion.ColumnQueue] = []legionBoardCard{queued}
 	}
 	columns := make([]legionBoardColumn, 0, len(legion.Columns))
@@ -359,12 +356,12 @@ func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
 		columns = append(columns, legionBoardColumn{ID: column.ID, Label: legionBoardColumnLabels[column.ID], Cards: held})
 	}
 	header := legionBoardHeader{
-		SlotsInUse: slots, SlotCap: number(3), Trees: 2, QueueLength: len(cards[legion.ColumnQueue]),
-		ReadAt: moment(at.Add(-30 * time.Second)), ReadOK: true, FactsCursorAgeSeconds: number(cursorAge),
+		SlotsInUse: slots, SlotCap: new(3), Trees: 2, QueueLength: len(cards[legion.ColumnQueue]),
+		ReadAt: new(at.Add(-30 * time.Second)), ReadOK: true, FactsCursorAgeSeconds: new(cursorAge),
 	}
 	for _, entry := range issues {
 		if header.FactsUpdatedAt == nil || entry.UpdatedAt.Before(*header.FactsUpdatedAt) {
-			header.FactsUpdatedAt = moment(entry.UpdatedAt)
+			header.FactsUpdatedAt = new(entry.UpdatedAt)
 		}
 	}
 	return legionBoardResponse{

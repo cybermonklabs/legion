@@ -129,6 +129,21 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 	seedLegionRead(t, database, project, ago(0.01), "")
 }
 
+// seedAwaitingChildrenTree seeds one tree of the facts' own rig whose root waited on its children
+// (legiontest.Spec's AwaitingChildren), numbered from 11, after the issues a test seeds of its
+// own, and observes the root in `awaiting_children` from entered on. The rig puts its root back in
+// `accepting` at hour 48 of its history and closes it at hour 56, four hours before now, so the
+// daemon's stand-in reports it in `awaiting_children` again after that, as the state of the moment
+// a card or a stored row is read: blocked on the tree's open child, and holding no slot, since the
+// rig's root gave its slot up at hour 50. It answers the root and the open child.
+func seedAwaitingChildrenTree(t *testing.T, database *store.Store, now, entered time.Time) (parent, openChild string) {
+	t.Helper()
+	tree := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: 1, IssueOffset: 10, Now: now, AwaitingChildren: true})
+	parent, openChild = tree.Roots[0], tree.Open[0]
+	seedLegionObservation(t, database, "INFRA", parent, legion.FieldPhase, `"`+legion.PhaseAwaitingChildren+`"`, entered)
+	return parent, openChild
+}
+
 // legionBoardOf is the board the route answers for project.
 func legionBoardOf(t *testing.T, handler http.Handler, project string) legionBoardResponse {
 	t.Helper()
@@ -1056,6 +1071,7 @@ func seedSessionEvent(t *testing.T, database *store.Store, issue, session, title
 // wait on a person, and a slot held for children who work or do not — and it is null for an
 // issue holding no slot of its own. The Legion tab reads the field and works none of it out.
 func TestALegionCardSaysWhatItsSlotHolds(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -1130,6 +1146,7 @@ func TestALegionCardSaysWhatItsSlotHolds(t *testing.T) {
 // `awaiting_children` blocked on its open children — and it is null for an issue that waits for
 // nothing. The Legion tab's waiting line reads the field.
 func TestALegionCardSaysWhyItWaits(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -1155,16 +1172,8 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 		`{"kind":"ask","since":"2026-11-03T09:00:00Z","answeredAt":"2026-11-03T10:00:00Z"}`, ago(6))
 	seedLegionObservation(t, database, "INFRA", person, legion.FieldWaitingOn,
 		`{"kind":"gate","since":"`+asked+`"}`, ago(6))
-	// One tree of the facts' own rig whose root waited on its children (legiontest.Spec's
-	// AwaitingChildren), numbered after the issues above. The rig puts the root back in
-	// `accepting` at hour 48 of its history and closes it at hour 56, four hours ago, so the
-	// daemon's stand-in reports it in `awaiting_children` again after that, as the state of the
-	// moment the card is read: blocked on the tree's open child, and holding no slot, since the
-	// rig's root gave its slot up at hour 50.
-	tree := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: 1, IssueOffset: 10, Now: now, AwaitingChildren: true})
-	parent, openChild := tree.Roots[0], tree.Open[0]
 	waited := ago(2)
-	seedLegionObservation(t, database, "INFRA", parent, legion.FieldPhase, `"`+legion.PhaseAwaitingChildren+`"`, waited)
+	parent, openChild := seedAwaitingChildrenTree(t, database, now, waited)
 	seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, fmt.Sprintf(`{
 		"cap": 4,
 		"active": [%q],

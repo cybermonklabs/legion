@@ -18,8 +18,7 @@ import (
 // with, taken from Postgres's statement log (log_min_duration_statement 0, in jsonlog), so the
 // facts reads' plans and times are measured on the statements a request of the board ran, with
 // the board's keys and roots, as TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget takes
-// them from its traced pool. It is evals/evalbench's capture of #3976 (measure/capture.go),
-// narrowed to two statements.
+// them from its traced pool.
 
 // factsRead is one of the board's reads of the stored facts as the statement log holds it: its
 // text and its parameters' literals, in order.

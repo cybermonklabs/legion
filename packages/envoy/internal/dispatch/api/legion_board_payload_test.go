@@ -114,6 +114,7 @@ func gzipped(t *testing.T, body []byte) int {
 // the body: the Go server writes the bytes of the first number, and the second is what a proxy
 // that compresses makes of them.
 func TestTheBoardsBodyAtInfrasSizeFitsTheFirstPayloadBound(t *testing.T) {
+	t.Parallel()
 	handler, _, fixture := boardAtInfraSize(t, testServerOptions{})
 
 	response := dispatchRequest(t, handler, http.MethodGet,
@@ -176,6 +177,8 @@ const boardComputeRuns = 20
 // in api trips on a loaded runner, and k14 measures the board's recompute cost at root R14's
 // size).
 func TestWhatOneBoardComputeCostsAtInfrasSize(t *testing.T) {
+	// Not parallel: the median it records is one board read's wall-clock time, which the
+	// package's parallel tests would share the machine with.
 	handler, _, fixture := boardAtInfraSize(t, testServerOptions{})
 	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
 

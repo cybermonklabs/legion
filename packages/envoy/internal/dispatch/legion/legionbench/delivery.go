@@ -82,7 +82,7 @@ var checkStages = func() []checkStage {
 // Settings is the one delivery_settings row the history is read by.
 func Settings() delivery.DeliverySettings {
 	return delivery.DeliverySettings{
-		DeployRepo: Repos[0], DeployWorkflowPath: ".github/workflows/deploy.yml",
+		DeployRepo: repos[0], DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{productionJob}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: authors, ExcludedRepos: []string{},
 		StagingE2EJobName: new(stagingE2EJob), StagingApplyJobName: new(stagingApplyJob), PRChecksRollupJobName: new(rollupJob),
@@ -170,11 +170,11 @@ func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 		pr := &prs[i]
 		switch u := rng.Float64(); {
 		case u < 0.6:
-			pr.repo = Repos[0]
+			pr.repo = repos[0]
 		case u < 0.85:
-			pr.repo = Repos[1]
+			pr.repo = repos[1]
 		default:
-			pr.repo = Repos[2]
+			pr.repo = repos[2]
 		}
 		pr.merged = start.Add(within(rng, runDays*24*time.Hour))
 		pr.created = pr.merged.Add(-min(max(lasting(rng, 70*time.Minute, 1.1), 3*time.Minute), 5*24*time.Hour))
@@ -230,7 +230,7 @@ func planRuns(spec Spec, prs []plannedPR) []plannedRun {
 	start := spec.Now.Add(-runDays * 24 * time.Hour)
 	var deployPRs []plannedPR
 	for _, pr := range prs {
-		if pr.repo == Repos[0] {
+		if pr.repo == repos[0] {
 			deployPRs = append(deployPRs, pr)
 		}
 	}
@@ -426,7 +426,7 @@ func (s *jobSource) Next() bool {
 
 func (s *jobSource) Values() ([]any, error) {
 	job := s.jobs[s.at-1]
-	s.values = append(s.values[:0], Repos[0], s.id, job.name, job.started, job.completed, job.conclusion)
+	s.values = append(s.values[:0], repos[0], s.id, job.name, job.started, job.completed, job.conclusion)
 	return s.values, nil
 }
 
@@ -485,8 +485,8 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history inf
 	runRows := make([][]any, len(runs))
 	for i, run := range runs {
 		row := run.build(spec, firstRunID+int64(i))
-		url := "https://github.com/" + Repos[0] + "/actions/runs/" + strconv.FormatInt(row.id, 10)
-		runRows[i] = []any{Repos[0], row.id, string(row.kind), row.prNumber, row.sha, row.headAt, row.started, row.created,
+		url := "https://github.com/" + repos[0] + "/actions/runs/" + strconv.FormatInt(row.id, 10)
+		runRows[i] = []any{repos[0], row.id, string(row.kind), row.prNumber, row.sha, row.headAt, row.started, row.created,
 			row.completed, row.conclusion, url, row.branch, row.event, row.completed != nil}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"delivery_runs"}, []string{"repo", "run_id", "kind", "pr_number", "head_sha",

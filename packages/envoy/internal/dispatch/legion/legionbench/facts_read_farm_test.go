@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -143,7 +144,7 @@ func TestFarmBoardFactsRead(t *testing.T) {
 		{name: "closed", sql: reads.Closed.SQL, types: []string{"text", "text[]", "text[]"}, literals: []string{project, keys, roots}},
 	}
 	generic := func(name, statement string, types, literals []string) planNode {
-		plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, name, statement, types, literals, "set local enable_seqscan = off")
+		plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, name, statement, types, literals, legionfacts.BoardReadSettings)
 		var root planNode
 		if err := json.Unmarshal(plan, &root); err != nil {
 			t.Fatalf("decode the plan: %v", err)

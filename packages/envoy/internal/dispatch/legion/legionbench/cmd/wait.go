@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -18,8 +16,7 @@ import (
 // read the stand-in whole once and recorded the read (legion_reads), and, where the server runs
 // the Legion facts consumer (this head), the consumer has read the project whole under the running
 // build (issue_facts_computed names it), its cursors stand at the heads of its three feeds, and the
-// outbox holds nothing to drain. It is evals/evalbench's `measure wait` of #3976, narrowed to the
-// facts consumer.
+// outbox holds nothing to drain.
 
 // pollEvery is how often the wait reads the consumer's state. The consumer is a woken loop: an
 // event, an observation or a drained change wakes its next pass as soon as the running one ends,
@@ -47,30 +44,6 @@ type consumerState struct {
 	facts    map[string]int64
 	computed string
 	pending  int64
-}
-
-// serverBuild is the build the server at url says it is (/healthz's commit), which its consumer
-// records against the project it reads whole.
-func serverBuild(ctx context.Context, url string) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/healthz", nil)
-	if err != nil {
-		return "", err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("read the server's health: %w", err)
-	}
-	defer response.Body.Close()
-	var health struct {
-		Commit string `json:"commit"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return "", fmt.Errorf("read the server's health: %w", err)
-	}
-	if health.Commit == "" {
-		return "", fmt.Errorf("the server answers no commit: build it with -ldflags \"-X main.buildCommit=<commit>\", since an unstamped binary is a build of its own process and its record of the whole read names no commit")
-	}
-	return health.Commit, nil
 }
 
 // waitConsumers polls until the server has caught up (caughtUp) on two polls in a row. Once
@@ -161,14 +134,14 @@ func readConsumers(ctx context.Context, pool *store.Pool, project string, facts 
 // passes to reach), and an empty outbox.
 func (s consumerState) caughtUp(project, build string, facts bool, previous *heads) []string {
 	var missing []string
-	if previous == nil {
-		missing = append(missing, fmt.Sprintf("%d polls, the heads the cursors are held to", lagPolls+1))
-	}
 	if !s.readOK {
 		missing = append(missing, fmt.Sprintf("a good read of %s's daemon (the stand-in)", project))
 	}
 	if !facts {
 		return missing
+	}
+	if previous == nil {
+		missing = append(missing, fmt.Sprintf("%d polls, the heads the cursors are held to", lagPolls+1))
 	}
 	if s.computed != build {
 		missing = append(missing, fmt.Sprintf("the Legion facts of %s read whole under %s (marked %q)", project, build, s.computed))

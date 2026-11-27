@@ -1197,14 +1197,14 @@ func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
 		t.Fatal("the hub's cursor rests on no change")
 	}
 	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
-	for _, statement := range []string{
-		`update delivery_changes set at = now() - interval '2 days'`,
-		`delete from delivery_changes where at < now() - interval '1 day'`,
-		`insert into delivery_changes (kind, repo, ref) values ('issue_filings', 'NONE', 'NONE-1')`,
-	} {
-		if _, err := rig.database.Pool.Exec(t.Context(), statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
+	if _, err := rig.database.Pool.Exec(t.Context(), `update delivery_changes set at = now() - interval '2 days'`); err != nil {
+		t.Fatalf("age the change log by two days: %v", err)
+	}
+	if _, err := delivery.PruneChanges(t.Context(), rig.database.Pool); err != nil {
+		t.Fatalf("prune the change log: %v", err)
+	}
+	if _, err := rig.database.Pool.Exec(t.Context(), `insert into delivery_changes (kind, repo, ref) values ('issue_filings', 'NONE', 'NONE-1')`); err != nil {
+		t.Fatalf("log a change after the prune: %v", err)
 	}
 	// The hub last read the log, and the change at its cursor, a day and an hour ago. The change's
 	// time is the database's, the clock a change's at is written by and CursorLost's young branch

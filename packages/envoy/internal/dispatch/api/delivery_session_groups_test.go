@@ -303,11 +303,10 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 // for the group writes one, and a PATCH that writes none leaves the group as the read answered it.
 // Three edits change nothing and each answers the group with the same updated_at and logs no
 // session_group change: the group's own name sent again, a session it holds sent for addition and
-// one it does not hold sent for removal. Before the fix the first of them moved updated_at, which
-// the read answers, while the trigger, which skips an update that differs only in updated_at,
-// logged no change row, so the view kept the old updated_at until some later write's delta
-// (dispatch://INFRA-2916, the testing round of 2026-11-16 at db4f353b). A rename moves updated_at
-// and logs exactly one change.
+// one it does not hold sent for removal. The trigger skips an update that differs only in
+// updated_at, so a PATCH that moved updated_at and nothing else would log no change row, and the
+// view would keep the old updated_at, which the read answers, until some later write's delta. A
+// rename moves updated_at and logs exactly one change.
 func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

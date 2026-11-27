@@ -17,11 +17,10 @@ import (
 // notification its commit sent reached no hub. The row alone wakes nothing: a live Legion board
 // of its project is not recomputed. The boot of the next server drains the outbox before it
 // serves (cmd/dispatch's main calls delivery.DrainPending), and its drain's notification wakes
-// the hub, which reads the moved change and recomputes the board, in well under the 5 s this test
-// waits; the time from the drain to the recompute is recorded. A pending row left by a writer
-// killed between its commit and its drain is moved by the next drain of any process, or else by
-// the next process's boot before it serves (delivery.DrainPending states the bound); this test
-// drives the boot's.
+// the hub, which reads the moved change and recomputes the board; the time from the drain to the
+// recompute is recorded. A pending row left by a writer killed between its commit and its drain
+// is moved by the next drain of any process, or else by the next process's boot before it serves
+// (delivery.DrainPending states the bound); this test drives the boot's.
 func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

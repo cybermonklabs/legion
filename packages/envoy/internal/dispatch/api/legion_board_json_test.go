@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
 
@@ -16,9 +15,11 @@ import (
 )
 
 // plainLegionBoardFacts and plainLegionBoardGrowth are the two entry types' shapes with no method
-// of their own: what encoding/json writes of them by reflection, field by field, which is what
-// each wrote before it had a method. A defined type takes its fields from the type it is defined
-// on and none of its methods, so a field added to either type is a field of its copy as well.
+// of their own: what encoding/json writes of them by reflection, field by field. A defined type
+// takes its fields from the type it is defined on and none of its methods, so a field added to
+// either type is a field of its copy as well, and the marshal comparisons of
+// TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields fail when the entry's hand-written
+// encoder leaves it out.
 type (
 	plainLegionBoardFacts  legionBoardFacts
 	plainLegionBoardGrowth legionBoardGrowth
@@ -54,20 +55,6 @@ func marshalPlainLegionEntry(entry legionBoardFacts) ([]byte, error) {
 // reader could parse.
 func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 	t.Parallel()
-	for _, pair := range [][2]reflect.Type{
-		{reflect.TypeFor[legionBoardFacts](), reflect.TypeFor[plainLegionBoardFacts]()},
-		{reflect.TypeFor[legionBoardGrowth](), reflect.TypeFor[plainLegionBoardGrowth]()},
-	} {
-		original, plain := pair[0], pair[1]
-		if original.NumField() != plain.NumField() {
-			t.Fatalf("%s has %d fields, %s has %d", original, original.NumField(), plain, plain.NumField())
-		}
-		for i := range original.NumField() {
-			if !reflect.DeepEqual(original.Field(i), plain.Field(i)) {
-				t.Errorf("%s field %d = %v, copy has %v", original, i, original.Field(i), plain.Field(i))
-			}
-		}
-	}
 	whole := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	nanos := time.Date(2026, 11, 27, 12, 0, 0, 123456789, time.UTC)
 	tenths := time.Date(2026, 11, 27, 12, 0, 0, 100000000, time.UTC)
@@ -76,7 +63,6 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 	oddOffset := time.Date(2026, 6, 1, 0, 0, 0, 0, time.FixedZone("", 3600+45))
 	firstYear := time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
 	lastYear := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
-	moment := func(at time.Time) *time.Time { return &at }
 	manyColumns := map[string]float64{}
 	for column := range 20 {
 		manyColumns[fmt.Sprintf("column_%02d", 19-column)] = float64(column) * 0.25
@@ -84,7 +70,7 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 	open := legionBoardFacts{
 		OpenedAt: whole, HoursByPhase: map[string]float64{"queue": 1.5, "design": 2.25, "implementing": 3.5, "reviewing": 1.25},
 		WorkHours: 8.5, ReviewRounds: 2, RootKey: "INFRA-1000", TreeDepth: 1, SlotHours: 6, WaitingReason: "waiting for a slot",
-		WorkFirstAt: moment(whole.Add(-time.Hour)), WorkLastAt: moment(nanos), UpdatedAt: whole, AsOf: moment(nanos),
+		WorkFirstAt: new(whole.Add(-time.Hour)), WorkLastAt: new(nanos), UpdatedAt: whole, AsOf: new(nanos),
 		Growth: &legionBoardGrowth{HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1},
 	}
 	with := func(change func(*legionBoardFacts)) legionBoardFacts {
@@ -100,7 +86,7 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 	}{
 		{"an open issue's entry", open},
 		{"a closed issue's entry, every moment set and nothing growing", with(func(f *legionBoardFacts) {
-			f.ClosedAt, f.AsOf, f.Growth, f.WaitingReason = moment(tenths), nil, nil, ""
+			f.ClosedAt, f.AsOf, f.Growth, f.WaitingReason = new(tenths), nil, nil, ""
 		})},
 		{"every pointer nil", legionBoardFacts{OpenedAt: whole, UpdatedAt: whole, HoursByPhase: map[string]float64{}}},
 		{"the zero entry: the zero times and the nil maps", legionBoardFacts{}},
@@ -147,13 +133,13 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 			f.RootKey, f.WaitingReason = "naïve — ünïcode ✓ 𝄞", "line\u2028para\u2029 bad \xff byte \xc3"
 		})},
 		{"times with nanoseconds and with tenths", with(func(f *legionBoardFacts) {
-			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.WorkFirstAt = nanos, tenths, moment(nanos), moment(tenths)
+			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.WorkFirstAt = nanos, tenths, new(nanos), new(tenths)
 		})},
 		{"times in locations other than UTC", with(func(f *legionBoardFacts) {
-			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.WorkFirstAt, f.WorkLastAt, f.AsOf = east, west, moment(east), moment(west), moment(oddOffset), moment(east)
+			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.WorkFirstAt, f.WorkLastAt, f.AsOf = east, west, new(east), new(west), new(oddOffset), new(east)
 		})},
 		{"the first and the last four-digit years", with(func(f *legionBoardFacts) {
-			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.AsOf = firstYear, lastYear, moment(firstYear), moment(lastYear)
+			f.OpenedAt, f.UpdatedAt, f.ClosedAt, f.AsOf = firstYear, lastYear, new(firstYear), new(lastYear)
 		})},
 	}
 	for _, row := range encoded {
@@ -204,9 +190,9 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 		{"an infinite rate of a column", with(func(f *legionBoardFacts) { f.Growth.HoursByPhase = map[string]float64{"queue": math.Inf(-1)} })},
 		{"an infinite rate of the last moment", with(func(f *legionBoardFacts) { f.Growth.WorkLastAt = math.Inf(1) })},
 		{"a five-digit year", with(func(f *legionBoardFacts) { f.UpdatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) })},
-		{"a year before the first", with(func(f *legionBoardFacts) { f.ClosedAt = moment(time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)) })},
+		{"a year before the first", with(func(f *legionBoardFacts) { f.ClosedAt = new(time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)) })},
 		{"an offset of a whole day", with(func(f *legionBoardFacts) {
-			f.AsOf = moment(time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("", 24*3600)))
+			f.AsOf = new(time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("", 24*3600)))
 		})},
 	}
 	for _, row := range refused {
@@ -281,29 +267,26 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 func TestTheHubWritesTheLegionBoardsBodyAsTheGETWritesIt(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 27, 12, 0, 0, 123456789, time.UTC)
-	moment := func(at time.Time) *time.Time { return &at }
-	number := func(n int) *int { return &n }
-	text := func(s string) *string { return &s }
 	opened, closed := now.Add(-72*time.Hour), now.Add(-3*time.Hour)
 	growing := &legionBoardGrowth{HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1}
 	issues := map[string]legionBoardFacts{
 		"INFRA-9": {
 			OpenedAt: opened, HoursByPhase: map[string]float64{"queue": 1.5, "implementing": 3.25}, WorkHours: 4.75,
-			ReviewRounds: 1, RootKey: "INFRA-9", SlotHours: 3.25, WaitingReason: "", WorkFirstAt: moment(opened.Add(time.Hour)),
-			WorkLastAt: moment(now), UpdatedAt: now.Add(-time.Minute), AsOf: moment(now), Growth: growing,
+			ReviewRounds: 1, RootKey: "INFRA-9", SlotHours: 3.25, WaitingReason: "", WorkFirstAt: new(opened.Add(time.Hour)),
+			WorkLastAt: new(now), UpdatedAt: now.Add(-time.Minute), AsOf: new(now), Growth: growing,
 		},
 		"INFRA-10": {
 			OpenedAt: opened, HoursByPhase: map[string]float64{}, RootKey: "INFRA-9", TreeDepth: 1,
 			WaitingReason: "waiting for a slot", UpdatedAt: now.Add(-time.Hour),
 		},
 		"INFRA-11": {
-			OpenedAt: opened, ClosedAt: moment(closed), HoursByPhase: map[string]float64{"merging": 0.5, "testing": 0.75},
+			OpenedAt: opened, ClosedAt: new(closed), HoursByPhase: map[string]float64{"merging": 0.5, "testing": 0.75},
 			WorkHours: 12.5, ReviewRounds: 2, RootKey: "INFRA-9", TreeDepth: 1, SlotHours: 6,
-			WorkFirstAt: moment(opened.Add(2 * time.Hour)), WorkLastAt: moment(closed), UpdatedAt: closed,
+			WorkFirstAt: new(opened.Add(2 * time.Hour)), WorkLastAt: new(closed), UpdatedAt: closed,
 		},
 		"INFRA-12": {
-			OpenedAt: opened, ClosedAt: moment(closed), HoursByPhase: map[string]float64{"merging": 1}, WorkHours: 9,
-			RootKey: "INFRA-12", SlotHours: 2.5, WorkLastAt: moment(closed), UpdatedAt: closed, AsOf: moment(now),
+			OpenedAt: opened, ClosedAt: new(closed), HoursByPhase: map[string]float64{"merging": 1}, WorkHours: 9,
+			RootKey: "INFRA-12", SlotHours: 2.5, WorkLastAt: new(closed), UpdatedAt: closed, AsOf: new(now),
 			Growth: &legionBoardGrowth{HoursByPhase: map[string]float64{}, SlotHours: 1},
 		},
 		"INFRA-<13>&": {OpenedAt: opened, HoursByPhase: map[string]float64{}, RootKey: "INFRA-<13>&", UpdatedAt: closed},
@@ -311,15 +294,15 @@ func TestTheHubWritesTheLegionBoardsBodyAsTheGETWritesIt(t *testing.T) {
 	everyField := legionBoardResponse{
 		Project: "INFRA",
 		Header: legionBoardHeader{
-			SlotsInUse: 3, SlotCap: number(4), P0Holders: number(1), Trees: 2, QueueLength: 1, ReadAt: moment(now.Add(-time.Second)),
-			ReadOK: false, ReadError: text("the daemon answered 503 <busy>"), FactsUpdatedAt: moment(closed), FactsCursorAgeSeconds: number(7),
+			SlotsInUse: 3, SlotCap: new(4), P0Holders: new(1), Trees: 2, QueueLength: 1, ReadAt: new(now.Add(-time.Second)),
+			ReadOK: false, ReadError: new("the daemon answered 503 <busy>"), FactsUpdatedAt: new(closed), FactsCursorAgeSeconds: new(7),
 		},
 		Columns: []legionBoardColumn{
 			{ID: "queue", Label: "Queue", Cards: []legionBoardCard{{
-				Key: "INFRA-10", Title: `a "quoted" & <escaped> title`, Priority: number(1), Phase: "backlog",
-				PhaseSince: moment(opened), Slot: number(2), WaitingPlace: number(1), Roles: []string{"architect"},
-				BlockedBy: []string{"INFRA-9"}, WaitingOn: &legionBoardWait{Kind: "ask", Since: moment(opened), AnsweredAt: moment(now)},
-				SlotUse: text("own"), Waiting: &legionBoardWaiting{Reason: "blocked", Since: moment(opened), BlockedBy: []string{"INFRA-9"}},
+				Key: "INFRA-10", Title: `a "quoted" & <escaped> title`, Priority: new(1), Phase: "backlog",
+				PhaseSince: new(opened), Slot: new(2), WaitingPlace: new(1), Roles: []string{"architect"},
+				BlockedBy: []string{"INFRA-9"}, WaitingOn: &legionBoardWait{Kind: "ask", Since: new(opened), AnsweredAt: new(now)},
+				SlotUse: new("own"), Waiting: &legionBoardWaiting{Reason: "blocked", Since: new(opened), BlockedBy: []string{"INFRA-9"}},
 				Tree: "INFRA-9", Children: 2,
 			}}},
 			{ID: "design", Label: "Design", Cards: []legionBoardCard{}},

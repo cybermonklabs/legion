@@ -168,7 +168,7 @@ func planInfra(spec Spec) infraHistory {
 	planned := make([]plannedIssue, count)
 	opened := make([]time.Time, count)
 	for i := range opened {
-		opened[i] = start.Add(time.Duration(rng.Int64N(int64(span/time.Second))) * time.Second)
+		opened[i] = start.Add(within(rng, span))
 	}
 	slices.SortFunc(opened, func(a, b time.Time) int { return a.Compare(b) })
 	life := make([]time.Duration, count)
@@ -218,11 +218,11 @@ func planInfra(spec Spec) infraHistory {
 		}
 		switch u := rng.Float64(); {
 		case u < 0.35:
-			issue.repo = Repos[0]
+			issue.repo = repos[0]
 		case u < 0.55:
-			issue.repo = Repos[1]
+			issue.repo = repos[1]
 		case u < 0.70:
-			issue.repo = Repos[2]
+			issue.repo = repos[2]
 		}
 		// About a third of the issues are children of a recent root, one level down.
 		if len(roots) > 0 && rng.Float64() < 0.35 {
@@ -375,7 +375,7 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 	return planned
 }
 
-// writeInfra writes INFRA's project, whose default repository is the first of Repos, its issues,
+// writeInfra writes INFRA's project, whose default repository is the first of repos, its issues,
 // events, handoffs and observations, and its legion_settings row, which names the daemon
 // spec.StateURL names, and answers the history. The project names alice as its default assignee,
 // the column every project fills (store migration 20261111210103); no count the load prints
@@ -384,7 +384,7 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 	history := planInfra(spec)
 	if _, err := pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, 'Infrastructure', 'alice', 1, $2)
-	`, Project, Repos[0]); err != nil {
+	`, Project, repos[0]); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {
@@ -463,13 +463,15 @@ func (s *eventSource) Next() bool {
 func (s *eventSource) Values() ([]any, error) {
 	event := s.events[s.at-1]
 	issue := s.history.issues[event.issue]
-	actorJSON := helperActor(int(event.helper))
+	var actorJSON string
 	if event.role >= 0 {
 		owner := issue.key
 		if event.filing {
 			owner = s.history.issues[issue.parent].key
 		}
 		actorJSON = sessionActor(roles[event.role], owner)
+	} else {
+		actorJSON = helperActor(int(event.helper))
 	}
 	at := time.Unix(0, event.at).UTC()
 	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, s.payload(event, issue), false, at, at)
@@ -484,7 +486,7 @@ func (s *eventSource) Values() ([]any, error) {
 // fill stops at the first event that lacks a field it needs, an issue event's title or a comment's
 // id or body, and tries that event again, at most a minute apart. It needs no key nor issue_key:
 // where the payload lacks one, issueKeyOf and postVersion read the event's own (events.issue_key).
-// Load writes the fill's cursor at the loaded log's newest event (keywordFillCaughtUpQuery), but a
+// Load writes the fill's cursor at the loaded log's newest event (keywordFillCaughtUp), but a
 // fill that reads the log from its start, as one does after its cursor is reset, would never get
 // past the first event without the fields it needs.
 func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
@@ -558,7 +560,7 @@ func copyObservations(ctx context.Context, pool *store.Pool, history infraHistor
 			}
 		}
 		if issue.reached > 2 {
-			observe(issue.key, legion.FieldSlot, fmt.Sprintf("%d", issue.number%8), issue.stretch[2])
+			observe(issue.key, legion.FieldSlot, fmt.Sprintf("%d", issue.number%standInSlots), issue.stretch[2])
 		}
 		if issue.closed != nil {
 			observe(issue.key, legion.FieldPhase, fmt.Sprintf("%q", legion.PhaseDone), *issue.closed)

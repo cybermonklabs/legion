@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -41,13 +42,8 @@ import (
 // DefaultCards is how many cards the stand-in puts on the board: R8's 1,000.
 const DefaultCards = 1000
 
-// standInPhases are the phases a card of the stand-in carries: those the loaded observations write
-// as a role's stretch begins (infra.go's rolePhases), each of which the board puts on a column.
-var standInPhases = []string{legion.PhaseAdmitted, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting,
-	legion.PhaseReviewing, legion.PhaseMerging}
-
 // standInSlots is the admission cap the stand-in reports: the slot indexes the loaded
-// observations give (copyObservations' number mod 8).
+// observations give (copyObservations' number mod standInSlots).
 const standInSlots = 8
 
 // The stand-in's daemon block and settings: what makes a whole read of it a good one (the comment
@@ -84,7 +80,7 @@ func StandInState(ctx context.Context, pool *store.Pool, project string, cards i
 		select key, number, coalesce(parent_key, '')
 		from issues
 		where project_key = $1 and closed_at is null and key = any($2)
-		order by number desc`, project, mapsKeys(fields))
+		order by number desc`, project, slices.Sorted(maps.Keys(fields)))
 	if err != nil {
 		return legion.State{}, fmt.Errorf("read the open issues the observations name: %w", err)
 	}
@@ -119,8 +115,10 @@ func StandInState(ctx context.Context, pool *store.Pool, project string, cards i
 			break
 		}
 		observed := fields[one.key]
+		// A card carries a phase the loaded observations write as a role's stretch begins
+		// (rolePhases), each of which the board puts on a column.
 		phase := legion.JSONString(observed[legion.FieldPhase])
-		if !slices.Contains(standInPhases, phase) {
+		if !slices.Contains(rolePhases, phase) {
 			continue
 		}
 		root := one.key
@@ -160,16 +158,6 @@ func StandInState(ctx context.Context, pool *store.Pool, project string, cards i
 	slices.Sort(state.Admission.Active)
 	slices.Sort(state.Admission.Trees)
 	return state, nil
-}
-
-// mapsKeys is the keys of fields, sorted.
-func mapsKeys(fields map[string]map[string]json.RawMessage) []string {
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // StandIn is the stand-in's handler: GET /legion/v1/state, whatever its query, answers state's
