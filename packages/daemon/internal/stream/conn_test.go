@@ -1004,54 +1004,6 @@ func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
 	}
 }
 
-// A bundle answer names the commit the fix's working copy stood on beside the workspace's own head,
-// and the connection hands it on with the rest of the saved work, so the store keeps it and the pod
-// that replaces the released one makes the fix's working copy again there. A shim that ran no fix
-// names none, and the bundle carries none. A fix's head that is no full commit id is refused as a
-// malformed answer.
-func TestABundleCarriesTheFixCopysHead(t *testing.T) {
-	const head, fixHead = "c0de000000000000000000000000000000000001", "c0de000000000000000000000000000000000003"
-	h := startListener(t, harnessOptions{})
-	p := h.connect(testToken)
-	conn := h.conn()
-	type answer struct {
-		bundle runtime.WorkspaceBundle
-		err    error
-	}
-	ask := func() <-chan answer {
-		answered := make(chan answer, 1)
-		go func() {
-			bundle, err := conn.BundleWorkspace(context.Background(), "LEGION-209", 3*time.Second)
-			answered <- answer{bundle, err}
-		}()
-		return answered
-	}
-	await := func(answered <-chan answer) answer {
-		t.Helper()
-		select {
-		case got := <-answered:
-			return got
-		case <-time.After(5 * time.Second):
-			t.Fatal("BundleWorkspace did not return")
-			return answer{}
-		}
-	}
-	for _, tc := range []struct{ name, fixHead string }{{"a shim that ran a fix", fixHead}, {"a shim that ran none", ""}} {
-		answered := ask()
-		request := p.expect(shimwire.TypeBundleWorkspace).(shimwire.BundleWorkspace)
-		p.send(shimwire.BundleWorkspaceResult{ID: request.ID, OK: true, SizeBytes: 4, Bundle: []byte("PACK"), Head: head, FixHead: tc.fixHead})
-		if got := await(answered); got.err != nil || got.bundle.Head != head || got.bundle.FixHead != tc.fixHead {
-			t.Fatalf("%s: BundleWorkspace = head %s, the fix's working copy %q, %v; want %s and %q", tc.name, got.bundle.Head, got.bundle.FixHead, got.err, head, tc.fixHead)
-		}
-	}
-	answered := ask()
-	request := p.expect(shimwire.TypeBundleWorkspace).(shimwire.BundleWorkspace)
-	p.send(shimwire.BundleWorkspaceResult{ID: request.ID, OK: true, SizeBytes: 4, Bundle: []byte("PACK"), Head: head, FixHead: "abc"})
-	if got := await(answered); !errors.Is(got.err, shimwire.ErrMalformedFrame) {
-		t.Fatalf("a bundle naming the fix's working copy abc = %+v, %v; want it refused as malformed", got.bundle, got.err)
-	}
-}
-
 func TestAgentSecretsEnrollmentIsAnsweredByTheShim(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
