@@ -1145,19 +1145,26 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 // the server's answer: a test that expects a refusal reads it from the error.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
-	options := []natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}
-	if seed != "" {
-		user, err := nkeys.FromSeed([]byte(seed))
-		if err != nil {
-			t.Fatalf("read the seed: %v", err)
-		}
-		public, err := user.PublicKey()
-		if err != nil {
-			t.Fatalf("read the seed's public key: %v", err)
-		}
-		options = append(options, natsgo.Nkey(public, user.Sign))
-	}
+	options := append([]natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}, seedOptions(t, seed)...)
 	return dialNATS(uri, append(options, opts...)...)
+}
+
+// seedOptions is the option that signs a connect as the nkey user whose seed is seed, or none when
+// seed is "".
+func seedOptions(t testing.TB, seed string) []natsgo.Option {
+	t.Helper()
+	if seed == "" {
+		return nil
+	}
+	user, err := nkeys.FromSeed([]byte(seed))
+	if err != nil {
+		t.Fatalf("read the seed: %v", err)
+	}
+	public, err := user.PublicKey()
+	if err != nil {
+		t.Fatalf("read the seed's public key: %v", err)
+	}
+	return []natsgo.Option{natsgo.Nkey(public, user.Sign)}
 }
 
 // dialNATS is every dial of this package's helpers: natsgo.Connect, which a row of this package's
@@ -1179,12 +1186,19 @@ const (
 // JetStream is still starting; a KV test needs both readiness boundaries.
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
+	return connectAs(t, uri, "")
+}
+
+// connectAs is Connect as the nkey user whose seed is seed, or with no credential when seed is "".
+func connectAs(t testing.TB, uri, seed string) *natsgo.Conn {
+	t.Helper()
 	bound := boundOf(t)
+	credential := seedOptions(t, seed)
 	var conn *natsgo.Conn
 	for {
 		var err error
 		options, retire := bound.dial()
-		conn, err = dialNATS(uri, options...)
+		conn, err = dialNATS(uri, append(options, credential...)...)
 		if err == nil {
 			retire()
 			break
