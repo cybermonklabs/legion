@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -12,6 +13,7 @@ import {
   parseExport,
   parseRows,
   type RenderExport,
+  type RowsEvidence,
   rowSizes,
   rowsLaunchName,
   rowsPartPath,
@@ -45,8 +47,27 @@ const sampleExport = parseExport(exportText);
 const rows = parseRows(rowText);
 const evidence = { rows, subjectHead: parseComposition(compositionText) };
 const historyFile = path.join(sample, "history", "rows.jsonl");
-const historyRows = parseRows(readFileSync(historyFile, "utf8"));
+const historyText = readFileSync(historyFile, "utf8");
+const historyRows = parseRows(historyText);
 const scratch = temporaryDirectory("teardown-inputs", { real: true });
+
+// A synthetic recorder for `rows`: three of the recorder's source paths, each with a text of the
+// test's own, and no file of the real driver.
+const DRIVER = "packages/daemon/internal/daemon/prompt_inputs_live_test.go";
+const TESTDATA = "packages/daemon/internal/daemon/testdata/prompt-inputs/sample.txt";
+const SCRIPT = "scripts/e2e/prompt-inputs.sh";
+const RECORDER: readonly (readonly [string, string])[] = [
+  [DRIVER, "package daemon\n"],
+  [TESTDATA, "sample\n"],
+  [SCRIPT, "#!/usr/bin/env bash\n"],
+];
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const recorder = new Map(RECORDER.map(([file, text]) => [file, sha256(text)] as const));
+
+/** `rows` as one run's evidence, with the synthetic recorder. */
+function arm(rows: readonly PromptInputsRow[]): RowsEvidence {
+  return { rows, recorder };
+}
 
 /** A copy of the sample export with `change` made to it. */
 function exportWith(change: (exported: RenderExport) => void): RenderExport {
@@ -365,39 +386,46 @@ test("a row written before the other messages were counted still reads, and comp
     compare(sampleExport, { ...evidence, rows: [{ ...row, first_request: without }] }, expected)
       .problems
   ).toEqual([unmeasured("row")]);
-  expect(rowSizes(historyRows, rows)).toEqual({
+  expect(rowSizes(arm(historyRows), arm(rows))).toEqual({
     problems: [unmeasured("before row")],
     table: "",
   });
-  expect(rowSizes(rows, historyRows)).toEqual({ problems: [unmeasured("after row")], table: "" });
+  expect(rowSizes(arm(rows), arm(historyRows))).toEqual({
+    problems: [unmeasured("after row")],
+    table: "",
+  });
 });
 
 test("rows refuses a launch that one arm lacks or holds twice, and an arm with no row", () => {
   const row = rows[0] as PromptInputsRow;
   const merger = { ...row, launch: "merger/omp" };
-  expect(rowSizes([row, merger], [row]).problems).toEqual([
+  expect(rowSizes(arm([row, merger]), arm([row])).problems).toEqual([
     "merger/omp has a row in the before rows and none in the after rows",
   ]);
-  expect(rowSizes([row], [merger, row]).problems).toEqual([
+  expect(rowSizes(arm([row]), arm([merger, row])).problems).toEqual([
     "merger/omp has a row in the after rows and none in the before rows",
   ]);
-  expect(rowSizes([row, row], [row]).problems).toEqual([`the before rows hold ${LAUNCH} 2 times`]);
-  expect(rowSizes([], [row]).problems).toEqual([
+  expect(rowSizes(arm([row, row]), arm([row])).problems).toEqual([
+    `the before rows hold ${LAUNCH} 2 times`,
+  ]);
+  expect(rowSizes(arm([]), arm([row])).problems).toEqual([
     "the before rows hold no launch",
     `${LAUNCH} has a row in the after rows and none in the before rows`,
   ]);
   const { other_messages_bytes: _, ...without } = merger.first_request;
-  expect(rowSizes([row, merger], [row, { ...merger, first_request: without }]).problems).toEqual([
+  const unmeasuredMerger = { ...merger, first_request: without };
+  expect(rowSizes(arm([row, merger]), arm([row, unmeasuredMerger])).problems).toEqual([
     unmeasured("after row", "merger/omp"),
   ]);
 });
 
-test("rows gives each part of each launch before and after, in the base's order, sums the reads and marks reads not observed", () => {
+test("rows gives each part of each launch and its addressing before and after, in the base's order, sums the reads and marks reads not observed", () => {
   const row = rows[0] as PromptInputsRow;
   const before: PromptInputsRow = {
     ...row,
     launch: "planner/omp",
     parts: [{ path: "roles/planner.md", bytes: 100, sha256: "a".repeat(64) }],
+    addressing_bytes: 180,
     first_request: {
       system_text_bytes: 1000,
       tool_definitions_bytes: 2000,
@@ -416,6 +444,7 @@ test("rows gives each part of each launch before and after, in the base's order,
       { path: "roles/planner.md", bytes: 60, sha256: "b".repeat(64) },
       { path: "go/planner.md", bytes: 20, sha256: "c".repeat(64) },
     ],
+    addressing_bytes: 205,
     first_request: { ...before.first_request, other_messages_bytes: 16163 },
     required_reads: [
       { path: "skill://legion-worker", bytes: 7000 },
@@ -424,13 +453,13 @@ test("rows gives each part of each launch before and after, in the base's order,
     reads_observed: "observed",
     total_bytes: 27413,
   };
-  expect(rowSizes([before, row], [row, after])).toEqual({
+  expect(rowSizes(arm([before, row]), arm([row, after]))).toEqual({
     problems: [],
     table: [
-      "| Launch | Role-part bytes before | after | System text before | after | Tool definitions before | after | Skill list before | after | Dispatch-first before | after | First message before | after | Other messages before | after | Required reads before | after | Total before | after |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-      "| planner/omp | 100 | 80 | 1000 | 1000 | 2000 | 2000 | 300 | 300 | 400 | 400 | 50 | 50 | 0 | 16163 | 0, not observed | 7500 | 3750 | 27413 |",
-      `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
+      "| Launch | Role-part bytes before | after | System text before | after | Tool definitions before | after | Skill list before | after | Dispatch-first before | after | First message before | after | Addressing before | after | Other messages before | after | Required reads before | after | Total before | after |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| planner/omp | 100 | 80 | 1000 | 1000 | 2000 | 2000 | 300 | 300 | 400 | 400 | 50 | 50 | 180 | 205 | 0 | 16163 | 0, not observed | 7500 | 3750 | 27413 |",
+      `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 223 | 223 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
       "",
     ].join("\n"),
   });
@@ -561,6 +590,19 @@ function written(name: string, text: string): string {
   return file;
 }
 
+/** GNU sha256sum's lines for `files`, each a path and its text, in the order given. */
+function sha256sum(files: readonly (readonly [string, string])[]): string {
+  return files.map(([file, text]) => `${sha256(text)}  ${file}\n`).join("");
+}
+
+/** An evidence directory under the scratch directory: `rowsText` as its rows.jsonl and, where it
+ * is given, `listed` as its recorder-files.sha256. */
+function evidenceWith(name: string, listed: string | undefined, rowsText = rowText): string {
+  written(path.join(name, "rows.jsonl"), rowsText);
+  if (listed !== undefined) written(path.join(name, "recorder-files.sha256"), listed);
+  return path.join(scratch, name);
+}
+
 test("compare passes on the sample and prints what agreed and at which commits", () => {
   expect(run(compareArgs())).toEqual({
     status: 0,
@@ -645,20 +687,49 @@ test("sizes prints its table on the sample read as both sides", () => {
   expect(result.out.join("\n")).toContain(`| BETA | ${LAUNCH} | 676 | 676 | 775 | 775 |`);
 });
 
-test("rows on the command line prints the two runs' table, and refuses a row of the history with exit 1", () => {
-  const evidenceRows = path.join(evidenceDir, "rows.jsonl");
-  const table = run(["rows", "--before", evidenceRows, "--after", evidenceRows]);
+test("rows on the command line prints the two runs' table where both list the same recorder files in any order, and refuses a row of the history with exit 1", () => {
+  const before = evidenceWith("rows/before", sha256sum(RECORDER));
+  const after = evidenceWith("rows/after", sha256sum(RECORDER.toReversed()));
+  const table = run(["rows", "--before", before, "--after", after]);
   expect(table).toMatchObject({ status: 0, err: [] });
   expect(table.out.join("\n").split("\n").slice(2)).toEqual([
-    `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
+    `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 223 | 223 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
   ]);
-  expect(run(["rows", "--before", historyFile, "--after", evidenceRows])).toEqual({
+  const history = evidenceWith("rows/history", sha256sum(RECORDER), historyText);
+  expect(run(["rows", "--before", history, "--after", after])).toEqual({
     status: 1,
     out: [`problem: ${unmeasured("before row")}`, "teardown-inputs: fail, 1 problems"],
     err: [],
   });
-  expect(run(["rows", "--before", evidenceRows]).status).toBe(2);
-  expect(
-    run(["rows", "--before", evidenceRows, "--after", evidenceRows, "--head", HEAD]).status
-  ).toBe(2);
+  // A rows.jsonl on its own is no evidence directory.
+  const bare = path.join(evidenceDir, "rows.jsonl");
+  expect(run(["rows", "--before", bare, "--after", after]).status).toBe(1);
+  expect(run(["rows", "--before", before]).status).toBe(2);
+  expect(run(["rows", "--before", before, "--after", after, "--head", HEAD]).status).toBe(2);
+});
+
+test("rows prints no table and exits 1, naming the path, where the recorder files differ by a byte or a path, or a list is missing, names a path twice or does not read", () => {
+  const before = evidenceWith("recorder/before", sha256sum(RECORDER));
+  /** What `rows` prints from the before run to an after run whose recorder-files.sha256 is
+   * `listed`, or that has none where it is undefined: the run must exit 1 and print no table. */
+  const refused = (name: string, listed: string | undefined): string => {
+    const result = run(["rows", "--before", before, "--after", evidenceWith(name, listed)]);
+    expect(result.status).toBe(1);
+    expect(result.out.filter((line) => line.startsWith("| "))).toEqual([]);
+    return [...result.out, ...result.err].join("\n");
+  };
+  const changed = sha256sum([...RECORDER.slice(0, 2), [SCRIPT, "#!/usr/bin/env dash\n"]]);
+  expect(refused("recorder/byte", changed)).toContain(SCRIPT);
+  expect(refused("recorder/fewer", sha256sum(RECORDER.slice(0, 2)))).toContain(SCRIPT);
+  const extra = "scripts/e2e/extra.sh";
+  const more = sha256sum([...RECORDER, [extra, "extra\n"]]);
+  expect(refused("recorder/more", more)).toContain(extra);
+  const twice = sha256sum([...RECORDER, [DRIVER, "package daemon\n"]]);
+  expect(refused("recorder/twice", twice)).toContain(DRIVER);
+  const none = path.join(scratch, "recorder", "none", "recorder-files.sha256");
+  expect(refused("recorder/none", undefined)).toContain(none);
+  const tagged = path.join(scratch, "recorder", "tagged", "recorder-files.sha256");
+  const tag = `SHA256 (${SCRIPT}) = ${sha256("#!/usr/bin/env bash\n")}\n`;
+  expect(refused("recorder/tagged", tag)).toContain(tagged);
+  refused("recorder/empty", "");
 });

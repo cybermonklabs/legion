@@ -5163,10 +5163,18 @@ It records each session's read results up to the first non-read call or the end 
 The extra-read control repeats the planner launch with a mandatory read added to a copy of a subject prompt part.
 It checks that the new read appears and that the total increases.
 
-`packages/pi-legion/scripts/skill-scenarios/teardown-inputs.ts rows --before <base rows.jsonl> --after <head rows.jsonl>` compares two runs.
-It prints one Markdown table with a line for each launch: the role parts, each part of the first request, the required reads and the total, in bytes, before and after.
+`packages/pi-legion/scripts/skill-scenarios/teardown-inputs.ts rows --before <base evidence dir> --after <head evidence dir>` compares two runs.
+Each directory is the `PROMPT_INPUTS_EVIDENCE_DIR` of one run, and holds that run's `rows.jsonl` and `recorder-files.sha256`.
+Write `recorder-files.sha256` in each run's build Job with GNU `sha256sum`, run at the root of the checkout the driver was built from, one line for each source file of the recorder that the driver used: each `packages/daemon/internal/daemon/prompt_inputs_*.go`, each regular file under `packages/daemon/internal/daemon/testdata/prompt-inputs/`, and `scripts/e2e/prompt-inputs.sh`.
+The two runs must list the same paths with the same SHA-256 digests, in any order.
+The command exits 1 and prints no table when a list is missing, when a line is not a `sha256sum` line, or when a list names one path twice.
+It refuses a list of no file, a path that only one run lists, and a path whose digests differ, naming the path and the arm.
+It prints one Markdown table with a line for each launch: the role parts, each part of the first request, the addressing beside the first message, the required reads and the total, in bytes, before and after.
+The addressing is the text that the daemon writes after the role parts.
+It is not one of the six parts of the first request, and the total does not add it.
 It refuses a row that has no `other_messages_bytes`, naming the launch and the arm: such a row was measured before the other messages were counted, so its total leaves them out.
 It also refuses a launch that only one arm has, and it drops no row.
+A refusal prints no table.
 Run both arms with this driver before you compare them.
 
 ## late-completion.sh

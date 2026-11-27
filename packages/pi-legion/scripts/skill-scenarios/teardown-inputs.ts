@@ -10,7 +10,7 @@
  *   bun teardown-inputs.ts sizes --before <export.json> --before-private <label>
  *       --after <export.json> --head <commit> --branch <branch> --projects <project,...>
  *       --launches <launch,...>
- *   bun teardown-inputs.ts rows --before <rows.jsonl> --after <rows.jsonl>
+ *   bun teardown-inputs.ts rows --before <evidence dir> --after <evidence dir>
  *
  * --export, and the --before and --after of `sizes`, are export.json files of the schema
  * prompt-render/2, and of no other version. The keys read are the ones that version keeps from
@@ -61,13 +61,21 @@
  * checkout --before-private names (`base` in a pull request's run: the old deployment text at
  * each project's released Legion); a before render's own problems are counted, not failed.
  *
- * `rows` compares two runs of the prompt-inputs proof, the base's rows.jsonl (--before) and the
- * head's (--after). It prints one table with a line for each launch: the bytes of its role parts,
- * of each part of its first request (the system text, the tool definitions, the skill list, the
- * dispatch-first skill, the first message and the other messages), of its required reads (marked
- * `not observed` where the run did not observe them) and its total, before and after. It refuses,
- * naming the launch and the arm, a row measured without the other messages, a launch one arm has
- * twice, and a launch that only one arm has; it drops no row.
+ * `rows` compares two runs of the prompt-inputs proof from the evidence directory each printed:
+ * the base's (--before) and the head's (--after). Each directory holds the run's rows.jsonl and
+ * its recorder-files.sha256, one GNU sha256sum line (`<sha256>  <path>`) for each source file of
+ * the recorder its driver ran. The two runs must list the same paths with the same sha256, in any
+ * order. A list that is missing, a line that is no such line (an escaped path among them) and a
+ * path that a list names twice do not read. A list of no file, a path that only one run lists and
+ * a path whose sha256 differs are refused, naming the path and the arm. It prints one table with
+ * a line for each launch: the bytes of its role parts, of each part of its first request (the
+ * system text, the tool definitions, the skill list, the dispatch-first skill, the first message
+ * and the other messages), of its addressing (the text the daemon writes after the role parts)
+ * beside the first message, of its required reads (marked `not observed` where the run did not
+ * observe them) and its total, before and after. The addressing is none of the first request's
+ * parts, and the total does not add it. It refuses, naming the launch and the arm, a row measured
+ * without the other messages, a launch one arm has twice, and a launch that only one arm has; it
+ * drops no row. A refusal leaves no table.
  *
  * Exit 0 when every check holds, 1 when one does not or an input does not read, 2 when the
  * arguments are refused.
@@ -85,6 +93,11 @@ export const PROMPTS_DIR = "packages/daemon/internal/prompts/";
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+/** The file of a prompt-inputs evidence directory that lists its recorder's source files. */
+const RECORDER_FILES = "recorder-files.sha256";
+/** A line of GNU sha256sum: the sha256, a space, ` ` (text) or `*` (binary), and the path. The
+ * line it writes for a path with a backslash or a newline starts with `\` and does not match. */
+const SHA256SUM_LINE = /^([0-9a-f]{64}) [ *](.+)$/;
 
 const Bytes = z.number().int().nonnegative();
 const Sha256 = z.string().regex(SHA256, "a lower-case sha256");
@@ -206,6 +219,25 @@ export function parseComposition(text: string): string {
   return parsed(Composition, JSON.parse(text)).subject_head;
 }
 
+/**
+ * A recorder-files.sha256's text: the sha256 of each source file, by path. Throws, naming the
+ * line, where a line is not a sha256sum line or names a path an earlier line names. A list of no
+ * file reads, and `rowSizes` refuses it.
+ */
+function parseRecorderFiles(text: string): Map<string, string> {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const files = new Map<string, string>();
+  for (const [index, line] of lines.entries()) {
+    const match = SHA256SUM_LINE.exec(line);
+    if (match === null) throw new Error(`line ${index + 1} is not a sha256sum line`);
+    const [, sha256, file] = match;
+    if (files.has(file)) throw new Error(`line ${index + 1} names ${file} a second time`);
+    files.set(file, sha256);
+  }
+  return files;
+}
+
 /** What the caller expects: the exact public head, its branch, and the projects and launches. */
 export interface Expected {
   readonly head: string;
@@ -218,6 +250,13 @@ export interface Expected {
 export interface Evidence {
   readonly rows: readonly PromptInputsRow[];
   readonly subjectHead: string;
+}
+
+/** A prompt-inputs run's evidence as `rows` reads it: its rows, and the sha256 of each source file
+ * of its recorder, by path (recorder-files.sha256). */
+export interface RowsEvidence {
+  readonly rows: readonly PromptInputsRow[];
+  readonly recorder: ReadonlyMap<string, string>;
 }
 
 /** The render's launches whose rows' name is not `<role>/<backend>`: the role each must have,
@@ -562,6 +601,7 @@ const ROW_COLUMNS: readonly (readonly [string, (row: PromptInputsRow) => number 
   ["Skill list", (row) => row.first_request.skill_list_bytes],
   ["Dispatch-first", (row) => row.first_request.dispatch_first_bytes],
   ["First message", (row) => row.first_request.first_message_bytes],
+  ["Addressing", (row) => row.addressing_bytes],
   ["Other messages", (row) => row.first_request.other_messages_bytes ?? "-"],
   [
     "Required reads",
@@ -574,20 +614,48 @@ const ROW_COLUMNS: readonly (readonly [string, (row: PromptInputsRow) => number 
 ];
 
 /**
- * The before and after bytes of each launch, from two runs' rows: the base's (`before`) and the
- * head's (`after`). Every launch of either run is a line, in the order the base's rows give them,
- * and a launch that only one run has, a launch one run has twice, or a row measured without the
- * other messages is a problem, which leaves no table.
+ * Where two runs' recorders differ: a run that lists no source file, a file that only one run
+ * lists, and a file whose sha256 differs. The order of the lists does not count.
  */
-export function rowSizes(
-  before: readonly PromptInputsRow[],
-  after: readonly PromptInputsRow[]
-): Sizes {
+function recorderProblems(
+  before: ReadonlyMap<string, string>,
+  after: ReadonlyMap<string, string>
+): string[] {
   const problems: string[] = [];
+  if (before.size === 0) problems.push("the before recorder files list no file");
+  if (after.size === 0) problems.push("the after recorder files list no file");
+  for (const [file, sha256] of before) {
+    const theirs = after.get(file);
+    if (theirs === undefined)
+      problems.push(
+        `${file} has a sha256 in the before recorder files and none in the after recorder files`
+      );
+    else if (theirs !== sha256)
+      problems.push(
+        `${file} has sha256 ${sha256} in the before recorder files and ${theirs} in the after recorder files`
+      );
+  }
+  for (const file of after.keys())
+    if (!before.has(file))
+      problems.push(
+        `${file} has a sha256 in the after recorder files and none in the before recorder files`
+      );
+  return problems;
+}
+
+/**
+ * The before and after bytes of each launch, from two runs: the base's (`before`) and the head's
+ * (`after`). Every launch of either run is a line, in the order the base's rows give them. Each
+ * of these is a problem, which leaves no table: a run that lists no recorder source file, a file
+ * that only one run lists or whose sha256 differs, a launch that only one run has, a launch one
+ * run has twice, and a row measured without the other messages.
+ */
+export function rowSizes(before: RowsEvidence, after: RowsEvidence): Sizes {
+  const problems = recorderProblems(before.recorder, after.recorder);
   const arms = (
     [
-      ["before", before],
-      ["after", after],
+      ["before", before.rows],
+      ["after", after.rows],
     ] as const
   ).map(([arm, rows]) => {
     if (rows.length === 0) problems.push(`the ${arm} rows hold no launch`);
@@ -632,7 +700,7 @@ export function rowSizes(
 const USAGE = [
   "usage: teardown-inputs.ts compare --export <export.json> --evidence <dir> --head <commit> --branch <branch> --projects <project,...> --launches <launch,...>",
   "   or: teardown-inputs.ts sizes --before <export.json> --before-private <label> --after <export.json> --head <commit> --branch <branch> --projects <project,...> --launches <launch,...>",
-  "   or: teardown-inputs.ts rows --before <rows.jsonl> --after <rows.jsonl>",
+  "   or: teardown-inputs.ts rows --before <evidence dir> --after <evidence dir>",
 ].join("\n");
 
 const FLAGS = {
@@ -733,10 +801,11 @@ export function main(argv: readonly string[], io: Pick<CliIo, "out" | "err">): n
       problems = found.problems;
       lines.push(found.table.trimEnd());
     } else {
-      const found = rowSizes(
-        readInput(file("--before"), parseRows),
-        readInput(file("--after"), parseRows)
-      );
+      const evidence = (flag: string): RowsEvidence => ({
+        rows: readInput(path.join(file(flag), "rows.jsonl"), parseRows),
+        recorder: readInput(path.join(file(flag), RECORDER_FILES), parseRecorderFiles),
+      });
+      const found = rowSizes(evidence("--before"), evidence("--after"));
       problems = found.problems;
       lines.push(found.table.trimEnd());
     }
