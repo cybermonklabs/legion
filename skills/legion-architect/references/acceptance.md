@@ -33,7 +33,7 @@ Read, against the goal, every check and every requirement:
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
 
-- No `after_merge` result is asked here; the production check records it after the merge, while the issue waits in `verifying`.
+- No `after_merge` result is asked here; the production check records it after the merge.
 
 ## A merge hold
 
@@ -103,7 +103,7 @@ When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the th
 
 ## The close
 
-The merge puts the issue in `verifying`, and the daemon closes it (`done`) once Dispatch computes a pass for each check of its Verification document at the newest merge, its production check passes and nothing beneath it is open.
+The merge puts the issue in `verifying`; the daemon closes it (`done`) once each of its checks passes.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger

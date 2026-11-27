@@ -114,7 +114,6 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	stored := e.waitOf(started, view, old, now)
-	stored.Withdrawn = heldWithdrawals(old, nil)
 	if err := putStoredWait(&started, stored); err != nil {
 		return err
 	}
@@ -124,7 +123,7 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.store.MarkIssueMoved(ctx, tx, started.Key, now); err != nil {
 		return err
 	}
-	if err := e.store.ClearChangeGeneration(ctx, tx, started.Key, now); err != nil {
+	if err := e.store.ClearChangeGeneration(ctx, tx, started.Key); err != nil {
 		return err
 	}
 	if err := e.publishWait(ctx, tx, started); err != nil {
@@ -372,7 +371,7 @@ func (e *Engine) endChange(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	stored := e.waitOf(ended, after, old, now)
 	stored.Entered = now
 	stored.Ended = &record.WaitChangeEnd{Generation: issue.NextChange, At: now}
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	if err := putStoredWait(&ended, stored); err != nil {
 		return err
 	}
@@ -495,8 +494,8 @@ func (e *Engine) startChangeIfDue(ctx context.Context, tx pgx.Tx, key string) (b
 // joins the change where the change has not passed its last step, so the change's work takes it;
 // one that comes later waits for the change after it. Where the change opened no pull request of
 // its own and each reason it carries is resolved, the change ends (endChange). Otherwise the
-// stored wait is written again, with the withdrawals a version has still to say (heldWithdrawals),
-// and close-wait.md's row is queued where it changed.
+// stored wait is written again, with the withdrawals a version has still to say (waitOf carries
+// them, and this one's are appended), and close-wait.md's row is queued where it changed.
 func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	view, err := e.closeWait(ctx, tx, issue)
 	if err != nil {
@@ -527,7 +526,7 @@ func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	stored := e.waitOf(issue, view, old, e.now())
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}

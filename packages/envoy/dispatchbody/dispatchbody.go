@@ -16,9 +16,11 @@ package dispatchbody
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -64,3 +66,27 @@ const (
 	BlockUnits = contracts.DispatchBlockUnits
 	ItemBlocks = contracts.DispatchItemBlocks
 )
+
+// MaxBlockIDBytes is the most bytes a typed block's id holds, Dispatch's own bound
+// (internal/dispatch/text), whose twin is MAX_BLOCK_ID_BYTES in @legion/contracts. A caller that
+// takes a block id of a document from an agent holds it to this and to BlockIDHoldsControl, and to
+// nothing narrower: an id may hold any character that is not a control character, `q:1`,
+// `décision` and `a b` among them.
+const MaxBlockIDBytes = text.MaxBlockIDBytes
+
+// BlockIDHoldsControl reports whether id holds a character Dispatch's parser would not keep in a
+// typed block's id: a control character, which is every rune below U+0020, U+007F, and the C1
+// range U+0080 to U+009F. It is the one shape of a block id a caller refuses, beside
+// MaxBlockIDBytes.
+func BlockIDHoldsControl(id string) bool {
+	return strings.ContainsFunc(id, func(r rune) bool { return r < 0x20 || r >= 0x7f && r <= 0x9f })
+}
+
+// LineFeeds is body with each CRLF and each lone CR a line feed, the normalisation Dispatch's
+// parser makes of every upload (internal/dispatch/pmdoc). A caller that writes an agent's text
+// into a markdown document normalises it with this before it indents or quotes the lines, since
+// Dispatch would otherwise turn a CR inside a line into a line break of its own and set that part
+// of the text at the start of a line.
+func LineFeeds(body string) string {
+	return pmdoc.LineFeeds(body)
+}

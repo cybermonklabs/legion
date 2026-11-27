@@ -3,6 +3,7 @@ package workflow
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -207,6 +208,32 @@ func TestAnArchitectsDoneOnAnUnmergedChildDropsIt(t *testing.T) {
 		ActorSession: "session-architect"})
 	if got := rig.issue(waitChild).Phase; got != phase.Done {
 		t.Fatalf("the unmerged child stands at %s, want done", got)
+	}
+}
+
+// A child run again keeps the merge snapshot of an earlier generation (record.Issue.Merge), which no
+// clear touches, but its own generation's work has not merged: it is at work, it opened no next
+// change, and its generation holds no merged pull request. Its owning architect's done therefore
+// takes it out of the workflow, as on any unmerged child. Read from the snapshot alone, the rule
+// set that done back and told the architect "Its pull request merged", which was not why.
+func TestAnArchitectsDoneOnAChildRunAgainAfterAMergeDropsIt(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Implementing, "in_progress")
+	rig.seedChild(waitChild, phase.Implementing, "in_progress")
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitChild, record.Merge{Number: 41, Head: headOne, SHA: waitChildMerge,
+			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt.Add(-time.Hour)})
+		return err
+	})
+	seedArchitectClaim(t, rig.pool, waitRoot)
+	rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V",
+		ActorSession: "session-architect"})
+	if got := rig.issue(waitChild).Phase; got != phase.Done {
+		t.Fatalf("the child run again stands at %s, want done: its own generation's work has not merged", got)
+	}
+	if notices := noticesOfKind(t, rig.pool, waitChild, "close-waits"); len(notices) != 0 {
+		t.Fatalf("close-waits notices = %+v, want none: nothing of its generation merged", notices)
 	}
 }
 

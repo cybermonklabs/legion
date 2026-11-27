@@ -58,7 +58,7 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 	}
 	if !allowed {
 		return intake.Result{Refusal: &intake.Refusal{Status: http.StatusForbidden, Code: "DEFECT_CALLER_NOT_ALLOWED", Message: fmt.Sprintf(
-			"the %s may not report a defect of %s while it stands in %s: the implementer reports in retro, the merger in merging and in verifying until its completion lands, and the owning architect from retro on. This report recorded nothing.",
+			"the %s may not report a defect of %s while it stands in %s: the implementer reports in retro, the merger in merging, and the owning architect from retro on. This report recorded nothing.",
 			fact.Role, issue.Key, record.StandsAt(issue))}}, nil
 	}
 	open, err := e.store.OpenDefects(ctx, tx, issue.Key)
@@ -212,9 +212,9 @@ func (e *Engine) ownsBySignOff(ctx context.Context, tx pgx.Tx, architect claim.T
 }
 
 // waitNamesDefects writes issue's open reported defects, and withdrawn, the defects a withdrawal
-// just ended, into the stored wait that close-wait.md renders, and queues its write. The wait keeps
-// each withdrawal it already holds beside them (heldWithdrawals), since no version of the document
-// has said it yet. In verifying that is the close's judgement (judgeCloseNoting), which reads the
+// just ended, into the stored wait that close-wait.md renders, and queues its write. The write
+// keeps each withdrawal the wait already holds, since no version of the document has said it yet.
+// In verifying that is the close's judgement (judgeCloseNoting), which reads the
 // defects with every other term. Before the merge, in retro or merging or held from either, it
 // replaces the stored wait's defects alone, keeping whatever an earlier entry into verifying left:
 // nothing else of the close is read before the merge. Elsewhere it writes nothing, unless the
@@ -245,7 +245,7 @@ func (e *Engine) waitNamesDefects(ctx context.Context, tx pgx.Tx, issue record.I
 			stored.Defects = append(stored.Defects, waitReason(defect))
 		}
 	}
-	stored.Withdrawn = heldWithdrawals(stored, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}

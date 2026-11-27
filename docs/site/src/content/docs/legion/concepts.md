@@ -28,9 +28,10 @@ section can use the words without stopping to explain them.
   issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's in its own project, else the project's default repository,
   which is set in Dispatch), which Legion records, with that repository's default branch as GitHub
-  names it, when it first records the issue, and keeps. This release's one-time pass is the one
-  exception: it writes a configured rename's new name (`repository_renames`) over the old one on
-  the records.
+  names it, when it first records the issue. The record then follows Dispatch: a later change of
+  the issue's repository moves it onto the new one when GitHub answers, at that moment, that both
+  role Apps are installed there ([The project's repositories](/legion/legion/running-legion/#the-projects-repositories)),
+  and a configured rename's pass writes the new name (`repository_renames`) over the old one.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -44,7 +45,7 @@ section can use the words without stopping to explain them.
 One Legion deployment can work issues across several GitHub repositories, under several owners,
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
-Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
+Several children may share a repository, and each child's record follows the repository Dispatch resolves for it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
@@ -448,8 +449,9 @@ decision: it stays on the ask for the person who asked, and nothing wakes.
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
 hold: the issue returns to the phase it was held from and that phase's worker starts again, with
-no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
-`todo`.
+no new run of the tree. A root you parked, by contrast, runs again when you set it to `todo`: as
+one next change of it where its work merged ([the close](#the-close)), and as a new run of its tree
+where its work never merged.
 
 ## The design gate
 
@@ -778,6 +780,28 @@ After the close, Legion opens nothing for the issue.
 A `fail` recorded later on an issue that Legion closed by its checks sends the controller one
 notice, `closed-check-failed`.
 
+**New work on a merged issue.**
+A request for new work on a closed issue whose work merged starts one next change of it, never a
+new run of its tree.
+A request is a person's, an operator's or the controller's `todo`, an architect's `rerun_child` or
+`release_children`, or a person's approval of the spec of a root in backlog, icebox or triage.
+A `todo` on an issue in `verifying` is a request too.
+The approved design gate, the branch and the other issues' work stay.
+Before the change ends, its owner writes the requested work as checks of the Verification document
+that run after the merge.
+It reads that work in the comment that begins `Reopened after an early close:`, or else in the
+reason of whoever asked.
+A request of a person ends with no pull request only on that person's `done`.
+A request of the controller or of an architect ends so when the owner withdraws it with evidence
+that the work is done.
+Where the record shows no merge, Legion first looks for one: in the issue's links, in its checks'
+results in Dispatch, and on GitHub.
+Where it finds none, it starts nothing and tells the controller (`merge-unread`).
+A person then ends the wait: links the merged pull request to the issue
+(`dispatch issue-update --external-links`), or confirms that the work never merged by setting the
+issue to `backlog`, then `todo`.
+Only that confirmation runs the tree again whole, as a new generation from its architect.
+
 ## The production check
 
 Where your project asks for it, the close also waits for a production check:
@@ -865,8 +889,9 @@ database; then its Sandboxes are deleted, once no member's check is open. Closin
 from the Dispatch dashboard lingers the tree at once, children and all: your decision outranks
 that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch: a
 workspace lives as long as the pod it was provisioned in, and the next pod provisions it again
-from that branch. Setting a done root back to `todo` runs it again as a new generation, starting
-from its architect.
+from that branch. Setting a done root back to `todo` starts one next change of it where its work
+merged, and runs its tree again as a new generation, from its architect, only where a person
+confirmed that its work never merged ([the close](#the-close)).
 
 ## Supervision
 
@@ -898,8 +923,9 @@ in the admission line. Where the pull request's head is red, the issue goes on t
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
-`todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
-from its architect.
+`todo` by a person or an operator, runs the whole tree over as a new generation where its work never
+merged, which is the move for a tree that must start from its architect. Where its work merged, the
+same pair starts one next change of the root ([the close](#the-close)).
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A
