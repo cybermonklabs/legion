@@ -4719,11 +4719,14 @@ func (m *Machine) forgetSession(why string) {
 // sentence (forgottenBy), and the claim stays held. The migration that adds the record writes such
 // a session of a claim held when it runs (20261126182717_claim_cyber_policy_sessions), and this is
 // the record of one that release forgot during a rollback after it. A session abandoned before the
-// failure was not the one refused. The list is clipped first, so the append never writes into an
-// array a copy of the claim still holds.
+// failure was not the one refused, and one beside a failure whose moment the claim does not record
+// (a zero FailedAt, which the store reads a null failed_at as) is not known to be, since nothing
+// says it was abandoned after the failure: neither is recorded, as the migration records neither.
+// The list is clipped first, so the append never writes into an array a copy of the claim still
+// holds.
 func (m *Machine) holdCyberPolicySession() {
 	s := m.claim.Session
-	if a := m.claim.Abandoned; s == "" && a.At.After(m.claim.FailedAt) {
+	if a := m.claim.Abandoned; s == "" && !m.claim.FailedAt.IsZero() && a.At.After(m.claim.FailedAt) {
 		s = a.Session
 	}
 	if s != "" && !slices.Contains(m.claim.CyberPolicySessions, s) {

@@ -225,7 +225,10 @@ func readAnswersBoot(answers config.Answers, runtimeName string, setting leakgua
 }
 
 // readPostgresURL is the postgres:// URL the file a key names holds, refused, naming the key and
-// the file and never what it holds, unless it is one.
+// the file and never what it holds, unless it is one, and unless pgdsn.Refusal passes it, as
+// ompsessions.ReadDSN reads the session database's: a URL holding an unencoded "@" after its user
+// part, where a password holding an "@" or a "/" leaves part of itself that every connect error
+// would print, is refused at boot rather than at the first connection.
 func readPostgresURL(key, file string) (string, error) {
 	dsn, err := config.ReadSecretPointer(key, file)
 	if err != nil {
@@ -233,6 +236,9 @@ func readPostgresURL(key, file string) (string, error) {
 	}
 	if parsed, err := url.Parse(dsn); err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
 		return "", fmt.Errorf("%s names %s, which holds no postgres:// URL", key, file)
+	}
+	if err := pgdsn.Refusal(key+" names "+file+", whose URL", dsn); err != nil {
+		return "", err
 	}
 	return dsn, nil
 }

@@ -116,9 +116,25 @@ func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) 
 	}
 }
 
-// The conversation store's URL file is read at boot as every other *_file is: a missing or blank
-// file, or one holding no postgres:// URL, refuses the boot naming the key and the file and never
-// what the file holds.
+// atInPasswordDSN is a postgres:// URL whose password holds an unencoded "@", with fixture-head
+// before it and fixture-tail after it: pgx reads fixture-tail as part of the host, which every
+// connect error prints. It is joined from its parts so that no line of this file holds a URL with
+// a password.
+const atInPasswordDSN = "postgres://legion-daemon:fixture-head" + "@" + "fixture-tail" + "@" +
+	"conversations.internal.example:5432/omp_sessions"
+
+// carriesWhatTheFileHolds says whether a refusal carries what a DSN file of these tests holds: a
+// keyword DSN's password, or either part of a password holding an unencoded "@".
+func carriesWhatTheFileHolds(err error) bool {
+	return slices.ContainsFunc([]string{"fixture-keyword-password", "fixture-head", "fixture-tail"},
+		func(held string) bool { return strings.Contains(err.Error(), held) })
+}
+
+// The conversation store's URL file is read at boot as every other *_file is: a missing file
+// refuses the boot naming the key and why, a blank file or one holding no postgres:// URL naming
+// the key and the file, and one whose URL pgdsn.Refusal refuses, a password holding an unencoded
+// "@" here, naming the key and the file in pgdsn.Refusal's words; no refusal carries what the file
+// holds.
 func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 	t.Parallel()
 	gh := binary(t, t.TempDir(), "gh")
@@ -126,17 +142,20 @@ func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
 	notAURL := dsnFileOf(t, "host=conversations.internal.example password=fixture-keyword-password\n")
 	blank := dsnFileOf(t, "\n")
+	atInPassword := dsnFileOf(t, atInPasswordDSN+"\n")
 	for _, tc := range []struct{ name, file, want string }{
-		{"missing", missing, "answers.conversation_store.dsn_file names " + missing + ", which could not be read"},
+		{"missing", missing, "answers.conversation_store.dsn_file names a file that could not be read"},
 		{"blank", blank, "answers.conversation_store.dsn_file names " + blank + ", which is empty"},
 		{"no URL", notAURL, "answers.conversation_store.dsn_file names " + notAURL + ", which holds no postgres:// URL"},
+		{"an unencoded @ in its password", atInPassword,
+			"answers.conversation_store.dsn_file names " + atInPassword + `, whose URL cannot be read: it holds an "@" after its user name and password`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 			cfg.LeakCheck = leakCheckSetting
 			cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), tc.file)
 			_, err := readBoot(cfg, withGH, os.Getenv, true, quietLogger())
-			if err == nil || !strings.HasPrefix(err.Error(), tc.want) || strings.Contains(err.Error(), "fixture-keyword-password") {
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) || carriesWhatTheFileHolds(err) {
 				t.Fatalf("readBoot = %v, want a refusal starting %q that carries nothing the file holds", err, tc.want)
 			}
 		})
@@ -175,25 +194,29 @@ func TestATmuxSessionDatabaseIsTheAnswerLoopsConversationStore(t *testing.T) {
 	}
 }
 
-// runtime.tmux.session_dsn_file is read at boot as every other *_file is: a missing or blank file,
-// or one holding no postgres:// URL, refuses the boot naming the key and the file and never what
-// the file holds.
+// runtime.tmux.session_dsn_file is read at boot as every other *_file is: a missing file refuses
+// the boot naming the key and why, a blank file or one holding no postgres:// URL naming the key
+// and the file, and one whose URL pgdsn.Refusal refuses, a password holding an unencoded "@" here,
+// naming the key and the file in pgdsn.Refusal's words; no refusal carries what the file holds.
 func TestBootRefusesATmuxSessionDSNFileWithNoURL(t *testing.T) {
 	t.Parallel()
 	lookup := environLookup([]string{"PATH=" + t.TempDir()})
 	missing := filepath.Join(t.TempDir(), "absent")
 	notAURL := dsnFileOf(t, "host=sessions.internal.example password=fixture-keyword-password\n")
 	blank := dsnFileOf(t, "\n")
+	atInPassword := dsnFileOf(t, atInPasswordDSN+"\n")
 	for _, tc := range []struct{ name, file, want string }{
-		{"missing", missing, "runtime.tmux.session_dsn_file names " + missing + ", which could not be read"},
+		{"missing", missing, "runtime.tmux.session_dsn_file names a file that could not be read"},
 		{"blank", blank, "runtime.tmux.session_dsn_file names " + blank + ", which is empty"},
 		{"no URL", notAURL, "runtime.tmux.session_dsn_file names " + notAURL + ", which holds no postgres:// URL"},
+		{"an unencoded @ in its password", atInPassword,
+			"runtime.tmux.session_dsn_file names " + atInPassword + `, whose URL cannot be read: it holds an "@" after its user name and password`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.Runtime.Tmux = &config.Tmux{SessionDSNFile: tc.file}
 			_, err := readBoot(cfg, lookup, os.Getenv, false, quietLogger())
-			if err == nil || !strings.HasPrefix(err.Error(), tc.want) || strings.Contains(err.Error(), "fixture-keyword-password") {
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) || carriesWhatTheFileHolds(err) {
 				t.Fatalf("readBoot = %v, want a refusal starting %q that carries nothing the file holds", err, tc.want)
 			}
 		})

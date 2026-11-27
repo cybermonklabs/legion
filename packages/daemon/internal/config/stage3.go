@@ -666,7 +666,8 @@ func runKeyCommand(ctx context.Context, command, field string) (string, error) {
 // killed, a child it started (`sleep`, a token helper) keeps the pipe until it exits.
 const keyCommandWaitDelay = 2 * time.Second
 
-// keyCommandWordShown stands for a word of private_key_command in what its stderr prints.
+// keyCommandWordShown stands for a word of a key command, `private_key_command` or
+// `api_key_command` (runKeyCommand), in what its stderr prints.
 const keyCommandWordShown = "[a word of the command]"
 
 // keyCommandWords are the words of command, the first included, of redact.HeldRun characters or
@@ -684,10 +685,11 @@ func keyCommandWords(command string) []redact.Word {
 	return words
 }
 
-// keyCommandShown is text, private_key_command's stderr or a line of it, as the daemon prints it:
-// redact.Withheld's rule over words, the rule stderrShown prints a `secrets` command's stderr by,
-// and ok false, nothing of it to be printed, when what is left still holds a run of a word or a PEM
-// block's first line, which is the private key itself.
+// keyCommandShown is text, the stderr of a key command (`private_key_command`'s or
+// `api_key_command`'s) or a line of it, as the daemon prints it: redact.Withheld's rule over
+// words, the rule stderrShown prints a `secrets` command's stderr by, and ok false, nothing of it
+// to be printed, when what is left still holds a run of a word or a PEM block's first line, which
+// is the private key itself.
 func keyCommandShown(text string, words []redact.Word) (shown string, ok bool) {
 	if strings.Contains(text, "-----BEGIN") {
 		return "", false
@@ -695,8 +697,9 @@ func keyCommandShown(text string, words []redact.Word) (shown string, ok bool) {
 	return redact.Withheld(text, words)
 }
 
-// keyCommandStderr is private_key_command's whole stderr as its refusal quotes it
-// (keyCommandShown), or the words that say it is withheld.
+// keyCommandStderr is the whole stderr of a key command (`private_key_command`'s or
+// `api_key_command`'s) as its refusal quotes it (keyCommandShown), or the words that say it is
+// withheld.
 func keyCommandStderr(stderr string, words []redact.Word) string {
 	text := strings.TrimSpace(stderr)
 	if shown, ok := keyCommandShown(text, words); ok {
@@ -705,10 +708,11 @@ func keyCommandStderr(stderr string, words []redact.Word) string {
 	return fmt.Sprintf("its stderr (%d bytes) holds part of the command or a private key, so it is not printed", len(text))
 }
 
-// keyCommandLines writes private_key_command's stderr to out a line at a time, each line as
-// keyCommandShown prints it, or the words that say it is withheld; every line of a PEM block, its
-// first line to its last (`-----END`), is withheld, since only its first line says it is one. flush
-// writes what is left of a line the command did not end.
+// keyCommandLines writes the stderr of a key command (`private_key_command`'s or
+// `api_key_command`'s) to out a line at a time, each line as keyCommandShown prints it, or the
+// words that say it is withheld; every line of a PEM block, its first line to its last
+// (`-----END`), is withheld, since only its first line says it is one. flush writes what is left of
+// a line the command did not end.
 type keyCommandLines struct {
 	out     io.Writer
 	field   string

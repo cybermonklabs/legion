@@ -245,8 +245,11 @@ func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 // the asker's sentence (forgottenBy), stays held with no session: nothing names the refused session
 // but the claim's abandoned-session record. The decided retry that ends the hold records that
 // session as refused (holdCyberPolicySession), in memory and in the store, so its conversation
-// stays held once the hold has ended (Claim.SessionHeldForCyberPolicy). The control is a session
-// the claim abandoned before it failed, which was not the one refused: the retry records none.
+// stays held once the hold has ended (Claim.SessionHeldForCyberPolicy). The controls are a session
+// the claim abandoned before it failed, which was not the one refused, and a session beside a
+// failure whose moment the claim does not record (a null failed_at, which the store reads as the
+// zero time), which nothing says was abandoned after it: the retry records neither, as the
+// migration that adds the record does not (20261126182717_claim_cyber_policy_sessions).
 func TestADecidedRetryRecordsTheRefusedSessionAnEarlierForgetLeftBehind(t *testing.T) {
 	failedAt := epoch.Add(-time.Hour)
 	forgotten, err := forgottenBy(SuspendedByOperator)
@@ -254,16 +257,17 @@ func TestADecidedRetryRecordsTheRefusedSessionAnEarlierForgetLeftBehind(t *testi
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name        string
-		abandonedAt time.Time
-		want        []string
+		name                  string
+		failedAt, abandonedAt time.Time
+		want                  []string
 	}{
-		{"the session forgotten after the failure", failedAt.Add(time.Minute), []string{session}},
-		{"a session abandoned before the failure", failedAt.Add(-time.Minute), nil},
+		{"the session forgotten after the failure", failedAt, failedAt.Add(time.Minute), []string{session}},
+		{"a session abandoned before the failure", failedAt, failedAt.Add(-time.Minute), nil},
+		{"a session beside a failure whose moment the claim does not record", time.Time{}, failedAt.Add(time.Minute), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := queuedClaim()
-			c.State, c.Generation, c.FailureCause, c.FailedAt = StateFailed, 3, CauseCyberPolicy, failedAt
+			c.State, c.Generation, c.FailureCause, c.FailedAt = StateFailed, 3, CauseCyberPolicy, tc.failedAt
 			c.Failure = "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content"
 			c.Abandoned = AbandonedSession{Session: session, SessionFile: sessionFile, Why: forgotten, At: tc.abandonedAt}
 			h := newHarnessOf(t, c)
