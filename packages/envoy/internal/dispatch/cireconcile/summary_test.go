@@ -16,28 +16,25 @@ import (
 const summaryDebounce = 100 * time.Millisecond
 
 type scheduledRecord struct {
-	state   cistore.State
-	attempt bool
-	at      int64
+	state cistore.State
+	kind  string
+	pass  uint64
 }
 
 // summaryWitness receives actual scheduling decisions from the real summary loop. Publish still
 // goes through the real bus. The buffered wake is a change notification, not a clock tick.
 type summaryWitness struct {
 	cistore.Publisher
-	mu      sync.Mutex
-	records map[string]scheduledRecord
-	scanned bool
-	wake    chan struct{}
+	mu        sync.Mutex
+	records   map[string]scheduledRecord
+	wake      chan struct{}
+	requests  chan chan struct{}
+	completed uint64
 }
 
-func (p *summaryWitness) SummaryScheduled(key string, state cistore.State, attempt bool, at int64) {
+func (p *summaryWitness) SummaryScheduled(pass uint64, key string, state cistore.State, kind string, _ int64) {
 	p.mu.Lock()
-	if key == "" {
-		p.scanned = true
-	} else {
-		p.records[key] = scheduledRecord{state: state, attempt: attempt, at: at}
-	}
+	p.records[key] = scheduledRecord{state: state, kind: kind, pass: pass}
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
@@ -45,17 +42,29 @@ func (p *summaryWitness) SummaryScheduled(key string, state cistore.State, attem
 	}
 }
 
-func (p *summaryWitness) record(key string) (scheduledRecord, bool, bool) {
+func (p *summaryWitness) SummaryPassEnded(pass uint64) {
+	p.mu.Lock()
+	p.completed = pass
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *summaryWitness) SummaryScheduleRequests() chan chan struct{} { return p.requests }
+
+func (p *summaryWitness) record(key string) (scheduledRecord, bool, uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r, ok := p.records[key]
-	return r, ok, p.scanned
+	return r, ok, p.completed
 }
 
 // noSettlementAt waits for the loop to classify the durable record, not for an interval in which
 // nothing arrived. A debounce-only wait is not a verdict: the loop must inspect it again at due.
-// If a failed write left no record, the loop's initial scan and the absent durable key witness
-// that there is nothing it could settle. Transport errors are failures, never absence.
+// A fresh pass, not an earlier empty scan, witnesses an absent durable key. Transport errors
+// are failures, never absence.
 func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, number, sha string) {
 	h.t.Helper()
 	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
@@ -64,12 +73,23 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 	}
 	key := cistore.Key(owner, repo, number, sha)
 	ctx := testwait.Context(h.t)
+	done := make(chan struct{})
+	select {
+	case h.summary.requests <- done:
+	case <-ctx.Done():
+		h.t.Fatalf("%s: the summary loop never accepted the fresh-pass request", why)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		h.t.Fatalf("%s: the summary loop never finished the requested fresh pass", why)
+	}
 	for {
-		note, reported, scanned := h.summary.record(key)
+		note, reported, completed := h.summary.record(key)
 		entry, err := kv.Get(key)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
-			if scanned && !reported {
+			if !reported {
 				h.requireNoQueuedSettlement(sub, why)
 				return
 			}
@@ -88,8 +108,8 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 			if err != nil {
 				h.t.Fatal(err)
 			}
-			if bytes.Equal(got, want) && (note.at == 0 || note.at != durable.LastEventAt+summaryDebounce.Milliseconds()) {
-				if note.attempt {
+			if bytes.Equal(got, want) && completed >= note.pass && note.kind != "debounce" && (h.verify || note.kind != "claim") {
+				if note.kind == "attempt" {
 					h.t.Fatalf("%s: the summary loop scheduled a settlement of the durable record: %+v", why, durable)
 				}
 				h.requireNoQueuedSettlement(sub, why)
@@ -99,7 +119,7 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 		select {
 		case <-h.summary.wake:
 		case <-ctx.Done():
-			h.t.Fatalf("%s: the summary loop never reported a non-debounce decision for %s", why, key)
+			h.t.Fatalf("%s: the summary loop never completed a decisive pass for %s", why, key)
 		}
 	}
 }

@@ -59,11 +59,16 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 	wake := store.attachSummary()
 	start := time.Now()
 	z := newSummarizer(store, debounce)
+	var requests chan chan struct{}
 	// A test publisher can observe the scheduler's actual decisions without waiting for silence.
 	if observer, ok := pub.(interface {
-		SummaryScheduled(string, State, bool, int64)
+		SummaryScheduled(uint64, string, State, string, int64)
+		SummaryPassEnded(uint64)
+		SummaryScheduleRequests() chan chan struct{}
 	}); ok {
 		z.scheduled = observer.SummaryScheduled
+		z.completed = observer.SummaryPassEnded
+		requests = observer.SummaryScheduleRequests()
 	}
 	backlog := &backlogHeld{gauge: held}
 	go func() {
@@ -84,13 +89,22 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				if k := int64(time.Since(start)/tick) + 1; armed == 0 || k < armed {
 					arm(k)
 				}
+			case done := <-requests:
+				// A test asks for a fresh normal pass, including when the cache is empty.
+				// Do not reload the cache or refile unchanged records just to witness them.
+				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
+				backlog.observe(count, logger)
+				if ok {
+					k := max(int64(time.Since(start)/tick)+1, gridIndexAtOrAfter(start, tick, next))
+					if armed == 0 || k < armed {
+						arm(k)
+					}
+				}
+				close(done)
 			case <-timer.C:
 				passed := armed
 				armed = 0
 				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
-				if z.scheduled != nil {
-					z.scheduled("", State{}, false, 0) // This pass, including an empty initial scan, ended.
-				}
 				backlog.observe(count, logger)
 				if ok {
 					arm(max(passed+1, gridIndexAtOrAfter(start, tick, next)))
@@ -276,9 +290,11 @@ func (q *deadlineQueue) remove(key string) {
 type summarizer struct {
 	store    *Store
 	debounce time.Duration
-	// scheduled reports the record, whether it will be attempted, and its next deadline.
-	// An empty key reports the end of a pass. Nil is the production path.
-	scheduled func(string, State, bool, int64)
+	// The test observer sees the production verdict and the pass that made it.
+	// Nil observers leave the production path unchanged.
+	scheduled func(uint64, string, State, string, int64)
+	completed func(uint64)
+	passID    uint64
 
 	// mu guards the fields below. No pass holds it, or the store's lock, while it settles a record.
 	mu    sync.Mutex
@@ -330,6 +346,10 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 // (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
 // to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
+	if z.scheduled != nil {
+		z.passID++
+		defer z.completed(z.passID)
+	}
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
@@ -410,7 +430,27 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 	}
 	v, at := schedule(st, now, z.debounce)
 	if z.scheduled != nil {
-		z.scheduled(key, st, v == verdictAttempt, at)
+		kind := "idle"
+		switch v {
+		case verdictAttempt:
+			kind = "attempt"
+		case verdictHeld:
+			kind = "held"
+		case verdictStuck:
+			kind = "stuck"
+		case verdictWait:
+			switch {
+			case verifyStopped(st, now):
+				kind = "retry"
+			case !settlementReady(st):
+				kind = "not-ready"
+			case now < st.LastEventAt+z.debounce.Milliseconds():
+				kind = "debounce"
+			default:
+				kind = "claim"
+			}
+		}
+		z.scheduled(z.passID, key, st, kind, at)
 	}
 	switch v {
 	case verdictIdle:

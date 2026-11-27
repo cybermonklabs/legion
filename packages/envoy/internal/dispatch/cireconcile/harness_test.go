@@ -283,7 +283,7 @@ func (h *harness) startListener() {
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
 	h.loopLogs = &syncBuffer{}
-	h.summary = &summaryWitness{Publisher: h.bus, records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1)}
+	h.summary = &summaryWitness{Publisher: h.bus, records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1), requests: make(chan chan struct{})}
 	cistore.StartSummaryLoop(loop, listener, h.summary, summaryDebounce, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
