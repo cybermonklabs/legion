@@ -51,8 +51,9 @@ It carries:
   claude-envoy ships as a build of that commit's source, which the image's `plugin` stage makes (`scripts/build.ts --out` on the Bun `.bun-version` pins), not as the tree's `dist/` and `legion/`, which lag the source until main's rebuild commits them, nor as a pack:
   no workflow releases that package, so the image is where a Kubernetes deployment gets it.
   The pin and the plugin are in every image, whatever a deployment's `worker_backends` names
-  — one image serves both harnesses — and every probe of the image checks both (`legion probe-image`'s Claude lane, below, and its `claude-code` row);
-  no build and no probe fetches Claude Code;
+  — one image serves both harnesses — and the image build's probe checks both, in `legion probe-image`'s Claude lane (below) and its `claude-code` row.
+  The daemon's boot probe checks them in the `claude-code` row alone, which reads the pin and the root's two files, `dist/envoy-channel.js` and `legion/.claude-plugin/plugin.json`, but not the daemon API contract the root's manifest declares.
+  No build and no probe fetches Claude Code;
 
 - `@bopstack/pi-codegraph`, installed at `/opt/omp-plugins` from the committed lockfile at `packages/daemon/docker/omp-plugins` (its `package.json` is the pin;
   the build resolves nothing from npm), the one plugin linked into the OMP profile `legion` (`OMP_PROFILE=legion`;
@@ -524,7 +525,9 @@ Once it observes the probe container running, it starts the command phase for th
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
 The image probe pod reserves 500m CPU, a value set while `legion probe-image` also ran a TLS check of the image's clients, the longest part of its run, which it no longer makes.
 Every timing measured for that value came from a probe that ran that check: the slowest of eleven runs at 500m took 147 s, 93 s inside the 240 s command budget of the defaults, and the slowest of sixteen at 1 CPU 104 s (2026-11-20, each in a CPU-quota scope on a development host).
-No run without that check has been measured, so the value is kept until the command's other checks are audited, and a measurement of the probe as it then runs sizes it (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
+No run without that check has been measured.
+No boot run without the `pi.agents` probe, the session-storage probe and the Claude lane has been measured yet: the daemon's probe Sandbox no longer makes these three ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
+So the value is kept (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
 A check stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a role's overlay read that returned after it, and the reads of `omp --version` and `omp --help` for the OK line's two marks that failed after it (recorded as `omp-version: …` and `omp-session-id: …`).
 A failure seen before the deadline still fails, and a failure decides over a check with no verdict.
 Where nothing failed and something has no verdict, `legion probe-image` prints `legion probe-image: worker probe has no verdict: <check>: <detail>; …` and exits 75, `EX_TEMPFAIL` (`bootprobe.NoVerdictExit`); every failure still exits 1.
@@ -534,14 +537,16 @@ The stage 4a harness's `image-probe` and `root-ready` checks (`scripts/e2e/READM
 
 ### The image is probed before it publishes
 
-The daemon refuses to serve unless its OMP exposes `pi.agents` and actually loads `pi-legion` with `pi-envoy` beside it, the two at one plugin interface version and without the pre-split package (`packages/daemon/internal/daemon/bootgate.go`).
+The daemon refuses to serve unless two probes pass (`pluginGate.verify`, `packages/daemon/internal/daemon/bootgate.go`).
+The contract probe holds `pi-legion` to the daemon's contract.
+The plugin load probe requires that its OMP loads `pi-legion` with `pi-envoy` beside it, the two at one plugin interface version and without the pre-split package.
 The image build's final step runs `legion version`, requiring the commit the workflow built, and the plugin's `dispatch` shim (`/opt/legion/pi-envoy/bin/dispatch --help`, which needs its bundled `dist/dispatch.js` and the image's Bun), then `legion probe-image`:
-the same two probes, run by the daemon's own code, plus two only the image runs
-— the session-storage probe, which prints `session-storage=probed` on the OK line ([The image guard](#the-image-guard)), and the Claude lane, on `--claude-root /opt/legion/claude-envoy` and `--claude-code-pin /opt/legion/claude-code` (the image's own paths, which the flags default to, so the daemon's probe Sandbox below checks them too):
+the same two probes, run by the daemon's own code, plus three that only the image build makes, which the daemon's probe Sandbox below does not make
+— the `pi.agents` probe, which requires that the image's OMP exposes `pi.agents`, the session-storage probe, which prints `session-storage=probed` on the OK line ([The image guard](#the-image-guard)), and the Claude lane, on `--claude-root /opt/legion/claude-envoy` and `--claude-code-pin /opt/legion/claude-code` (the image's own paths, which the flags default to):
 that root's built channel server (`dist/envoy-channel.js`) and generated Legion plugin (`legion/.claude-plugin/plugin.json`), each a regular file, and the daemon API contract the root's own manifest declares, which the image's build of it wrote;
 and Claude Code's pin, which must name one exact version and lock that release and its `linux-x64` package, the one whose binary a pod's install runs, at that version with the `sha512` integrity `npm ci` holds each tarball to.
 The lane reads the pin and fetches nothing:
-installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
+installing from it would make the publish depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
 Each of the lane's refusals names a build of the image from this daemon's commit.
 The two probes the daemon shares hold the Legion plugin to the daemon's own contract number ([Contract discipline](#contract-discipline)), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
 
@@ -590,7 +595,7 @@ The Envoy plugin ships these skills in its `dist/skills`:
 
 The build has none of the operator's model configuration, so it leaves those agents' models unresolved (`--skip-agent-models`).
 It then checks every image-site row of the capability table (`packages/daemon/internal/capabilities`) against the image, as a worker's Oh My Pi would find each
-— `omp setup python --check`, the `chromium` on `PATH` (or the browser a `PUPPETEER_EXECUTABLE_PATH` in the pod's env names) run with `--version`, the three language servers on `PATH`, the CodeGraph CLI with its plugin enabled in the profile's lock, the tools listed below on `PATH` with `go version` running, and the `claude-code` row's claude-envoy root and Claude Code pin, as the Claude lane held them, with the `npm` that installs from the pin and the `node` that checks the installed version on `PATH`.
+— `omp setup python --check`, the `chromium` on `PATH` (or the browser a `PUPPETEER_EXECUTABLE_PATH` in the pod's env names) run with `--version`, the three language servers on `PATH`, the CodeGraph CLI with its plugin enabled in the profile's lock, the tools listed below on `PATH` with `go version` running, and the `claude-code` row's claude-envoy root and Claude Code pin (the root's two files and the pin, as the build's Claude lane reads them, but not the root's contract), with the `npm` that installs from the pin and the `node` that checks the installed version on `PATH`.
 The tools on `PATH` are these:
 
 - `go`
@@ -642,7 +647,17 @@ the probe proves nothing of it; [The deployment's capability report](#the-deploy
 A build whose image lacks a capability fails, the probe naming every missing one.
 The daemon's Agent Sandbox runtime runs the same command in a probe Sandbox, `legion-probe-<project>-<digest12>`, with its own contract, under the operator's pod, at every boot, and requires `agent-models=resolved`:
 each agent's model resolves, with a working key, as the task tool resolves a subagent's (`packages/daemon/internal/runtime/sandbox/probe.go`).
-Before those probes the probe Sandbox's command adds `--role-namespaces /var/run/legion/role-probe`, a disk `emptyDir` (`role-probe`) the probe pod mounts there as an issue pod mounts `role-homes`:
+The probe Sandbox's container carries `LEGION_IMAGE_PROBE_RUN=boot`, last in its env, which tells the image's `legion probe-image` that it is the daemon's boot run (`bootprobe.ImageProbeRunVariable`).
+Of the launch probes, the boot run makes only the contract probe and the plugin load probe, with the task agents and skills Legion's prompts name and the agents' models.
+It does not make the `pi.agents` probe, the session-storage probe or the Claude lane: their results depend only on what the image carries, and the image build made all three.
+Every check after the launch probes runs as in the image build: the capability table with its `claude-code` row, the read of `retry.modelFallback`, the reads of `omp --version` and `omp --help`, and the roles' overlays.
+Its OK line says `session-storage=skipped`:
+`probe-image: OK (/opt/omp/bin/omp) session-storage=skipped extensions=discovered agent-models=resolved capabilities=checked model-fallback=<state> omp-version=<version> omp-session-id=<state> daemon-api-version=<N>`.
+Any other value of `LEGION_IMAGE_PROBE_RUN` makes the command exit 2 before any check runs, with `legion probe-image: LEGION_IMAGE_PROBE_RUN is "<value>": it takes only boot, which the daemon's probe Sandbox sets, or no value`.
+The variable is the daemon's alone: `CheckPod` refuses the name in `runtime.kubernetes.pod.env` and as a `provider_keys` variable (`packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+A daemon whose build predates the variable sets none, and an image whose `legion` predates it ignores it.
+In either case the image makes all three launch probes and prints `session-storage=probed`, and the daemon passes that line too.
+Before the launch probes the probe Sandbox's command adds `--role-namespaces /var/run/legion/role-probe`, a disk `emptyDir` (`role-probe`) the probe pod mounts there as an issue pod mounts `role-homes`:
 the probe first runs one role generation through `legion launcher role-init` as an issue pod's launcher runs every role, over a layout of its own in that directory and with its own `legion version` as the shim, and exits 1 with `legion probe-image: role namespaces: <why>` when the runtime or node refuses what that generation makes (`launcher.CheckRoleNamespaces`):
 user, mount, PID and IPC namespaces of its own;
 its gh, private and state directories bound at the fixed paths, and a test database's log file bound read-only at its own fixed path, as every role of a pod that serves the pod's test database gets it;
@@ -1007,7 +1022,7 @@ Every refusal is exit 1 with the message on stderr, and none falls back to file 
 | the file's contents are not a connection URL the driver accepts (for example the libpq keyword form `host=… user=… password=…`) | `… names <path>, but its contents are not a connection URL the database driver accepts` — the driver's parse error is not printed, since it embeds the whole string; never the contents |
 | the database is unreachable or refuses the connection             | `… names <path>, but the session database could not be opened: <driver error> (<code>)` — for a closed port `Connection closed (ERR_POSTGRES_CONNECTION_CLOSED)`; the driver's error, never the connection string |
 | any other `OMP_SESSION_STORAGE` value                             | `OMP_SESSION_STORAGE is "<value>"; expected "file" or "sql"`                                                                                                                           |
-| the running Oh My Pi build predates the setting                   | the variables are ignored and the session stays on files — caught before it can happen: the session-storage launch probe (`verifySessionStorageSetting`, `boot-probes.ts`) runs inside the worker image through `legion probe-image` (see [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), fails on such a build so the image never publishes, and on a passing image prints `session-storage=probed` on the command's OK line, which a `legion probe-image` of this release prints only once that probe has passed, under every store ([The image guard](#the-image-guard)) — the daemon never probes a host OMP for it |
+| the running Oh My Pi build predates the setting                   | the variables are ignored and the session stays on files — caught before it can happen: the session-storage launch probe (`verifySessionStorageSetting`, `boot-probes.ts`) runs in the image build through `legion probe-image` (see [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), fails on such a build so the image never publishes, and on a passing image prints `session-storage=probed` on the build's OK line, which `legion probe-image` prints only once that probe has passed, under every store ([The image guard](#the-image-guard)). The daemon's boot run of the command does not make the probe again and prints `session-storage=skipped`, and the daemon never probes a host OMP for it |
 
 ### What stays on the pod's disk
 
@@ -1716,8 +1731,9 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
 
 An Oh My Pi built before the `session.storage` setting ignores the two variables and keeps sessions on files without a word
 — the one silent fallback this setting must never allow.
-The check lives inside the image: `legion probe-image`, which the image build runs before it publishes, starts the image's own Oh My Pi with a nonsense `OMP_SESSION_STORAGE` value and passes only if it refuses, then prints `session-storage=probed` on its OK line.
-The daemon's image probe passes only an OK line that carries its daemon API contract, which a `legion probe-image` of this release prints only after that probe passed, under every store.
+The check is the image build's: `legion probe-image`, which the image build runs before it publishes, starts the image's own Oh My Pi with a nonsense `OMP_SESSION_STORAGE` value and passes only if it refuses, then prints `session-storage=probed` on its OK line.
+The daemon's boot run of the command, in its probe Sandbox, does not make the check, and its OK line says `session-storage=skipped`.
+The daemon's image probe passes only an OK line that carries its daemon API contract, and it reads neither state of the session-storage mark.
 The daemon never probes a host Oh My Pi for this: pods run the image's build, not the host's.
 
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
@@ -4543,7 +4559,7 @@ One number frees nothing at run time: under gVisor every process of a pod alread
 On GKE Autopilot the cap is 10Gi of ephemeral storage for the main containers' sum and 10Gi for each init container (server dry runs, 2026-10-24), and GKE clamps a container's limit to its request, so a GKE deployment sets `issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi}`.
 
 The image probe pod's reservation is the daemon's own and no issue pod's share (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`):
-`legion probe-image` starts one Oh My Pi at a time, runs no lane, and checks the image's capability rows and the roles' overlays, so 1Gi holds it; its 500m was set while it also ran a TLS check of the image's clients, and is kept until its other checks are audited ([Image size and pull time](#image-size-and-pull-time)); and the probe runs at every boot before anything is served
+`legion probe-image` starts one Oh My Pi at a time, runs no lane, and checks the image's capability rows and the roles' overlays, so 1Gi holds it; its 500m was set while it also ran a TLS check of the image's clients, and is kept, since no boot run without the `pi.agents` probe, the session-storage probe and the Claude lane has been measured yet ([Image size and pull time](#image-size-and-pull-time)); and the probe runs at every boot before anything is served
 — a probe that reserved a larger share, as it did the controller's 1 CPU and 4Gi until LEGION-632, could leave the daemon unable to boot on a pool with no room for a pod that large ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound").
 
 At the defaults an issue pod reserves 2 CPU and 8 GiB, an ephemeral-storage limit of 80Gi and a request of 6Gi.

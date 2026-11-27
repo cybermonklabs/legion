@@ -144,8 +144,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   kubectl -n agent-sandbox-system get deployment agent-sandbox-controller
   ```
 
-- **The image probe refuses.** The daemon runs the worker image's launch probes in a probe Sandbox,
-  `legion-probe-<project>-<digest prefix>`, and quotes the probe's log. The causes it names:
+- **The image probe refuses.** The daemon runs the worker image's plugin load probe and capability
+  check in a probe Sandbox, `legion-probe-<project>-<digest prefix>`, and quotes the probe's log.
+  The causes it names:
   - the image's plugin speaks another daemon contract than this binary: run the `legion` binary
     from the same commit as the image ([Upgrade](/legion/legion/running-legion/#upgrade));
   - the registry does not have the image (`… failed its probe: the registry does not have image

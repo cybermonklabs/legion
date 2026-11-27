@@ -1724,7 +1724,8 @@ ARG GH_STACK_TOOL
 # other gate. The Envoy plugin's `dispatch` shim runs its bundled CLI under
 # the image's bun and prints its help, so a pi-envoy packed without bin/ or dist/dispatch.js, or an
 # image without bun, fails here; that the extension puts bin/ first on an agent's PATH is pi-envoy's
-# own test. Then `legion probe-image` runs the three launch probes through
+# own test. Then `legion probe-image`, with no LEGION_IMAGE_PROBE_RUN, runs the launch probes of
+# the build's run, pi.agents, the session-storage probe and the Claude lane among them, through
 # the daemon's own code, loading the plugins the way a Sandbox pod does (--envoy-plugin-root then
 # --plugin-root: the two explicit extensions, discovery on, so the profile's CodeGraph plugin and a
 # repository's own extensions load beside the two roots; a pi-envoy that loaded twice, a profile
@@ -1758,10 +1759,12 @@ ARG GH_STACK_TOOL
 # omp-session-id=<taken|absent|unread> daemon-api-version=<N>` — `on` here is
 # Oh My Pi's own default for retry.modelFallback, since the build runs under no operator overlay; a
 # probe pod reads the operator's value — and a build whose image lacks a capability fails here, the
-# probe naming every failure. The daemon's probe Sandbox runs it
-# again with its own contract, on the pod baseline and under the operator's pod, resolving every
-# agent's model, and refuses a skipped result, before any claim runs on the image
-# (packages/daemon/internal/runtime/sandbox/probe.go).
+# probe naming every failure. The daemon's probe Sandbox runs it again at every boot with its own
+# contract, on the pod baseline and under the operator's pod, resolving every agent's model, and
+# refuses an agent-models=skipped result, before any claim runs on the image
+# (packages/daemon/internal/runtime/sandbox/probe.go). That run sets LEGION_IMAGE_PROBE_RUN=boot in
+# the probe container's env, which leaves out pi.agents, the session-storage probe and the Claude
+# lane, since this step makes them on the same image, and prints session-storage=skipped.
 # It needs the natives step 3 extracted, which the cached probe layer above carries. The step leaves no
 # residue: Oh My Pi's logs, and the Go telemetry counters the capability check's `go version` writes
 # under HOME (the toolchain step's XDG_CONFIG_HOME does not reach a probe that runs as a pod would).
