@@ -8,7 +8,7 @@
 - merger: `merging` and `awaiting_merge`
 - no role: `awaiting_person`, `awaiting_children` and `held`
 
-The hours in the queue and the hours out of the workflow before the close, as legion-work-time counts them, are on no bar. So the seven bars of an issue add up to its work time, and this eval and legion-work-time agree. When the daemon stops reporting an issue, its sampler writes `null` for every field of the issue at one moment, and that is a drop, not a release. The phase and the slot that the issue held run on through a drop until the next observation that names a phase, and from that moment the issue holds a slot only if a slot observation at the same moment names one; where no such observation comes, they run to the issue's end.
+The hours in the queue and the hours out of the workflow before the close, as legion-work-time counts them, are on no bar. So the seven bars of an issue add up to its work time, and this eval and legion-work-time agree. When the daemon stops reporting an issue, Dispatch's whole read of the daemon's state writes `null` for every field of the issue at one moment, and that is a drop, not a release. The phase and the slot that the issue held run on through a drop until the next observation that names a phase, and from that moment the issue holds a slot only if a slot observation at the same moment names one; where no such observation comes, they run to the issue's end.
 
 The hours of each bar split into five segments. Each hour goes to the first segment of this list that holds through it:
 

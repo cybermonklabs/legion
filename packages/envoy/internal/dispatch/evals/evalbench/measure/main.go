@@ -180,7 +180,7 @@ func main() {
 	flags.StringVar(&o.pgLog, "pg-log", "", "Postgres's jsonlog file, which holds each statement with its parameters")
 	flags.StringVar(&o.project, "project", "INFRA", "the project the first paint reads")
 	flags.DurationVar(&o.quiet, "quiet", 30*time.Second, "how long after the restart the first window starts, so the boot's own passes have ended")
-	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: more than a minute, so every loop a quiet server runs on a minute's pace or on the Legion sampler's minute wake runs in it")
+	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: more than a minute, so every loop a quiet server runs on a minute's pace runs in it")
 	flags.DurationVar(&o.timeout, "timeout", time.Hour, "how long wait polls before it fails")
 	flags.BoolVar(&o.info, "info", false, "measure the first paint alone and judge no budget")
 	flags.IntVar(&o.run, "run", 0, "paint: which of the first paint's runs this is, from 1, which tags its lines run=<n>; the checks after the paint are run 1's; 0 for a paint measured once")

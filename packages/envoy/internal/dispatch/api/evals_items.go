@@ -42,6 +42,13 @@ import (
 // order above, the compare range's rows after the window's, and a row kind's rows in its own
 // order.
 //
+// `series` narrows every source to the series it names, as `row_kind` narrows them to a row kind,
+// so a series no row holds answers no row: the readings and the day rows of that series alone, and
+// a computed row kind only where the series is one its rows stand behind (evalItemKind.series), a
+// Legion eval's issues only under a series the eval holds, those of its cut and its filing class
+// (legionItemSource), and pr-ci's jobs only under the job series of each (jobItemRows,
+// failingJobRows).
+//
 // One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
 // project and the eval, the settings the rows stand built under, the day rows, the items they
 // counted and the delivery, CI, Legion and readings rows behind them, runs in one read-only
@@ -167,30 +174,57 @@ type evalRangeReads struct {
 }
 
 // evalItemKind is one row kind a computed eval answers, and its reader: read answers the kind's
-// rows whole, or source, set in its place, answers them a page at a time.
+// rows whole, or source, set in its place, answers them a page at a time. series is the series of
+// the eval whose numbers count the kind's rows, so a series filter naming any other answers none
+// of them (standsBehind); a kind that names none narrows to the filter's series itself: a Legion
+// eval's issues (legionItemSource) and pr-ci's jobs (jobItemRows, failingJobRows).
 type evalItemKind struct {
 	kind   string
+	series []string
 	read   func(s *server, ctx context.Context, read evalItemsRead) ([]evalItemRow, error)
 	source func(s *server, ctx context.Context, read evalItemsRead) (evalItemSource, error)
 }
 
+// standsBehind is whether the kind's rows stand behind series, the request's series filter: where
+// the filter names none, where the kind narrows to it itself (series nil), and where it is one of
+// the kind's own series.
+func (kind evalItemKind) standsBehind(series string) bool {
+	return series == "" || kind.series == nil || slices.Contains(kind.series, series)
+}
+
+// pullRequestItems is a delivery eval's pull requests, and deployItems its deploy runs, each
+// standing behind series of the eval.
+func pullRequestItems(series ...string) evalItemKind {
+	return evalItemKind{kind: evalRowPullRequest, series: series, read: (*server).pullRequestItemRows}
+}
+
+func deployItems(series ...string) evalItemKind {
+	return evalItemKind{kind: evalRowDeploy, series: series, read: (*server).deployItemRows}
+}
+
+// The kinds no other computed eval shares: a Legion eval's issues, which narrow to a series
+// themselves (legionItemSource), a CI eval's runs, which its minutes count, pr-ci's jobs, which
+// narrow to their job series themselves (jobItemRows, failingJobRows), and unowned-p0's issues.
 var (
-	pullRequestItems = evalItemKind{kind: evalRowPullRequest, read: (*server).pullRequestItemRows}
-	deployItems      = evalItemKind{kind: evalRowDeploy, read: (*server).deployItemRows}
-	legionItems      = evalItemKind{kind: evalRowIssue, source: (*server).legionItemSource}
+	legionItems  = evalItemKind{kind: evalRowIssue, source: (*server).legionItemSource}
+	runItems     = evalItemKind{kind: evalRowRun, series: []string{measures.SeriesMinutes}, read: (*server).runItemRows}
+	jobItems     = evalItemKind{kind: evalRowJob, read: (*server).jobItemRows}
+	unownedItems = evalItemKind{kind: evalRowIssue, series: []string{evals.SeriesUnownedP0}, read: (*server).unownedItemRows}
 )
 
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
-// rows, by the source it names: the rows its fold counts.
+// rows, by the source it names: the rows its fold counts, each kind with the series of the eval
+// that count its rows, as the day builders build them (measures.DeployFrequencyDay and the rest):
+// change-fail-rate's per_deploy and upper_bound count its deploys and per_pr its pull requests.
 var evalComputedItems = map[string][]evalItemKind{
-	evals.SourceFoldDeployFrequency:   {deployItems},
-	evals.SourceFoldDeployRunSuccess:  {deployItems},
-	evals.SourceFoldLeadTime:          {pullRequestItems},
-	evals.SourceFoldReworkShare:       {pullRequestItems},
-	evals.SourceFoldTimeToRestore:     {pullRequestItems},
-	evals.SourceFoldChangeFailureRate: {pullRequestItems, deployItems},
-	evals.SourceFoldTiming:            {{kind: evalRowRun, read: (*server).runItemRows}, {kind: evalRowJob, read: (*server).jobItemRows}},
-	evals.SourceListUnownedP0:         {{kind: evalRowIssue, read: (*server).unownedItemRows}},
+	evals.SourceFoldDeployFrequency:   {deployItems(measures.SeriesDeploys)},
+	evals.SourceFoldDeployRunSuccess:  {deployItems(measures.SeriesRuns)},
+	evals.SourceFoldLeadTime:          {pullRequestItems(measures.SeriesMinutes)},
+	evals.SourceFoldReworkShare:       {pullRequestItems(measures.SeriesPRs)},
+	evals.SourceFoldTimeToRestore:     {pullRequestItems(measures.SeriesMinutes)},
+	evals.SourceFoldChangeFailureRate: {pullRequestItems(measures.SeriesPerPR), deployItems(measures.SeriesPerDeploy, measures.SeriesUpperBound)},
+	evals.SourceFoldTiming:            {runItems, jobItems},
+	evals.SourceListUnownedP0:         {unownedItems},
 	evals.SourceFoldWorkTime:          {legionItems},
 	evals.SourceFoldPhaseTime:         {legionItems},
 	evals.SourceFoldIdleTime:          {legionItems},
@@ -285,7 +319,9 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 // evalItemSources is the sources of one items read in tx, the answer's snapshot, in the order its
 // page runs across them: for the window and then the compare range, the computed rows of each
 // kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
-// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone.
+// where row_kind names it or names none, and where series names none or one its rows stand behind
+// (evalItemKind.standsBehind; the readings and the day rows of that series alone). A request
+// naming sort reads pr-ci's job rows alone.
 func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest) ([]evalItemSource, error) {
 	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
 	if err != nil {
@@ -313,7 +349,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		read := evalItemsRead{project: project, entry: entry, request: request, repos: repos, rng: rng, settings: settings, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
-				if !kept(kind.kind) {
+				if !kept(kind.kind) || !kind.standsBehind(request.series) {
 					continue
 				}
 				if kind.source != nil {
@@ -473,15 +509,17 @@ func evalItemsPath(project, slug string) string {
 
 // legionItemSource is the issues a Legion eval counts in the range: the issues of the project that
 // closed in it (legionfacts.ReadClosedIn), and for legion-splitting the filings its sessions made
-// in it (legionfacts.ReadFilingsIn), the filings first; a `filed:<class>` series reads the filings
-// of that class alone, and any other series of legion-splitting the closed issues alone. A series'
-// cut keeps the issues of that cut, by the stored root (metrics.InCut), and row keeps the issue it
-// names. An issue the range both filed and closed answers one row (R24), its closed row, which
-// states its filing beside its facts (legionfacts.ItemRows), so its filing makes no row of its
-// own and each number the rows stand behind still finds its issue once. The repository each issue
-// resolves to now (legionfacts.ReadRepos, the repository the day rows cut by) is what a closed
-// issue's row shows and what repo keeps the issues by, so a row never shows one repository while
-// it is kept by another. Each row carries its issue's title and priority
+// in it (legionfacts.ReadFilingsIn), the filings first. A series the eval does not hold answers no
+// issue: SplitCutSeries reads any name, so `nope` would otherwise be read as the all cut of a
+// series named so and answer every issue the range closed. A `filed:<class>` series reads the
+// filings of that class alone, and any other series of legion-splitting the closed issues alone. A
+// series' cut keeps the issues of that cut, by the stored root (metrics.InCut), and row keeps the
+// issue it names. An issue the range both filed and closed answers one row (R24), its closed row,
+// which states its filing beside its facts (legionfacts.ItemRows), so its filing makes no row of
+// its own and each number the rows stand behind still finds its issue once. The repository each
+// issue resolves to now (legionfacts.ReadRepos, the repository the day rows cut by) is what a
+// closed issue's row shows and what repo keeps the issues by, so a row never shows one repository
+// while it is kept by another. Each row carries its issue's title and priority
 // (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
 //
 // The source answers a page at a time: the stored rows of the range are read whole, since every
@@ -490,6 +528,9 @@ func evalItemsPath(project, slug string) string {
 // built, where a read of every page made all three over every issue of the range. A repo filter
 // resolves every issue's repository, which the total then counts by.
 func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (evalItemSource, error) {
+	if series := read.request.series; series != "" && !slices.ContainsFunc(read.entry.Series, func(held evals.Series) bool { return held.Series == series }) {
+		return listedSource(nil), nil
+	}
 	base, cut := metrics.SplitCutSeries(read.request.series)
 	class, filedSeries := strings.CutPrefix(base, metrics.FilingSeriesPrefix)
 	splitting := read.entry.Definition.Slug == evals.SlugLegionSplitting

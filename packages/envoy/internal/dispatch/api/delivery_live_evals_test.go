@@ -345,12 +345,13 @@ func pipelineSlowestJobs(t *testing.T, body json.RawMessage) ([]string, int) {
 	return names, shape.PRChecks.SlowestMinResults
 }
 
-// TestAP0WriteAndTheSamplerMarkNoEvalsView: an evals view shows the unowned-p0 eval, whose count
+// TestAP0WriteAndTheIntakeMarkNoEvalsView: an evals view shows the unowned-p0 eval, whose count
 // it reads from the project's stored row, so an event of a P0 issue, which moves no stored row,
 // marks the timeline, which lists the open P0 issues, and no evals view; an event of an issue that
-// is no P0 marks neither. The sampler's read of the project's daemon, once a minute, marks the
-// project's Legion board and leaves its evals view.
-func TestAP0WriteAndTheSamplerMarkNoEvalsView(t *testing.T) {
+// is no P0 marks neither. The Legion state intake's record of the project's daemon, a batch of its
+// state events or a whole read (dirtyLegionProject), marks the project's Legion board and leaves
+// its evals view.
+func TestAP0WriteAndTheIntakeMarkNoEvalsView(t *testing.T) {
 	t.Parallel()
 	hub := &deliveryHub{clock: newStillHubClock()}
 	board, list, timeline := boardViewShowing("INFRA", "INFRA-7"), evalsViewOf("INFRA", 28, time.Time{}, time.Time{}),
@@ -396,7 +397,7 @@ func TestAP0WriteAndTheSamplerMarkNoEvalsView(t *testing.T) {
 	clean()
 	hub.dirtyLegionProject(g, "INFRA")
 	if got, want := dirty(), map[string]bool{"board": true, "evals": false, "timeline": false}; !reflect.DeepEqual(got, want) {
-		t.Errorf("the sampler's read of INFRA's daemon marks %v, want %v", got, want)
+		t.Errorf("the intake's record of INFRA's daemon marks %v, want %v", got, want)
 	}
 }
 

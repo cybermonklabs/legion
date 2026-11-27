@@ -360,7 +360,7 @@ func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
 // it (the most a refusal's text takes), and stores no version: the answer takes at most
 // evals.MaxAnswerBytes and is the one its idempotency key keeps, and the same body again under the
 // key is answered it byte for byte, replayed (checkKeptReplay). The refusal once carried every
-// digit, an answer past what one statement of the write sends.
+// digit, an answer past what the parameters of one statement of the write hold.
 func TestARegisterWriteOfANumberNoFieldHoldsIsRefusedWithABoundedKeptAnswer(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

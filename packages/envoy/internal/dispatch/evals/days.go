@@ -310,7 +310,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 				row.Series, row.Day.Format(time.DateOnly))})
 		case folded.N > MaxDaySamples && folded.N > row.N:
 			refuse(RowError{Index: pastDaySamples(base, given, first[key]), Code: CodeReadingDaySamplesLimit, Field: "measured_at", Message: fmt.Sprintf(
-				"with this reading the day row of %s would hold %d values, and a day row holds at most %d, so that its write is sent in one statement of at most %d bytes",
+				"with this reading the day row of %s would hold %d values, and a day row holds at most %d, so that its write is sent in one statement whose parameters take at most %d bytes",
 				dayRowName(row), folded.N, MaxDaySamples, statementBytes)})
 		default:
 			folded.Listed = series[row.Series].Listed

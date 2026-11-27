@@ -3235,7 +3235,7 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	requireSameBody(t, "the board's first snapshot", snapshot.Body,
 		getBody(t, rig.handler, windowTarget(t, legionBoardView, snapshot.Body, "")))
 	// The listener's connection and the relay's feed each mark the board (dirtyLegionViews,
-	// applyFeed): both are answered before the sampler's rows are written, so no recompute reads
+	// applyFeed): both are answered before the intake's rows are written, so no recompute reads
 	// them half written.
 	rig.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	rig.settle(t)

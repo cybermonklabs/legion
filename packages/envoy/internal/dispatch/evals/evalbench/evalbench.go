@@ -73,10 +73,10 @@ const (
 	checkJobs      = 40
 	readings       = 2_800_000
 	readingDays    = 730
-	// observedDays is how far back the daemon's sampler saw INFRA's issues: the issues opened in
-	// the last 120 days carry observations and the older ones the event log alone, so the
-	// project's first observation falls inside the history, as it does for a project whose
-	// daemon Dispatch began to read partway through.
+	// observedDays is how far back Dispatch's Legion state intake observed INFRA's issues: the
+	// issues opened in the last 120 days carry observations and the older ones the event log
+	// alone, so the project's first observation falls inside the history, as it does for a
+	// project whose daemon Dispatch began to read partway through.
 	observedDays = 120
 	// smallIssues is how many finished issues each smaller project's Legion history holds at
 	// least (evalfixture.DefaultIssues), and smallIssuesFloor the fewest it holds at any scale:

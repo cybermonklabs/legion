@@ -58,9 +58,10 @@ const (
 	// evalRepoMax is the most repositories an eval read's `repo` names, a repository the query
 	// repeats counted once, and evalRepoBytes the most bytes one of them holds, the bound of a
 	// reading's attributes.repo (evals' key bound): a longer name is the repository of no stored
-	// row. Every statement of the read sends the list, and at these bounds it takes at most
-	// 100 × (512 + 4) bytes, about 50 KiB of the 256 KiB a statement sends (evals'
-	// statementBytes), as a slug's 512 bytes keep each statement of a write under it.
+	// row. Every statement of the read sends the list among its parameters, and at these bounds it
+	// takes at most 100 × (512 + 4) bytes, about 50 KiB of the 256 KiB a statement's parameters
+	// take at most (evals' statementBytes), as a slug's 512 bytes keep the parameters of each
+	// statement of a write under it.
 	evalRepoMax   = 100
 	evalRepoBytes = 512
 
@@ -91,8 +92,8 @@ func evalQueryKeysOf(params any) evalQueryKeys {
 	return evalQueryKeys{declared: queryKeysOf(params), oneValue: oneValue}
 }
 
-// The query keys each eval read takes (evalQueryKeysOf), read once when the package starts. A
-// readings write declares none.
+// The query keys each eval read takes (evalQueryKeysOf), read once when the package starts. An
+// eval write declares none (evalWriteQueryKey).
 var (
 	evalListQueryKeys   = evalQueryKeysOf(evalListQuery{})
 	evalsQueryKeys      = evalQueryKeysOf(evalsQuery{})
@@ -149,6 +150,19 @@ func undeclaredQueryKey(query url.Values, declared []string) error {
 	return nil
 }
 
+// evalWriteQueryKey refuses the query of an eval write, the readings write and the register write:
+// each takes no query key but the `session` parameter every operation carries (actingPerson),
+// once, since a window means nothing to a write, so any other key (undeclaredQueryKey), and that
+// one named twice (repeatedQueryKey), is 400 INVALID_QUERY naming it (R7), before the write reads
+// its body or writes anything. A write that passed over a key would answer 201 to a caller who
+// asked a question the write never read.
+func evalWriteQueryKey(query url.Values) error {
+	if err := undeclaredQueryKey(query, nil); err != nil {
+		return err
+	}
+	return repeatedQueryKey(query, []string{evalSessionQueryKey})
+}
+
 // bodyKeys is the keys a JSON object of one Go struct takes, each spelled exactly as its field's
 // `json` tag spells it, with the keys the value under each takes in turn: nil for a value whose
 // keys are not checked here (a scalar, a map, a time, json.RawMessage). A list's value, and a
@@ -190,71 +204,99 @@ func bodyKeysOf(shape reflect.Type) bodyKeys {
 	return keys
 }
 
-// unspelledBodyKey refuses a JSON body holding a key its type does not spell exactly (keys): 400
-// INVALID_JSON naming the first such key, by where it stands, in name order; nil where every key
-// at every depth keys checks is one keys holds. encoding/json matches a key to a field without
-// regard to case, so `"Target": 10` would set the target the typed decode reads while the write,
-// which reads the keys a body names to tell a field it sets from one it leaves out
-// (decodeEvalRegistration's fieldOf), found no `target` and answered 200 with the target it had:
-// a write accepted and then ignored (R5). raw is a body the typed decode already took, so a value
-// that is no object or list is one keys does not check.
-func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
-	value := bytes.TrimLeft(raw, " \t\r\n")
-	if len(value) == 0 {
-		return nil
+// refusedBodyKey refuses a JSON body holding a key its type does not spell exactly (keys), or one
+// key twice in any object of it: 400 INVALID_JSON naming the first such key, in the order the body
+// holds them, by where it stands, cut to a field's bound (evals.BoundedField); nil where every key
+// at every depth keys checks is one keys holds, and every object of the body names each of its
+// keys once. encoding/json matches a key to a field without regard to case, so `"Target": 10`
+// would set the target the typed decode reads while the write, which reads the keys a body names
+// to tell a field it sets from one it leaves out (decodeEvalRegistration's fieldOf), found no
+// `target` and answered 200 with the target it had: a write accepted and then ignored (R5). And
+// it, the registry's read of a reading's row (evals' parseRow) and Postgres's jsonb each take the
+// last of two values of one key, so `{"slug": "a", "slug": "b"}` would write b's version of a
+// body that named a as well, and `"attributes": {"repo": "a", "repo": "b"}` store b alone. raw is
+// a body the typed decode already took, so it is one JSON value, read once here as a stream of
+// tokens (walkBodyKeys) rather than object by object into maps.
+func refusedBodyKey(raw json.RawMessage, keys bodyKeys) error {
+	err := walkBodyKeys(json.NewDecoder(bytes.NewReader(raw)), keys, "")
+	var refused *apiError
+	if err == nil || errors.As(err, &refused) {
+		return err
 	}
-	switch value[0] {
-	case '[':
-		var elements []json.RawMessage
-		if json.Unmarshal(raw, &elements) != nil {
-			return nil
-		}
-		for index, element := range elements {
-			if err := unspelledBodyKey(element, keys, fmt.Sprintf("%s[%d]", at, index)); err != nil {
+	return errorf(http.StatusBadRequest, "INVALID_JSON", "%s", evals.BoundedError("invalid JSON body: "+err.Error()))
+}
+
+// walkBodyKeys reads the next JSON value of decoder, which stands at at in the body ("" for the
+// body itself, `series[0]`, `readings[2].attributes`): an object's keys in the order it holds
+// them, each refused where the object named it already, and where keys does not spell it, and
+// the value under each walked in turn with the keys that value takes; a list's elements in turn,
+// each with keys; and a scalar as it is. A value whose keys are not checked (keys nil: a reading's
+// row, which the registry reads key by key itself, a map such as `attributes`, a scalar) is
+// walked all the same, every object in it held to naming each key once.
+func walkBodyKeys(decoder *json.Decoder, keys bodyKeys, at string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	switch token {
+	case json.Delim('['):
+		for index := 0; decoder.More(); index++ {
+			if err := walkBodyKeys(decoder, keys, fmt.Sprintf("%s[%d]", at, index)); err != nil {
 				return err
 			}
 		}
-	case '{':
-		var named map[string]json.RawMessage
-		if json.Unmarshal(raw, &named) != nil {
-			return nil
-		}
+	case json.Delim('{'):
 		where := "the body"
 		if at != "" {
 			where = at
 		}
-		for _, key := range slices.Sorted(maps.Keys(named)) {
-			inner, spelled := keys[key]
-			if !spelled {
-				// The key is the body's, of any length; the refusal names it cut to a field's
-				// bound, so the answer an idempotency key keeps stays bounded whatever the body.
-				return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q, which is none of the keys it takes, each spelled exactly so: %s",
-					where, evals.BoundedField(key), strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+		named := make(map[string]bool, len(keys))
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
 			}
-			if inner == nil {
-				continue
+			key, _ := token.(string)
+			// The key is the body's, of any length; each refusal names it cut to a field's bound,
+			// so the answer an idempotency key keeps stays bounded whatever the body.
+			var inner bodyKeys
+			if keys != nil {
+				held, spelled := keys[key]
+				if !spelled {
+					return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q, which is none of the keys it takes, each spelled exactly so: %s",
+						where, evals.BoundedField(key), strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+				}
+				inner = held
 			}
+			if named[key] {
+				return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q twice, and an object names each of its keys once: the write would take the last value and pass over the first",
+					where, evals.BoundedField(key))
+			}
+			named[key] = true
 			path := key
 			if at != "" {
 				path = at + "." + key
 			}
-			if err := unspelledBodyKey(named[key], inner, path); err != nil {
+			if err := walkBodyKeys(decoder, inner, path); err != nil {
 				return err
 			}
 		}
+	default:
+		return nil
 	}
-	return nil
+	_, err = decoder.Token()
+	return err
 }
 
 // decodeEvalBody reads an eval write's JSON body into value, whose keys are keys
 // (evalRegisterBodyKeys, evalReadingsBodyKeys), and answers the body as sent. A body that is no
-// JSON value of value's type, or one holding a key keys does not spell exactly (unspelledBodyKey),
-// is 400 INVALID_JSON. The decoder's error carries a number of the body whole
-// (json.UnmarshalTypeError's Value), so the refusal names that number cut to a field's bound
-// (evals.BoundedField), which leaves room for the field and the type the error names after it, and
-// its whole text is cut to the most a refusal's text takes (evals.BoundedError, 1,024 bytes as JSON
-// writes it): a megabyte of digits would otherwise make a megabyte of answer, which the write's
-// Idempotency-Key keeps in one statement.
+// JSON value of value's type, or one holding a key keys does not spell exactly or a key twice in
+// any object of it (refusedBodyKey), is 400 INVALID_JSON. The decoder's error carries a number of
+// the body whole (json.UnmarshalTypeError's Value), so the refusal names that number cut to a
+// field's bound (evals.BoundedField), which leaves room for the field and the type the error names
+// after it, and its whole text is cut to the most a refusal's text takes (evals.BoundedError, 1,024
+// bytes as JSON writes it): a megabyte of digits would otherwise make a megabyte of answer, which
+// the write's Idempotency-Key keeps in one statement.
 func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if err := decodeJSON(r, &raw); err != nil {
@@ -267,7 +309,7 @@ func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage,
 		}
 		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "%s", evals.BoundedError("invalid JSON body: "+err.Error()))
 	}
-	if err := unspelledBodyKey(raw, keys, ""); err != nil {
+	if err := refusedBodyKey(raw, keys); err != nil {
 		return nil, err
 	}
 	return raw, nil
@@ -411,14 +453,14 @@ type evalReadingsBody struct {
 // evalReadingsResponse is the readings write's answer: the readings it stored, the eval's
 // definition, and whether this write registered it (R3). Total is how many readings the write
 // stored, and Items the first of them in the batch's order, as many as keep the answer within
-// evals.MaxAnswerBytes, so that the statement that keeps it under the write's Idempotency-Key
-// sends at most 256 KiB, as every statement of the write does, and a repeat under the key is
-// answered this same answer however large the batch; Limit is how many Items lists. The ids of the
-// readings it leaves out are read from the eval's items route, each reading's cols.id
-// (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves most of the answer
-// to the readings, but one reading may take more than the bound itself as JSON (a note of some
-// hundred kilobytes is within what one statement stores), so Items may list none while Total
-// counts every one.
+// evals.MaxAnswerBytes, so that the parameters of the statement that keeps it under the write's
+// Idempotency-Key take at most 256 KiB, as the parameters of every statement of the write do, and
+// a repeat under the key is answered this same answer however large the batch; Limit is how many
+// Items lists. The ids of the readings it leaves out are read from the eval's items route, each
+// reading's cols.id (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves
+// most of the answer to the readings, but one reading may take more than the bound itself as JSON
+// (a note of some hundred kilobytes is within what one statement stores), so Items may list none
+// while Total counts every one.
 type evalReadingsResponse struct {
 	Items      []evals.Reading  `json:"items"`
 	Total      int              `json:"total"`
@@ -475,10 +517,11 @@ type evalRegisterInput struct {
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
 // of its series by name, and whether the write stored a new version of the definition or of a
 // series. SeriesTotal is how many series the eval holds, and Series the first of them, as many as
-// keep the answer within evals.MaxAnswerBytes, so that the statement that keeps it under the
-// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a repeat
-// under the key is answered this same answer. A version, of the definition or of a series, takes
-// at most evals.MaxVersionBytes, so Series lists at least one series of an eval that holds any.
+// keep the answer within evals.MaxAnswerBytes, so that the parameters of the statement that keeps
+// it under the write's Idempotency-Key take at most 256 KiB, as the parameters of every statement
+// of the write do, and a repeat under the key is answered this same answer. A version, of the
+// definition or of a series, takes at most evals.MaxVersionBytes, so Series lists at least one
+// series of an eval that holds any.
 type evalRegistered struct {
 	Definition  evals.Definition `json:"definition"`
 	Series      []evals.Series   `json:"series"`
@@ -628,7 +671,8 @@ func invalidEvalQuery(err error) error {
 // INVALID_QUERY naming the first such key in the order oneValue gives them, nil where none is. A
 // delivery read's oneValue is the keys of its shape's query struct that are no list, in the order
 // the shape declares them (oneValueQueryKeys); an eval read's is those and the global session
-// parameter, in name order (evalQueryKeys), and a readings write's the session parameter alone.
+// parameter, in name order (evalQueryKeys), and an eval write's the session parameter alone
+// (evalWriteQueryKey).
 // Such a key is read as its first value, so `?kind=legion&kind=ci` would be answered the Legion
 // evals alone, and ?from=A&from=B the window from A: a question other than the one asked, as a key
 // the route does not take would be (undeclaredQueryKey). A list key of the shape (the
@@ -1108,9 +1152,9 @@ func evalNotFound(project, slug string) error {
 // writeEvalError answers err: a registry refusal (*evals.Error) as its own body, {code, error}
 // and for a readings write its refused rows, the first evals.MaxRefusedRows of them, and
 // rows_omitted, how many more there are, every text in it bounded, so the answer the write's
-// idempotency key keeps stays within the statement bound whatever the body; 404 for a project no
-// row holds, 409 for a project whose `evals-md` slug names a file and 400 for every other;
-// anything else as writeHandlerError does.
+// idempotency key keeps stays within the bound of a statement's parameters whatever the body; 404
+// for a project no row holds, 409 for a project whose `evals-md` slug names a file and 400 for
+// every other; anything else as writeHandlerError does.
 func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 	var refused *evals.Error
 	if !errors.As(err, &refused) {
@@ -1133,8 +1177,7 @@ func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 // and a reading under a computed eval's slug is stored and never folded into its value. The write
 // needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED), so a retry is answered from the keyed
 // layer (keyedWrites) rather than written twice (R4). It takes no query key but the `session`
-// parameter every operation carries (actingPerson), once: a window means nothing to a write, so
-// any other key, and that one named twice, is 400 INVALID_QUERY naming it (R7). The body's actor
+// parameter every operation carries (actingPerson), once (evalWriteQueryKey). The body's actor
 // follows Dispatch's bearer rule (bearerSessionActor); the server sets recorded_by and
 // recorded_at, and a row carrying either is refused (READING_FIELD_SERVER_SET). The day rows the
 // write keeps record s.deps.Build as the build that wrote them. It answers 201 with how many
@@ -1144,12 +1187,7 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	query := r.URL.Query()
-	if err := undeclaredQueryKey(query, nil); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := repeatedQueryKey(query, []string{evalSessionQueryKey}); err != nil {
+	if err := evalWriteQueryKey(r.URL.Query()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1212,9 +1250,14 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // all (evalRegistered, answerPrefix). A field the body names that no earlier write of the eval
 // named is a change of the version's record of what a person set, so `target: null` on an eval
 // whose target is already off is answered 201, and sent again 200 (evals.Definition's
-// SetByPerson).
+// SetByPerson). It takes no query key but the `session` parameter every operation carries, once,
+// as the readings write does (evalWriteQueryKey), and refuses any other before it reads the body.
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	if err := evalWriteQueryKey(r.URL.Query()); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	change, supplied, err := decodeEvalRegistration(r)
@@ -1250,13 +1293,13 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 }
 
 // answerPrefix is the longest leading part of items with which an eval write's answer takes at
-// most evals.MaxAnswerBytes as WriteJSON encodes it, so that the statement that keeps it under the
-// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a
-// repeat under the key is answered the first answer rather than ANSWER_NOT_KEPT. answer is that
-// answer listing none of items, every count in it as many digits as it will hold; each item adds
-// its JSON as the answer encodes it, and a comma before every one but the first. Each item is
-// encoded once, in order, and none past the first that passes the bound, so a batch far past it
-// is not encoded whole.
+// most evals.MaxAnswerBytes as WriteJSON encodes it, so that the parameters of the statement that
+// keeps it under the write's Idempotency-Key take at most 256 KiB, as the parameters of every
+// statement of the write do, and a repeat under the key is answered the first answer rather than
+// ANSWER_NOT_KEPT. answer is that answer listing none of items, every count in it as many digits
+// as it will hold; each item adds its JSON as the answer encodes it, and a comma before every one
+// but the first. Each item is encoded once, in order, and none past the first that passes the
+// bound, so a batch far past it is not encoded whole.
 func answerPrefix[T any](answer any, items []T) ([]T, error) {
 	var encoded bytes.Buffer
 	if err := json.NewEncoder(&encoded).Encode(answer); err != nil {
@@ -1281,8 +1324,8 @@ func answerPrefix[T any](answer any, items []T) ([]T, error) {
 // decodeEvalRegistration reads a register write's body into the registration it asks for: each
 // field the body names is set, `null` included (a null target is off), and each it leaves out is
 // left unset, so the registry copies it forward. The body is decoded twice, once into its type,
-// which refuses a key no field spells exactly (decodeEvalBody), and once by key, which says which
-// keys it named.
+// which refuses a key no field spells exactly and a key named twice in one object
+// (decodeEvalBody), and once by key, which says which keys it named.
 func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, error) {
 	var input evalRegisterInput
 	raw, err := decodeEvalBody(r, &input, evalRegisterBodyKeys)

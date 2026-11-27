@@ -444,15 +444,15 @@ const (
 	CodeFieldComputed = "EVAL_FIELD_COMPUTED"
 	// CodeSeriesLimit: a register write or a readings write would leave an eval holding more
 	// series than MaxEvalSeries, listed or not, the most whose stored rows are each written in one
-	// statement of at most statementBytes.
+	// statement whose parameters take at most statementBytes.
 	CodeSeriesLimit = "EVAL_SERIES_LIMIT"
 	// CodeReadingDaySamplesLimit: the row's value would make its day row of a logged eval hold
-	// more values than MaxDaySamples, the most whose row is written in one statement of at most
-	// statementBytes.
+	// more values than MaxDaySamples, the most whose row is written in one statement whose
+	// parameters take at most statementBytes.
 	CodeReadingDaySamplesLimit = "READING_DAY_SAMPLES_LIMIT"
 	// CodeReadingTooLarge: the row's reading takes more bytes as the write sends it (its note,
-	// attributes, links and other texts) than one statement of the write sends, so no statement
-	// within statementBytes could store it.
+	// attributes, links and other texts) than the parameters of one statement of the write hold,
+	// so no statement whose parameters take at most statementBytes could store it.
 	CodeReadingTooLarge = "READING_TOO_LARGE"
 	// CodeVersionTooLarge: a write would store a version of an eval's definition, or of one of
 	// its series, that takes more than MaxVersionBytes as JSON: a register write's version once
@@ -505,9 +505,10 @@ const (
 
 // MaxAnswerBytes is the most bytes the answer of an eval write takes as its route encodes it (api's
 // WriteJSON, the newline it ends with among them). The idempotency store keeps a write's answer in
-// one statement (api's settleRequestKey: update request_keys), and it is the most whose statement
-// sends within statementBytes beside answerStatementReserve, the statement's other parameters:
-// 262,144 - 4,096 = 258,048. Each answer that grows with its body stays within it by listing the
+// one statement (api's settleRequestKey: update request_keys), and it is the most whose
+// statement's parameters take at most statementBytes beside answerStatementReserve, the
+// statement's other parameters: 262,144 - 4,096 = 258,048 bytes, the Bind message that carries
+// them being a little larger. Each answer that grows with its body stays within it by listing the
 // first of its rows and counting the rest: a refusal of a readings write its row errors
 // (MaxRefusedRows, RowsOmitted), and api's 201 of a readings write its readings, and the answer of
 // a register write its eval's series. So a repeat under the write's key is answered the first
@@ -515,10 +516,11 @@ const (
 // status alone.
 const MaxAnswerBytes = statementBytes - answerStatementReserve
 
-// answerStatementReserve is what the statement that keeps an answer (MaxAnswerBytes) sends besides
-// the answer's body: 4 bytes of length before each of its six parameters, the idempotency key (at
-// most 128 bytes, contracts.IdempotencyKeyMax), the attempt and the status, the caller's login
-// and the answer's headers as JSON, a few hundred bytes: 4,096 reserved in all.
+// answerStatementReserve is what the parameters of the statement that keeps an answer
+// (MaxAnswerBytes) take besides the answer's body: 4 bytes of length before each of its six
+// parameters, the idempotency key (at most 128 bytes, contracts.IdempotencyKeyMax), the attempt
+// and the status, the caller's login and the answer's headers as JSON, a few hundred bytes: 4,096
+// reserved in all.
 const answerStatementReserve = 4096
 
 // MaxRefusedRows is the most row errors a refusal of a readings write lists (Error.Rows), the
