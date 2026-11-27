@@ -2723,9 +2723,10 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // publishJetStream publishes item to the notification stream within ctx's bound, and returns the
 // stream's acknowledgement (StoredAck), under the message id the envelope earns (storedMsgID): a
 // GitHub comment that mentions the trigger is published on its mention topic beside its comment
-// topic under one key, and each of those must be retained. The bound PublishStoredAck sets is the
-// earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
-// deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
+// topic under one key, and each of those must be retained. The bound of the publish
+// (publishStoredRaw) is the earlier of the caller's own deadline and publishBound, since
+// WithTimeout keeps the parent's deadline when that is the earlier one; publishBound is what
+// bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
 // to expire that bound without spending it.
 //
@@ -2757,12 +2758,14 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // Nats-Msg-Id header within the server's max payload, which every stored write is (checkSend), and
 // the envelope and the relay's headers within it too (relayFrameTooLarge), since the relay hands
 // a session the stored envelope under headers of its own and none of the stored message's
-// (RelayFrameHeaderBytes). An envelope on its own topic is a message for the sessions that follow
-// that topic, so one the stream stores reaches each of them whole. Both are refused before the
-// wait for a reconnect or the read of ctx, the stored bound first, so a message past the max
-// payload by itself is named as such. A stored write that names its own subject (PublishStoredAck,
-// the raw writes) is held to the stream's bound alone: a frame of one past the max payload is the
-// relay's notice to the session in its place.
+// (RelayFrameHeaderBytes). So an envelope published here reaches the sessions that follow its topic
+// whole. Both are refused before the wait for a reconnect or the read of ctx, the stored bound
+// first, so a message past the max payload by itself is named as such. Not every stored write is
+// held to the frame: a publish window's sends of an envelope on its own topic (Dispatch's outbox),
+// PublishStoredAck and PublishStoredAs (a role's kept copy, a delivery exception), the raw writes,
+// and a forward of a copy the stream already holds keep the stream's bound alone, and a message
+// they store with less room than the frame needs reaches a session as the relay's notice in its
+// place (RelayFrameHeaderBytes names them).
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	data, err := json.Marshal(item)
 	if err != nil {
@@ -3028,12 +3031,11 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // envelope again under one MsgId until it is stored leaves the stream one copy per message and
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
 // duplicate, which counts as stored. A forward past the server's max payload, its header
-// included, is ErrTooLarge before the wait for a connection or anything else (checkSend), and so
-// is one whose relay frame would be past it (relayFrameTooLarge): the forward is stored for a
-// session's consumer, which hands it on as a frame of the forward's bytes under the relay's own
-// headers, so a forward the stream took and no session could be handed would reach its holder
-// only as the relay's notice. A role forward carries a message a caller sent. An error here is
-// the publish's own, before any reply
+// included, is ErrTooLarge before the wait for a connection or anything else (checkSend): a role
+// forward carries a message a caller sent. The forward is held to the stream's bound alone, since
+// it is also how a copy the stream already holds reaches its holder (the kept lane's walk, the role
+// lane's delivery), which a refusal could not take back; a caller whose sender is still waiting
+// asks RelayFrameTooLarge first. An error here is the publish's own, before any reply
 // could arrive (a refused, denied or invalid forward, a connection that never came back within
 // timeout); every returned forward must be waited for, which releases its reply subscription.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
@@ -3049,9 +3051,6 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	forward := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(msgID)}
 	if err := c.checkSend(forward); err != nil {
-		return nil, err
-	}
-	if err := relayFrameTooLarge(int64(len(data)), subject, c.maxPayload.Load()); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

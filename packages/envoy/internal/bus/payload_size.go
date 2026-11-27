@@ -104,8 +104,26 @@ func payloadTooLarge(size, maxPayload int64) error {
 // the one wording every refusal of one uses (payloadTooLarge before a send, refused after
 // nats.go's), so a caller reads one answer whichever made it.
 func pastMaxPayload(size, maxPayload int64) error {
-	return fmt.Errorf("%w: a message of %d bytes, its headers included, against the server's max payload of %d bytes", ErrTooLarge, size, maxPayload)
+	return &MessageTooLargeError{Size: size, MaxPayload: maxPayload}
 }
+
+// MessageTooLargeError is the ErrTooLarge of a message past the server's max payload, with the
+// numbers the refusal was made on: the message's size, its data and headers as nats.go counts
+// them (messageBytes), and the max payload it was held to, the one the client last read for its
+// own check (checkSend) or the connection's own for nats.go's (refused). A caller that must name
+// those numbers, as cmd/listener's relay does in the notice of a frame it could not publish,
+// reads them from the refusal rather than from the client again, which a reconnect may have
+// moved since.
+type MessageTooLargeError struct {
+	Size, MaxPayload int64
+}
+
+func (e *MessageTooLargeError) Error() string {
+	return fmt.Sprintf("%s: a message of %d bytes, its headers included, against the server's max payload of %d bytes", ErrTooLarge, e.Size, e.MaxPayload)
+}
+
+// Unwrap is ErrTooLarge, so errors.Is reads the refusal as ErrTooLarge and as ErrRefused.
+func (e *MessageTooLargeError) Unwrap() error { return ErrTooLarge }
 
 // messageBytes is what nats.go holds msg to against the server's max payload: its data and its
 // headers as nats.go encodes them (nats.go v1.55.0 Conn.publish counts len(data)+len(hdr)), which

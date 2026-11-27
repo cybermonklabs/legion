@@ -645,8 +645,18 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 				send.windowEnded(inProcess)
 				return
 			}
-			send.attempts++
 			subject := contracts.LegacyAgentSubject(send.holder)
+			// The sender is still waiting, so a forward whose relay frame would be past the max
+			// payload is refused here, the 413 the routes answer for the same rule
+			// (bus.Client.RelayFrameTooLarge), rather than stored for a holder that could be handed
+			// it only as the relay's notice. A forward of a copy the stream already holds - the
+			// kept lane's walk, the role lane's delivery - makes no such check: that copy is past
+			// refusing, and its holder is handed it whole or the notice in its place.
+			if err := d.client.RelayFrameTooLarge(subject, forwarded); err != nil {
+				send.refused(err)
+				return
+			}
+			send.attempts++
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.

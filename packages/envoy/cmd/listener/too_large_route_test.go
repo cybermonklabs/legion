@@ -83,24 +83,36 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 	return before
 }
 
-// headerBandText is a message for POST /v1/messages/publish on topic under idempotency key key
-// whose envelope, as the route builds it, is within the server's max payload by itself, and past
-// it by one byte with the Nats-Msg-Id header its publish carries. It is one of the two bands a
-// check of the envelope alone would let through; on a topic the stream stores the relay's frame
-// headers reserve more than that header does (bus.RelayFrameHeaderBytes), so the route's check
-// refuses this message for the frame, and either reserve keeps it from the publish.
+// headerBandText is a message for POST /v1/messages/publish on topic, of source dispatch under
+// idempotency key key, whose envelope, as the route builds it, is within the server's max payload
+// by itself and within the room the relay's frame headers take (bus.RelayFrameHeaderBytes), and
+// past the max payload by one byte with the Nats-Msg-Id header its publish carries: the band in
+// which only the route's count of that header refuses it before the publish. The header must then
+// be the larger reserve of the two. A message id of the usual length is not - an agent's minted key
+// is 40 bytes, and the relay's fixed header bytes are 264 - and only an envelope of source dispatch
+// earns one under a key of any length (contracts.DedupeKeyNamesTheUpstreamEvent), so the row sends
+// one under a long key (headerBandKey). The helper fails UNKNOWN when the envelope earns no message
+// id or its header is not the larger reserve, rather than leave the row passing on the frame's.
 func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 	t.Helper()
 	dedupeKey := publishDedupePrefix + key
+	envelope := func(text string) contracts.Envelope {
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "dispatch", Message: text}, contracts.ExpectsReplyUnset), topic, dedupeKey)
+	}
 	envelopeSize := func(text string) int {
-		item := contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", Message: text}, contracts.ExpectsReplyUnset), topic, dedupeKey)
-		encoded, err := json.Marshal(item)
+		encoded, err := json.Marshal(envelope(text))
 		if err != nil {
 			t.Fatalf("encode the envelope: %v", err)
 		}
 		return len(encoded)
 	}
+	if !contracts.DedupeKeyNamesTheUpstreamEvent(envelope("")) {
+		t.Fatal("UNKNOWN: the envelope earns no message id, so its publish carries no header to count")
+	}
 	header := (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(dedupeKey, topic)}}}).Size()
+	if frame := bus.RelayFrameHeaderBytes(topic); header <= frame {
+		t.Fatalf("UNKNOWN: the message id header takes %d bytes and the relay's frame headers %d: the row wants the message id the larger reserve", header, frame)
+	}
 	// A text past the summary's 160 runes is the envelope's payload whole, so each further 'm' adds
 	// one byte to the envelope, and its ids and issue time have a fixed width.
 	const base = 1000
@@ -109,6 +121,15 @@ func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 		t.Fatalf("UNKNOWN: the envelope takes %d bytes and its header %d against the max payload of %d: the row wants the envelope within it and the message one byte past it", size, header, maxPayload)
 	}
 	return text
+}
+
+// headerBandKey is an idempotency key long enough that the Nats-Msg-Id header of a Dispatch
+// envelope published under it is a larger reserve than the relay's frame headers on the same topic:
+// the message id is the dedupe key and the topic, so the key must outgrow the frame's fixed header
+// bytes (bus.RelayFrameHeaderBytes less the subject), 264, by the header's own line and prefix.
+// Every call returns another key of the same length, so the envelope is the same size under each.
+func headerBandKey() string {
+	return id.New() + strings.Repeat("k", 300)
 }
 
 // stampBandText is a message for POST /v1/messages/publish on topic from sender, under idempotency
@@ -260,7 +281,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	oversized := strings.Repeat("m", 2<<20)
-	band := headerBandText(t, topic, id.New(), maxPayload)
+	band := headerBandText(t, topic, headerBandKey(), maxPayload)
 	for _, deadline := range []struct {
 		name string
 		ctx  context.Context
@@ -274,7 +295,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 			{"a send to a live session", "/v1/messages/send", map[string]string{"target_session": live, "message": oversized}},
 			{"a send to a stopped session", "/v1/messages/send", map[string]string{"target_session": stopped, "message": oversized}},
 			{"a send to a session neither store knows", "/v1/messages/send", map[string]string{"target_session": unknown, "message": oversized}},
-			{"a publish within the bound but for its header", "/v1/messages/publish", map[string]string{"topic": topic, "message": band, "idempotency_key": id.New()}},
+			{"a publish within the bound but for its header", "/v1/messages/publish", map[string]string{"topic": topic, "message": band, "idempotency_key": headerBandKey(), "source": "dispatch"}},
 		} {
 			refused(row.name+", "+deadline.name, request(deadline.ctx, row.path, row.body))
 		}

@@ -54,6 +54,13 @@ const (
 	relayGapRepositoryWithheld = "repository_withheld"
 )
 
+// relayGapReasons is every value relayHeaderGapReason takes: relayNATS sets gapReason to these and
+// to "" alone. The room the listener's checks reserve for a frame's headers counts the longest of
+// them (bus.RelayFrameHeaderBytes), and TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader
+// ranges over this list, so a reason added here that is longer fails that row until the bound
+// counts it.
+var relayGapReasons = []string{relayGapRepositoryWithheld}
+
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
 const (
 	// relayReplyReceived: the frame decoded, before any host work. The receipt.
@@ -1461,9 +1468,11 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 // the server deliver it again, and so the notice again. Such a message never reaches the session
 // whole, however often it is sent, and before the notice its failed publish restarted the relay at
 // the ack floor, where it came first again, so no later message of the session was ever sent. A
-// message the listener accepted is held to the frame's room when it is stored
-// (bus.RelayFrameHeaderBytes); one stored before that, by a write held to the stream's bound
-// alone, or under a max payload the server has since lowered, is what meets this.
+// message the listener's own checks accept is held to the frame's room when it is stored
+// (bus.RelayFrameHeaderBytes); every write that keeps the stream's bound alone can still store one
+// that meets this - a publish window's send of Dispatch's outbox, a delivery exception, a role's
+// kept copy and its forward, a role lane's forward, a raw stored write - and so can an older
+// build, or a max payload the server has since lowered.
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]

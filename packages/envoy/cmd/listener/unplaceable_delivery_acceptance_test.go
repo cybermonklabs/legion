@@ -1041,11 +1041,16 @@ func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target)
 	// The payload fills the envelope to the largest the listener publishes on the target's own
 	// subject - the server's max payload less the room the relay's frame headers take
-	// (bus.RelayFrameHeaderBytes) and 64 bytes - so the envelope itself is published and
-	// delivered, and the notice - the same payload plus the notice's own fields and a second
-	// level of JSON quoting - is past the max payload.
+	// (bus.RelayFrameHeaderBytes) - so the envelope itself is published and delivered, and the
+	// notice - the same payload plus the notice's own fields and a second level of JSON quoting -
+	// is past the max payload. The empty payload is left out of bare, so its key's own bytes are
+	// counted once it is filled.
 	bare := marshalListenerEnvelope(t, item)
-	item.Payload = strings.Repeat("p", int(harness.client.Conn.MaxPayload())-len(bare)-bus.RelayFrameHeaderBytes(item.Topic)-64)
+	largest := int(harness.client.Conn.MaxPayload()) - bus.RelayFrameHeaderBytes(item.Topic)
+	item.Payload = strings.Repeat("p", largest-len(bare)-len(`,"payload":""`))
+	if size := len(marshalListenerEnvelope(t, item)); size != largest {
+		t.Fatalf("UNKNOWN: the envelope takes %d bytes, want the %d the listener publishes at most on %s", size, largest, item.Topic)
+	}
 	cfg := harness.config
 	cfg.unplaceableRetryWindow = oneDeferralWindow
 	run := startEnvelopeDeliveryThrough(t, harness, jetStreamDeliveryHandler(cfg), target, item, 0)
