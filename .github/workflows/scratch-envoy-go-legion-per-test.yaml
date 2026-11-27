@@ -1,0 +1,135 @@
+name: scratch envoy-go leg 3 per-test
+
+# Scratch, never merged (branch probe/legion-parallel-per-test, deleted after): where envoy-go leg
+# 3's time goes on CI's own runners. `leg` runs leg 3's packages exactly as the leg does (same
+# -skip, -timeout and env), `alone` runs internal/dispatch/legion by itself; both keep go test's
+# -json report (the leg's database-skips.sh deletes its own), run under /usr/bin/time -v, with
+# vmstat every 5 s, and print each top-level test's time.
+on:
+  push:
+    branches: [probe/legion-parallel-per-test]
+
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  probe:
+    name: ${{ matrix.mode }} ${{ matrix.rep }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [leg, alone]
+        rep: [1, 2]
+    services:
+      postgres:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      - name: Name the runner
+        run: |
+          nproc
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|MHz|BogoMIPS' || true
+          free -g
+          git log --oneline -1
+      - name: Per-test times
+        working-directory: packages/envoy
+        env:
+          DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+        run: |
+          skip=$(python3 - <<'EOF'
+          import re, yaml
+          w = yaml.safe_load(open('../../.github/workflows/ci-job-envoy-go.yaml'))
+          step = [s for s in w['jobs']['envoy-go-legs']['steps'] if s.get('name') == 'Unit test envoy Go package'][0]
+          print(re.search(r"--skip '([^']+)'", step['run']).group(1))
+          EOF
+          )
+          if [ "${{ matrix.mode }}" = leg ]; then
+            mapfile -t pkgs < <(python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go 3 5)
+          else
+            pkgs=(./internal/dispatch/legion/)
+          fi
+          echo "packages: ${#pkgs[@]}: ${pkgs[*]}"
+          vmstat -n 5 > "$RUNNER_TEMP/vmstat.txt" &
+          vm=$!
+          s=$(date +%s)
+          set +e
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" go test -json -count=1 -timeout 30m -skip "$skip" "${pkgs[@]}" > "$RUNNER_TEMP/t2j.json"
+          rc=$?
+          e=$(date +%s)
+          kill "$vm"
+          echo "RESULT rc=$rc wall=$((e - s)) $(grep -E 'User time|System time|Percent of CPU|Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt" | sed -E 's/^\s+//' | tr '\n' ';')"
+          python3 - "$RUNNER_TEMP/t2j.json" <<'EOF'
+          import json, sys, collections
+          pk = {}; tests = collections.defaultdict(dict)
+          for line in open(sys.argv[1]):
+              try: e = json.loads(line)
+              except ValueError: continue
+              p = e.get('Package', '').replace('github.com/sjawhar/envoy/', '')
+              t = e.get('Test')
+              if e.get('Action') in ('pass', 'fail', 'skip'):
+                  if t is None: pk[p] = (e['Action'], e.get('Elapsed'))
+                  elif '/' not in t: tests[p][t] = (e['Action'], e.get('Elapsed', 0))
+          for p, (a, el) in sorted(pk.items(), key=lambda x: -(x[1][1] or 0)):
+              print(f"PKG {a} {p} {el}")
+          L = tests.get('internal/dispatch/legion', {})
+          tot = sum(v[1] for v in L.values())
+          print(f"LEGION tests={len(L)} sum={tot:.1f}s")
+          for t, (a, el) in sorted(L.items(), key=lambda x: -x[1][1]):
+              print(f"TEST {el:8.2f} {a} {t}")
+          EOF
+          echo "::group::vmstat"
+          cat "$RUNNER_TEMP/vmstat.txt"
+          echo "::endgroup::"
+          exit $rc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: t2j-${{ matrix.mode }}-${{ matrix.rep }}
+          path: ${{ runner.temp }}/t2j.json
+          retention-days: 5
