@@ -44,6 +44,7 @@ const (
 // drop the guard against an empty remainder, and the row of the two bare prefixes counts; have
 // readSource answer the frozen source, and the read rows read the second prefix.
 func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
+	t.Parallel()
 	moved := sourceRule{prefix: movedConfigured, second: movedSecond}
 	unset := sourceRule{prefix: movedConfigured}
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }

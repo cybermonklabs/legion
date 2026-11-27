@@ -90,6 +90,7 @@ const (
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestSecondPrefixCarriesGrantsAcrossAStoreMove(t *testing.T) {
+	t.Parallel()
 	databaseURLs := []string{storetest.URL(t), storetest.URL(t), storetest.URL(t)}
 	binary := buildBroker(t)
 	for i, step := range []struct {
