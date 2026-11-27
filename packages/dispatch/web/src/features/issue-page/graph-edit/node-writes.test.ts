@@ -38,7 +38,13 @@ import {
   typeNewRow,
   useNewRows,
 } from "./new-rows";
-import { type NodeWrites, readOutlinesAgain, refusalLine, useNodeWrites } from "./node-writes";
+import {
+  heldRead,
+  type NodeWrites,
+  readOutlinesAgain,
+  refusalLine,
+  useNodeWrites,
+} from "./node-writes";
 import { placementOf } from "./placement";
 
 /**
@@ -1308,9 +1314,7 @@ test("a taken move to a place the held pages lack reads the next page before R7'
     await waitFor(() =>
       expect(reads.cursors, "the reads after the outdent").toEqual([firstPage.cursor, null])
     );
-    const ids = (
-      client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey)?.nodes ?? []
-    ).map((node) => node.id);
+    const ids = (heldRead(client, KEY)?.nodes ?? []).map((node) => node.id);
     expect(
       ids.filter((id) => id === PAGED),
       "the held read holds the paragraph but once"

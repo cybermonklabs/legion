@@ -86,7 +86,7 @@ export function useMoveKeys({
 }: {
   readonly bridge: MoveKeyBridge;
   readonly closed: ReadonlySet<string>;
-  readonly drawTo: (place: string | undefined) => void;
+  readonly drawTo: (place: string) => void;
   readonly editing: EditedRow | undefined;
   readonly editor: RowEditor | undefined;
   readonly isClosed: boolean;
@@ -194,7 +194,7 @@ export function useMoveKeys({
         held.row = to;
         restoreNext.current = true;
         bridge.follow?.(from, to);
-      } else if (!drawn(to)) {
+      } else {
         if (placesAlong(trail).some((place) => closed.has(place))) unfoldPath(trail);
         if (held.revealed !== to) {
           held.revealed = to;

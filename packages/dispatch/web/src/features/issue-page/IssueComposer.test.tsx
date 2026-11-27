@@ -1290,9 +1290,11 @@ const BTW_UNADVERTISED = "Planner does not advertise BTW, so sending it records 
  * The reader writes `BTW_TO_PLANNER` in the line, which draws `BTW_UNADVERTISED` once the focus in
  * it reads the agents list, and, where `send`, sends it, which Dispatch refuses, so the line holds
  * the send. Then the page mounts again in the same tab over the draft the line kept or the send it
- * holds, as a reload brings the box back, and its field holds the draft with no focus in it.
+ * holds, as a reload brings the box back, and its field holds the draft with no focus in it. The
+ * line mounted again must draw `BTW_UNADVERTISED` before any focus, else the case fails with
+ * `message`.
  */
-async function remountedOverBtw(send: boolean): Promise<void> {
+async function remountedOverBtw(send: boolean, message: string): Promise<void> {
   const user = userEvent.setup();
   stub(
     spyOn(api, "createComment").mockRejectedValueOnce(
@@ -1319,6 +1321,10 @@ async function remountedOverBtw(send: boolean): Promise<void> {
   renderPage({}, outline(), first.client);
   expect(writeField().value).toBe(BTW_TO_PLANNER);
   expect(writeField()).not.toHaveFocus();
+  await waitFor(() =>
+    expect(within(composerBox()).queryByText(BTW_UNADVERTISED), message).not.toBeNull()
+  );
+  expect(writeField()).not.toHaveFocus();
 }
 
 // A line the reader has not used reads no agents list (`WriteLine`), but a draft the line kept
@@ -1326,25 +1332,11 @@ async function remountedOverBtw(send: boolean): Promise<void> {
 // are the reader's use of it: the delivery mode of the draft and the notices about it come from
 // that list, so the line mounted over either reads it at once, before any focus.
 test("the line mounted again over the draft it kept reads the agents list before any focus", async () => {
-  await remountedOverBtw(false);
-  await waitFor(() =>
-    expect(
-      within(composerBox()).queryByText(BTW_UNADVERTISED),
-      "the line mounted over its kept draft read no agents list"
-    ).not.toBeNull()
-  );
-  expect(writeField()).not.toHaveFocus();
+  await remountedOverBtw(false, "the line mounted over its kept draft read no agents list");
 });
 
 test("the line mounted again over the send it holds reads the agents list before any focus", async () => {
-  await remountedOverBtw(true);
-  await waitFor(() =>
-    expect(
-      within(composerBox()).queryByText(BTW_UNADVERTISED),
-      "the line mounted over its held send read no agents list"
-    ).not.toBeNull()
-  );
-  expect(writeField()).not.toHaveFocus();
+  await remountedOverBtw(true, "the line mounted over its held send read no agents list");
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches

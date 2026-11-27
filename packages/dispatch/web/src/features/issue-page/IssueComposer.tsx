@@ -362,10 +362,9 @@ function WriteLine({
   // takes, since the delivery mode of what the field holds and its notices come from that list.
   // The kept draft is read at the mount alone: the field takes it out of the kept drafts there
   // (`useKeptDrafts`). So a page sends no read for the line that its reader has not used.
-  const [used, setUsed] = useState(false);
   const held = useHeldSend(writer.sendKey) !== undefined;
   const unsent = useUnsentDrafts();
-  const [kept] = useState(
+  const [used, setUsed] = useState(
     () => unsent.readAway(composerNameOf(writer.sendKey), reply, undefined, anchor) !== undefined
   );
   // What the line is aimed at (`LineAim`); none for a write on the issue itself.
@@ -448,7 +447,7 @@ function WriteLine({
   return (
     <div className="contents" onFocusCapture={() => setUsed(true)}>
       <MentionComposer
-        agents={used || held || kept ? undefined : EMPTY_AGENTS}
+        agents={used || held ? undefined : EMPTY_AGENTS}
         box="issue-page-composer"
         closed={isClosed}
         kind={writesKinds ? writer.kind : "comment"}

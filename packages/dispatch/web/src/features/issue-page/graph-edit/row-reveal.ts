@@ -91,7 +91,7 @@ export function useRowReveal({
   unfoldPath,
 }: {
   readonly body: RefObject<HTMLElement | null>;
-  readonly drawTo: (place: string | undefined) => void;
+  readonly drawTo: (place: string) => void;
   readonly reach: (id: string) => void;
   readonly root: TreeNode;
   readonly unfoldPath: (above: readonly string[]) => void;

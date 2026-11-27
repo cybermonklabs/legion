@@ -1031,8 +1031,7 @@ interface GraphRead {
 function graphReadPage(request: Request, key: string): GraphRead["page"] | undefined {
   const url = new URL(request.url());
   const { searchParams } = url;
-  const tree = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
-  if (request.method() !== "GET" || url.pathname !== tree) return undefined;
+  if (request.method() !== "GET" || !treeReadRoute(key)(url)) return undefined;
   if (["view", "kind", "comments_before"].some((name) => searchParams.has(name))) return undefined;
   return searchParams.has("cursor") ? "next" : "first";
 }
@@ -1099,7 +1098,7 @@ async function holdReread(
   let answered = false;
   let held: Route | undefined;
   page.on("response", (response) => {
-    if (isMoveOf(response.request(), key, id)) answered = true;
+    if (!answered && isMoveOf(response.request(), key, id)) answered = true;
   });
   await page.route(treeReadRoute(key), async (route) => {
     if (answered && held === undefined && graphReadPage(route.request(), key) === "first") {

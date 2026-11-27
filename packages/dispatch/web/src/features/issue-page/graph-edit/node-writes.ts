@@ -552,8 +552,7 @@ function owedPlace(
 ): Place | undefined {
   const held = heldRead(client, issue);
   if (answer === null || held === undefined) return undefined;
-  const place: Place = { after: answer.after, parent: answer.parent };
-  return lacksPlace(held, place) ? place : undefined;
+  return lacksPlace(held, answer) ? answer : undefined;
 }
 
 /** `held` without the copy of `node`'s subtree that `movedIn` placed after the last child the

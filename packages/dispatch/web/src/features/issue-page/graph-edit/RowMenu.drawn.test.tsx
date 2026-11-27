@@ -58,6 +58,8 @@ import { EditorBox } from "../StagedDocument";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { AppProviders, focusedRow, stubReads } from "../slots/stage-fixtures";
+import { nodeRowSelectorOf } from "../tree-focus";
+import { CHILD_PAGE } from "../tree-fold";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
 import type { OnEditing, OnEditor } from "../useNodeEditing";
@@ -1845,7 +1847,7 @@ function headingWithManyChildren(count: number): {
 test("a move by key that puts the node past a parent's drawn children draws its row and keeps the caret", async () => {
   const user = userEvent.setup();
   holdTreeReads();
-  const { last, read } = headingWithManyChildren(55);
+  const { last, read } = headingWithManyChildren(CHILD_PAGE + 5);
   const placed = `${String(LIST.placement_seq)}@2`;
   const sent = answerNodeRoutes({
     patches: [{ body: { after: last, parent: HEADING.id, placement_seq: placed }, status: 200 }],
@@ -1886,7 +1888,7 @@ test("a move by key that puts the node past a parent's drawn children draws its 
 // ("N more rows") draws the rows up to it and focuses the moved row.
 test("a move from the menu that puts the node past a parent's drawn children draws and focuses its row", async () => {
   const user = userEvent.setup();
-  const { last, read } = headingWithManyChildren(55);
+  const { last, read } = headingWithManyChildren(CHILD_PAGE + 5);
   answerTreeReads(read, NEVER);
   const placed = `${String(LIST.placement_seq)}@2`;
   const sent = answerNodeRoutes({
@@ -2110,6 +2112,14 @@ function heldNode(live: LiveOutline, id: string): TreeAnswerNode | undefined {
 /** The `placement_seq` Graph's held read gives the node `id`. */
 function heldSeq(live: LiveOutline, id: string): unknown {
   return heldNode(live, id)?.placement_seq;
+}
+
+/** Whether the row of the node `id` holds the focus, the caret in its text. */
+function holdsCaret(live: LiveOutline, id: string): boolean {
+  return (
+    live.view.container.querySelector(nodeRowSelectorOf(id))?.contains(document.activeElement) ===
+    true
+  );
 }
 
 // R3: New row below and New row under from the menu of a row with no caret, and Enter with the
@@ -2918,17 +2928,13 @@ test("a new row under a comment keeps its row and its caret until a read holds i
   });
   const view = tree?.editor?.view;
   if (view === undefined) throw new Error("the tree artifact's editor was never made");
-  const holdsCaret = () =>
-    live.view.container
-      .querySelector(`[data-node-row][data-node-id="${CSS.escape(id)}"]`)
-      ?.contains(document.activeElement) === true;
   const { queryKey } = outlineQuery(KEY, "graph");
   await act(async () => {
     live.client.setQueryData(queryKey, read.across);
   });
-  expect(holdsCaret(), "the read out as the PATCH went took the row's caret").toBe(true);
+  expect(holdsCaret(live, id), "the read out as the PATCH went took the row's caret").toBe(true);
 
-  heard = () => commits.push(holdsCaret());
+  heard = () => commits.push(holdsCaret(live, id));
   out.resolve();
   // A taken answer reads the outline again (`readOutlinesAgain`), which never answers here.
   await waitFor(() =>
@@ -3021,12 +3027,7 @@ test("a new row under a comment keeps its row and its caret when a read out as i
   await waitFor(() => expect(sent.patches).toHaveLength(1));
   const view = tree?.editor?.view;
   if (view === undefined) throw new Error("the tree artifact's editor was never made");
-  heard = () =>
-    commits.push(
-      live.view.container
-        .querySelector(`[data-node-row][data-node-id="${CSS.escape(id)}"]`)
-        ?.contains(document.activeElement) === true
-    );
+  heard = () => commits.push(holdsCaret(live, id));
   moved = true;
   out.resolve();
   await waitFor(() =>

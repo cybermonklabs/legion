@@ -9,7 +9,7 @@ import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
 import { loadEditsHold } from "../node-caret";
 import { rowSelectorOf } from "../tree-focus";
-import { type DrawnRow, placesAlong } from "../tree-fold";
+import { type DrawnRow, placeOf, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
 import type { TreeAnswer } from "../tree-read/tree-read";
 import {
@@ -163,7 +163,7 @@ export function useNewRowEditing({
   readonly bridge: MoveKeyBridge;
   /** The places of the rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`). */
   readonly closed: ReadonlySet<string>;
-  readonly drawTo: (place: string | undefined) => void;
+  readonly drawTo: (place: string) => void;
   readonly edit: NodeEditing["edit"];
   readonly editing: EditedRow | undefined;
   readonly issue: string | undefined;
@@ -216,10 +216,9 @@ export function useNewRowEditing({
       // parent's drawn page ("N more rows") hides it. Unfold and name its place in this render so
       // the next draws it before the drop rule ends the editing.
       const path = ownPathTo(root, blockId);
-      const node = path?.at(-1);
-      if (path === undefined || node === undefined) continue;
+      if (path === undefined) continue;
       const trail = path.slice(0, -1).map((above) => above.id);
-      const to = rowKeyOf({ kind: "node", level: path.length, node, trail });
+      const to = placeOf(trail, blockId);
       if (placesAlong(trail).some((place) => closed.has(place))) unfoldPath(trail);
       if (mine.revealed !== to) {
         mine.revealed = to;
@@ -369,10 +368,9 @@ export function useNewRowEditing({
           // A folded branch above the row's place, or a parent's drawn page ("N more rows"), is
           // opened once; a place the outline draws nowhere - outside the zoom - takes no row.
           const path = ownPathTo(root, blockId);
-          const node = path?.at(-1);
-          if (mine.unfolded === undefined && path !== undefined && node !== undefined) {
+          if (mine.unfolded === undefined && path !== undefined) {
             const above = path.slice(0, -1).map((each) => each.id);
-            const to = rowKeyOf({ kind: "node", level: path.length, node, trail: above });
+            const to = placeOf(above, blockId);
             if (placesAlong(above).some((place) => closed.has(place))) unfoldPath(above);
             drawTo(to);
             mine.unfolded = true;
