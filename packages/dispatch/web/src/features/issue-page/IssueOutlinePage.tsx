@@ -78,6 +78,8 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // lands an address on its cards by the page's rule.
   useDrawerPage(issue.data);
 
+  // The title bar holds no markup, so an issue's key and title go in as the characters they
+  // are; the reading list's `issue-outline-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );

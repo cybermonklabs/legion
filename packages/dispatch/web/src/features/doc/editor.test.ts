@@ -91,7 +91,7 @@ test("bindRemoteMarks keeps an accepted suggestion's text when its projection ar
     expect(text.toString()).toBe("The quick red fox");
   } finally {
     unbind();
-    handle.destroy();
+    await handle.destroy();
     root.remove();
   }
 });

@@ -198,42 +198,45 @@ test.each([
       window.dispatchEvent(new Event("scroll"));
     },
   ],
-])("a reader's own scroll (%s) before the broker's read settles keeps Settings from scrolling them back", async (_way, readerScrolls) => {
-  const unrelated = stubUnrelatedQueries();
-  const pending = Promise.withResolvers<CredentialPendingResponse>();
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
-    () => pending.promise
-  );
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
-  // Its restore puts back the page's own `scrollY`, which the second way overwrites.
-  const layout = installPageLayout();
-  try {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
-        <QueryClientProvider client={queryClient}>
-          <SettingsPage />
-        </QueryClientProvider>
-      </MemoryRouter>
+])(
+  "a reader's own scroll (%s) before the broker's read settles keeps Settings from scrolling them back",
+  async (_way, readerScrolls) => {
+    const unrelated = stubUnrelatedQueries();
+    const pending = Promise.withResolvers<CredentialPendingResponse>();
+    const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
+      () => pending.promise
     );
-    await waitFor(() => expect(layout.placements).toEqual([SECTION_TOP]));
-    readerScrolls();
+    const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+    // Its restore puts back the page's own `scrollY`, which the second way overwrites.
+    const layout = installPageLayout();
+    try {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
+          <QueryClientProvider client={queryClient}>
+            <SettingsPage />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      await waitFor(() => expect(layout.placements).toEqual([SECTION_TOP]));
+      readerScrolls();
 
-    pending.resolve({ pending: [] });
-    expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
-    // The settled read's render has run its effects by the time its heading is drawn.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(layout.placements).toEqual([SECTION_TOP]);
-  } finally {
-    cleanup();
-    layout.restore();
-    getCredentialGrants.mockRestore();
-    getCredentialPending.mockRestore();
-    for (const spy of Object.values(unrelated)) {
-      spy.mockRestore();
+      pending.resolve({ pending: [] });
+      expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
+      // The settled read's render has run its effects by the time its heading is drawn.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(layout.placements).toEqual([SECTION_TOP]);
+    } finally {
+      cleanup();
+      layout.restore();
+      getCredentialGrants.mockRestore();
+      getCredentialPending.mockRestore();
+      for (const spy of Object.values(unrelated)) {
+        spy.mockRestore();
+      }
     }
   }
-});
+);
 
 // A `#` part that is no valid percent-encoding names no section: Settings opens at its top and
 // stays usable, rather than the decode throwing from the page's effect (dispatch://INFRA-5200).

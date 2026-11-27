@@ -367,21 +367,24 @@ test("the write the page going makes is let finish as the page goes, and one mad
 test.each([
   ["isComposing", COMPOSING],
   ["keyCode 229", KEY_CODE_229],
-] as const)("the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both", async (_mark, form) => {
-  const user = userEvent.setup({ delay: null });
-  const { field, view, writes } = heldField();
-  await onFakeClock(async () => {
-    await user.type(field, ", mine");
-    pressInputMethodKey(field, "Enter", form);
-    expect(writes).toEqual([]);
-    expect(document.activeElement).toBe(field);
-    await user.keyboard("{Enter}");
+] as const)(
+  "the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both",
+  async (_mark, form) => {
+    const user = userEvent.setup({ delay: null });
+    const { field, view, writes } = heldField();
+    await onFakeClock(async () => {
+      await user.type(field, ", mine");
+      pressInputMethodKey(field, "Enter", form);
+      expect(writes).toEqual([]);
+      expect(document.activeElement).toBe(field);
+      await user.keyboard("{Enter}");
+      expect(writes).toEqual(["Old name, mine"]);
+      expect(document.activeElement).not.toBe(field);
+    });
+    view.unmount();
     expect(writes).toEqual(["Old name, mine"]);
-    expect(document.activeElement).not.toBe(field);
-  });
-  view.unmount();
-  expect(writes).toEqual(["Old name, mine"]);
-});
+  }
+);
 
 test("the answer to an earlier write the reader typed back to leaves the later write out, and writes the reader's text again", async () => {
   const user = userEvent.setup({ delay: null });

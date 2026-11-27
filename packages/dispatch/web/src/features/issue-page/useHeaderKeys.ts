@@ -3,6 +3,7 @@ import { outsideAskCard } from "../inbox/ask-card";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
+import { EDIT_TITLE_BUTTON } from "./IssueTitleRow";
 import { PROPERTY_LABELS } from "./page-structure";
 import { usableControl } from "./usable-control";
 
@@ -16,7 +17,6 @@ const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
-const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
  *  names by `aria-controls`: the actions menu's, hidden while the menu is shut
@@ -162,16 +162,17 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => headerControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
-      // The heading's click opens the editor, and a focus does not, so the key clicks it: a
-      // heading that already holds the focus - where Escape and Enter leave it - takes no new
-      // focus. The selector finds the heading only while the issue is open and not edited
-      // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
+      // Edit title's click opens the editor, and a focus does not, so the key clicks it: a
+      // button that already holds the focus - where Escape and Enter leave it - takes no new
+      // focus. The title row draws the button only while the issue is open and its title not
+      // edited (`IssueTitleRow.tsx`), so the key is offered exactly while a click opens it. The
+      // editor the click opens takes the focus, so the key moves the reader.
       effect: "moves the reader",
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => headerControl(TITLE_HEADING)?.click(),
-      when: () => headerControl(TITLE_HEADING) !== null,
+      run: () => headerControl(EDIT_TITLE_BUTTON)?.click(),
+      when: () => headerControl(EDIT_TITLE_BUTTON) !== null,
     },
     {
       // The pin writes the issue and leaves the focus where it was.

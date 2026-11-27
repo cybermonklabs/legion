@@ -913,7 +913,7 @@ test("an element the editor cannot build survives a read-only session and a late
     expect(topElements(readOnly.connection.doc)).toEqual(["paragraph"]);
     readOnly.serve();
     expect(topElements(server)).toEqual(["paragraph", "future_block"]);
-    editor.destroy();
+    await editor.destroy();
     readOnly.connection.destroy();
 
     const writable = await admitted(artifact, server, "read-write");
@@ -962,7 +962,7 @@ test("an edit typed in the editor is kept, and the editor's repair beside it is 
     expect(topElements(server)).toEqual(["paragraph", "future_block"]);
     expect(server.getXmlFragment("prosemirror").toString()).toContain("Typed. Known text.");
   } finally {
-    editor.destroy();
+    await editor.destroy();
     root.remove();
   }
 });

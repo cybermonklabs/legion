@@ -153,7 +153,7 @@ test("a paragraph replaced by a rule draws the words it lost in the editor", asy
       )
     ).toEqual([lost]);
   } finally {
-    handle.destroy();
+    await handle.destroy();
     root.remove();
   }
 });

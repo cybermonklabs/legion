@@ -1,5 +1,6 @@
 import type { Agent, IssueCollaboratorAgent } from "../../api/types";
 import type { AgentText } from "./AgentName";
+import { REF_PICKER_DEFAULT_WORDS, type RefPickerWords } from "./ref-picker";
 import { recordedRoles, roleHolders } from "./role-holders";
 
 /**
@@ -100,12 +101,15 @@ export function mentionOptions(
  *
  * The options keep the server's order, which the collaborators contract states - the registry's
  * agents by role in workflow order, then newest first - each token where the answer first names
- * it (`recordedRoles`), a token every session of which was replaced among them.
+ * it (`recordedRoles`), a token every session of which was replaced among them. Each option's
+ * detail says, after its role, that nobody running holds it and so it is not told, in the words
+ * the picker draws (`RefPickerWords.stoppedRole`).
  */
 export function stoppedRoleOptions(
   live: readonly Agent[],
   collaborators: readonly IssueCollaboratorAgent[],
-  text: Pick<AgentText, "sessionText">
+  text: Pick<AgentText, "sessionText">,
+  notRunning: RefPickerWords["stoppedRole"] = REF_PICKER_DEFAULT_WORDS.stoppedRole
 ): MentionOption[] {
   const held = roleHolders(live);
   return [...recordedRoles(collaborators)]
@@ -118,7 +122,7 @@ export function stoppedRoleOptions(
         capabilities: [],
         // Not running, so a mention of it is refused rather than kept for its next session: the
         // line says so, as the box's hint does.
-        detail: `${agent.legion.role} · not running, not told`,
+        detail: `${agent.legion.role} · ${notRunning}`,
         holder: text.sessionText(agent.session_id, storedTitle),
         sessionId: agent.session_id,
         sessionTitle: storedTitle,
