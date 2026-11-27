@@ -1,0 +1,19 @@
+# Refuses credentials, customer names and private code in public writes and pushes.
+# Usage: check-public-text [--] FILE..., --commits [--] REV..., --tree [--] DIR, gh-guard [--] ARGS,
+# or REMOTE URL. A mode with one argument after its word writes `--` (README.md, "Modes").
+# Reads are checked for credentials; see README.md for decisions and limitations.
+#
+# THE CHECK ITSELF IS public_leak_check.py, BESIDE THIS FILE. This is a launcher, and it stays at
+# this name because every caller calls it: the jj shim (shims/git, the jj gate),
+# shims/jj-push-hooks/pre-push, the wrapper install-prepush-hook.sh generates, and
+# scripts/public-text-gate.
+#
+# /usr/bin/python3 -I, NEVER the python3 on PATH. This is security, not preference: PATH resolves
+# through ~/.mise/shims/python3, which picks its interpreter from the CHECKOUT's tool
+# configuration, and this check runs inside the repository being pushed -- so a mise shim would
+# let the thing being checked choose the interpreter that checks it. `-I` also ignores
+# PYTHONPATH, PYTHONHOME and the user site directory, so no module the checkout or the
+# environment supplies can be imported ahead of the standard library.
+#
+# IF THE INTERPRETER IS MISSING OR WILL NOT START, THIS REFUSES (exit 2) and the push is blocked.
+# A gate that cannot run is not a gate that passed.

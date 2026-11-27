@@ -915,3 +915,48 @@ func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
 		}
 	})
 }
+
+// verifyServed is the guard's sixth output-parsing read (beside the five in
+// TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone): it reads the check's two invocation
+// shapes (`check-public-text` and `gh-guard`) from `--help`'s standard output alone, never from
+// standard error, and quotes the first line of standard error when the check fails to name them.
+//
+// The fixtures under testdata/served-check-help/ were captured on 2026-11-27 from the shared
+// check's repository at each tag a deployment pins (`leak-check-v15`, `leak-check-v21`,
+// `leak-check-v33`): `leak-check/public-leak-check.sh` and `leak-check/public_leak_check.py`
+// beside it were fetched at each tag with
+// `gh api "repos/<shared-check-repo>/contents/leak-check/<file>?ref=<tag>" -H "Accept: application/vnd.github.raw"`
+// and run with `env -i PATH="$PATH" HOME=<dir> TMPDIR=<dir> bash ./public-leak-check.sh --help`
+// (exit 1, standard output only), as verifyServed runs it.
+func TestTheServedChecksHelpIsReadFromItsStandardOutputAlone(t *testing.T) {
+	diagnostics := printsToStderr(
+		"* trace: starting public-leak-check.sh",
+		"> python3 -I public_leak_check.py --help",
+	)
+	for _, tag := range []string{"leak-check-v15", "leak-check-v21", "leak-check-v33"} {
+		t.Run(tag+" on stdout with diagnostics on stderr", func(t *testing.T) {
+			usage, err := os.ReadFile(filepath.Join("testdata", "served-check-help", tag+".stdout"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			launcher := "#!/bin/sh\nprintf '%s' " + shQuote(string(usage)) + "\n" + diagnostics + "exit 1\n"
+			dir := filepath.Join(t.TempDir(), "leak-check")
+			if _, err := install(t, dir, tag, served(t, wholeCheck(t, launcher))); err != nil {
+				t.Fatalf("install of %s with usage on stdout and diagnostics on stderr failed: %v", tag, err)
+			}
+		})
+	}
+
+	t.Run("both shapes on stderr alone", func(t *testing.T) {
+		const firstStderrLine = "# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL."
+		launcher := "#!/bin/sh\n" + printsToStderr(firstStderrLine, "diagnostic second line") + "exit 1\n"
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		_, err := install(t, dir, theTag, served(t, wholeCheck(t, launcher)))
+		if err == nil {
+			t.Fatalf("install succeeded when --help wrote both shapes on stderr alone and nothing on stdout; want it refused")
+		}
+		if !strings.Contains(err.Error(), firstStderrLine) {
+			t.Fatalf("install = %v, want error naming the first line of stderr (%q)", err, firstStderrLine)
+		}
+	})
+}

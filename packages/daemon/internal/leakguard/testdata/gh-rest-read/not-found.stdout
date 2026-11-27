@@ -1,0 +1,25 @@
+HTTP/2.0 404 Not Found
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Fri, 27 Nov 2026 19:18:13 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Github-Permissions: metadata=read
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Api-Version-Selected: 2022-11-28
+X-Github-Edge-Region: westus2
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: 7414:318D9:67E8BD:A75325:6B09D775
+X-Ratelimit-Limit: 15000
+X-Ratelimit-Remaining: 13819
+X-Ratelimit-Reset: 1795809723
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 1181
+X-Xss-Protection: 0
+
+{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/repos#get-a-repository","status":"404"}

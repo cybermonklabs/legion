@@ -1,0 +1,1 @@
+Get "https://api.github.com/repos/cybermonklabs/legion": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused

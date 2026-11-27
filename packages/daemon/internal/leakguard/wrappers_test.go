@@ -282,6 +282,203 @@ func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T)
 	}
 }
 
+// gitPushRig is a real git behind a copy of the pod's git wrapper, with a recording pre-push hook
+// and a stand-in legion that marks a run as a failure: a push must never run legion. Each test
+// pushes one commit from repo to a new local bare repository remote through wrapper, then reads
+// whether the hook ran (hookLines), what PushNamesReceivePackVar it saw, and whether remote holds
+// any ref (remoteRefs).
+type gitPushRig struct {
+	dir, git, wrapper, hookLog, legionLog, repo, remote string
+	run                                                 fixturegit.Runner
+}
+
+func newGitPushRig(t *testing.T) gitPushRig {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("real git on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hookLog := filepath.Join(dir, "hook-log")
+	hookScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\t%%s\\t%%s\\n' \"$1\" \"$2\" \"${%s-unset}\" >> %s\nexit 0\n",
+		PushNamesReceivePackVar, shQuote(hookLog))
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hookScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legionLog := filepath.Join(dir, "legion-ran")
+	legion := logging(t, filepath.Join(dir, "stand-in-legion"), legionLog)
+	wrapper := wrapperCopy(t, dir, "git",
+		[2]string{"real=/usr/bin/git", "real=" + realGit},
+		[2]string{"hooks=/opt/legion/githooks", "hooks=" + hooksDir},
+		[2]string{"legion=/opt/legion/bin/legion", "legion=" + legion},
+	)
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	remote := filepath.Join(dir, "remote.git")
+	repo := filepath.Join(dir, "repo")
+	run.Run(dir, fixturegit.InitBare(remote, "main")...)
+	run.Run(dir, fixturegit.InitWorkTree(repo, "main")...)
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("one commit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run.Run(repo, realGit, "add", "f.txt")
+	run.Run(repo, realGit, "commit", "-q", "-m", "seed")
+	return gitPushRig{
+		dir:       dir,
+		git:       realGit,
+		wrapper:   wrapper,
+		hookLog:   hookLog,
+		legionLog: legionLog,
+		repo:      repo,
+		remote:    remote,
+		run:       run,
+	}
+}
+
+// hookLines is the lines the pre-push hook appended to hookLog, one per invocation, and nil when
+// the hook did not run. Each line is `<remote>\t<url>\t<value of PushNamesReceivePackVar or unset>`.
+func (r gitPushRig) hookLines(t *testing.T) []string {
+	t.Helper()
+	if _, err := os.Stat(r.legionLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the git wrapper ran legion for a push (recorded in %s)", r.legionLog)
+	}
+	read, err := os.ReadFile(r.hookLog)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := strings.TrimRight(string(read), "\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
+// remoteRefs is what `git for-each-ref` prints for remote: empty when nothing was written there.
+func (r gitPushRig) remoteRefs(t *testing.T) string {
+	t.Helper()
+	return strings.TrimSpace(r.run.Out(r.remote, r.git, "for-each-ref"))
+}
+
+// Every option prefix that the real git accepts as `--no-verify` on `git push` still runs the
+// wrapper's pre-push hook: git's parse-options accepts any unambiguous prefix of a long option,
+// so stripping only `--no-verify` lets shorter spellings such as `--no-veri` and `--no-verif` skip
+// the hook and land the push unchecked. Driving the real git over every prefix of `no-verify` and
+// `--no-verify=1` also catches any newer git that comes to accept one more spelling.
+func TestEverySpellingGitReadsAsNoVerifyStillRunsTheHook(t *testing.T) {
+	const full = "no-verify"
+	spellings := make([]string, 0, len(full)+1)
+	for n := 1; n <= len(full); n++ {
+		spellings = append(spellings, "--"+full[:n])
+	}
+	spellings = append(spellings, "--"+full+"=1")
+
+	for _, spelling := range spellings {
+		t.Run(spelling, func(t *testing.T) {
+			rig := newGitPushRig(t)
+			out, err := rig.run.Try(rig.repo, rig.wrapper, "push", spelling, rig.remote, "main")
+			lines := rig.hookLines(t)
+			if len(lines) > 0 {
+				return
+			}
+			refs := rig.remoteRefs(t)
+			if err == nil {
+				t.Fatalf("spelling %q: git exited 0 without running the pre-push hook (remote refs: %q)\n%s",
+					spelling, refs, out)
+			}
+			if refs != "" {
+				t.Fatalf("spelling %q: git exited non-zero (%v) without running the hook, yet wrote refs %q\n%s",
+					spelling, err, refs, out)
+			}
+		})
+	}
+}
+
+// Every option spelling that the real git accepts as `--receive-pack` or `--exec` on `git push` —
+// each non-empty prefix, both `--<P>=<program>` and `--<P> <program>` — makes the git wrapper mark
+// the push by exporting PushNamesReceivePackVar before running git, so Guard.StaysLocal will never
+// clear a push whose command line can run a caller-chosen program in place of git-receive-pack.
+// Negations (`--no-receive-pack`, `--no-e`) name no program and leave the mark unset. Driving the
+// real git catches every prefix git accepts rather than hard-coding one release's ambiguity cut.
+func TestEverySpellingGitReadsAsReceivePackOrExecMarksThePush(t *testing.T) {
+	type row struct {
+		name     string
+		args     func(program string) []string
+		negation bool
+	}
+	var rows []row
+	for _, full := range []string{"receive-pack", "exec"} {
+		for n := 1; n <= len(full); n++ {
+			prefix := "--" + full[:n]
+			rows = append(rows,
+				row{
+					name: prefix + "=<program>",
+					args: func(program string) []string { return []string{prefix + "=" + program} },
+				},
+				row{
+					name: prefix + " <program>",
+					args: func(program string) []string { return []string{prefix, program} },
+				},
+			)
+		}
+	}
+	for _, neg := range []string{"--no-receive-pack", "--no-e"} {
+		rows = append(rows, row{
+			name:     neg,
+			args:     func(string) []string { return []string{neg} },
+			negation: true,
+		})
+	}
+
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newGitPushRig(t)
+			program := filepath.Join(rig.dir, "my-receive-pack")
+			if err := os.WriteFile(program, []byte("#!/bin/sh\nexec "+shQuote(rig.git)+" receive-pack \"$@\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			argv := append([]string{rig.wrapper, "push"}, tc.args(program)...)
+			argv = append(argv, rig.remote, "main")
+			out, err := rig.run.Try(rig.repo, argv...)
+			lines := rig.hookLines(t)
+			refs := rig.remoteRefs(t)
+			if tc.negation {
+				if err != nil || len(lines) == 0 {
+					t.Fatalf("negation %q: push failed or hook did not run (err=%v, hook lines=%q, refs=%q)\n%s",
+						tc.name, err, lines, refs, out)
+				}
+				for _, line := range lines {
+					parts := strings.Split(line, "\t")
+					if got := parts[len(parts)-1]; got != "unset" {
+						t.Fatalf("negation %q: hook saw %s=%q, want unset (hook line: %q)",
+							tc.name, PushNamesReceivePackVar, got, line)
+					}
+				}
+				return
+			}
+			if len(lines) == 0 {
+				if err == nil || refs != "" {
+					t.Fatalf("spelling %q: hook did not run, yet push was not refused cleanly (err=%v, refs=%q)\n%s",
+						tc.name, err, refs, out)
+				}
+				return
+			}
+			for _, line := range lines {
+				parts := strings.Split(line, "\t")
+				if got := parts[len(parts)-1]; got == "unset" {
+					t.Fatalf("spelling %q: hook ran with %s unset (err=%v, refs=%q, hook line: %q)",
+						tc.name, PushNamesReceivePackVar, err, refs, line)
+				}
+			}
+		})
+	}
+}
+
 // jjWrapper is the setup the jj wrapper's tests share, under a directory of the test's own: the
 // git wrapper over a logging stand-in that records its argv in log, under the name and in the
 // directory bin that the jj wrapper looks for on PATH, since the jj wrapper's first check is that
