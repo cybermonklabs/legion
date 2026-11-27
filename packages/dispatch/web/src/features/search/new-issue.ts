@@ -122,8 +122,5 @@ export async function fileNewIssue(
     "PATCH",
     (bounds) => api.patchIssue(issue.key, { route: target }, bounds)
   );
-  if (route !== undefined) {
-    return filed(route);
-  }
   return filed(route);
 }

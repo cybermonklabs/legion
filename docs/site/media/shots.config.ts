@@ -209,7 +209,8 @@ const dispatch: ShotSet<DispatchWorkspace> = {
         const dialog = page.getByRole("dialog", { name: "Search" });
         await page.getByRole("combobox", { name: "Search" }).fill("runbook");
         // The words are the Runbook document's name, so the bar lists that document alone as the
-        // best match, above the hits grouped by kind; its row reads its project, then its name.
+        // best match, above the hits grouped under their issue or document; its row reads its
+        // project, then its name.
         await expect(
           dialog
             .getByRole("group", { name: "Best match" })
