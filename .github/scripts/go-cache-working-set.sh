@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
-# Keeps in Go's build cache only the entries one fill's build used, so the entry
-# .github/workflows/ci-caches.yaml saves holds that build's working set and does not grow.
+# Keeps in Go's build cache only the entries one fill's build used, and in its module cache no
+# module zip, so the entry .github/workflows/ci-caches.yaml saves holds that build's working set
+# and does not grow.
 #
 #   go-cache-working-set.sh begin <state-dir>
 #   go-cache-working-set.sh end <state-dir>
+#   go-cache-working-set.sh zips
 #
 # Run `begin` after the restore and before the build, `end` after the build and before the save,
 # each with the GOCACHE the build uses (the script asks `go env GOCACHE`). <state-dir> is the
 # script's own scratch directory for that pair; it must not exist before `begin`. A relative
-# <state-dir> is taken from the current directory.
+# <state-dir> is taken from the current directory. `end` also does what `zips` does; run `zips`
+# alone before the save of a fill that builds from nothing and so has no `begin`.
+#
+# zips deletes every module zip under `go env GOMODCACHE`/cache/download and prints how many and
+# how large. Go reads a module from the tree it extracted it to; the zip is read only to extract
+# that tree again when it is missing, and by `go mod download` and `go mod verify`. No job that
+# restores these entries runs `go mod verify`, and the one script that ran `go mod download` on a
+# module they hold, packages/envoy/scripts/forced-order.sh (daemon-go's leg 2, envoy-go-race),
+# reads that module's tree through `go list -m` instead. The .ziphash, .mod
+# and .info files beside each zip stay: a build checks the .ziphash
+# (cmd/go/internal/modfetch/fetch.go, DownloadDir). A zip does not
+# compress again, so it is stored at its full size (.github/ci-notes/ci-caches.md, "Why the fills
+# delete the module zips", has the measurements).
 #
 # Why: a fill restores the newest entry of its family, builds on it and saves the result. Each
 # build adds the objects of every package whose inputs changed since that entry, and nothing
@@ -40,7 +54,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 begin <state-dir> | end <state-dir>" >&2
+  echo "usage: $0 begin <state-dir> | end <state-dir> | zips" >&2
   exit 2
 }
 
@@ -72,13 +86,36 @@ mb() {
   echo $((($1 + 524288) / 1048576))
 }
 
-(($# >= 2)) || usage
+# zips: deletes the module zips of `go env GOMODCACHE` and says how many and how large; the
+# header says why. A module cache with no download directory holds no zip, and says so.
+zips() {
+  local modcache download deleted
+  modcache=$(go env GOMODCACHE)
+  [[ -n $modcache ]] || fail "go env GOMODCACHE names no directory."
+  download=$modcache/cache/download
+  if [[ ! -d $download ]]; then
+    echo "go module cache $modcache: no $download, so no module zip to delete"
+    return
+  fi
+  deleted=$(find "$download" -type f -name '*.zip' -printf '%s\n' -delete)
+  echo "go module cache $modcache: deleted $(grep -c . <<<"$deleted" || true) module zips" \
+    "($(mb "$(awk '{ s += $1 } END { print s + 0 }' <<<"$deleted")") MB), which no build reads"
+}
+
+(($# >= 1)) || usage
 command=$1
-state=$(realpath -ms -- "$2")
+case $command in
+begin | end)
+  (($# == 2)) || usage
+  state=$(realpath -ms -- "$2")
+  ;;
+zips)
+  (($# == 1)) || usage
+  ;;
+esac
 
 case $command in
 begin)
-  (($# == 2)) || usage
   [[ ! -e $state ]] || fail "$state exists already; give each begin/end pair a directory of its own."
   cache=$(go env GOCACHE)
   [[ -n $cache ]] || fail "go env GOCACHE names no directory."
@@ -94,7 +131,6 @@ begin)
   echo "go build cache $cache: $(wc -l <"$state/before") entries, $(mb "$(size "$cache" "$state/before")") MB, marked unused until the build uses them"
   ;;
 end)
-  (($# == 2)) || usage
   [[ -f $state/mark && -f $state/cache ]] || fail "$state holds no mark; run begin with it first."
   cache=$(<"$state/cache")
   [[ $cache == "$(go env GOCACHE)" ]] ||
@@ -121,6 +157,10 @@ end)
       "held, so the saved entry holds only what it compiled. A restore of another Go version does this; so would a Go" \
       "that no longer marks the cache entries it reads (cmd/go/internal/cache's markUsed), which go-cache-working-set.test.sh checks."
   fi
+  zips
+  ;;
+zips)
+  zips
   ;;
 *)
   usage

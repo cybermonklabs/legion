@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A launch no longer waits out its whole provisioning bound on an issue pod that is being deleted. Such a pod stays Pending while it terminates, and the kubelet can restart its init container as it goes, which read as the pod still coming up.
+time: 2026-11-27T05:35:45Z
+custom:
+    Issue: INFRA-5887

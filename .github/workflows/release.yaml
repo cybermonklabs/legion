@@ -107,17 +107,19 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchbody/
+    packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchblocks/
+    packages/envoy/dispatchbody/ packages/envoy/fileerr/ packages/envoy/githubrate/ packages/envoy/httpoutage/
     packages/envoy/internal/cipher/oauthwire/ packages/envoy/internal/cipherclient/
-    packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
+    packages/envoy/internal/clock/ packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/dpopproof/ packages/envoy/internal/fold/
     packages/envoy/internal/googleidentity/ packages/envoy/internal/id/
-    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
+    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/oidc/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
+    packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json

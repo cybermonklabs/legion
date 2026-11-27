@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -114,6 +115,8 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
 	"POST /legion/v1/operator/intake/replay":                 sameBuild + " (`legion intake replay`)",
 	"POST /legion/v1/operator/intake/discard":                sameBuild + " (`legion intake discard`)",
+	"POST /legion/v1/operator/project/p0-bound":              sameBuild + " (`legion project set-p0-bound`)",
+	"POST /legion/v1/operator/project/p0-bound/clear":        sameBuild + " (`legion project clear-p0-bound`)",
 }
 
 // routesReadingNoBody is every POST route the server registers that decodes no body at all, so
@@ -197,7 +200,7 @@ func sortedRequestShapes(records []requestShape) []requestShape {
 // readRequestShapes is the frozen fixture as it stands, and false where no file is there.
 func readRequestShapes(t *testing.T) ([]requestShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(requestShapesFixture))
+	encoded, err := os.ReadFile(apifixture.Path(requestShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

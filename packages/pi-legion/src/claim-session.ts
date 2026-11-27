@@ -11,10 +11,12 @@ import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
+import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 
 /** The daemon API contract this build speaks, which its registration states as `pluginContract`
  * (`daemonContract`, read once as the module loads). */
@@ -36,6 +38,13 @@ export interface ClaimSession {
    * registers), or in a session that boots no claim of its own, such as the controller's, which
    * claims its role for itself (`src/controller-session.ts`). */
   readonly firstTurnStarted: () => void;
+  /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
+   * dispatch://INFRA-3589: the boot's signal aborts, so its deferred role claim is not made, a
+   * failed `claims/ready` is neither said nor sent again, and a claim that fails from then on
+   * says nothing and exits nothing. A claim Envoy refuses because the session's stop has begun
+   * (`claimRefusedForStop`) is that same stop: in RPC mode a SIGTERM stops Envoy's session with
+   * no `session_shutdown`. */
+  readonly stop: () => void;
 }
 
 /**
@@ -81,15 +90,22 @@ export function attributionInputs(
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * A 4xx registration refusal, and any failure after a registration, exit the process, except
+ * once the session's stop has begun ({@link ClaimSession.stop}): the stop ends the process
+ * itself, and an exit in its middle would cut its role release and its DELETE short. The host's
+ * stop can begin before this session hears of its own: in RPC mode a SIGTERM runs pi-envoy's stop
+ * and emits no `session_shutdown`. A refusal or a failure that comes then, such as a ready the
+ * daemon refuses once its registration deadline retired this process, exits once the host's stop
+ * has ended, and at most at its bound (`exitAfterHostStop`), with the same status.
  */
-export function createClaimSession(deps: {
-  readonly daemon: () => LegionDaemonClient;
-  readonly persistedTranscript: (
-    context: SessionContext
-  ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
-  readonly exitProcess: (code: number) => never;
-}): ClaimSession {
+export function createClaimSession(
+  deps: HostStopExit & {
+    readonly daemon: () => LegionDaemonClient;
+    readonly persistedTranscript: (
+      context: SessionContext
+    ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
+  }
+): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
   // The boot's first-turn signal, held from the moment the boot registers it, and whether a turn
@@ -100,6 +116,8 @@ export function createClaimSession(deps: {
   // reported, which does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
   let reportFirstTurn: (() => void) | undefined;
   let turnStarted = false;
+  // Aborts as the session's stop begins: the boot's signal (`LegionClaimHost.signal`).
+  const stopped = new AbortController();
 
   const boot = async (
     context: SessionContext,
@@ -127,8 +145,18 @@ export function createClaimSession(deps: {
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
-      // so no claim subscribes to one.
-      claimRole: (role) => claimEnvoyRole(sessionID, role, context),
+      // so no claim subscribes to one. `replaces`, the session the registration says this one
+      // replaces, is the claim's `previous_session_id`, so its unread messages come here.
+      claimRole: async (role, replaces) => {
+        try {
+          await claimEnvoyRole(sessionID, role, context, replaces);
+        } catch (error) {
+          // Envoy refused the claim because the session's stop has begun: the stop is this
+          // boot's too, so the failure ends the claim step quietly (`claimRoleAtFirstTurn`).
+          if (claimRefusedForStop(error)) stopped.abort();
+          throw error;
+        }
+      },
       onFirstTurn: (started) => {
         reportFirstTurn = started;
         if (turnStarted) started();
@@ -138,8 +166,13 @@ export function createClaimSession(deps: {
       firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
+      signal: stopped.signal,
       stopping: "exiting so the daemon launches it again",
-      stop: () => deps.exitProcess(1),
+      // A boot the session's stop overtook exits nothing: the stop ends the process itself. A boot
+      // that fails while the host's stop runs exits once that stop has ended.
+      stop: () => {
+        if (!stopped.signal.aborted) void exitAfterHostStop(deps, 1);
+      },
     });
   };
 
@@ -166,5 +199,6 @@ export function createClaimSession(deps: {
       turnStarted = true;
       reportFirstTurn?.();
     },
+    stop: () => stopped.abort(),
   };
 }

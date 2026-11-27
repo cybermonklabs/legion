@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -26,10 +27,11 @@ func standIn(t *testing.T, dir string, list []string, body string) string {
 }
 
 // Of eight lookups that race for one binary's natives cache, as test binaries under `go test ./...`
-// do, one runs omp and the rest find its copy; each HOME then holds that copy's inode rather than
-// bytes of its own, and the copy takes no write through a link. The staging directory of a filler
-// that died is gone once the cache is filled. The omp here is a script that extracts the one natives
-// file it embeds into its HOME, as the real binary does, and counts its runs.
+// do, one runs omp and the rest find its copy; each HOME on the cache's filesystem then holds that
+// copy's inode, as a hardlink and not a symlink, rather than bytes of its own, and the copy takes no
+// write through a link. The staging directory of a filler that died is gone once the cache is
+// filled. The omp here is a script that extracts the one natives file it embeds into its HOME, as
+// the real binary does, and counts its runs.
 func TestTheNativesCacheRunsOmpOnceAndEveryHomeLinksTheOneCopy(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")
@@ -73,16 +75,57 @@ func TestTheNativesCacheRunsOmpOnceAndEveryHomeLinksTheOneCopy(t *testing.T) {
 		t.Errorf("the cached natives file is %v, want it read-only", cached.Mode().Perm())
 	}
 	for _, home := range []string{filepath.Join(dir, "a"), filepath.Join(dir, "b")} {
-		if err := linkTree(caches[0], filepath.Join(home, ".omp", "natives")); err != nil {
+		if err := linkTree(caches[0], filepath.Join(home, ".omp", "natives"), os.Link); err != nil {
 			t.Fatal(err)
 		}
-		linked, err := os.Stat(filepath.Join(home, ".omp", "natives", "9.9.9", "pi_natives.test.node"))
+		linked, err := os.Lstat(filepath.Join(home, ".omp", "natives", "9.9.9", "pi_natives.test.node"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !os.SameFile(cached, linked) {
-			t.Errorf("%s's natives file is a file of its own, want the cache's", home)
+			t.Errorf("%s's natives file is %v and not the cache's inode, want a hardlink to the cache's", home, linked.Mode())
 		}
+	}
+}
+
+// A HOME on another filesystem than the cache (a TMPDIR on a data disk, the cache under $HOME)
+// cannot take a hardlink: link(2) fails with EXDEV. Its native is then a symlink to the cached file,
+// which the HOME reads whole with no byte of its own. The case makes link(2) fail as it does across
+// filesystems, so it holds that branch on any machine; a link that fails for another reason still
+// fails the HOME.
+func TestANativesHomeOnAnotherFilesystemSymlinksTheCachedFile(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "cache")
+	cached := filepath.Join(cache, "9.9.9", "pi_natives.test.node")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte("native"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	failing := func(errno syscall.Errno) func(string, string) error {
+		return func(oldname, newname string) error {
+			return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: errno}
+		}
+	}
+
+	natives := filepath.Join(dir, "home", ".omp", "natives")
+	if err := linkTree(cache, natives, failing(syscall.EXDEV)); err != nil {
+		t.Fatalf("linkTree across filesystems = %v, want a symlink to the cache's file", err)
+	}
+	home := filepath.Join(natives, "9.9.9", "pi_natives.test.node")
+	if info, err := os.Lstat(home); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("the HOME's native lstats %v (%v), want a symlink", info, err)
+	}
+	if target, err := os.Readlink(home); err != nil || target != cached {
+		t.Errorf("the HOME's native links to %q (%v), want %q", target, err, cached)
+	}
+	if got, err := os.ReadFile(home); err != nil || string(got) != "native" {
+		t.Errorf("the HOME's native reads %q (%v), want the cached bytes", got, err)
+	}
+
+	if err := linkTree(cache, filepath.Join(dir, "other", ".omp", "natives"), failing(syscall.EACCES)); !errors.Is(err, syscall.EACCES) {
+		t.Errorf("linkTree whose link fails with EACCES = %v, want that error", err)
 	}
 }
 
@@ -165,7 +208,7 @@ func TestANativesFillThatExtractsNothingCachesNothing(t *testing.T) {
 
 // A binary that lists no embedded natives is refused before it runs: with nothing to check an
 // extraction against, every file it wrote would be refused by name anyway, so refusing first fails
-// with a precise message and never runs omp to extract a native of about 124 MiB.
+// with a precise message and never runs omp to extract a native of about 125 MiB.
 func TestANativesFillRefusesABinaryThatListsNoEmbeddedNatives(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")

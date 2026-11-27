@@ -427,6 +427,7 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
+	// Not parallel: it requires the publish to a team topic to answer within 1 s of its start.
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -531,7 +532,7 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 // the core subscriber holding the subject never sends.
 func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	t.Parallel()
-	const topic = "notifications.github.acme.unbound"
+	const topic = "notifications.team.acme-unbound"
 	clock := &listenerAcknowledgementClock{}
 	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock))
 	info, err := client.JS().StreamInfo(bus.Stream)
@@ -882,42 +883,42 @@ func TestPublishHandler_SourceFieldWithNATS(t *testing.T) {
 	}{
 		{
 			name:       "defaults to agent when source omitted",
-			body:       `{"topic":"notifications.github.acme.widgets.source","message":"hello"}`,
+			body:       `{"topic":"notifications.team.acme-widgets.source","message":"hello"}`,
 			wantSource: "agent",
 		},
 		{
 			name:       "defaults to agent when source empty",
-			body:       `{"source":"","topic":"notifications.github.acme.widgets.source","message":"hello"}`,
+			body:       `{"source":"","topic":"notifications.team.acme-widgets.source","message":"hello"}`,
 			wantSource: "agent",
 		},
 		{
 			name:       "accepts human source",
-			body:       `{"source":"human","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"human","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "human",
 		},
 		{
 			name:       "accepts envoy source",
-			body:       `{"source":"envoy","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"envoy","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "envoy",
 		},
 		{
 			name:       "accepts slack source",
-			body:       `{"source":"slack","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"slack","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "slack",
 		},
 		{
 			name:       "accepts whatsapp source",
-			body:       `{"source":"whatsapp","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"whatsapp","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "whatsapp",
 		},
 		{
 			name:       "accepts ghostwispr source",
-			body:       `{"source":"ghostwispr","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"ghostwispr","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "ghostwispr",
 		},
 		{
 			name:       "accepts github source",
-			body:       `{"source":"github","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"github","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "github",
 		},
 	}
@@ -2194,7 +2195,7 @@ func TestIdempotencyKey_Publish(t *testing.T) {
 
 	// Test: same idempotency_key produces same DedupeKey
 	rr1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
 	req1.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr1, req1)
 
@@ -2207,7 +2208,7 @@ func TestIdempotencyKey_Publish(t *testing.T) {
 	}
 
 	rr2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr2, req2)
 
@@ -2235,7 +2236,7 @@ func TestIdempotencyKey_BackwardsCompat(t *testing.T) {
 
 	// Test: no idempotency_key produces different DedupeKeys (existing behavior)
 	rr1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.backwards","message":"hello"}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.backwards","message":"hello"}`))
 	req1.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr1, req1)
 
@@ -2248,7 +2249,7 @@ func TestIdempotencyKey_BackwardsCompat(t *testing.T) {
 	}
 
 	rr2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.backwards","message":"hello"}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.backwards","message":"hello"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr2, req2)
 
@@ -2618,7 +2619,9 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 // TestBoundDurableConsumerIsNotStolen pins the rolling-deploy contract: a
 // second listener attaching to a consumer that is still push-bound by a live
 // listener must be rejected, not delete the consumer to steal the binding —
-// stealing resets the durable cursor and replays the full retention window.
+// stealing drops the durable's cursor, and the durable created in its place
+// starts at deliver policy new, so it skips every message the old one had not
+// acknowledged.
 func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	t.Parallel()
 	first, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
@@ -2734,6 +2737,8 @@ type bindOutcome struct {
 // The replacement polls the durable while the old task holds it, so it binds within one interval of
 // the old task's exit rather than at the end of a backoff that grows with each attempt.
 func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
+	// Not parallel: it requires the bind within 500 ms of the old task's exit at a 50 ms
+	// interval, after a 300 ms time.Sleep that must still find the durable held.
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-on-release"
 	old, _ := durableHeldElsewhere(t, uri, consumer)
@@ -2816,6 +2821,8 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 // A signal during the wait ends the bind at once, without waiting for the next attempt, so the
 // listener's ordered shutdown starts while ECS's stop timeout still runs.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
+	// Not parallel: it requires the bind to return within 500 ms of the context's end, which a
+	// 120 ms time.Sleep places inside the bind's 2 s wait.
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-cancelled"
 	durableHeldElsewhere(t, uri, consumer)
@@ -2903,6 +2910,8 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 // interval until the deadline: the grant refuses it again however often it is sent. It once ended
 // after 2m15s and 69 attempts with "listener durable bind exhausted".
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
@@ -2925,6 +2934,8 @@ func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 // A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
 // the refusal, rather than reading it again every interval until the deadline.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, info)
@@ -3123,7 +3134,6 @@ func TestIsControlTopic(t *testing.T) {
 		want  bool
 	}{
 		{topic: "notifications.role.legion-controller", want: true},
-		{topic: contracts.LegacyAgentSubject("ses_control"), want: true},
 		{topic: "notifications.envoy.exceptions.notifications.role.legion-controller", want: false},
 		{topic: "notifications.github.sjawhar.legion.issue.42.comment", want: false},
 	}
@@ -3533,15 +3543,16 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 	}
 }
 
-// A control topic with no holder: an agent subject nobody has is still the no_holder exception,
-// while a role nobody holds is kept for the role's next holder and raises none.
-func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.T) {
+// A role or agent topic with no holder raises no exception. An agent subject nobody has reports the
+// session's wake, at once since the harness sets no agent wait, and a role nobody holds is kept
+// for the role's next holder.
+func TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name  string
 		topic string
 		// role is the role a kept copy is read back under; empty for the agent subject, which
-		// keeps nothing.
+		// keeps nothing and reports a wake.
 		role string
 	}{
 		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
@@ -3556,6 +3567,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 			item.Payload = `{"reason":"no_holder"}`
 			item.SourceSession = "ses_source_" + tc.name
 			exceptionTopic := "notifications.envoy.exceptions." + tc.topic
+			wakes := agentWakeProbe(t, harness)
 			probe, err := harness.client.Conn.SubscribeSync(exceptionTopic)
 			if err != nil {
 				t.Fatalf("subscribe exception probe: %v", err)
@@ -3583,7 +3595,8 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 
 			// Then
 			if tc.role == "" {
-				assertDeliveryException(t, probe, item, "no_holder")
+				awaitWake(t, wakes, wakeKindAgent, strings.TrimPrefix(tc.topic, contracts.AgentTopicPrefix))
+				noException(t, probe)
 				return
 			}
 			kept := waitForKeptRoleMessage(t, harness.client, tc.role, item.EventID)
@@ -3602,6 +3615,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 // the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
 // publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
@@ -3847,17 +3861,28 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 	}
 }
 
-// An entry the previous build wrote for a portless self-subscribed session is unreachable now:
-// no consumer of its own holds its messages and no subscription of its own takes them, so the
-// delivery fails (session.ErrNoSessionRecord) instead of counting as skipped, on a followed
-// topic and on the session's agent subject alike. Only a message a consumer holds is skipped.
-func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
+// An entry the previous build wrote for a portless self-subscribed session is unreachable on a
+// followed topic: no consumer of its own holds its messages and no subscription of its own takes
+// them, so the fan-out's delivery fails (session.ErrNoSessionRecord) instead of counting as
+// skipped. On the session's agent subject the same entry is a record, and a message there is the
+// session's own consumer's whatever that consumer holds now: the consumer the session's next
+// registration starts delivers it. So the agent subject counts it skipped, and reports no wake.
+// The control: the same message on the agent subject of a session with no record counts one
+// wake_reported, the series the rows above must not write.
+func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAgentSubject(t *testing.T) {
 	t.Parallel()
-	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.LegacyAgentSubject("ses_omp")} {
-		t.Run(topic, func(t *testing.T) {
+	for _, tc := range []struct {
+		topic string
+		// skipped is the skipped series' count, -1 for no series at all.
+		skipped int64
+	}{
+		{"notifications.github.owner.repo.issue.1", -1},
+		{contracts.LegacyAgentSubject("ses_omp"), 1},
+	} {
+		t.Run(tc.topic, func(t *testing.T) {
 			// Given
 			harness := newListenerDeliveryHarness(t)
-			item := listenerTestEnvelope(topic, "self-subscribed-unreachable")
+			item := listenerTestEnvelope(tc.topic, "self-subscribed-unreachable")
 			if _, err := harness.registry.Upsert(store.Interest{
 				SessionID: "ses_omp",
 				MachineID: "test-machine",
@@ -3873,14 +3898,22 @@ func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t
 
 			// Then
 			body := deliveredMetrics(t, harness)
-			if strings.Contains(body, `test_messages_delivered{delivery_status="skipped"}`) {
-				t.Fatalf("expected no skipped delivery metric, got %s", body)
+			if got := counterValue(t, body, deliveredSeries("skipped")); got != tc.skipped {
+				t.Fatalf("%s = %d, want %d; metrics %s", deliveredSeries("skipped"), got, tc.skipped, body)
 			}
-			if strings.Contains(body, `test_messages_delivered{delivery_status="delivered"}`) {
-				t.Fatalf("expected no delivered metric for an unreachable session, got %s", body)
+			if got := counterValue(t, body, deliveredSeries("wake_reported")); got != -1 {
+				t.Fatalf("%s = %d, want no series for a session on no consumer; metrics %s", deliveredSeries("wake_reported"), got, body)
 			}
 		})
 	}
+	t.Run("control: a session with no record", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		item := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_no_record"), "no-record-wake")
+		harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+		if body := deliveredMetrics(t, harness); counterValue(t, body, deliveredSeries("wake_reported")) != 1 {
+			t.Fatalf("%s is not 1 for a message to a session with no record; metrics %s", deliveredSeries("wake_reported"), body)
+		}
+	})
 }
 
 // A delivery that fails on a non-control topic raises no exception: only control topics get one.
@@ -3888,7 +3921,7 @@ func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t
 func TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
-	// Use a non-control topic (not notifications.role.* or notifications.agent.*)
+	// Use a topic that is neither a control topic (notifications.role.*) nor an agent subject.
 	item := listenerTestEnvelope("notifications.github.owner.repo.issue.1", "dedupe-non-control")
 	// Register a subscriber for this topic, with no session record behind it.
 	if _, err := harness.registry.Upsert(store.Interest{
@@ -4016,16 +4049,19 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
 		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
-		// The walk's other two counts, and its dead letters stored as main.go stores them, on
-		// the sender's agent subject of this test's own stream.
-		roleDeadLetters:     met.NewCounter("test_role_dead_letters", "test"),
-		roleKeptUndecodable: met.NewCounter("test_role_kept_undecodable", "test"),
-		publishDeadLetter:   client.PublishStoredAs,
-		keepPublish:         client.PublishStoredAck,
-		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
-		// main.go's always has both; the harness's two handlers share these as main.go's do. The
+		// The walk's other counts, and its dead letters stored as main.go stores them, on the
+		// sender's agent subject of this test's own stream.
+		roleDeadLetters:       met.NewCounter("test_role_dead_letters", "test"),
+		roleKeptExpiryNotices: met.NewCounter("test_role_kept_expiry_notices", "test"),
+		roleKeptUndecodable:   met.NewCounter("test_role_kept_undecodable", "test"),
+		publishDeadLetter:     client.PublishStoredAs,
+		publishExpiryNotice:   client.PublishKeptCopyExpiry,
+		keepPublish:           client.PublishStoredAck,
+		// The handler refuses a config without its set of held-back agent messages or its
+		// kept-lane drain guards, as main.go's always has both; the harness's two handlers share
+		// these as main.go's do. The harness sets no agent wait, so its set is built for none. The
 		// clock is main.go's too, which a test that crosses a kept copy's hour replaces on its copy.
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		deferredUnplaceable: newUnplaceableDeferrals(0),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
 		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
@@ -4825,6 +4861,8 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
+	// Not parallel: each fault lands 50 ms after its repair, which the monitor's probe right
+	// after the rebuild must beat, and four rebuilds must come within a 1.4 s time.After deadline.
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),
@@ -5161,17 +5199,18 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // listenerTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every untagged test calls t.Parallel except those that change or read back
-// something the whole process shares (t.Setenv, the log package's output, the default logger, the
-// entries of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock bound within a
+// names no -parallel. Every test, in each build (natslive, odatrace and serverchange included),
+// calls t.Parallel except those that change or read back something the whole process shares
+// (t.Setenv, the log package's output, the default logger, the left-out log limiters and the
+// entries of takeoverUnrecordedWarnings a test asserts on, every goroutine's stack,
+// testing.AllocsPerRun, testnats.Hook) or that hold a wall-clock bound or a quiet window within a
 // second or two of what they wait for (a close, a probe count, a recovery, a relay's receipt wait
-// of 500 ms), which stay serial and run before the rest. The natslive rows keep the choice each
-// already made: the nine of relay_socket_live_test.go are parallel, the others serial. A test here
-// spends most of its time waiting on NATS, a listener process or Postgres, not on a core, and each
-// has a JetStream account of its own (testnats.URL) or a server of its own. go test's default of
-// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account, rig
-// and Dispatch database at once would swamp the one shared server. TestMain (testmain_test.go)
-// sets it.
+// of 500 ms); those stay serial, run before the rest, and say why on their first line in a
+// `// Not parallel:` comment. A test here spends most of its time waiting on NATS, a listener
+// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL)
+// or a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds
+// on a dev box, where every test's account, rig and Dispatch database at once would swamp the one
+// shared server. TestMain (testmain_test.go) sets it.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8
@@ -5406,23 +5445,15 @@ func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
 }
 
 // The role claim reaper runs on a period of its own, and its default is the five minutes the
-// fixed pass this change replaces ran at, which is also the age the session bucket ships with
-// (session.BucketMaxAge): a stalled session's key is expired by that age, and a holder whose
-// key is gone reads gone, so a pass more often than that frees a stalled holder's role sooner
-// than the fixed pass did - the harm this whole change exists to end. Two passes still fit well
-// inside the gone horizon, so a holder that really is gone loses its role promptly.
-//
-// The floor the bucket's age sets holds only while that age is below the gone horizon, as the
-// shipping age is: once dispatch://INFRA-887 raises it past the horizon, the session reaper
-// deletes a record at the horizon and the bucket expires none before it, so the floor is the
-// horizon's and a period as long as the raised age would keep a gone holder's role for hours.
-func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge(t *testing.T) {
+// deployment keeps for it. A session bucket an older build created keeps a record
+// five minutes until ENVOY_SESSION_MAX_AGE raises it, and there a holder whose key expired reads
+// gone, so a shorter pass would free a stalled holder's role sooner than a five-minute pass does.
+// Two passes still fit well inside the gone horizon, so a holder that really is gone loses its
+// role promptly.
+func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGoneHorizon(t *testing.T) {
 	t.Parallel()
 	if defaultRoleClaimReapInterval != 5*time.Minute {
-		t.Fatalf("the default role claim reap interval is %s, want the 5m fixed pass this change replaced: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
-	}
-	if session.BucketMaxAge < session.GoneHorizon && defaultRoleClaimReapInterval < session.BucketMaxAge {
-		t.Fatalf("the default role claim reap interval is %s, want at least the %s the session bucket keeps a record for: a stalled holder reads gone when its key expires, and a shorter pass takes its role sooner than the five-minute pass this change replaced", defaultRoleClaimReapInterval, session.BucketMaxAge)
+		t.Fatalf("the default role claim reap interval is %s, want 5m: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
 	}
 	if got := 2 * defaultRoleClaimReapInterval; got > session.GoneHorizon {
 		t.Fatalf("two passes at the default role claim reap interval take %s, want them inside the %s gone horizon, so a gone holder's role is free well before an operator waits out another horizon", got, session.GoneHorizon)

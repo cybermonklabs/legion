@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -207,6 +209,9 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
 		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
+				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+			}
 			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
 		}
 		if _, exists := projects[name]; exists {
@@ -245,11 +250,14 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
-		if unknown.name == "repo" {
+		if unknown.node.Value == "repo" {
 			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
+		if !keyShape(unknown.node.Value) {
+			return Project{}, nil, unknown
+		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
-		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
+		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.node.Value)
 	}
 	if err != nil {
 		return Project{}, nil, err
@@ -319,9 +327,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
 // plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
-// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
-// roles), and refuses an empty list, so the steps a task with none runs are steps this release
-// carries out. A refusal names the key, then gives every reason of both checks.
+// task `default` with those steps passes against Legion's own roles (plan.Refusals), and refuses
+// an empty list, so the steps a task with none runs are steps this release carries out. A refusal
+// names the key, then gives every reason of both checks.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -342,7 +350,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		steps = append(steps, parsed[0])
 	}
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	refusals := plan.Refusals(task, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))
 		for i, refusal := range refusals {
@@ -613,18 +621,25 @@ func resolveGitHubApp(app GitHubApp, field string) (GitHubApp, error) {
 }
 
 // executePrivateKeyCommand runs command and returns its trimmed stdout. Its stderr goes to the
-// daemon's own stderr as it is written, so an operator sees what `agent-secrets` prints while it
-// waits for a person's grant (the request's id), and is kept for the failure's message.
+// daemon's own stderr a line at a time as it is written, so an operator sees what `agent-secrets`
+// prints while it waits for a person's grant (the request's id), and is kept for the failure's
+// message. Both print it by providerkeys.go's rule (keyCommandShown): a word of the command that
+// can be a secret's name, or the secret pasted in its place, stands as keyCommandWordShown, and a
+// line, or the whole stderr in the refusal, that still holds part of one, or a PEM block's first
+// line, is not printed, its length printed instead.
 func executePrivateKeyCommand(command, field string) (string, error) {
 	keyCommand := exec.Command("sh", "-c", command)
 	keyCommand.Env = runtime.WithoutNATSSeeds(os.Environ())
+	words := keyCommandWords(command)
 	var stderr strings.Builder
-	keyCommand.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	live := &keyCommandLines{out: os.Stderr, field: field, words: words}
+	keyCommand.Stderr = io.MultiWriter(live, &stderr)
 	result, err := keyCommand.Output()
+	live.flush()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = []byte(stderr.String())
+			exit.Stderr = []byte(keyCommandStderr(stderr.String(), words))
 		}
 		return "", commandError(field, err)
 	}
@@ -635,6 +650,96 @@ func executePrivateKeyCommand(command, field string) (string, error) {
 	return key, nil
 }
 
+// keyCommandWordShown stands for a word of private_key_command in what its stderr prints.
+const keyCommandWordShown = "[a word of the command]"
+
+// keyCommandWords are the words of command, the first included, of redact.HeldRun characters or
+// more, with any quote around them taken off, each shown as keyCommandWordShown: where an operator
+// names the secret the command reads (a secretsd key, a variable), where the key itself lands when
+// it is pasted into the command in its name's place, and the whole command when the key is pasted
+// in the command's place (`sh: 1: <key>: not found`).
+func keyCommandWords(command string) []redact.Word {
+	var words []redact.Word
+	for _, field := range strings.Fields(command) {
+		if word := strings.Trim(field, `'"`); len(word) >= redact.HeldRun {
+			words = append(words, redact.Word{Text: word, Shown: keyCommandWordShown})
+		}
+	}
+	return words
+}
+
+// keyCommandShown is text, private_key_command's stderr or a line of it, as the daemon prints it:
+// redact.Withheld's rule over words, the rule stderrShown prints a `secrets` command's stderr by,
+// and ok false, nothing of it to be printed, when what is left still holds a run of a word or a PEM
+// block's first line, which is the private key itself.
+func keyCommandShown(text string, words []redact.Word) (shown string, ok bool) {
+	if strings.Contains(text, "-----BEGIN") {
+		return "", false
+	}
+	return redact.Withheld(text, words)
+}
+
+// keyCommandStderr is private_key_command's whole stderr as its refusal quotes it
+// (keyCommandShown), or the words that say it is withheld.
+func keyCommandStderr(stderr string, words []redact.Word) string {
+	text := strings.TrimSpace(stderr)
+	if shown, ok := keyCommandShown(text, words); ok {
+		return shown
+	}
+	return fmt.Sprintf("its stderr (%d bytes) holds part of the command or a private key, so it is not printed", len(text))
+}
+
+// keyCommandLines writes private_key_command's stderr to out a line at a time, each line as
+// keyCommandShown prints it, or the words that say it is withheld; every line of a PEM block, its
+// first line to its last (`-----END`), is withheld, since only its first line says it is one. flush
+// writes what is left of a line the command did not end.
+type keyCommandLines struct {
+	out     io.Writer
+	field   string
+	words   []redact.Word
+	partial []byte
+	inPEM   bool
+}
+
+func (l *keyCommandLines) Write(p []byte) (int, error) {
+	l.partial = append(l.partial, p...)
+	for {
+		end := bytes.IndexByte(l.partial, '\n')
+		if end < 0 {
+			return len(p), nil
+		}
+		l.line(string(l.partial[:end]))
+		l.partial = l.partial[end+1:]
+	}
+}
+
+func (l *keyCommandLines) flush() {
+	if len(l.partial) > 0 {
+		l.line(string(l.partial))
+		l.partial = nil
+	}
+}
+
+func (l *keyCommandLines) line(text string) {
+	if strings.Contains(text, "-----BEGIN") {
+		l.inPEM = true
+	}
+	shown, ok := keyCommandShown(text, l.words)
+	if l.inPEM {
+		ok = false
+		l.inPEM = !strings.Contains(text, "-----END")
+	}
+	if ok {
+		fmt.Fprintln(l.out, shown)
+		return
+	}
+	fmt.Fprintf(l.out, "%s: a line of its stderr (%d bytes) holds part of the command or a private key, so it is not printed\n", l.field, len(text))
+}
+
+// resolvePrivateKeySecret is an App's private key read from the secretsd key name names. No refusal
+// names the key: it stands as keyNameShown, as provider_keys' do, since a key made only of letters,
+// digits and underscores passes as a name, so the name can be the key itself pasted where its name
+// goes. field names the setting.
 func resolvePrivateKeySecret(name, field string) (string, error) {
 	statusText, err := runAppSecretsGet(name, "--no-request", field)
 	if err != nil {
@@ -645,10 +750,10 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 		Tier string `json:"tier"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(statusText)), &status); err != nil || status.Key != name || status.Tier == "" {
-		return "", fmt.Errorf("%s: secrets get %s --no-request printed an unparsable status (expected {\"key\",\"tier\"})", field, name)
+		return "", fmt.Errorf(`%s: %s printed an unparsable status (expected {"key","tier"})`, field, shownCommand("--no-request"))
 	}
 	if status.Tier != "human" {
-		return "", fmt.Errorf("App private key %s is readable by agent-tier callers; move it to a daemon-only store", name)
+		return "", fmt.Errorf("%s: the App private key it names is readable by agent-tier callers; move it to a daemon-only store", field)
 	}
 	encoded, err := runAppSecretsGet(name, "--value", field)
 	if err != nil {
@@ -656,7 +761,7 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 	}
 	key, err := DecodePrivateKey(encoded)
 	if err != nil {
-		return "", fmt.Errorf("%s: %s did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field, name)
+		return "", fmt.Errorf("%s: the secretsd key it names did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field)
 	}
 	return key, nil
 }
@@ -700,19 +805,31 @@ func decodeBase64LikeNode(encoded string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
 
+// runAppSecretsGet runs `secrets get <name> <flag>`, returning its stdout. A failure names field
+// and the command with keyNameShown in place of name, and the child's stderr as stderrShown
+// prints it.
 func runAppSecretsGet(name, flag, field string) (string, error) {
 	args := []string{"get", name, flag}
 	environment := daemonEnvironment()
 	binary, ok := lookpath.On(pathValue(environment), "secrets")
 	if !ok {
-		return "", fmt.Errorf("%s: the secrets command is not on PATH, so %s cannot be read", field, name)
+		return "", fmt.Errorf("%s: the secrets command is not on PATH, so the secretsd key it names cannot be read", field)
 	}
 	command := exec.Command(binary, args...)
 	command.Env = environment
 	command.Stdin = os.Stdin
 	output, err := command.Output()
 	if err != nil {
-		return "", commandError(field+": secrets get "+name+" "+flag, err)
+		end := procgroup.Ended(err)
+		if !end.Ran() {
+			return "", fmt.Errorf("%s: could not run %s: %w", field, shownCommand(flag), err)
+		}
+		var exit *exec.ExitError
+		stderr := ""
+		if errors.As(err, &exit) {
+			stderr = string(exit.Stderr)
+		}
+		return "", fmt.Errorf("%s: %s failed (%s)%s", field, shownCommand(flag), end, stderrShown(stderr, name))
 	}
 	return string(output), nil
 }

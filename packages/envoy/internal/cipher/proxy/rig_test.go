@@ -221,6 +221,13 @@ type fakeGrants struct {
 	// broker's own table holds it: minted once and answered again after.
 	access      map[string]string
 	accessCalls int
+	// enrollmentCalls counts the reads of every live grant of an enrollment, and enrollmentErr
+	// is what each of them answers when a row sets it: a read that did not happen. grantErrs is
+	// the answer of a read that reaches one grant, by its id: that grant's own check failing, as
+	// its project check does while Dispatch cannot answer, fails the whole read.
+	enrollmentCalls int
+	enrollmentErr   error
+	grantErrs       map[string]error
 	// rules is the airlock's rules the fake answers (AirlockRules), as the broker's live policy
 	// holds them: testRules unless the row's rig was built with others (newRuledRig), or the row
 	// changes them (setRules) to play a retag the broker read.
@@ -947,8 +954,14 @@ func bodyOf(t *testing.T, answer *http.Response) string {
 // does.
 func newTestAuthority(t *testing.T) *Authority {
 	t.Helper()
+	return newTestAuthorityOn(t, nil)
+}
+
+// newTestAuthorityOn is newTestAuthority signing by clock, and nil is the system's.
+func newTestAuthorityOn(t *testing.T, clock Clock) *Authority {
+	t.Helper()
 	certFile, keyFile := writeCAFiles(t)
-	authority, err := NewAuthority(certFile, keyFile)
+	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
 	if err != nil {
 		t.Fatalf("the test certificate authority: %v", err)
 	}

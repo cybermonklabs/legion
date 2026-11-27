@@ -201,6 +201,12 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return event.payload.reason === "closed" ? "Claim released on close" : "Claim released";
     case "issue.deployed":
       return `Deployed by run ${event.payload.run_id}`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "Role holders cleared"
+        : `Roles given: ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
+    case "deploy.recorded":
+      return `Recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
@@ -253,6 +259,15 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
     case "issue.pull_request_attribution_changed":
       return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
+    // Dispatch's outbox writes it, as a system actor, when an event's copy for a role reached no
+    // session: each keep of the copy ended its hour untaken, or Envoy no longer held the copy to
+    // keep it again.
+    case "role.undelivered": {
+      const kept = `Not delivered to role ${event.payload.role}: event ${event.payload.event_id} (${event.payload.event_type}) was kept ${event.payload.keeps} time${event.payload.keeps === 1 ? "" : "s"}`;
+      return event.payload.reason === "expired"
+        ? `${kept} for an hour and no session took it`
+        : `${kept} and Envoy no longer held it to keep again`;
+    }
   }
   return event satisfies never;
 }

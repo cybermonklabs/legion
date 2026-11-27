@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
-# The shared clone live proof on a throwaway kind cluster: an issue pod the daemon's own code
-# launches under gVisor provisions its clone with `git clone --shared` from the read-only feed, so
-# the clone reads the feed's objects through `.git/objects/info/alternates` on `/legion/feed` and
-# the pod's disk holds the repository once. The pods are built by Legion's own code: the daemon's
-# loader reads the legion.yaml, its sandboxOptions builds the Agent Sandbox runtime, which launches
-# each issue's root through Agent Sandbox v1.0.3's controller (internal/daemon's
-# shared_clone_live_test.go), as the share volumes proof's driver launches its pod, on a public
-# repository of some tens of megabytes. Two pods: the first issue's, whose launch makes the
-# repository's cache (its workspace-fetch fills the feed from the cache or from GitHub, whichever
-# the runtime's wait for the cache gives it, and the run prints which), and, once that cache is
-# Ready, a second issue's, whose feed comes from the cache's tar (the e2e check cache-second-pod).
-# The checks read each pod as its roles container sees it. Of the first: both init containers
-# ended 0, the container's kernel is gVisor's, the clone's alternates name the feed's objects and
-# nothing else, `du -s` of the clone's `.git/objects` is under a tenth of the feed's objects (a
-# plain local clone of the same feed, made beside it in the container as the release before made
-# the pod's, copies them, and its `du -s` is printed as the control), the feed is read-only there,
-# `git fsck --connectivity-only` passes in the clone, and `git log` and `jj log` of the default
-# branch succeed in the clone as the launched architect's agent runs them. Of the second
-# (cache-second-pod): both init containers ended 0, its workspace-fetch streamed the feed from the
-# repository cache and fetched under 1 MiB from GitHub, its clone's alternates name its feed's
-# objects, and `git fsck --connectivity-only` passes in that clone. Each check prints
-# `== <name>`, what it observed and `ok <name> (<s>s)`; the first that fails ends the run
-# non-zero, naming it.
+# The issue-clone live proof on a throwaway kind cluster. An issue pod that the daemon's own code
+# launches under gVisor holds one repository at `/legion/repos/github.com/<owner>/<repo>`, with no
+# `/legion/feed`. The pod's one `workspace-init` container receives the provisioning token, unpacks
+# the repository cache's tar into the clone's `.git`, verifies that history, fetches the default
+# branch and its own issue branches from GitHub, then creates the colocated jj workspace. The clone
+# has no tags and exposes only its default and issue branches through its refspecs.
+#
+# The pods are built by Legion's own code: the daemon's loader reads the legion.yaml, and its
+# sandboxOptions builds the Agent Sandbox runtime that launches each issue's root through Agent
+# Sandbox v1.0.3's controller (internal/daemon's shared_clone_live_test.go), as the share-volumes
+# proof's driver launches its pod, on a public repository of some tens of megabytes. Two pods run:
+# the first creates the repository cache, and the second starts once that cache is Ready. The
+# checks read each pod as its roles container sees it. They prove one init container, the absence
+# of the legacy repository path and mount, the narrow refs and clone configuration, plain and named
+# fetches as a launched role, a cache-backed second provision with a small GitHub delta, and a cache
+# whose tar has only the default branch's objects. They also retain the gVisor, fsck and git/jj log
+# checks. Each check prints `== <name>`, what it observed and `ok <name> (<s>s)`; the first that
+# fails ends the run non-zero, naming it.
+
 #
 # Run it from a checkout on an amd64 (x86_64) Linux host — the gVisor release, kind's binary and
 # the static binaries it builds are amd64 only — as
@@ -34,8 +30,8 @@
 # commit: LEGION_E2E_IMAGE names it by digest, and where it is unset the run reads the digest of
 # `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of HEAD>`, which
 # `.github/workflows/worker-image.yaml` publishes for a pull request's head, and fails naming the
-# tag when the registry has none. The image's own `legion` runs the pods' workspace-fetch and
-# workspace-init, so the image must be built from the commit under proof. That is why
+# tag when the registry has none. The image's own `legion` runs the pods' workspace-init, so the
+# image must be built from the commit under proof. That is why
 # .github/e2e-scripts.json marks this proof dispatch_only: e2e.yaml runs it on
 # `gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind`, whose checkout is the
 # branch's head, and never on a label's merge commit, for which no image is built, or the
@@ -165,7 +161,7 @@ result=$work/result
 on_kind driver \
   -e LEGION_E2E_KUBECONFIG="$work/kubeconfig-internal" -e LEGION_E2E_KUBE_CONTEXT="$kind_context" \
   -e LEGION_E2E_IMAGE="$image" -e LEGION_E2E_WORK="$work" -e LEGION_E2E_RESULT="$result" -- \
-  sh -c 'LEGION_E2E_STREAM_HOST=$(ip -4 -o addr show eth0 | awk "{print \$4}" | cut -d/ -f1) exec "$0" -test.count=1 -test.timeout=45m -test.v -test.run "^TestASharedCloneReadsTheFeedInAnIssuePodLive\$"' "$work/shared-clone.test" ||
+  sh -c 'LEGION_E2E_STREAM_HOST=$(ip -4 -o addr show eth0 | awk "{print \$4}" | cut -d/ -f1) exec "$0" -test.count=1 -test.timeout=45m -test.v -test.run "^TestAnIssuePodGetsOneRepositoryLive\$"' "$work/shared-clone.test" ||
   fail "the launch driver failed"
 { read -r pod repo && read -r second _ cache_sandbox; } < "$result" || true
 [ -n "${pod:-}" ] && [ -n "${repo:-}" ] && [ -n "${second:-}" ] && [ -n "${cache_sandbox:-}" ] || fail "the launch driver recorded no two pods: $(cat "$result" 2>/dev/null)"
@@ -179,56 +175,84 @@ pass
 container=roles
 in_pod() { kind_k -n legion exec "$pod" -c "$container" -- "$@"; }
 clone=/legion/repos/github.com/$repo
-feed=/legion/feed/$repo.git
+# expected_refs <pod>: the refs the pod's clone holds outside refs/jj/: its issue's own bookmark,
+# which the workspace's creation exports to git (CLONE-1 in the first pod, CLONE-2 in the second),
+# the default branch, and origin's HEAD and default branch, in for-each-ref's order.
+expected_refs() {
+  local issue=CLONE-1
+  [ "$1" = "$second" ] && issue=CLONE-2
+  printf 'refs/heads/legion/%s\nrefs/heads/master\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/master' "$issue"
+}
+
+refs_in_clone() {
+  local proof_pod=${1:-$pod} refs
+  refs=$(kind_k -n legion exec "$proof_pod" -c "$container" -- git -C "$clone" for-each-ref --format='%(refname)') ||
+    fail "list refs in pod $proof_pod's $clone"
+  printf '%s\n' "$refs" | grep -v '^refs/jj/' || true
+}
+
 
 begin provision
-# shellcheck disable=SC2016 # a kubectl JSONPath, not the shell's
-ends=$(kind_k -n legion get pod "$pod" -o jsonpath='{range .status.initContainerStatuses[*]}{.name}={.state.terminated.exitCode} {end}')
-[ "$ends" = "workspace-fetch=0 workspace-init=0 " ] || fail "the pod's init containers ended $ends, want workspace-fetch=0 workspace-init=0"
-note "init containers: $ends"
-note "workspace-fetch: $(kind_k -n legion logs "$pod" -c workspace-fetch | grep -E '^workspace-init fetch: ' | tail -1)"
+for proof_pod in "$pod" "$second"; do
+  # shellcheck disable=SC2016 # a kubectl JSONPath, not the shell's
+  ends=$(kind_k -n legion get pod "$proof_pod" -o jsonpath='{range .status.initContainerStatuses[*]}{.name}={.state.terminated.exitCode} {end}')
+  [ "$ends" = "workspace-init=0 " ] || fail "pod $proof_pod's init containers ended $ends, want workspace-init=0 alone"
+  note "pod $proof_pod init containers: $ends"
+done
 pass
 
 begin gvisor-kernel
-kernel=$(in_pod sh -c 'dmesg 2>/dev/null | head -1')
-[[ $kernel == *gVisor* ]] || fail "container $container's kernel is not gVisor's: $kernel"
-note "container $container: $kernel"
+for proof_pod in "$pod" "$second"; do
+  kernel=$(kind_k -n legion exec "$proof_pod" -c "$container" -- sh -c 'dmesg 2>/dev/null | head -1')
+  [[ $kernel == *gVisor* ]] || fail "pod $proof_pod container $container's kernel is not gVisor's: $kernel"
+  note "pod $proof_pod container $container: $kernel"
+done
 pass
 
-begin alternates
-alternates=$(in_pod cat "$clone/.git/objects/info/alternates") || fail "the clone at $clone has no .git/objects/info/alternates"
-[ "$alternates" = "$feed/objects" ] || fail "the clone's alternates name $alternates, want the feed's objects $feed/objects alone"
-note "cat $clone/.git/objects/info/alternates → $alternates"
-packs=$(in_pod sh -c "ls $clone/.git/objects/pack | grep -c '\\.pack\$' || true")
-note "packs in the clone's own objects/pack: $packs"
-[ "$packs" = 0 ] || fail "the clone's own objects/pack holds $packs packs, want none of the feed's"
+begin no-feed
+for proof_pod in "$pod" "$second"; do
+  kind_k -n legion exec "$proof_pod" -c "$container" -- test ! -e /legion/feed ||
+    fail "pod $proof_pod holds /legion/feed"
+  mounts=$(kind_k -n legion get pod "$proof_pod" -o json | jq -r '[ (.spec.initContainers[]?, .spec.containers[]?) | .volumeMounts[]? | select(.mountPath == "/legion/feed" or (.mountPath | startswith("/legion/feed/"))) ] | length')
+  [ "$mounts" = 0 ] || fail "pod $proof_pod has $mounts /legion/feed mount(s)"
+  note "pod $proof_pod: /legion/feed absent; feed mounts: $mounts"
+done
 pass
 
-begin disk
-clone_kib=$(in_pod du -sk "$clone/.git/objects" | awk '{print $1}')
-feed_kib=$(in_pod du -sk "$feed/objects" | awk '{print $1}')
-note "du -sk $clone/.git/objects → $clone_kib; du -sk $feed/objects → $feed_kib"
-[ $((clone_kib * 10)) -lt "$feed_kib" ] || fail "the clone's objects take $clone_kib KiB, not under a tenth of the feed's $feed_kib KiB"
-# The control: a plain local clone of the same read-only feed, as the release before made the
-# pod's (`git clone --no-checkout`), copies every object across the two mounts.
-control=$(in_pod sh -c "d=\$(mktemp -d) && git clone --quiet --no-checkout $feed \$d/plain >/dev/null && du -sk \$d/plain/.git/objects | cut -f1; rm -rf \$d") ||
-  fail "the control's plain clone of $feed failed: $control"
-note "control: du -sk of a plain git clone --no-checkout of the feed's objects → $control"
-[ $((control * 10)) -ge "$feed_kib" ] || fail "the control's plain clone takes $control KiB, under a tenth of the feed's $feed_kib: the control shows nothing"
+begin refs
+for proof_pod in "$pod" "$second"; do
+  refs=$(refs_in_clone "$proof_pod")
+  want=$(expected_refs "$proof_pod")
+  [ "$refs" = "$want" ] || fail "pod $proof_pod's clone refs are $(printf %q "$refs"), want $(printf %q "$want")"
+  note "pod $proof_pod git -C $clone for-each-ref outside refs/jj/: $(tr '\n' ' ' <<<"$refs")"
+done
 pass
 
-begin feed-read-only
-if refused=$(in_pod sh -c "touch $feed/written-by-roles" 2>&1); then
-  fail "container $container wrote to $feed, which it mounts read-only"
-fi
-[[ $refused == *"Read-only file system"* ]] || fail "the write to $feed failed for another reason: $refused"
-note "touch $feed/written-by-roles → refused: $(tr '\n' ' ' <<<"$refused")"
+begin clone-config
+expected_fetch=$(printf '+refs/heads/master:refs/remotes/origin/master\n+refs/heads/legion/CLONE-1*:refs/remotes/origin/legion/CLONE-1*')
+for digit in {0..9}; do
+  expected_fetch+=$(printf '\n^refs/heads/legion/CLONE-1%s*' "$digit")
+done
+fetch_specs=$(in_pod git -C "$clone" config --get-all remote.origin.fetch) || true
+tag_opt=$(in_pod git -C "$clone" config --get remote.origin.tagOpt) || true
+gc_auto=$(in_pod git -C "$clone" config --get gc.auto) || true
+maintenance_auto=$(in_pod git -C "$clone" config --get maintenance.auto) || true
+fetch_tags=$(in_pod env XDG_CONFIG_HOME=/var/run/legion/home/.config jj -R "$clone" --ignore-working-copy config get remotes.origin.fetch-tags) || true
+[ "$fetch_specs" = "$expected_fetch" ] || fail "remote.origin.fetch is $(printf %q "$fetch_specs"), want $(printf %q "$expected_fetch")"
+[ "$tag_opt" = --no-tags ] || fail "remote.origin.tagOpt is $tag_opt, want --no-tags"
+[ "$gc_auto" = 0 ] || fail "gc.auto is $gc_auto, want 0"
+[ "$maintenance_auto" = false ] || fail "maintenance.auto is $maintenance_auto, want false"
+[ "$fetch_tags" = '~*' ] || fail "jj remotes.origin.fetch-tags is $fetch_tags, want ~*"
+note "remote.origin.fetch: $(tr '\n' ' ' <<<"$fetch_specs")"
+note "remote.origin.tagOpt=$tag_opt gc.auto=$gc_auto maintenance.auto=$maintenance_auto remotes.origin.fetch-tags=$fetch_tags"
 pass
 
 begin fsck
-fsck=$(in_pod git --git-dir="$clone/.git" fsck --connectivity-only --no-dangling --no-progress 2>&1) ||
-  fail "git fsck --connectivity-only of the clone: $fsck"
-note "git fsck --connectivity-only of $clone: ok $(tr '\n' ' ' <<<"$fsck")"
+for proof_pod in "$pod" "$second"; do
+  fsck=$(kind_k -n legion exec "$proof_pod" -c "$container" -- git --git-dir="$clone/.git" fsck --connectivity-only --no-dangling --no-progress 2>&1) ||
+    fail "git fsck --connectivity-only of pod $proof_pod's clone: $fsck"
+  note "pod $proof_pod git fsck --connectivity-only of $clone: ok $(tr '\n' ' ' <<<"$fsck")"
+done
 pass
 
 begin logs
@@ -251,20 +275,67 @@ note "jj log -r master@origin → $jj_log"
 [ "${git_log%% *}" = "${jj_log%% *}" ] || fail "git and jj read origin's master as ${git_log%% *} and ${jj_log%% *}"
 pass
 
+begin plain-fetch
+git_fetch=$(role_exec git -C "$clone" fetch 2>&1) ||
+  fail "plain git fetch as role $role: $git_fetch"
+jj_fetch=$(role_exec sh -c "cd \"$clone\" && jj git fetch" 2>&1) ||
+  fail "plain jj git fetch as role $role: $jj_fetch"
+plain_refs=$(refs_in_clone)
+want=$(expected_refs "$pod")
+[ "$plain_refs" = "$want" ] || fail "the clone refs after plain fetch are $(printf %q "$plain_refs"), want $(printf %q "$want")"
+note "plain git fetch: $(tr '\n' ' ' <<<"$git_fetch")"
+note "plain jj git fetch: $(tr '\n' ' ' <<<"$jj_fetch")"
+note "refs after plain fetch: $(tr '\n' ' ' <<<"$plain_refs")"
+pass
+
+begin named-fetch
+other_branch=$(role_exec git -C "$clone" ls-remote --heads origin |
+  awk '$2 != "refs/heads/master" { sub("^refs/heads/", "", $2); print $2; exit }')
+[ -n "$other_branch" ] || fail "tmux/tmux names no branch other than master"
+named_fetch=$(role_exec jj -R "$clone" git fetch --branch "$other_branch" 2>&1) ||
+  fail "jj git fetch --branch $other_branch as role $role: $named_fetch"
+# shellcheck disable=SC2016 # a jj template, not the shell's
+other_row=$(role_exec jj -R "$clone" --ignore-working-copy log --no-graph --color=never -r "$other_branch@origin" -T 'commit_id ++ "\n"' 2>&1) ||
+  fail "jj has no $other_branch@origin after its named fetch: $other_row"
+note "jj git fetch --branch $other_branch: $(tr '\n' ' ' <<<"$named_fetch")"
+note "jj log -r $other_branch@origin: $(tr '\n' ' ' <<<"$other_row")"
+pass
+
 begin cache-second-pod
-# shellcheck disable=SC2016 # a kubectl JSONPath, not the shell's
-ends=$(kind_k -n legion get pod "$second" -o jsonpath='{range .status.initContainerStatuses[*]}{.name}={.state.terminated.exitCode} {end}')
-[ "$ends" = "workspace-fetch=0 workspace-init=0 " ] || fail "pod $second's init containers ended $ends, want workspace-fetch=0 workspace-init=0"
-fetched=$(kind_k -n legion logs "$second" -c workspace-fetch | grep -E "^workspace-init fetch: [0-9,]+ bytes from the repository cache http://$cache_sandbox\.legion\.svc:[0-9]+ in " | tail -1) ||
-  fail "pod $second's workspace-fetch log names no stream from the repository cache $cache_sandbox: $(kind_k -n legion logs "$second" -c workspace-fetch | tail -5)"
+fetched=$(kind_k -n legion logs "$second" -c workspace-init |
+  grep -E "^workspace-init: [0-9,]+ bytes from the repository cache http://$cache_sandbox\.legion\.svc:[0-9]+ in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$" |
+  tail -1) ||
+  fail "pod $second's workspace-init log names no stream from repository cache $cache_sandbox: $(kind_k -n legion logs "$second" -c workspace-init | tail -5)"
 delta=$(sed -E 's/.*; ([0-9,]+) bytes from GitHub for the delta.*/\1/' <<<"$fetched" | tr -d ,)
 [[ $delta =~ ^[0-9]+$ ]] && [ "$delta" -lt 1048576 ] || fail "pod $second fetched $delta bytes from GitHub beside the cache's tar, want under 1 MiB: $fetched"
-note "workspace-fetch: $fetched"
-alternates=$(kind_k -n legion exec "$second" -c "$container" -- cat "$clone/.git/objects/info/alternates") ||
-  fail "pod $second's clone at $clone has no .git/objects/info/alternates"
-[ "$alternates" = "$feed/objects" ] || fail "pod $second's clone's alternates name $alternates, want the feed's objects $feed/objects alone"
-fsck=$(kind_k -n legion exec "$second" -c "$container" -- git --git-dir="$clone/.git" fsck --connectivity-only --no-dangling --no-progress 2>&1) ||
-  fail "git fsck --connectivity-only of pod $second's clone: $fsck"
-note "cat $clone/.git/objects/info/alternates → $alternates; git fsck --connectivity-only: ok $(tr '\n' ' ' <<<"$fsck")"
+note "workspace-init: $fetched"
+pass
+
+begin cache-default-only
+cache_clone=/legion/cache/$repo.git
+health=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c "curl -s -w '\n%{http_code}' localhost:8418/healthz") ||
+  fail "read cache $cache_sandbox health: $health"
+health_code=${health##*$'\n'}
+health_json=${health%$'\n'*}
+[ "$health_code" = 200 ] || fail "cache $cache_sandbox /healthz returned $health_code: $health_json"
+default_branch_only=$(jq -r '.defaultBranchOnly // false' <<<"$health_json") ||
+  fail "cache $cache_sandbox /healthz is not JSON: $health_json"
+[ "$default_branch_only" = true ] || fail "cache $cache_sandbox /healthz defaultBranchOnly is $default_branch_only, want true"
+cache_refs=$(kind_k -n legion exec "$cache_sandbox" -c cache -- git --git-dir="$cache_clone" for-each-ref --format='%(refname)') ||
+  fail "list cache refs: $cache_refs"
+[ "$cache_refs" = refs/heads/master ] || fail "cache refs are $(printf %q "$cache_refs"), want refs/heads/master alone"
+# shellcheck disable=SC2016 # expanded by the cache pod's shell
+# `git show-index` runs inside the cache's repository (--git-dir), which names the object format:
+# the image's git segfaults (exit 139) reading an index outside any repository.
+index_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; for index in "$1"/objects/pack/*.idx; do [ -e "$index" ] || continue; git --git-dir="$1" show-index < "$index" > "$tmp" || exit; cut -d" " -f2 < "$tmp" || exit; done' sh "$cache_clone") ||
+  fail "list cache pack indexes: $index_objects"
+[ -n "$index_objects" ] || fail "cache $cache_sandbox has no pack index under $cache_clone/objects/pack"
+# shellcheck disable=SC2016 # expanded by the cache pod's shell
+master_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; git --git-dir="$1" rev-list --objects master > "$tmp" || exit; cut -d" " -f1 < "$tmp"' sh "$cache_clone") ||
+  fail "list cache master objects: $master_objects"
+missing=$(comm -23 <(printf '%s\n' "$index_objects" | sort -u) <(printf '%s\n' "$master_objects" | sort -u))
+[ -z "$missing" ] || fail "cache indexes name objects outside master: $(tr '\n' ' ' <<<"$missing")"
+note "cache /healthz defaultBranchOnly=$default_branch_only; refs: $cache_refs"
+note "cache indexes: $(printf '%s\n' "$index_objects" | sed '/^$/d' | wc -l) objects, all in master"
 pass
 run_end

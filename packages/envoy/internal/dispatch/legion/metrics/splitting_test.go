@@ -29,10 +29,10 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 		{Key: "CORE-9", At: hour(7), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}},
 		{Key: "INFRA-4", At: hour(8), Filer: legion.SessionTitle{Role: "controller", Project: "INFRA", Controller: true}},
 	}
-	report := Compute(population, ScopeAll, hour(48))
+	w := windowOf(population, ScopeAll)
 	classOf := map[string]string{}
 	phaseOf := map[string]string{}
-	for _, row := range report.Splitting.Filed {
+	for _, row := range w.filed {
 		classOf[row.Key], phaseOf[row.Key] = row.Class, row.FilerPhase
 	}
 	want := map[string]string{
@@ -57,20 +57,22 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 	if phaseOf["INFRA-4"] != "" {
 		t.Errorf("the controller's filing names the phase %q, want none: the controller works no issue", phaseOf["INFRA-4"])
 	}
-	if len(report.Splitting.Weeks) != 1 {
-		t.Fatalf("the filings fall in %d weeks, want one", len(report.Splitting.Weeks))
+	weeks := w.weeks()
+	if len(weeks) != 1 {
+		t.Fatalf("the filings fall in %d weeks, want one", len(weeks))
 	}
-	week := report.Splitting.Weeks[0]
+	week := weeks[0].fold
 	if week.Finished != 1 || week.Filed[ClassInTreeAtDesign] != 1 || week.Filed[ClassByTheController] != 1 {
 		t.Fatalf("the week is %+v, want one finished issue and one filing of each class", week)
 	}
-	if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
+	roots := w.roots(t)
+	if perRoot := valueOf(roots.ChildrenPerRoot); roots.FinishedRoots != 1 || perRoot != 2 {
 		t.Fatalf("finished roots %d with %g children each, want one root with its two children",
-			report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
+			roots.FinishedRoots, perRoot)
 	}
-	if report.Splitting.MedianHoursRootsWithChildren != 20 || report.Splitting.MedianHoursRootsNoChildren != 0 {
-		t.Fatalf("the medians are %g with children and %g without, want 20 and 0",
-			report.Splitting.MedianHoursRootsWithChildren, report.Splitting.MedianHoursRootsNoChildren)
+	// No root without children finished, so its median is no value (-1 here) rather than a 0.
+	if with, without := medianOf(roots.HoursWithChildren), medianOf(roots.HoursWithoutChildren); with != 20 || without != -1 {
+		t.Fatalf("the medians are %g with children and %g without, want 20 and no value", with, without)
 	}
 }
 
@@ -87,20 +89,21 @@ func TestAFilingUnderAnotherTreeIsOutOfTheFilersTree(t *testing.T) {
 	population.Filed = []Filed{
 		{Key: "INFRA-6", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-5", Ancestors: []string{"INFRA-5"}},
 	}
-	report := Compute(population, ScopeAll, hour(48))
-	if len(report.Splitting.Filed) != 1 || report.Splitting.Filed[0].Class != ClassOutOfTree {
-		t.Fatalf("the filings are %+v, want INFRA-6 out of the filer's tree: its parent INFRA-5 tops a tree of its own", report.Splitting.Filed)
+	w := windowOf(population, ScopeAll)
+	if len(w.filed) != 1 || w.filed[0].Class != ClassOutOfTree {
+		t.Fatalf("the filings are %+v, want INFRA-6 out of the filer's tree: its parent INFRA-5 tops a tree of its own", w.filed)
 	}
 }
 
-// TestTheScopeNarrowsTheFilingsByTheIssueFiled: the splitting table's rows and each week's four
-// class counts follow the scope, read by the issue each filing created — the one implementer
-// files a child of its own tree and a follow-up that is a root, and `roots` keeps one and
-// `children` the other, whichever session filed them. That week's finished count and the table's
-// root figures stand where they are: "These root figures count the project's finished roots
-// whatever the all, roots or children toggle says, since they describe roots, while the weekly
-// counts follow the toggle" (the spec's metric 4).
-func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
+// TestEachCutNarrowsTheFilingsByTheIssueFiled: the filings each cut lists and each week's four
+// class counts follow the cut, read by the issue each filing created — the one implementer files a
+// child of its own tree and a follow-up that is a root, and each cut keeps one or the other,
+// whichever session filed them. That week's finished count stands where it is, and so do the root
+// figures: "These root figures count the project's finished roots whatever the all, roots or
+// children toggle says, since they describe roots, while the weekly counts follow the toggle" (the
+// spec's metric 4), which the eval holds as figures the all cut carries, the roots cut carries the
+// same, and the children cut carries none.
+func TestEachCutNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 	// The root and its two children finish in the window's second week, so the week the filings
 	// fall in has no finished issue of either kind and its finished count is the same under every
 	// scope, while the filings in it are not.
@@ -117,7 +120,7 @@ func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 		{Key: "INFRA-2", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
 		{Key: "INFRA-7", At: hour(7), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}},
 	}
-	filingsWeek := weekStart(hour(6))
+	filingsWeek := mondayOf(hour(6))
 	for _, one := range []struct {
 		scope  Scope
 		filed  []string
@@ -128,19 +131,15 @@ func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 		{ScopeChildren, []string{"INFRA-2"}, map[string]int{ClassInTreeLater: 1}},
 	} {
 		t.Run(string(one.scope), func(t *testing.T) {
-			report := Compute(population, one.scope, hour(120))
-			var filed []string
-			for _, row := range report.Splitting.Filed {
-				filed = append(filed, row.Key)
-			}
-			if !reflect.DeepEqual(filed, one.filed) {
-				t.Fatalf("scope %s holds the filings %v, want %v: a filing is read by the tree of the issue it created, not by the filer's",
+			w := windowOf(population, one.scope)
+			if filed := keysOf(w.filed); !reflect.DeepEqual(filed, one.filed) {
+				t.Fatalf("cut %s holds the filings %v, want %v: a filing is read by the tree of the issue it created, not by the filer's",
 					one.scope, filed, one.filed)
 			}
-			var week SplittingWeek
-			for _, row := range report.Splitting.Weeks {
-				if row.Week.Equal(filingsWeek) {
-					week = row
+			var week SplittingFold
+			for _, row := range w.weeks() {
+				if row.start.Equal(filingsWeek) {
+					week = row.fold
 				}
 			}
 			want := map[string]int{ClassInTreeAtDesign: 0, ClassInTreeLater: 0, ClassOutOfTree: 0, ClassByTheController: 0}
@@ -148,20 +147,27 @@ func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 				want[class] = count
 			}
 			if !reflect.DeepEqual(week.Filed, want) {
-				t.Fatalf("scope %s counts the filings' week %v, want %v: the week counts hold the rows of the same table",
+				t.Fatalf("cut %s counts the filings' week %v, want %v: the week counts hold the rows of the same table",
 					one.scope, week.Filed, want)
 			}
 			if week.Finished != 0 {
-				t.Errorf("scope %s finished %d issues in the filings' week, want none: nothing closed in it under any scope",
+				t.Errorf("cut %s finished %d issues in the filings' week, want none: nothing closed in it in any cut",
 					one.scope, week.Finished)
 			}
-			if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
-				t.Errorf("scope %s answers %d finished roots with %g children each, want the one root with its two children: the root figures are the project's under every scope",
-					one.scope, report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
+			roots := w.roots(t)
+			if perRoot := valueOf(roots.ChildrenPerRoot); roots.FinishedRoots != 1 || perRoot != 2 {
+				t.Errorf("cut %s answers %d finished roots with %g children each, want the one root with its two children: the root figures are the project's whatever the cut",
+					one.scope, roots.FinishedRoots, perRoot)
 			}
-			if report.Splitting.MedianHoursRootsWithChildren != 100 || report.Splitting.MedianHoursRootsNoChildren != 0 {
-				t.Errorf("scope %s answers medians of %g with children and %g without, want the root's 100 hours and no root without children",
-					one.scope, report.Splitting.MedianHoursRootsWithChildren, report.Splitting.MedianHoursRootsNoChildren)
+			if with, without := medianOf(roots.HoursWithChildren), medianOf(roots.HoursWithoutChildren); with != 100 || without != -1 {
+				t.Errorf("cut %s answers medians of %g with children and %g without, want the root's 100 hours and no value for no root without children",
+					one.scope, with, without)
+			}
+			switch own := w.splitting(t).Roots; {
+			case one.scope == ScopeChildren && own != nil:
+				t.Errorf("the children cut carries the root figures %+v, want none: they count roots alone", *own)
+			case one.scope != ScopeChildren && (own == nil || own.FinishedRoots != 1 || own.Children != 2):
+				t.Errorf("cut %s carries the root figures %+v, want the one root with its two children", one.scope, own)
 			}
 		})
 	}
@@ -184,8 +190,8 @@ func TestEachWeeksFinishedCountFollowsTheScope(t *testing.T) {
 		{ScopeChildren, 1},
 	} {
 		t.Run(string(one.scope), func(t *testing.T) {
-			weeks := Compute(population, one.scope, hour(24)).Splitting.Weeks
-			if len(weeks) != 1 || weeks[0].Finished != one.finished {
+			weeks := windowOf(population, one.scope).weeks()
+			if len(weeks) != 1 || weeks[0].fold.Finished != one.finished {
 				t.Fatalf("scope %s answers the weeks %+v, want one week that finished %d", one.scope, weeks, one.finished)
 			}
 		})
@@ -206,8 +212,8 @@ func TestAWeekRunsFromMondayToMondayInUTC(t *testing.T) {
 		{Key: "INFRA-13", At: time.Date(2026, 10, 5, 0, 30, 0, 0, time.UTC), Filer: controller},
 	}
 	filed := map[string]int{}
-	for _, week := range Compute(population, ScopeAll, hour(24*14)).Splitting.Weeks {
-		filed[week.Week.Format(time.RFC3339)] = week.Filed[ClassByTheController]
+	for _, week := range windowOf(population, ScopeAll).weeks() {
+		filed[week.start.Format(time.RFC3339)] = week.fold.Filed[ClassByTheController]
 	}
 	want := map[string]int{"2026-09-28T00:00:00Z": 2, "2026-10-05T00:00:00Z": 1}
 	if !reflect.DeepEqual(filed, want) {
@@ -225,10 +231,10 @@ func TestChildrenPerRootCountsEveryIssueOfTheTreeUnderItsRoot(t *testing.T) {
 	// The child carries Legion phase work, so the walk from the grandchild climbs through it.
 	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1))
 	grandchild := newIssue("INFRA-3").under("INFRA-2")
-	report := Compute(fixture(hour(-24), hour(24), root, child, grandchild), ScopeAll, hour(24))
-	if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
+	roots := windowOf(fixture(hour(-24), hour(24), root, child, grandchild), ScopeAll).roots(t)
+	if perRoot := valueOf(roots.ChildrenPerRoot); roots.FinishedRoots != 1 || perRoot != 2 {
 		t.Fatalf("%d finished roots with %g children each, want the one root with its child and its grandchild",
-			report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
+			roots.FinishedRoots, perRoot)
 	}
 }
 
@@ -257,10 +263,10 @@ func TestTheSplittingTableNamesAFilerByThePhaseWordsOfTables(t *testing.T) {
 		{Key: "INFRA-8", At: hour(15), Filer: merger, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
 	}
 
-	report := Compute(population, ScopeAll, hour(48))
+	w := windowOf(population, ScopeAll)
 
 	phaseOf := map[string]string{}
-	for _, row := range report.Splitting.Filed {
+	for _, row := range w.filed {
 		phaseOf[row.Key] = row.FilerPhase
 	}
 	want := map[string]string{

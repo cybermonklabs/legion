@@ -291,8 +291,9 @@ func testGuard(t *testing.T, binary string) {
 	})
 	t.Run("guard exits 2 on a CI directory it cannot read", func(t *testing.T) {
 		t.Parallel()
+		// Root reads each directory, so root cannot make the state; a CI job runs as another user.
 		if os.Geteuid() == 0 {
-			t.Skip("root reads a directory of mode 000")
+			skipOutsideCI(t, "root reads a directory of mode 000")
 		}
 		root := t.TempDir()
 		workflows := filepath.Join(root, ".github", "workflows")
