@@ -333,7 +333,7 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		}
 	}
 	var set *[]string
-	if acceptedSetChange(setWritten, held.Checks, fact.Checks) {
+	if acceptedSetChange(setWritten, held.Checks, fact.Checks) && len(fact.Checks) > 0 {
 		checks := append([]string{}, fact.Checks...)
 		set = &checks
 	}
