@@ -239,7 +239,7 @@ func (r *registerGateBasisLive) refusesOverAnOpenBlock() {
 	if !answer.IsError || len(answer.DaemonRequests) != 0 {
 		t.Fatalf("the tool's call over the open block answered %+v, want a refusal that sent the daemon nothing", answer)
 	}
-	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open decision block", version), "block wave, ask " + ask} {
+	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open ask block", version), "block wave, ask " + ask} {
 		if !strings.Contains(answer.Text, want) {
 			t.Errorf("the tool's refusal does not say %q:\n%s", want, answer.Text)
 		}

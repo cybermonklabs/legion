@@ -1,4 +1,4 @@
-// The refusals a call meets while a document holds a decision block a person has yet to answer:
+// The refusals a call meets while a document holds an ask block a person has yet to answer:
 // an approval request over one (`dispatch request-approval`, and the `legion` tool's register_gate
 // on an ancestor's basis), and an edit that would take one out of the document (`dispatch doc-edit`).
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
@@ -30,16 +30,15 @@ async function blockAsks(
   );
 }
 
-/** The words and rule a refusal over open decision blocks uses around the blocks it names:
- * `call`, the call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`,
- * what its count calls an open block (`ask block` in `dispatch request-approval`'s words,
- * `decision block` in `legion register_gate`'s); `decidedBy`, which state decides a block that is
- * not open live — `"live"` takes the server's live ask state once the live text answers `asks`
- * (which `dispatch request-approval` uses, since approval carry moves an open request to the
- * version an answer writes), whereas `"version"` also requires the latest saved version to record
- * the block settled (which `legion register_gate` on a basis uses, since a later version ends the
- * basis); `effect`, the sentence on why an open block stops that call; `remedy`, what to do
- * instead. */
+/** The words and rule a refusal over open ask blocks uses around the blocks it names: `call`, the
+ * call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`, what its count
+ * calls an open block (`ask block` in the words of both); `decidedBy`, which state decides a block
+ * that is not open live — `"live"` takes the server's live ask state once the live text answers
+ * `asks` (which `dispatch request-approval` uses, since approval carry moves an open request to
+ * the version an answer writes), whereas `"version"` also requires the latest saved version to
+ * record the block settled (which `legion register_gate` on a basis uses, since a later version
+ * ends the basis); `effect`, the sentence on why an open block stops that call; `remedy`, what to
+ * do instead. */
 export interface OpenDecisionBlockRefusal {
   readonly call: string;
   readonly blocks: string;
@@ -48,18 +47,18 @@ export interface OpenDecisionBlockRefusal {
   readonly remedy: string;
 }
 
-/** The sentence every `remedy` over open decision blocks gives to reach the human: tell them
+/** The sentence every `remedy` over open ask blocks gives to reach the human: tell them
  * which block is open and ask them to answer it or to waive it. */
 export const OPEN_BLOCK_ASK_THE_HUMAN =
   "Tell the human which block is open and ask them to answer it or to waive it.";
 
-/** The sentence `register_gate`'s `remedy` over open decision blocks adds after
+/** The sentence `register_gate`'s `remedy` over open ask blocks adds after
  * `OPEN_BLOCK_ASK_THE_HUMAN`, saying that an answered block settles into a version on its own
  * about two seconds later, matching the wait `refuseOpenDecisionBlocks` names under `"version"`. */
 export const OPEN_BLOCK_SETTLES =
   "Once it is answered, it settles into a version on its own in about two seconds.";
 
-/** How every `remedy` over open decision blocks closes a block the human waives, which each one
+/** How every `remedy` over open ask blocks closes a block the human waives, which each one
  * continues with its own next step. */
 export const OPEN_BLOCK_WAIVED =
   "If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason)";

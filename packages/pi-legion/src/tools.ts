@@ -807,12 +807,12 @@ async function documentIdOf(
   );
 }
 
-/** register_gate's words around the open decision blocks of the root's own document, which it
- * refuses a basis over as `dispatch request-approval` refuses an approval request
+/** register_gate's words around the open ask blocks of the root's own document, which it refuses
+ * a basis over as `dispatch request-approval` refuses an approval request
  * (`refuseOpenDecisionBlocks`). */
 const OPEN_BLOCKS_UNDER_A_BASIS = {
   call: "legion register_gate",
-  blocks: "decision block",
+  blocks: "ask block",
   decidedBy: "version",
   effect:
     "A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
@@ -861,7 +861,7 @@ export function createLegionTool(deps: {
   /** Resolves to the pane's Dispatch, the one its `dispatch` commands reach, or to undefined where
    * the pane has none configured. register_gate looks a document reference up there
    * (`resolveIssueDocumentId`, as a `dispatch` command's `--artifact` is) and, for a registration
-   * on a basis, reads the root's own document for an open decision block
+   * on a basis, reads the root's own document for an open ask block
    * (`refuseOpenDecisionBlocks`). */
   readonly dispatch: () => Promise<DispatchClient | undefined>;
   /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
@@ -908,7 +908,7 @@ export function createLegionTool(deps: {
         "The daemon takes a basis only where your root's spec is a view on the nearest reviewed ancestor, which carries the " +
         "legion label and is not accepted, and the version is that document's latest, approved by a person or asked of one in an " +
         "open request, and refuses any other with a code that names what Dispatch shows; the tool refuses one while your " +
-        "document holds an open decision block, as dispatch request-approval does. " +
+        "document holds an open ask block, as dispatch request-approval does. " +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -1325,7 +1325,7 @@ export function createLegionTool(deps: {
               const board = await dispatch();
               if (board === undefined) {
                 throw new Error(
-                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
+                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open ask block`
                 );
               }
               // A basis opens the step with no person's review of the root's own document, so a

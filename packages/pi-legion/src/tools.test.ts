@@ -901,12 +901,12 @@ const ROOT_VERIFICATION = "3b9e7f10-5c2d-4e8a-9f61-0a7d2c4b8e15";
 const ANCESTOR_SPEC = "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f";
 const ANCESTOR_VERIFICATION = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 
-/** The question the root's spec puts to a person in its one decision block. */
+/** The question the root's spec puts to a person in its one ask block. */
 const OPEN_QUESTION = "Which store holds the export?";
 
 /**
  * A Dispatch holding the root LEGION-208 and its ancestor LEGION-100, each with a spec and a
- * Verification document. The root's spec holds one decision block, open at its version 4, where
+ * Verification document. The root's spec holds one ask block, open at its version 4, where
  * `openBlock`, and none otherwise; its Verification document holds none. `paths` is every request
  * the tool sent it.
  */
@@ -1043,8 +1043,8 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 
 // A basis names the ancestor's document for the same step (dispatch://INFRA-3320, R1). Its
 // reference names its own issue, the ancestor's, so the tool looks it up there, never on the root;
-// an artifact id goes to the daemon as it is. The root's own document is read for an open
-// decision block first, as `dispatch request-approval` reads it.
+// an artifact id goes to the daemon as it is. The root's own document is read for an open ask
+// block first, as `dispatch request-approval` reads it.
 test("register_gate resolves a basis reference on the issue it names, and sends the basis, its version and the reason", async () => {
   const { calls, daemon } = recordingDaemon({});
   const { paths, dispatch } = treeDispatch();
@@ -1247,7 +1247,7 @@ test("register_gate refuses a basis named in part, or one that names no issue's 
 // document still puts to a person refuses the call with the test `dispatch request-approval`
 // makes, and the daemon is asked nothing: no grant, no registration. A registration with no basis
 // opens the step only on a person's approval, which the approval request's own refusal guards.
-test("register_gate refuses a basis while the root's document holds an open decision block, before the daemon is asked anything", async () => {
+test("register_gate refuses a basis while the root's document holds an open ask block, before the daemon is asked anything", async () => {
   const { calls, daemon } = recordingDaemon({});
   const { paths, dispatch } = treeDispatch(true);
   const basisCall = {
@@ -1272,7 +1272,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
   const [refusal] = refused.content;
   const lines = refusal?.type === "text" ? refusal.text.split("\n") : [];
   expect(lines.slice(0, 2)).toEqual([
-    "legion register_gate was not called: spec.md (version 4) has 1 open decision block. A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
+    "legion register_gate was not called: spec.md (version 4) has 1 open ask block. A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
     `- ${JSON.stringify(OPEN_QUESTION)} (block b-1, ask ask-b-1)`,
   ]);
   expect(lines[2]).toStartWith("Do not register on a basis over an open block.");
@@ -1294,7 +1294,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
     content: [
       {
         type: "text",
-        text: "register_gate cannot register LEGION-208 on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block",
+        text: "register_gate cannot register LEGION-208 on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open ask block",
       },
     ],
     details: {},
