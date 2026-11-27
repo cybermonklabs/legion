@@ -10,13 +10,14 @@
  *
  * It imports only `node:` modules, so it runs as a plain bun script, outside `bun test`.
  */
-import { chmodSync, lstatSync, readdirSync, rmSync, type Stats } from "node:fs";
+import type { Stats } from "node:fs";
+import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const failures: string[] = [];
 for (const directory of process.argv.slice(2).reverse()) {
   try {
-    removeTree(directory);
+    await removeTree(directory);
   } catch (error) {
     failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -33,9 +34,9 @@ if (failures.length > 0) {
  * under its temporary directory leaves a tree nothing can unlink. It removes asynchronously, so a
  * removal waiting on a loaded disk holds the hook alone, never the process's event loop.
  */
-function removeTree(directory: string): void {
-  makeWritable(directory);
-  rmSync(directory, { recursive: true, force: true });
+async function removeTree(directory: string): Promise<void> {
+  await makeWritable(directory);
+  await rm(directory, { recursive: true, force: true });
 }
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is

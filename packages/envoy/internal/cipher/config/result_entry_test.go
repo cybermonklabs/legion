@@ -39,9 +39,11 @@ func resultsDestination() PrivateUpstream {
 
 // resultsStart is the start check of the results capability as cmd/cipherd makes it: the results
 // profile's own rules (ResultsEntryRules), then every dpop block's (ProxyMintedRules) against the
-// private destinations given.
+// private destinations given. These tests build the rules themselves rather than reading a
+// profiles file, so no block is one a file of no kinds read as before the kinds: readsAsBlock is
+// false, and cmd/cipherd's profiles-check tests hold that case.
 func resultsStart(rules proxyrules.Rules, upstreams []PrivateUpstream, resultWorkflows bool) error {
-	if err := ResultsEntryRules(rules, resultWorkflows); err != nil {
+	if err := ResultsEntryRules(rules, false, resultWorkflows); err != nil {
 		return err
 	}
 	return ProxyMintedRules(rules, upstreams)
