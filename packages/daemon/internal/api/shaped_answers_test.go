@@ -1377,6 +1377,15 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
 					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
 				}
+			case AnswerAgentAction:
+				action := AgentActionResponse{State: "failed", PhaseNotRestarted: "LEGION-209's start waits for its slot"}
+				below := entryNumber(claimStartContract) - 1
+				if shaped, _ := shapeAnswer(AnswerAgentAction, action, below, below); shaped != any(AgentActionResponse{State: action.State}) {
+					t.Errorf("an agent action's answer was shaped to %+v below the claim start entry, want it without `phaseNotRestarted`, which claimStartContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerAgentAction, action, entryNumber(claimStartContract), entryNumber(claimStartContract)); shaped != any(action) {
+					t.Errorf("an agent action's answer was shaped to %+v at the claim start entry's number, want the body it was given", shaped)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1387,11 +1396,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The six rows that shape a body of their own panic on a body of another type, as a row that
+// The seven rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

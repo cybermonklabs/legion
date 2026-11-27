@@ -309,6 +309,7 @@ var rebuildFields = map[string]string{
 	"cancelStart":           "kept: a start's cancel belongs to the decision that holds mu",
 	"startStopped":          "kept: a start's cancel belongs to the decision that holds mu",
 	"turnOutcomeDecided":    "kept: a test's hook",
+	"launchWritten":         "kept: the channel of the decision HandleStart runs, set and cleared by that decision's handle",
 	"turnOutcomeFailed":     "kept: HandleTurnOutcome reads it and clears it after the rebuild",
 	"storeFaultTold":        "kept: the hour bound of a session store's notice",
 	"sentThrough":           "kept: the stream's registration sequence goes on rising in this daemon's run",

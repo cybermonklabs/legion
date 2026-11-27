@@ -252,6 +252,8 @@ func (m *Machine) giveBackHeld() {
 //   - goroutines: sends and revocations still running report to it, and Wait waits on it.
 //   - startMu, cancelStart, startStopped: a start's cancel belongs to the decision that holds mu.
 //   - turnOutcomeDecided: a test's hook.
+//   - launchWritten: the channel of the decision HandleStart runs, set and cleared by that
+//     decision's handle, so it belongs to the decision and not to the claim.
 //   - turnOutcomeFailed: HandleTurnOutcome reads it, and clears it, after the rebuild.
 //   - storeFaultTold: the hour bound of a session store's notice, which a rebuild must not tell
 //     again.
