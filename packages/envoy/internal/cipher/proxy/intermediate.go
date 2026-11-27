@@ -36,6 +36,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // intermediateLifetime is the life a pod asks for its intermediate, Infisical Agent Proxy's
@@ -89,7 +90,8 @@ type Pool struct {
 	// local stand-in reads none, and a stack on a box with a person's application default
 	// credentials must not hand them to it.
 	Token oauth2.TokenSource
-	// HTTP is the client the requests go out on, and nil is a client of its own.
+	// HTTP is the client the requests go out on, and nil is http.DefaultClient; either follows no
+	// redirect (create).
 	HTTP *http.Client
 }
 
@@ -260,11 +262,9 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 		}
 		token.SetAuthHeader(request)
 	}
-	client := p.HTTP
-	if client == nil {
-		client = &http.Client{}
-	}
-	response, err := client.Do(request)
+	// No redirect is followed (redirects.Refused): the request carries the pod's own token, so a
+	// 3xx is the answer, refused by its status below, and the token goes nowhere its Location names.
+	response, err := redirects.Refused(cmp.Or(p.HTTP, http.DefaultClient)).Do(request)
 	if err != nil {
 		// net/http's error can quote what the pool sent, and names the URL with its user
 		// information and query: redact.Unanswered names the request by the URL asked, without.

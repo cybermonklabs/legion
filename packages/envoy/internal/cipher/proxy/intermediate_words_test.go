@@ -243,6 +243,44 @@ func TestAPoolRequestThatGotNoAnswerPrintsNoCredentialItCarried(t *testing.T) {
 	}
 }
 
+// TestAPoolRedirectIsTheAnswerAndPrintsNoCredential: a pool that answers 302, to another server
+// on the same address whose URL carries the pod's token, is not followed: the redirect is the
+// answer, refused by its status, the token is sent nowhere the Location names, and the line prints
+// no credential. What leaves the pod for a party other than the pool is captured with the line:
+// the Authorization the redirect's target was sent, none where it was sent no request. The twin
+// follows it, as a client with no redirect policy does: the target is sent the pod's token, and
+// net/http's error names the Location, token and all. Captures proxy.intermediate-redirect/run.
+func TestAPoolRedirectIsTheAnswerAndPrintsNoCredential(t *testing.T) {
+	redirectingPool := func(t *testing.T) (string, *abortingServer) {
+		target := newAbortingServer(t)
+		pool := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			location := target.URL + "/echo/" + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			w.Header().Set("Location", location)
+			w.WriteHeader(http.StatusFound)
+			_, _ = io.WriteString(w, `<a href="`+location+`">Found</a>`)
+		}))
+		t.Cleanup(pool.Close)
+		return credentialedEndpoint(t, pool.URL), target
+	}
+	t.Run("run", func(t *testing.T) {
+		endpoint, target := redirectingPool(t)
+		line := firstFailure(t, bearerPool(endpoint))
+		sent, _ := target.authorization.Load().(string)
+		redacttest.RequireNoPiece(t, "proxy.intermediate-redirect/run", line+"\nthe redirect's target was sent Authorization: "+sent, wordsCredentials...)
+		if asked := target.asked.Load(); asked != 0 {
+			t.Errorf("the redirect's target was sent %d requests; want none", asked)
+		}
+		requireSays(t, line, "the pool answered 302 Found")
+	})
+	t.Run("twin", func(t *testing.T) {
+		endpoint, target := redirectingPool(t)
+		requireHolds(t, "net/http's own text", plainFailure(t, endpoint), wordsBearer)
+		if got, _ := target.authorization.Load().(string); got != "Bearer "+wordsBearer {
+			t.Errorf("the target of the followed redirect was sent Authorization %q; want the pod's token, which net/http keeps on the same host", got)
+		}
+	})
+}
+
 // TestThePoolRequestGoesToTheResourceJoinedOntoTheEndpoint: the certificates resource is joined
 // onto the endpoint's path (urljoin.Join), the endpoint's query kept ahead of the request's own and
 // its fragment dropped, and each segment of the pool's name escaped, where main appended the path
