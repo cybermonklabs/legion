@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `GET /api/v1/issues/{key}/legion` and its live view `legion_issue` answer `state.waiting_on` as a
+  typed object with snake_case members, `{kind, ask, artifact_id, gate_version, since, answered_at,
+  answered_by}`, each but `kind` absent where the daemon wrote none, in place of the daemon's
+  stored object with its camelCase names. A member of another name is not passed on. A stored object
+  that does not decode, or that names no `kind`, answers `null`, and Dispatch logs one warning that
+  names the issue.
+time: 2026-11-27T04:54:07Z
+custom:
+    Issue: INFRA-4870
