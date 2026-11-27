@@ -83,6 +83,7 @@ import {
   isPrReview,
   methodOf,
   REVIEW_FLAGS_REFUSED,
+  reviewCreateRoute,
   reviewFlagEvent,
   reviewsRoute,
   routeFor,
@@ -493,12 +494,12 @@ const reviewed = reviewCall();
 /** The route that answers this call: the one chosen, except for a write the world does not model
  * on it (`unmodelledWrite`). GitHub answers such a write and the world does not, so it is refused
  * as every call the world has no answer for is, and `rig.sh health` names it. A `gh pr review`
- * the world models is answered by the world's create of a review, its route of `POST
- * …/pulls/<n>/reviews`, whose answer is the review GitHub makes on the pull request
+ * the world models is answered by the world's create of a review (gh-call.ts's
+ * `reviewCreateRoute`), whose answer is the review GitHub makes on the pull request
  * (`reviewPullRequest`): no route's regex reads the call, which gh sends as GraphQL of its own. */
 const route =
   reviewed !== undefined && world !== undefined
-    ? routeFor(routes, ["api", "--method", "POST", `repos/${world.repo}/pulls/${world.pr}/reviews`])
+    ? reviewCreateRoute(routes, world.repo, world.pr)
     : unmodelledWrite()
       ? undefined
       : matched;
@@ -2118,9 +2119,11 @@ Flags:
  * every later read of the record reads it: the reviews list and `gh pr view`'s reviews
  * (`ownReviews`, with the id the world's create route numbers it by, `route`), the review
  * decision (gh-threads.ts's `submittedReviews`), the daemon stand-in and the score (score.ts's
- * `reviewOf`). Not modelled, since no measurement says what GitHub answers: a review made this
- * way while the same App has one pending. Before this, the world refused every `gh pr review` as
- * a write it does not model, 404, and `rig.sh health` voided the run (its rule 20). */
+ * `reviewOf`). A review made this way while the same App has one pending is taken as the REST
+ * create of a review naming an event is taken then (`reviewCreate`, which refuses only the create
+ * of a second pending one): what GitHub answers for either is not measured. Before this, the
+ * world refused every `gh pr review` as a write it does not model, 404, and `rig.sh health`
+ * voided the run (its rule 20). */
 function reviewPullRequest(call: ReviewCall, at: NonNullable<typeof world>): never {
   handler = REVIEW_FLAGS_REFUSED;
   const usage = (refusal: string): never =>

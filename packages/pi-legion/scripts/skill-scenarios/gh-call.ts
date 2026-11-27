@@ -520,6 +520,18 @@ export function routeFor<R extends Route>(
   );
 }
 
+/** The route of `routes` that answers the create of a review on the pull request `pr` of `repo`,
+ * `POST repos/<repo>/pulls/<pr>/reviews` (`routeFor`): the world's answer to a review made on the
+ * pull request, which the gh stand-in answers a `gh pr review` by too, since gh sends that call as
+ * GraphQL of its own and no route's regex reads it (gh-standin.ts's `route`). */
+export function reviewCreateRoute<R extends Route>(
+  routes: readonly R[],
+  repo: string,
+  pr: number
+): R | undefined {
+  return routeFor(routes, ["api", "--method", "POST", `repos/${repo}/pulls/${pr}/reviews`]);
+}
+
 /** One check run as GitHub's check-runs route reports it: its name, `queued`, `in_progress` or
  * `completed`, the conclusion a completed one came to (`null` until then), the App that ran it,
  * by its id (`app`, rig.sh's concluded_checks; GitHub Actions where the world names none,
