@@ -267,12 +267,6 @@ export const natsStandInConnect = async (options: {
   readonly authenticator?: unknown;
 }) => {
   const { name, servers, authenticator } = options;
-  if (natsState.failConnects > 0) {
-    natsState.failConnects -= 1;
-    throw natsState.failError();
-  }
-  natsState.connectedNames.push(name);
-  natsState.connects.push({ servers, authenticated: authenticator !== undefined });
   // A CONNECT asks the authenticator for its credential over the server's nonce, as nats.js does
   // at every connect and reconnect.
   const connectWith = (nonce: string) => {
@@ -282,11 +276,22 @@ export const natsStandInConnect = async (options: {
       natsState.presented.push(String(credential.auth_token));
     }
   };
-  connectWith("stand-in-nonce");
-  // Parked only where a test asks for it: every other connect answers at once.
-  if (natsState.heldConnect !== undefined) await natsState.heldConnect;
-  if (natsState.realConnect) {
-    return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+  // An ended row's late connect takes nothing the running row armed (a refusal, a parked dial, a
+  // real server) and is not counted among that row's connections.
+  const late = fromEndedRow();
+  if (!late) {
+    if (natsState.failConnects > 0) {
+      natsState.failConnects -= 1;
+      throw natsState.failError();
+    }
+    natsState.connectedNames.push(name);
+    natsState.connects.push({ servers, authenticated: authenticator !== undefined });
+    connectWith("stand-in-nonce");
+    // Parked only where a test asks for it: every other connect answers at once.
+    if (natsState.heldConnect !== undefined) await natsState.heldConnect;
+    if (natsState.realConnect) {
+      return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+    }
   }
   let closed = false;
   // nats.js's `closed()`: settles once the connection is closed for good, with the close's error.
@@ -296,16 +301,22 @@ export const natsStandInConnect = async (options: {
     closed: () => ended.promise,
     close: async () => {
       closed = true;
+      if (fromEndedRow()) {
+        ended.resolve(undefined);
+        return;
+      }
       natsState.closedNames.push(name);
       ended.resolve(natsState.closeError);
     },
     drain: async () => {
+      if (fromEndedRow()) return;
       natsState.drainStarted = true;
       if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
     },
     // nats.js's client-initiated reconnect: the connection drops and comes back with a CONNECT of
     // its own, which every reader of its status hears of once it is back.
     reconnect: async () => {
+      if (fromEndedRow()) return;
       natsState.timeline.push("reconnect");
       connectWith("stand-in-nonce-again");
       setTimeout(() => pushNatsStatus("reconnect"), 0);
@@ -320,7 +331,8 @@ export const natsStandInConnect = async (options: {
         wake?.();
         wake = undefined;
       };
-      natsState.statusReaders.push(reader);
+      // An ended row's reader hears nothing of the running row's status pushes.
+      if (!fromEndedRow()) natsState.statusReaders.push(reader);
       return {
         [Symbol.asyncIterator]: () => ({
           next: async (): Promise<
@@ -342,6 +354,8 @@ export const natsStandInConnect = async (options: {
     // every pending one of them rejects when the connection drops. A rejection is transient
     // unless the connection is closed with it, which is the one case the extension gives up on.
     flush: async () => {
+      // An ended row's late flush takes nothing the running row armed: no failure, no hold.
+      if (fromEndedRow()) return;
       natsState.flushes.push([...natsState.subscriptions.keys()]);
       if (natsState.heldFlush !== undefined) await natsState.heldFlush;
       const failing = natsState.failFlushOnSubject;
@@ -439,7 +453,7 @@ export const natsStandInConnect = async (options: {
       return subscription;
     },
   };
-  natsState.connections.push(made);
+  if (!late) natsState.connections.push(made);
   return made;
 };
 
