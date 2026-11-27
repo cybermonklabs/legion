@@ -220,30 +220,33 @@ const noCommitNamed = ""
 // headsNotRead is each pull request of a `before_merge` check's issue whose head Dispatch has
 // not read (headBases), whatever the reason: no basis and no subject. headNotRead says whether
 // they leave a result at no basis unknown: Dispatch holds the repository and can read it (rule
-// 2), so a head it has not read can be the head that a result stands at. issuesNotKnown is each
-// pull request of the repository whose answer is not known, where the issue holds no pull
-// request at all (decision D2).
+// 2), so a head it has not read can be the head that a result stands at. subjectsNotRead is how
+// many of them are a subject all the same (headBases): an open pull request owed a read where one
+// is open, or the merge that merged last; no pass stands while one is (passStandsOf).
+// issuesNotKnown is each pull request of the repository whose answer is not known, where the
+// issue holds no pull request at all (decision D2).
 //
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
 // the head's repository and commit, which the subject of that repository at that commit carries
 // (subjectState).
 type comparison struct {
-	bases          []model.CheckBasis
-	merges         []mergeAnswer
-	linked         []model.CheckBasis
-	reason         string
-	unread         string
-	subjects       []headSubject
-	unordered      bool
-	headsNotRead   []model.HeadNotRead
-	headNotRead    bool
-	issuesNotKnown []model.IssueNotKnown
-	ci             map[ciHeadKey]*model.CheckCI
-	live           bool
-	program        string
-	deploy         *model.CheckDeploy
-	deployHolds    model.ResultCommitStands
-	deployReason   string
+	bases           []model.CheckBasis
+	merges          []mergeAnswer
+	linked          []model.CheckBasis
+	reason          string
+	unread          string
+	subjects        []headSubject
+	unordered       bool
+	headsNotRead    []model.HeadNotRead
+	headNotRead     bool
+	subjectsNotRead int
+	issuesNotKnown  []model.IssueNotKnown
+	ci              map[ciHeadKey]*model.CheckCI
+	live            bool
+	program         string
+	deploy          *model.CheckDeploy
+	deployHolds     model.ResultCommitStands
+	deployReason    string
 }
 
 // served is what the check names as its bases (model.CheckBlock.ComparedWith): the bases of the
