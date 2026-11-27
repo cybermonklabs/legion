@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The registration answer of a claim and of the daemon's own controller carries `replaces`, the
+    session the claim abandoned when it last forgot one (`legion claims forget-session`, a fresh
+    session, a session no store holds), while it is not the session registering and no operator's
+    release has freed it. The session names it in its Envoy role claim, and the listener hands the
+    replaced session's unread messages to it. Daemon API contract entry 20261125170509; a caller
+    below its number is served no `replaces`.
+time: 2026-11-25T03:15:04Z
+custom:
+    Issue: replaced-session-handover

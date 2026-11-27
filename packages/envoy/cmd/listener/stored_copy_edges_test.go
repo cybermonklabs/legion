@@ -46,6 +46,7 @@ func (r *standInReader) NextStoredMessage(ctx context.Context, _ string, _ uint6
 // stood in for, and so is the read, which answers nothing until the request's budget ends. The
 // control is the same verdict with a read that answers the copy at once, which is the answer.
 func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
+	t.Parallel()
 	const seq = 7
 	item := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_slow_read", Text: "read slowly"},
 		"notifications.team.slow-read", publishDedupePrefix+uuid.NewString())
@@ -109,6 +110,7 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 // its start (bus.defaultKeepInterval), and a pass between the cut and the forget keeps the id
 // under 72 hours again, so the row holds the keeper off.
 func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
+	t.Parallel()
 	rig, _ := newSenderLimitRigOnServer(t, bus.WithKeepInterval(backgroundReadsHeld))
 	js := rig.harness.client.JS()
 	const sender = "ses_forgotten_id"
