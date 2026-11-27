@@ -38,7 +38,7 @@ import {
   type MoveEntry,
   type MoveOutcome,
   type NewEntry,
-  useNodeLine,
+  useNodeWriteLine,
   useNodeWrites,
 } from "./node-writes";
 import {
@@ -773,7 +773,7 @@ export function RowEditLine({
   const { editor } = edit.outline;
   const client = useQueryClient();
   const readId = readIdOf(edit.outline, node);
-  const written = useNodeLine(edit.outline.issue.key, readId);
+  const written = useNodeWriteLine(edit.outline.issue.key, readId);
   const own = editor?.lineOf?.(node);
   const line = written ?? (own === undefined ? undefined : { text: own });
   if (line === undefined) return null;

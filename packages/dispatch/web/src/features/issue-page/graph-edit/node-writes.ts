@@ -886,7 +886,7 @@ export function useNodeWrites(issue: NodeWritesIssue): NodeWrites {
 
 /** The line of the row of read id `node` of `issue` (`NodeWrites.lines`), or undefined where it
  *  has none or `node` is undefined: the row that draws it is drawn again for its own line alone. */
-export function useNodeLine(issue: string, node: string | undefined): NodeLine | undefined {
+export function useNodeWriteLine(issue: string, node: string | undefined): NodeLine | undefined {
   const state = stateOf(useQueryClient());
   const subscribe = useLineListener(state);
   return useSyncExternalStore(subscribe, () =>
