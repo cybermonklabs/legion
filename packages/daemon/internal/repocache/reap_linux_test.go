@@ -22,7 +22,8 @@ func TestReapExitedReapsOrphans(t *testing.T) {
 			fmt.Println("prctl:", errno)
 			os.Exit(2)
 		}
-		if err := exec.Command("/bin/sh", "-c", "/bin/sh -c 'sleep 0.2' & exit 0").Run(); err != nil {
+		// CONTROL: the orphan stalls 1.5 s before it exits, standing in for a loaded machine.
+		if err := exec.Command("/bin/sh", "-c", "/bin/sh -c 'sleep 1.5; sleep 0.2' & exit 0").Run(); err != nil {
 			fmt.Println("spawn:", err)
 			os.Exit(2)
 		}
