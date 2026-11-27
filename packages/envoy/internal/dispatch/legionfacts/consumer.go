@@ -273,12 +273,13 @@ func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff)
 
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
 // short, each page computed and written in a transaction of its own, and answers the keys whose
-// stored rows it changed and whether it held an input back: an event above its safe horizon, or
-// an observation newer than its moment. Every page runs at the moment the pass read its horizon,
-// and judges and stamps its change cursor by a reading of the clock of its own (passPage). The
-// first page carries the work no feed announces (passPage), and so does a later page where the
-// page before it met a lost change cursor it held (readPages), so the pass answers the loss
-// itself rather than leave it to a pass no wake may start.
+// stored rows it changed and whether it held an input back: an event above its safe horizon, an
+// observation newer than its moment, or the logs reset under a page that had read them, whose
+// write wrote nothing and ended the pass (writePass). Every page runs at the moment the pass read
+// its horizon, and judges and stamps its change cursor by a reading of the clock of its own
+// (passPage). The first page carries the work no feed announces (passPage), and so does a later
+// page where the page before it met a lost change cursor it held (readPages), so the pass answers
+// the loss itself rather than leave it to a pass no wake may start.
 //
 // The events feed is read up to the safe horizon the pass reads once (safeHorizon,
 // events.Horizon.SafeOrAwait, the reading the suggestion outcomes take): one observation, which
@@ -291,6 +292,8 @@ func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff)
 // the horizon, so no event the pass reads is newer than the moment its rows are of. The
 // observations feed has no horizon, so its page stops below an observation newer than that moment
 // (readObservationPage), and a pass whose page stopped there says it held an input back as well.
+// A pass whose write found a reset says it too, and the next pass reads the reset logs from their
+// heads.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error) {
 	safe, err := safeHorizon(ctx, deps)
 	if err != nil {
@@ -370,19 +373,42 @@ type nextPage struct {
 // long enough crosses the change log's retention between two of its pages, and a page judged at
 // the pass's start would read on past what a prune took meanwhile.
 func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) ([]string, nextPage, error) {
+	page, err := readPage(ctx, deps, sched, safe, now, unfed)
+	if err != nil {
+		return nil, nextPage{}, err
+	}
+	return writePage(ctx, deps, sched, page)
+}
+
+// pageRead is what one page read and computed, which its write takes (writePage): where the
+// feeds stood when the page read them (from, and committed, whether any cursor row stood at all,
+// readCursors), the projects it computed, where the feeds stand after it (to), the moment it
+// computed at, and what the page after it owes.
+type pageRead struct {
+	from      feedCursors
+	committed bool
+	computed  []projectPass
+	to        feedCursors
+	now       time.Time
+	next      nextPage
+}
+
+// readPage is the first half of passPage: it reads where each feed stands, reads a page of each and
+// computes the rows those pages name, all before the write's transaction opens.
+func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) (pageRead, error) {
 	self := process{build: deps.Build, started: sched.started}
 	cursors, committed, err := readCursors(ctx, deps.Pool)
 	if err != nil {
-		return nil, nextPage{}, err
+		return pageRead{}, err
 	}
 	checked := sched.now()
 	read, err := readPages(ctx, deps.Pool, cursors, committed, safe, now, checked, sched.page, unfed)
 	if err != nil {
-		return nil, nextPage{}, err
+		return pageRead{}, err
 	}
 	projects, err := legionProjects(ctx, deps.Pool, self, now, read.lost)
 	if err != nil {
-		return nil, nextPage{}, err
+		return pageRead{}, err
 	}
 
 	work := map[string]*projectWork{}
@@ -449,11 +475,11 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		// record names this build alone, and a project read whole already reads them.
 		rows, err := otherBuildsRows(ctx, deps.Pool, self.build)
 		if err != nil {
-			return nil, nextPage{}, err
+			return pageRead{}, err
 		}
 		filings, err := otherBuildsFilings(ctx, deps.Pool, self.build)
 		if err != nil {
-			return nil, nextPage{}, err
+			return pageRead{}, err
 		}
 		narrow := func(project string) *projectWork {
 			if projects[project].whole {
@@ -485,21 +511,42 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	for _, project := range slices.Sorted(maps.Keys(work)) {
 		one, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
-			return nil, nextPage{}, err
+			return pageRead{}, err
 		}
 		computed = append(computed, one)
 	}
 
-	moved := feedCursors{
-		events:       read.events.position,
-		observations: read.observations.position,
-		changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
-	}
-	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self)
+	return pageRead{
+		from:      cursors,
+		committed: committed,
+		computed:  computed,
+		to: feedCursors{
+			events:       read.events.position,
+			observations: read.observations.position,
+			changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
+		},
+		now:  now,
+		next: nextPage{more: read.more, unfed: read.unfed, held: read.observations.held},
+	}, nil
+}
+
+// writePage is the second half of passPage: it writes what the page computed and moves the
+// cursors (writePass), and answers the keys whose stored rows changed and what the page after it
+// owes. A page whose write found the logs reset since the page read them (writePass) wrote
+// nothing and answers that it held an input back, with no page after it: the loop runs the next
+// pass soon (runPass), which finds the cursors where the reset left them and reads the logs from
+// their heads.
+func writePage(ctx context.Context, deps Deps, sched schedule, page pageRead) ([]string, nextPage, error) {
+	self := process{build: deps.Build, started: sched.started}
+	changed, reset, err := writePass(ctx, deps.Pool, page, self)
 	if err != nil {
 		return changed, nextPage{}, err
 	}
-	return changed, nextPage{more: read.more, unfed: read.unfed, held: read.observations.held}, nil
+	if reset {
+		slog.Warn("dispatch: the event log or the Legion observations were reset under a Legion facts pass; it wrote nothing and the next pass reads them from their heads")
+		return nil, nextPage{held: true}, nil
+	}
+	return changed, page.next, nil
 }
 
 // projectWork is what one page owes one project: the issues its feeds named and the rows another
@@ -575,10 +622,22 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // stale rows and filings inside the sets each project's pass stated (a project whose record names
 // a newer build has its stale rows and filings stamped instead, WriteProject and WriteFilings),
 // records the projects it computed whole and moves the three cursors, all in one transaction. It
-// answers the keys whose stored rows changed, the
-// deleted and stamped keys among them, because a row that went is a change of the stored facts as
-// much as a row that moved. A failure leaves the cursors and the marks where they were, so the
-// next pass reads the same rows again.
+// answers the keys whose stored rows changed, the deleted and stamped keys among them, because a
+// row that went is a change of the stored facts as much as a row that moved. A failure leaves the
+// cursors and the marks where they were, so the next pass reads the same rows again.
+//
+// The transaction first locks issue_facts_cursor in share row exclusive mode (lockCursors), then
+// asks whether the logs were reset since the page read them (resetSinceRead), and writes nothing
+// where they were: it answers reset true with no key. A page reads its cursors and its feeds and
+// computes its rows before this transaction opens, and a reset (e2e/seed.ts deletes the rows of
+// the event log, the observations and every table of the facts, the cursors among them, in one
+// transaction, and starts the logs' ids again at 1) that commits between the two makes what the
+// page holds the old logs': its positions stand above every id the new logs hand out, and the rows
+// the new logs write below them would never be read. The lock is what leaves no gap. A reset that
+// has deleted the cursor rows and not yet committed makes this transaction wait for its commit,
+// and reads the cursor rows as the reset left them; a reset that has not yet deleted them waits
+// for this transaction's commit and then deletes what it wrote. The lock conflicts with the
+// reset's delete and with itself, and not with the read of CursorAge.
 //
 // The rows' and the filings' triggers record their changes in the change log's outbox (migrations
 // 20261117100002 and 20261117100019) and take no lock, so the transaction never takes the change
@@ -587,38 +646,44 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // the next drain of any process moves their changes (delivery.DrainPending states the bound). The
 // drain's notification is also the wake of the other process of a roll, whose build the project's
 // record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, page pageRead, self process) (changed []string, reset bool, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
+		return nil, false, fmt.Errorf("open the Legion facts' write: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	changed := []string{}
-	for _, project := range computed {
+	if err := lockCursors(ctx, tx); err != nil {
+		return nil, false, err
+	}
+	if reset, err := resetSinceRead(ctx, tx, page); err != nil || reset {
+		return nil, reset, err
+	}
+	changed = []string{}
+	for _, project := range page.computed {
 		facts, filings := project.facts, project.filings
 		facts.Build, filings.Build = self.build, self.build
 		written, err := WriteProject(ctx, tx, facts)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		changed = append(changed, written...)
 		if err := WriteFilings(ctx, tx, filings); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	if err := markComputedWhole(ctx, tx, computed, now, self); err != nil {
-		return nil, err
+	if err := markComputedWhole(ctx, tx, page.computed, page.now, self); err != nil {
+		return nil, false, err
 	}
-	if err := advanceCursors(ctx, tx, cursors, now); err != nil {
-		return nil, err
+	if err := advanceCursors(ctx, tx, page.to, page.now); err != nil {
+		return nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit the Legion facts: %w", err)
+		return nil, false, fmt.Errorf("commit the Legion facts: %w", err)
 	}
 	if _, err := delivery.DrainPending(ctx, pool); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: the Legion facts consumer could not move its changes into the delivery change log; the next drain moves them", "error", err)
 	}
-	return changed, nil
+	return changed, false, nil
 }
 
 // markComputedWhole records that each project this write read whole was computed whole as of now,

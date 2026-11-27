@@ -823,7 +823,10 @@ func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 // is what the lost-cursor rule reads (delivery.CursorLost). CursorAge measures from the oldest of
 // the three stamps.
 //
-// It runs in the transaction that wrote the rows the positions cover (writePass).
+// It runs in the transaction that wrote the rows the positions cover (writePass), after that
+// transaction has locked the table (lockCursors) and found the logs not reset since the page read
+// them (resetSinceRead): the positions are the old logs' otherwise, and a row of them above the
+// ids a reset log hands out is never read below.
 func advanceCursors(ctx context.Context, tx pgx.Tx, cursors feedCursors, now time.Time) error {
 	_, err := tx.Exec(ctx, `
 		insert into issue_facts_cursor (name, position, at, updated_at)
@@ -839,6 +842,63 @@ func advanceCursors(ctx context.Context, tx pgx.Tx, cursors feedCursors, now tim
 		return fmt.Errorf("move the Legion facts' cursors: %w", err)
 	}
 	return nil
+}
+
+// lockCursors takes the lock of issue_facts_cursor that a write of a page holds to its end, in
+// share row exclusive mode. The mode conflicts with the ROW EXCLUSIVE lock of the delete that
+// e2e/seed.ts's reset makes of the cursor rows, and with itself, and not with the ACCESS SHARE
+// lock of CursorAge's read, so the board's header is never held by a write. The statement waits
+// for a reset that has deleted the rows and not committed, and a reset that comes after it waits
+// for the write's commit: no reset commits between the read resetSinceRead makes after it and the
+// write's commit. It is the first statement of the write, before any row of the facts is written,
+// so a write that waits holds nothing else of the facts' tables.
+func lockCursors(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `lock table issue_facts_cursor in share row exclusive mode`); err != nil {
+		return fmt.Errorf("lock the Legion facts' cursors: %w", err)
+	}
+	return nil
+}
+
+// resetSinceRead is whether the logs were reset since page read them, read by a statement that
+// runs after lockCursors, which under READ COMMITTED sees every reset committed by then.
+//
+// The cursor rows say it where the page found any. Only the pass that holds the lease writes them,
+// so a cursor row that is not as the page read it was changed by a reset, which deletes them: the
+// rows differ from page.from, or are gone, where the page read rows. Where the page read none
+// (page.committed false, so it read its feeds from their heads, readFeedHeads) a reset leaves the
+// cursors as it found them, and the page's own positions say it: a position above the newest id of
+// the log it pages (the events, and the observations the observations feed reads) is a position in
+// a log that went, since no row of either log is deleted but by a reset, and a position at or
+// below it cannot have been placed above a reset log's ids. The page that read cursor rows is not
+// judged by its positions: a cursor row above its log's newest id there is a log whose newest row
+// was deleted, which no reset says, and a write refused for it would be refused by every pass
+// after it.
+func resetSinceRead(ctx context.Context, tx pgx.Tx, page pageRead) (bool, error) {
+	now, committed, err := readCursors(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if committed != page.committed || !sameCursors(now, page.from) {
+		return true, nil
+	}
+	if page.committed {
+		return false, nil
+	}
+	var events, observations int64
+	if err := tx.QueryRow(ctx, `
+		select coalesce((select max(id) from events), 0), coalesce((select max(id) from legion_observations), 0)
+	`).Scan(&events, &observations); err != nil {
+		return false, fmt.Errorf("read the newest ids of the logs the Legion facts' feeds page: %w", err)
+	}
+	return page.to.events > events || page.to.observations > observations, nil
+}
+
+// sameCursors is whether two readings of the cursor rows (readCursors) hold the same positions,
+// the same moments of the change they rest on and the same stamps.
+func sameCursors(a, b feedCursors) bool {
+	return a.events == b.events && a.observations == b.observations &&
+		a.changes.Seq == b.changes.Seq && a.changes.ReadAt.Equal(b.changes.ReadAt) &&
+		(a.changes.At == nil) == (b.changes.At == nil) && (a.changes.At == nil || a.changes.At.Equal(*b.changes.At))
 }
 
 // CursorAge answers how long ago the consumer last read its feeds, as the oldest of the three
