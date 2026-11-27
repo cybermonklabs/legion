@@ -41,8 +41,8 @@ import {
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
-import { issueUnreadBoundaryQuery } from "../issue-page/history-log";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
+import { issueUnreadBoundaryQuery } from "../issue-page/history-log";
 import { ThreadCard } from "../margin/ThreadCard";
 import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";
 import type { Thread as CommentThread } from "../margin/useMarginItems";
