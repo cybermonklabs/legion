@@ -4,6 +4,8 @@ package main
 //ci:reads .github/scripts/ci_filter_coverage.py readsRepo copies it into a fixture repository.
 //ci:reads .github/scripts/workflow_paths.py readsRepo copies it into a fixture repository.
 //ci:reads .github/scripts/go_build_tags.py readsRepo copies it into a fixture repository.
+//ci:reads .github/scripts/script_words.py readsRepo copies it into a fixture repository.
+//ci:reads .github/scripts/shell_commands.py readsRepo copies it into a fixture repository.
 
 import (
 	"os"
@@ -17,9 +19,9 @@ import (
 )
 
 // readsScripts is each file of this repository's .github/scripts that go-test-reads.sh runs: the
-// script, its engine and the two modules the engine imports. ci_job_reads.py's row for this file
-// names them.
-var readsScripts = []string{"go-test-reads.sh", "ci_filter_coverage.py", "workflow_paths.py", "go_build_tags.py"}
+// script, its engine and the four modules the engine imports when it loads.
+var readsScripts = []string{"go-test-reads.sh", "ci_filter_coverage.py", "workflow_paths.py", "go_build_tags.py",
+	"script_words.py", "shell_commands.py"}
 
 // readsRepo is a git repository, with no commit, that holds this repository's script and engine
 // (readsScripts), a module example.com/m with the package lib in mod/lib, bound by a go.work, and a
