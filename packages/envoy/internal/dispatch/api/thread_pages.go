@@ -205,10 +205,13 @@ func threadAuthorMatches(actor string) string {
 
 // commentThreadRow groups the root and replies from the existing flat list, shaped as that
 // list shapes them and with replies oldest first, in commentRead's members. It adds
-// last_activity_at for the thread.
+// last_activity_at for the thread. Each comment carries its node_anchor where the caller sent
+// ?node_anchor=true (nodeAnchoredComment) and none otherwise, so a row read without the
+// parameter holds the members it held before node anchors existed.
 type commentThreadRow struct {
-	commentRead
-	LastActivityAt string `json:"last_activity_at"`
+	Comment        nodeAnchoredComment   `json:"comment"`
+	Replies        []nodeAnchoredComment `json:"replies"`
+	LastActivityAt string                `json:"last_activity_at"`
 }
 
 // commentThreadPage is the issue comment route's activity answer. Its before and remaining
@@ -225,8 +228,9 @@ type commentThreadPage struct {
 //
 // Creation times decide activity, including deleted entries but not edits. The author filter
 // can match any entry, but artifact matches the root's anchor so replies stay in the thread.
-// The person filter admits a user entry, an anchored root or a stored reply quote. The stored
-// quote keeps the thread on text even when the reply's read hides the deleted parent's words.
+// The person filter admits a user entry, a root on text - anchored in a document (anchor) or on
+// a node (node_anchor), which stores a null anchor - or a stored reply quote. The stored quote
+// keeps the thread on text even when the reply's read hides the deleted parent's words.
 var commentThreadPageQuery = `
  with threads as (
   select coalesce(reply_to, id) as id, max(created_at) as last_activity_at
@@ -237,13 +241,15 @@ var commentThreadPageQuery = `
    and ($2 = '' or bool_or(` + threadAuthorMatches("author") + `))
    and ($6 = '' or bool_or(reply_to is null and anchor->>'artifact_id' = $6))
    and ($7 = '' or bool_or(author->>'kind' = 'user' or
-    (reply_to is null and anchor is not null) or replies_to_quote is not null))
+    (reply_to is null and (anchor is not null or node_anchor is not null)) or replies_to_quote is not null))
  )` + selectThreadPage
 
 // readCommentThreadPage builds only the threads selected by commentThreadPageQuery. Like the
 // kept list in answerCommentList, it reads as everyReader so a cached answer cannot expose
-// a reply block reserved for one caller.
-func (s *server) readCommentThreadPage(ctx context.Context, key, artifact string, page threadPage, trees bool) (commentThreadPage, error) {
+// a reply block reserved for one caller. Under nodeAnchors each comment, first or reply,
+// carries its node_anchor (loadNodeAnchors); the selection, and so the threads, their order and
+// remaining, is the same either way.
+func (s *server) readCommentThreadPage(ctx context.Context, key, artifact string, page threadPage, trees, nodeAnchors bool) (commentThreadPage, error) {
 	pool := s.deps.Store.Pool
 	selected, err := selectThreads(ctx, pool, commentThreadPageQuery, append(page.args(key), artifact, page.person)...)
 	if err != nil {
@@ -268,21 +274,28 @@ func (s *server) readCommentThreadPage(ctx context.Context, key, artifact string
 	if err != nil {
 		return commentThreadPage{}, err
 	}
+	var anchors map[string]*model.CommentNodeAnchor
+	if nodeAnchors {
+		if anchors, err = loadNodeAnchors(ctx, pool, comments); err != nil {
+			return commentThreadPage{}, err
+		}
+	}
 	indexes := make(map[string]int, len(selected.positions))
 	for i, pos := range selected.positions {
 		indexes[pos.id] = i
-		result.Threads[i] = commentThreadRow{commentRead: commentRead{Replies: []shapedComment{}}, LastActivityAt: pos.activity()}
+		result.Threads[i] = commentThreadRow{Replies: []nodeAnchoredComment{}, LastActivityAt: pos.activity()}
 	}
 	reader := s.readDisplayTrees(ctx, trees)
 	reads := shapedComments(comments, reader)
 	// Resolve the trees before copying shaped comments into their threads.
 	reader.resolve()
 	for _, read := range reads {
+		anchored := nodeAnchoredComment{shapedComment: read, NodeAnchor: anchors[read.ID]}
 		if read.ReplyTo == nil {
-			result.Threads[indexes[read.ID]].Comment = read
+			result.Threads[indexes[read.ID]].Comment = anchored
 		} else {
 			thread := &result.Threads[indexes[*read.ReplyTo]]
-			thread.Replies = append(thread.Replies, read)
+			thread.Replies = append(thread.Replies, anchored)
 		}
 	}
 	return result, nil

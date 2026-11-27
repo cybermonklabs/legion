@@ -6144,9 +6144,11 @@ Each item below names a path with its method and identity, then its purpose.
   The whole resolution rides `ask.resolved` to every session following the ask, and a write that opens another question on the issue is answered the issue's `declined_asks`.
   `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask` for the ask's author and its followers, and under `declined_an_ask`, without Dispatch's sentences, for any other session it reached.
 
-- `/api/v1/issues/{key}/comments?artifact=&order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/comments?artifact=&node_anchor=&order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
 
   List comments, optionally limited to an artifact ID.
+  With `node_anchor=true` each comment of the list or of the page whose anchor names a node or a block carries `node_anchor`, `{node {kind, id, state}, quote, occurrence, orphaned}`;
+  the ETag then hashes the parameter and the node each of the issue's comments is anchored on with that node's state, so a write of the state, which writes no comment, moves it too.
   `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
   A comment thread is a comment with no `reply_to` and no `ask_id`, and each comment whose `reply_to` names it;
   its row is `{comment, replies, last_activity_at}`, the replies oldest first, each shaped as the list shapes it.
@@ -6159,7 +6161,7 @@ Each item below names a path with its method and identity, then its purpose.
   `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
   `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
   `remaining` counts under it.
-  `person=in` keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a `quote`;
+  `person=in` keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor in a document or on a node (`node_anchor`), or one of its comments is a reply that stores a `quote`;
   the route takes no other `person` value.
   With `order=activity`, `artifact` keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, `If-None-Match` answering `304` as for the list.
   Without `order` the route answers its list.

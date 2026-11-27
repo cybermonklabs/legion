@@ -49,7 +49,7 @@ func (s *server) createArtifactAsk(w http.ResponseWriter, r *http.Request) {
 
 // listArtifactComments answers an unlinked document's comment list: the same list as an issue's,
 // under the same validator and keeping the same answer (answerCommentList), scoped to the one
-// document the route names rather than to an issue.
+// document the route names rather than to an issue. It takes no ?node_anchor.
 func (s *server) listArtifactComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -58,7 +58,7 @@ func (s *server) listArtifactComments(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.answerCommentList(w, r, owner, "", r.PathValue("id"))
+	s.answerCommentList(w, r, owner, "", r.PathValue("id"), false)
 }
 
 func (s *server) createArtifactComment(w http.ResponseWriter, r *http.Request) {
