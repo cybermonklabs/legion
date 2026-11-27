@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { parseHeldoutFile, parseSkillUseFile, World } from "./heldout-case";
+import { parseHeldoutFile, parseSkillUseFile, type StepRun, World } from "./heldout-case";
 import type * as ownerWalkSeedModule from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
 import type * as seedModule from "./seed";
@@ -95,8 +95,8 @@ interface Call {
   body: Record<string, unknown> | undefined;
 }
 
-/** One run of a step as `GET /api/v1/issues/{key}/steps` answers it (fixture F2's shape): a
- * field no write stated is empty, or null where F2 holds null. */
+/** One run of a step as `GET /api/v1/issues/{key}/steps` answers it (testdata/steps-answer.json's
+ * shape): a field no write stated is empty, or null where that answer holds null. */
 interface FakeStep {
   id: string;
   issue: string;
@@ -277,8 +277,9 @@ class FakeDispatch {
       [
         /^POST \/api\/v1\/issues\/([^/]+)\/comments$/,
         (issue) => {
-          // An anchor names a document of the issue by its id, and words its text holds; a reply
-          // is filed under the head of the thread of the comment it names, as Dispatch files it.
+          // An anchor names a document of the issue by its id, and words its text holds once, as
+          // Dispatch places a quote with no occurrence (pmdoc/find.go choose); a reply is filed
+          // under the head of the thread of the comment it names, as Dispatch files it.
           const anchor = body?.anchor as { artifact?: string; quote?: string } | null | undefined;
           const document = this.artifacts.find(
             (artifact) => artifact.id === anchor?.artifact && artifact.issue_key === issue
@@ -287,6 +288,12 @@ class FakeDispatch {
           const quote = anchor?.quote;
           if (anchor && !(quote !== undefined && document?.markdown.includes(quote)))
             return json({ code: "TARGET_NOT_FOUND" }, 404);
+          if (
+            quote !== undefined &&
+            document !== undefined &&
+            document.markdown.indexOf(quote) !== document.markdown.lastIndexOf(quote)
+          )
+            return json({ code: "TARGET_AMBIGUOUS" }, 409);
           const parent =
             body?.reply_to === undefined
               ? undefined
@@ -296,7 +303,9 @@ class FakeDispatch {
           const row = {
             id: this.id("comment"),
             issue_key: issue,
-            artifact_id: document?.id ?? parent?.artifact_id ?? null,
+            // A comment's own artifact_id is its owner's, and an issue comment's is null: the
+            // document an anchor is on is named in the anchor alone.
+            artifact_id: null,
             anchor: document === undefined ? null : { artifact_id: document.id, quote },
             reply_to: parent === undefined ? null : (parent.reply_to ?? parent.id),
             body: body?.body,
@@ -1447,19 +1456,24 @@ describe("tester-proof", () => {
 describe("case-world Dispatch", () => {
   const example = (name: string) =>
     readFileSync(path.join(import.meta.dir, "testdata", `${name}-case-example.json`), "utf8");
-
-  test("allocates P05's issue and parent and writes its predecessor's handoff under that session", async () => {
+  /** P05's world as the example held-out file holds it, parsed afresh on each call. */
+  const p05World = (): World => {
     const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
     if (!p05) throw new Error("missing P05");
+    return p05.world;
+  };
+
+  test("allocates P05's issue and parent and writes its predecessor's handoff under that session", async () => {
+    const world = p05World();
     const dir = runDir();
-    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(p05.world));
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
     await seed.seedCaseDispatch(dir);
     const creates = dispatch.calls.filter(
       ({ method, path }) => method === "POST" && path === "/api/v1/issues"
     );
     expect(creates).toHaveLength(12);
     expect(creates[9]?.body?.title).toBe("Parent of ACME-12");
-    const { status, key, ...issue } = p05.world.dispatch.issue;
+    const { status, key, ...issue } = world.dispatch.issue;
     expect(creates.at(-1)?.body).toMatchObject(issue);
     expect(dispatch.calls).toContainEqual(
       expect.objectContaining({
@@ -1472,7 +1486,7 @@ describe("case-world Dispatch", () => {
       phase: "plan",
       version: 1,
       author: { kind: "session", id: "ses-acme-12-planner" },
-      body: JSON.stringify(p05.world.dispatch.handoffs[0]?.body),
+      body: JSON.stringify(world.dispatch.handoffs[0]?.body),
     });
   });
 
@@ -1537,9 +1551,7 @@ describe("case-world Dispatch", () => {
     ).toBe(
       'serves="dispatch://ACME-12/spec#b-r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/ask/a1'
     );
-    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
-    if (!p05) throw new Error("missing P05");
-    const world = structuredClone(p05.world);
+    const world = p05World();
     const verification = world.dispatch.documents[0];
     if (!verification) throw new Error("P05 has no Verification document");
     verification.body = verification.body.replace(
@@ -1602,9 +1614,7 @@ describe("case-world Dispatch", () => {
     expect(seed.dispatchBlockRefs(authored, "ACME-12")).toBe(written("t1"));
 
     // The refused input as the seed uploads it: each document under its own slug.
-    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
-    if (!p05) throw new Error("missing P05");
-    const world = structuredClone(p05.world);
+    const world = p05World();
     const verification = world.dispatch.documents[0];
     if (!verification) throw new Error("P05 has no Verification document");
     const check = verification.body.replace("{#k1 ", '{#k1 serves="r1" ');
@@ -1670,8 +1680,6 @@ describe("case-world Dispatch", () => {
     );
   });
 
-  /** One step run of a world, as the case holds it. */
-  type WorldStep = NonNullable<World["dispatch"]["steps"]>[number];
   const at = (time: string) => `2030-01-07T${time}Z`;
   /** P05's world with the runs of its task's steps around its records, as a reviewer's world
    * holds them: the planner's, the implementer's and the tester's runs ended and the reviewer's
@@ -1679,9 +1687,7 @@ describe("case-world Dispatch", () => {
    * thread; the tester wrote two versions of its handoff 20 s apart; and the implementer asks at
    * the very moment its run starts, when the planner's ends. */
   function steppedWorld(): World {
-    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
-    if (!p05) throw new Error("missing P05");
-    const world = structuredClone(p05.world);
+    const world = p05World();
     const handoff = (phase: "implement" | "test", version: number, role: string, time: string) => ({
       id: `hnd-acme-12-${phase}-${version}`,
       phase,
@@ -1690,7 +1696,7 @@ describe("case-world Dispatch", () => {
       at: at(time),
       body: { summary: `The ${phase} handoff, version ${version}.` },
     });
-    const ended = (step: number, role: string, from: string, to: string): WorldStep => ({
+    const ended = (step: number, role: string, from: string, to: string): StepRun => ({
       task: "t1",
       step,
       kind: "step",
@@ -1759,7 +1765,7 @@ describe("case-world Dispatch", () => {
   /** steppedWorld's runs after the review: the reviewer's run ended at 14:30, the retro's from then
    * to 14:40 with `retro`'s fields over its own (a rating of 4 and its reason), and the merger's
    * running since. */
-  function retroWorld(retro: Partial<WorldStep> = {}): World {
+  function retroWorld(retro: Partial<StepRun> = {}): World {
     const world = steppedWorld();
     const [plan, implement, test, review] = world.dispatch.steps ?? [];
     if (!plan || !implement || !test || !review) throw new Error("steppedWorld lost a run");
@@ -1803,28 +1809,6 @@ describe("case-world Dispatch", () => {
     dispatch.calls.filter(({ method, path }) => method === "PUT" && path.includes("/steps/"));
   const handoffId = (phase: string, version: number) =>
     dispatch.handoffs.find((record) => record.phase === phase && record.version === version)?.id;
-  /** The fields of one step run in fixture F2 (`GET /api/v1/issues/INFRA-5406/steps`), in order. */
-  const F2_STEP_FIELDS = [
-    "id",
-    "issue",
-    "task",
-    "step",
-    "kind",
-    "role",
-    "type",
-    "agent",
-    "session",
-    "model",
-    "generation",
-    "attempt",
-    "started_at",
-    "ended_at",
-    "result",
-    "returned_to",
-    "report",
-    "rating",
-    "rating_reason",
-  ];
 
   // Catches: a step run stamped when the seed wrote it, after every record, so that the reviewer
   // finds no handoff inside any run; and a record at the moment one run ends and the next starts
@@ -1837,7 +1821,13 @@ describe("case-world Dispatch", () => {
     expect(readback.steps.issue).toBe("ACME-12");
     expect(readback.steps.tasks.map(({ task }: { task: string }) => task)).toEqual(["t1"]);
     const runs: FakeStep[] = readback.steps.tasks[0].steps;
-    expect(runs.map((run) => Object.keys(run))).toEqual(runs.map(() => F2_STEP_FIELDS));
+    // Each run read back holds the fields production Dispatch's steps route answers a run with, in
+    // its order: those of the first run of testdata/steps-answer.json.
+    const answered = JSON.parse(
+      readFileSync(path.join(import.meta.dir, "testdata", "steps-answer.json"), "utf8")
+    );
+    const fields = Object.keys(answered.tasks[0].steps[0]);
+    expect(runs.map((run) => Object.keys(run))).toEqual(runs.map(() => fields));
 
     const ids = JSON.parse(readFileSync(path.join(dir, "dispatch-ids.json"), "utf8"));
     const stampOf = (rows: { id: string; created_at: string }[], id: string) =>
@@ -1870,7 +1860,7 @@ describe("case-world Dispatch", () => {
       text === null || text === undefined ? undefined : parseInstant(text);
     /** Each run by its role, with the records whose time on `clock` (the case's, `at`, or the
      * run's Dispatch's, `stamp`) `inside` places inside it. */
-    const held = (inside: (run: WorldStep, at: bigint) => boolean, clock: "at" | "stamp") =>
+    const held = (inside: (run: StepRun, at: bigint) => boolean, clock: "at" | "stamp") =>
       Object.fromEntries(
         (world.dispatch.steps ?? []).map((run) => [
           run.role,
@@ -1912,9 +1902,7 @@ describe("case-world Dispatch", () => {
   // them 20 s apart, so the reviewer reads no double write; and one that keeps every gap of the
   // case, which would take a run hours.
   test("keeps a gap of 60 s or less between two handoffs and no longer gap", async () => {
-    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
-    if (!p05) throw new Error("missing P05");
-    const world = structuredClone(p05.world);
+    const world = p05World();
     const plan = (version: number, time: string) => ({
       id: `hnd-acme-12-plan-${version}`,
       phase: "plan" as const,
@@ -2114,8 +2102,8 @@ describe("case-world Dispatch", () => {
     ]);
     expect(posts[1]).not.toHaveProperty("anchor");
     expect(dispatch.comments).toMatchObject([
-      { artifact_id: plan, anchor: { artifact_id: plan, quote }, reply_to: null },
-      { artifact_id: plan, reply_to: dispatch.comments[0]?.id },
+      { artifact_id: null, anchor: { artifact_id: plan, quote }, reply_to: null },
+      { artifact_id: null, reply_to: dispatch.comments[0]?.id },
     ]);
   });
 

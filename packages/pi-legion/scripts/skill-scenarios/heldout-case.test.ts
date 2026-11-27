@@ -291,7 +291,7 @@ describe("parseHeldoutFile", () => {
     expect(() => parseHeldoutFile(JSON.stringify(noDaemon))).toThrow("case P05: world.daemon:");
   });
 
-  test("a comment's anchor names a document of the world and words of its body, and a reply names an earlier comment and holds no anchor", () => {
+  test("a comment's anchor names a document of the world and words its body holds once, and a reply names an earlier comment and holds no anchor", () => {
     /** P05's world with the implementer's comment on words of its Verification document and the
      * architect's reply in that thread, after `edit` changed the two comments. */
     const threaded = (edit: (comments: Record<string, unknown>[]) => void = () => {}) => {
@@ -336,6 +336,16 @@ describe("parseHeldoutFile", () => {
     ).toThrow(
       `case P05: world.dispatch.comments[0].anchor.quote: "The flag's default is 3." is not in the body of verification.md`
     );
+    // Dispatch answers a quote with no occurrence that matches more than once TARGET_AMBIGUOUS.
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[0] ?? {}, {
+          anchor: { document: "verification.md", quote: "experiment" },
+        });
+      })
+    ).toThrow(
+      `case P05: world.dispatch.comments[0].anchor.quote: "experiment" is in the body of verification.md more than once`
+    );
     expect(
       refusal((comments) => {
         Object.assign(comments[0] ?? {}, { at: "2030-01-07T13:40:00Z" });
@@ -359,15 +369,17 @@ describe("parseHeldoutFile", () => {
     ).toThrow("case P05: world.dispatch.comments[1].anchor: a reply holds no anchor");
   });
 
-  test("a world with no anchors and no replies parses as before", () => {
-    const file = parseHeldoutFile(heldoutText);
-    expect(file).toEqual(heldoutJson());
-    for (const each of file.cases) {
-      for (const comment of each.world.dispatch.comments) {
-        expect(comment.anchor).toBeUndefined();
-        expect(comment.replyTo).toBeUndefined();
-      }
-    }
+  test("a plain comment parses with no anchor and no replyTo key, and the rest of the file exactly as written", () => {
+    const file = heldoutJson();
+    file.cases[0].world.dispatch.comments = [
+      {
+        id: "cmt-acme-12-note",
+        author: "alice",
+        at: "2030-01-07T13:35:00Z",
+        body: "A plain note on the issue.",
+      },
+    ];
+    expect(parseHeldoutFile(JSON.stringify(file))).toStrictEqual(file);
   });
 });
 

@@ -129,15 +129,15 @@ import {
   listIssueAsks,
   listIssueMessages,
   putStep,
+  putStepRating,
   recordCheckResult,
   resolveAsk,
 } from "../../../dispatch/e2e/api";
-import type { Body } from "../../../dispatch/web/src/api/paths";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
-import { World } from "./heldout-case";
+import { type StepRun, World } from "./heldout-case";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
-import { parseInstant, type Sleep } from "./production-dispatch";
-import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
+import { instantText, parseInstant, type Sleep } from "./production-dispatch";
+import { APPROVE, agentGet, handoffsOf, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -724,17 +724,6 @@ async function agentPost(route: string, input: unknown): Promise<void> {
     throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer as Dispatch wrote it; a refusal names the
- * route and Dispatch's answer. */
-async function agentGet(route: string): Promise<unknown> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return response.json();
-}
-
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
  * implement record among them, newest first, each with its body (handoffsOf). */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
@@ -1107,16 +1096,6 @@ interface Stamped {
   stamp: bigint;
 }
 
-/** `at`, nanoseconds since the epoch, as an RFC 3339 time in UTC with nine digits of fraction,
- * all of which Dispatch keeps for a step run's times. */
-function instantText(at: bigint): string {
-  const whole = new Date(Number(at / SECOND) * 1000).toISOString().slice(0, 19);
-  return `${whole}.${(at % SECOND).toString().padStart(9, "0")}Z`;
-}
-
-/** One step run of a world, as the case holds it. */
-type WorldStep = NonNullable<World["dispatch"]["steps"]>[number];
-
 /** Each step run of `steps`, the world's runs of `issue` in project `project`, as the seed writes
  * it, in world order: the run, its place in the world (`<issue> steps[<n>]`), the id the daemon
  * gives its record, the fields of its step write but its times, and the retro's rating with its
@@ -1131,7 +1110,7 @@ type WorldStep = NonNullable<World["dispatch"]["steps"]>[number];
  * packages/envoy/internal/dispatch/workflowstore/write.go); a step whose role has no type of work
  * the seed knows; and a rating without its reason or a reason without its rating, since the rating
  * route takes the two together (stepRatingInput in packages/envoy/internal/dispatch/api/steps.go). */
-function stepWrites(issue: string, project: string, steps: readonly WorldStep[]) {
+function stepWrites(issue: string, project: string, steps: readonly StepRun[]) {
   const starts = new Map<string, number>();
   return steps.map((run, index) => {
     const label = `${issue} steps[${index}]`;
@@ -1172,34 +1151,6 @@ function stepWrites(issue: string, project: string, steps: readonly WorldStep[])
           : { rating: planRating, rating_reason: planReason },
     };
   });
-}
-
-/** The rating a retro gave the plan, written onto the retro's record `id` of `issue` as the daemon
- * writes it (PutStepRating in packages/daemon/internal/dispatch/client.go): through the record's
- * rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, which e2e/api.ts has no helper for,
- * with the step write's body and the rating with its reason, under the agent bearer as the session
- * of the daemon of the issue's project, as putStep writes the step. A refusal names the route and
- * Dispatch's answer. */
-async function putStepRating(
-  issue: string,
-  id: string,
-  input: Body<"/api/v1/issues/{key}/steps/{id}/rating", "put">
-): Promise<void> {
-  const project = issue.slice(0, issue.indexOf("-"));
-  const route = `/api/v1/issues/${encodeURIComponent(issue)}/steps/${encodeURIComponent(id)}/rating`;
-  const response = await fetch(new URL(route, baseUrl), {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      ...input,
-      actor: { kind: "session", id: `legion-daemon:${project}` },
-    }),
-  });
-  if (!response.ok)
-    throw new Error(`PUT ${route} failed: ${response.status} ${await response.text()}`);
 }
 
 /** The time in the run's Dispatch of each case time of `times`, the starts and ends of the
@@ -1333,11 +1284,10 @@ export async function seedCaseDispatch(
   };
   /** What dispatch-ids.json holds: each seeded handoff's and comment's Dispatch id by case id. */
   const seededIds = new Map<string, string>();
-  const remember = (kind: "comment" | "handoff", id: string, given: string) => {
+  const remember = (id: string, given: string) => {
     if (seededIds.has(id))
       throw new Error(`${id}: the world names two of its handoffs and comments by this id`);
     seededIds.set(id, given);
-    ids.set(`${kind}/${id}`, given);
   };
   /** Each record of the world: its case id and time, whether it is a handoff, and its write,
    * which answers Dispatch's stamp of the record. */
@@ -1357,7 +1307,7 @@ export async function seedCaseDispatch(
           throw new Error(
             `${record.id}: got ${record.phase} v${saved.version}, wanted v${record.version}`
           );
-        remember("handoff", record.id, saved.id);
+        remember(record.id, saved.id);
         return saved.created_at;
       },
     })),
@@ -1382,7 +1332,8 @@ export async function seedCaseDispatch(
           },
           author(by)
         );
-        remember("comment", id, created.id);
+        remember(id, created.id);
+        ids.set(`comment/${id}`, created.id);
         return created.created_at;
       },
     })),

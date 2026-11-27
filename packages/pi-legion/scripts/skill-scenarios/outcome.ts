@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { recordWorkspace, translateCommits } from "./git-world";
+import { commitTranslator, mapStrings, recordWorkspace } from "./git-world";
 import { type OutcomeRecord, parseOutcome, T0_ACTION_KINDS } from "./heldout-case";
-import { parseInstant } from "./production-dispatch";
+import { instantText, parseInstant } from "./production-dispatch";
 import {
   childSessions,
   dispatchFirstInjected,
@@ -363,24 +363,27 @@ function nanos(at: string): bigint {
   return parsed;
 }
 function shifted(at: bigint, offset: bigint): string {
-  const ts = at + offset;
-  const seconds = ts / 1_000_000_000n;
-  const fractional = (ts % 1_000_000_000n).toString().padStart(9, "0");
-  return new Date(Number(seconds) * 1000).toISOString().replace(/\.000Z$/, `.${fractional}Z`);
+  return instantText(at + offset);
 }
 
-/** A Dispatch id: a uuid, lower-case, as Dispatch gives each record. */
-const DispatchId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+/** A uuid, lower-case, as Dispatch gives each record its id: what DispatchId and
+ * DISPATCH_ID_TOKEN are built from. */
+const UUID = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+/** A Dispatch id: a whole uuid. */
+const DispatchId = new RegExp(`^${UUID}$`);
 /** What dispatch-ids.json holds (seed.ts seedCaseDispatch): the Dispatch id the seed was given for
  * each handoff and comment of the case, by the case's id. */
 const SeededIds = z.record(z.string(), z.string().regex(DispatchId));
+/** A token dispatchIdTranslator reads: a whole uuid, or else 8 hexadecimal characters. */
+const DISPATCH_ID_TOKEN = new RegExp(`${UUID}|[0-9a-f]{8}`, "g");
 
-/** Write each seeded Dispatch id in every string of `value` as the case's id: the whole id, or its
- * first 8 hexadecimal characters where no other seeded id begins so. A token is a whole uuid or 8
- * hexadecimal characters, read only where no lower-case hexadecimal character precedes or follows
- * it, so an id or a prefix inside a longer run stays. A whole uuid is one token whether a seed wrote
- * it or not, so its first 8 characters are never read apart from it and no uuid is half replaced. */
-function translateDispatchIds<T>(value: T, seeded: z.infer<typeof SeededIds>): T {
+/** A string with each seeded Dispatch id of `seeded` written as the case's id: the whole id, or its
+ * first 8 hexadecimal characters where no other seeded id begins so; the string as it is where
+ * `seeded` holds none. A token is a whole uuid or 8 hexadecimal characters, read only where no
+ * lower-case hexadecimal character precedes or follows it, so an id or a prefix inside a longer run
+ * stays. A whole uuid is one token whether a seed wrote it or not, so its first 8 characters are
+ * never read apart from it and no uuid is half replaced. */
+function dispatchIdTranslator(seeded: z.infer<typeof SeededIds>): (text: string) => string {
   const whole = new Map<string, string>();
   const prefixes = new Map<string, string | undefined>();
   for (const [caseId, id] of Object.entries(seeded)) {
@@ -389,26 +392,13 @@ function translateDispatchIds<T>(value: T, seeded: z.infer<typeof SeededIds>): T
     // A prefix two seeded ids share names neither.
     prefixes.set(prefix, prefixes.has(prefix) ? undefined : caseId);
   }
+  if (whole.size === 0) return (text) => text;
   const hex = /[0-9a-f]/;
-  const translate = (item: unknown): unknown => {
-    if (typeof item === "string")
-      return item.replace(
-        /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{8}/g,
-        (word, offset: number) => {
-          const inRun =
-            hex.test(item[offset - 1] ?? "") || hex.test(item[offset + word.length] ?? "");
-          return (inRun ? undefined : (word.length === 8 ? prefixes : whole).get(word)) ?? word;
-        }
-      );
-    if (Array.isArray(item)) return item.map(translate);
-    if (item !== null && typeof item === "object") {
-      return Object.fromEntries(
-        Object.entries(item).map(([key, field]) => [key, translate(field)])
-      );
-    }
-    return item;
-  };
-  return translate(value) as T;
+  return (text) =>
+    text.replace(DISPATCH_ID_TOKEN, (word, offset: number) => {
+      const inRun = hex.test(text[offset - 1] ?? "") || hex.test(text[offset + word.length] ?? "");
+      return (inRun ? undefined : (word.length === 8 ? prefixes : whole).get(word)) ?? word;
+    });
 }
 
 /** Raw logs use the same host clock. Compare full precision, breaking exact ties by input order,
@@ -525,10 +515,11 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const seededIds = existsSync(file("dispatch-ids.json"))
     ? SeededIds.parse(JSON.parse(readFileSync(file("dispatch-ids.json"), "utf8")))
     : {};
-  // Each Dispatch id is read before any commit is: a uuid's run of hexadecimal characters can begin
-  // as a commit does.
-  const translate = <T>(value: T): T =>
-    translateCommits(translateDispatchIds(value, seededIds), inverse);
+  // Each Dispatch id of a string is read before any commit is: a uuid's run of hexadecimal
+  // characters can begin as a commit does.
+  const dispatchIds = dispatchIdTranslator(seededIds);
+  const commits = commitTranslator(inverse);
+  const translate = <T>(value: T): T => mapStrings(value, (text) => commits(dispatchIds(text)));
   const timed = actions
     .map((action) => ({ action, ns: nanos(action.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0));

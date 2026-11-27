@@ -216,10 +216,12 @@ const StepRun = z
     if (rated && (run.kind !== "retro" || run.endedAt === null))
       refuse(context, ["planRating"], "only a retro that ended rates its plan");
   });
+export type StepRun = z.infer<typeof StepRun>;
 
-/** A comment of the world. `anchor` puts it on words of one of the world's documents, by name;
- * `replyTo` makes it a reply in the thread of an earlier comment of the world, and a reply holds
- * no anchor. */
+/** A comment of the world. `anchor` puts it on words of one of the world's documents, by name,
+ * which the document's body holds once: the seed names no occurrence, and Dispatch refuses a quote
+ * that matches more than once (TARGET_AMBIGUOUS); `replyTo` makes it a reply in the thread of an
+ * earlier comment of the world, and a reply holds no anchor. */
 const WorldComment = z.strictObject({
   id: Text,
   author: Text,
@@ -316,12 +318,18 @@ const DispatchWorld = z
             [...at, "anchor", "quote"],
             `${JSON.stringify(anchor.quote)} is not in the body of ${document.name}`
           );
+        else if (document.body.indexOf(anchor.quote) !== document.body.lastIndexOf(anchor.quote))
+          refuse(
+            context,
+            [...at, "anchor", "quote"],
+            `${JSON.stringify(anchor.quote)} is in the body of ${document.name} more than once`
+          );
       }
       if (replyTo === undefined) return;
       if (anchor !== undefined) refuse(context, [...at, "anchor"], "a reply holds no anchor");
-      const parent = dispatch.comments.findIndex(({ id }) => id === replyTo);
-      const before = dispatch.comments[parent];
-      if (before === undefined || !seededBefore(before, parent, comment, index))
+      const parentIndex = dispatch.comments.findIndex(({ id }) => id === replyTo);
+      const parent = dispatch.comments[parentIndex];
+      if (parent === undefined || !seededBefore(parent, parentIndex, comment, index))
         refuse(context, [...at, "replyTo"], `${replyTo} is no earlier comment of the world`);
     });
   });

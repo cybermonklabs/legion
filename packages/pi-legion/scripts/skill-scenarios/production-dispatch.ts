@@ -309,6 +309,15 @@ export function parseInstant(text: string): bigint | undefined {
   return seconds * 1_000_000_000n + nanos;
 }
 
+/** `ns`, nanoseconds since the epoch, as an RFC 3339 time in UTC with nine digits of fraction, as
+ * parseInstant reads one back; Dispatch keeps all nine for a step run's times. */
+export function instantText(ns: bigint): string {
+  const fraction = (ns % 1_000_000_000n).toString().padStart(9, "0");
+  return new Date(Number(ns / 1_000_000_000n) * 1000)
+    .toISOString()
+    .replace(/\.000Z$/, `.${fraction}Z`);
+}
+
 /** A window of time: `since` inclusive, `until` exclusive. */
 export interface Window {
   readonly since: bigint;

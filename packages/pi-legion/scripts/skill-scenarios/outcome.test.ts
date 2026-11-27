@@ -618,7 +618,7 @@ test("a seeded id, or its first 8 characters, inside a longer hexadecimal run is
   ]);
 });
 
-test("a run with no dispatch-ids.json is written as before", () => {
+test("a run with no dispatch-ids.json keeps each Dispatch id and its prefix as they are, and still writes each commit as the case's", () => {
   const { dir, caseHead } = syntheticRun();
   const test1 = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
   addEvents(
@@ -677,6 +677,18 @@ function addCalls(dir: string, ...rows: object[]) {
 }
 const host = (fraction: string) => `2026-01-07T15:00:01.${fraction}Z`;
 const caseTime = (fraction: string) => `2030-01-07T15:00:01.${fraction}Z`;
+/** The calls.jsonl row of `dispatch <command>` with `flags` at host time `fraction`: exit 0 after
+ * one GET of `/api/v1/<command>`, no dry run, with `extra`'s fields over these. */
+const row = (fraction: string, command: string, flags: object, extra: object = {}) => ({
+  at: host(fraction),
+  done: host(fraction),
+  as: "dispatch",
+  argv: [command],
+  exit: 0,
+  requests: [{ method: "GET", path: `/api/v1/${command}` }],
+  call: { command, flags, dryRun: false },
+  ...extra,
+});
 
 // An Envoy message is what its tool answered without error, called by the tool's name or as a write
 // to its xd:// device. A send the tool refused (a session no listener knows) sent nothing, and a call
@@ -783,17 +795,6 @@ test("a task call with two items is two agent actions, each with its own end whe
 // run. The CLI's own write stays the `dispatch` action Dispatch's events make, once.
 test("a dispatch command that wrote nothing is a dispatch-read, and one that wrote, failed, only checked or sent nothing known is none", () => {
   const { dir } = syntheticRun();
-  const get = (path: string) => ({ method: "GET", path });
-  const row = (fraction: string, command: string, flags: object, extra: object = {}) => ({
-    at: host(fraction),
-    done: host(fraction),
-    as: "dispatch",
-    argv: [command],
-    exit: 0,
-    requests: [get(`/api/v1/${command}`)],
-    call: { command, flags, dryRun: false },
-    ...extra,
-  });
   addCalls(
     dir,
     row("100", "read", { issue: "ACME-12" }),
@@ -806,7 +807,7 @@ test("a dispatch command that wrote nothing is a dispatch-read, and one that wro
       { issue: "ACME-12", body: "A note." },
       {
         requests: [
-          get("/api/v1/issues/ACME-12"),
+          { method: "GET", path: "/api/v1/issues/ACME-12" },
           { method: "POST", path: "/api/v1/issues/ACME-12/comments" },
         ],
       }
@@ -943,19 +944,10 @@ test("a dispatch-read, an Envoy message and a task agent that name a seeded Disp
     "dispatch-ids.json",
     JSON.stringify({ "hnd-acme-12-test-1": test1, "cmt-acme-12-departure": departure })
   );
-  const read = (fraction: string, command: string, flags: object) => ({
-    at: host(fraction),
-    done: host(fraction),
-    as: "dispatch",
-    argv: [command],
-    exit: 0,
-    requests: [{ method: "GET", path: `/api/v1/${command}` }],
-    call: { command, flags, dryRun: false },
-  });
   addCalls(
     dir,
-    read("100", "read", { ref: `dispatch://ACME-12/comment/${departure}` }),
-    read("200", "handoff-read", { issue: "ACME-12", "handoff-id": test1 })
+    row("100", "read", { ref: `dispatch://ACME-12/comment/${departure}` }),
+    row("200", "handoff-read", { issue: "ACME-12", "handoff-id": test1 })
   );
   transcriptOf(
     write,

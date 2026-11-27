@@ -300,25 +300,34 @@ done
   return mapping;
 }
 
-/** Translate full ids and unambiguous abbreviated ids, including those embedded in prose. */
-export function translateCommits<T>(value: T, mapping: CommitMap): T {
-  const ids = Object.entries(mapping);
-  const translate = (item: unknown): unknown => {
-    if (typeof item === "string")
-      return item.replace(/[0-9a-f]{7,}/g, (word, offset: number) => {
-        if (/[0-9a-f]/.test(item[offset - 1] ?? "")) return word;
-        const matches = ids.filter(([id]) => id.startsWith(word));
-        return matches.length === 1 ? matches[0]?.[1].slice(0, word.length) : word;
-      });
-    if (Array.isArray(item)) return item.map(translate);
+/** `value` with each string it holds, at any depth of its arrays and objects, as `fn` writes it. */
+export function mapStrings<T>(value: T, fn: (text: string) => string): T {
+  const walk = (item: unknown): unknown => {
+    if (typeof item === "string") return fn(item);
+    if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {
-      return Object.fromEntries(
-        Object.entries(item).map(([key, field]) => [key, translate(field)])
-      );
+      return Object.fromEntries(Object.entries(item).map(([key, field]) => [key, walk(field)]));
     }
     return item;
   };
-  return translate(value) as T;
+  return walk(value) as T;
+}
+
+/** A string with the full ids and unambiguous abbreviated ids of `mapping`'s commits translated,
+ * including those embedded in prose. */
+export function commitTranslator(mapping: CommitMap): (text: string) => string {
+  const ids = Object.entries(mapping);
+  return (text) =>
+    text.replace(/[0-9a-f]{7,}/g, (word, offset: number) => {
+      if (/[0-9a-f]/.test(text[offset - 1] ?? "")) return word;
+      const matches = ids.filter(([id]) => id.startsWith(word));
+      return matches.length === 1 ? matches[0]?.[1].slice(0, word.length) : word;
+    });
+}
+
+/** Translate full ids and unambiguous abbreviated ids, including those embedded in prose. */
+export function translateCommits<T>(value: T, mapping: CommitMap): T {
+  return mapStrings(value, commitTranslator(mapping));
 }
 
 /** The directory variables the role is given for the run's own directories, each with its
