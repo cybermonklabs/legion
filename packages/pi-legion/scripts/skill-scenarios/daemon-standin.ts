@@ -333,6 +333,7 @@ const ROLE_FOR_PHASE: Readonly<Record<string, string>> = {
   implementing: "implementer",
   testing: "tester",
   reviewing: "reviewer",
+  retro: "implementer",
   merging: "merger",
 };
 
