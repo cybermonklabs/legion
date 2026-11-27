@@ -279,7 +279,7 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 				s := reopened(t, key)
 				s.wait(withdrawnAt.Add(5*time.Second), record.StoredWait{Entered: withdrawnAt,
 					Ended: &record.WaitChangeEnd{Generation: changeGen, At: withdrawnAt},
-					Withdrawn: []record.WaitWithdrawal{{ID: requestID, Text: "Reopened after an early close: the widget export was dropped.",
+					Withdrawn: []record.WaitWithdrawal{{ID: requestID, Kind: record.DefectKindRequest, Text: "Reopened after an early close: the widget export was dropped.",
 						Reason: evidence, At: withdrawnAt}}})
 				return s.fake
 			},
@@ -354,7 +354,7 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 			build: func(t *testing.T, key string) *fakeDispatch {
 				s := reopened(t, key)
 				s.merged(mergedAt)
-				s.fake.closeWait[s.waits] += "\n## Withdrawn requests\n\n- request 17, withdrawn at 2026-11-20 12:00:00 UTC, because:\n"
+				s.fake.closeWait[s.waits] += "\n## Requests withdrawn by hand\n\n- request 17, withdrawn at 2026-11-20 12:00:00 UTC, because:\n"
 				return s.fake
 			},
 			want: want{category: NotAssessable},
@@ -434,7 +434,7 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 		{record.StoredWait{}, []string{"Entered", "Checks", "Production", "Beneath", "OpenChildren", "Defects", "NextChange", "Unread", "Unapproved", "Ended", "Withdrawn", "Closed"}},
 		{record.WaitChange{}, []string{"Generation", "Reasons", "Since"}},
 		{record.WaitReason{}, []string{"ID", "Kind", "Text", "Check", "Role", "Head", "Since"}},
-		{record.WaitWithdrawal{}, []string{"ID", "Text", "Reason", "At"}},
+		{record.WaitWithdrawal{}, []string{"ID", "Kind", "Text", "Reason", "At"}},
 		{record.WaitChangeEnd{}, []string{"Generation", "PullRequest", "At"}},
 	} {
 		typ := reflect.TypeOf(shape.of)

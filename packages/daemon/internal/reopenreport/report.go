@@ -500,13 +500,13 @@ type changeEnd struct {
 // renderer, so they change together. The report's test renders every version it reads with
 // record.CloseWaitDocument, so a change of the renderer alone fails that test.
 const (
-	endedHeading     = "The change that ended"
-	openHeading      = "Next change"
-	withdrawnHeading = "Withdrawn defects"
-	reasonCutLine    = "  The defect was:"
-	agentTextIndent  = "      "
-	waitTimeLayout   = "2006-01-02 15:04:05 UTC"
-	waitTimePattern  = `(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)`
+	endedHeading            = "The change that ended"
+	openHeading             = "Next change"
+	withdrawnHeading        = "Withdrawn defects"
+	withdrawnRequestHeading = "Withdrawn requests"
+	agentTextIndent         = "      "
+	waitTimeLayout          = "2006-01-02 15:04:05 UTC"
+	waitTimePattern         = `(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)`
 )
 
 var (
@@ -514,14 +514,18 @@ var (
 	endedLine     = regexp.MustCompile(`^Change (\d+) ended with no pull request at ` + waitTimePattern + `\.$`)
 	openLine      = regexp.MustCompile(`^Change (\d+) is open since ` + waitTimePattern + `\. It carries these reasons:$`)
 	reasonLine    = regexp.MustCompile(`^- (\S+) (\d+)(?:,| about )`)
-	withdrawnLine = regexp.MustCompile(`^- defect (\d+), withdrawn at ` + waitTimePattern + `, because:$`)
+	withdrawnLine = regexp.MustCompile(`^- (defect|request) (\d+), withdrawn at ` + waitTimePattern + `, because:$`)
 )
 
+// withdrawnKinds is the kind of item each withdrawals heading lists, as record's writeWithdrawn
+// writes it: a request is listed under a heading of its own, never as a defect.
+var withdrawnKinds = map[string]record.DefectKind{withdrawnHeading: record.DefectKindDefect, withdrawnRequestHeading: record.DefectKindRequest}
+
 // knownHeadings is every `##` heading record.CloseWaitDocument writes. A version with any other is
-// refused: a section the renderer gained may say what the report must read (a request's
-// withdrawal under a heading of its own, say), so it is never passed over in silence.
+// refused: a section the renderer gained may say what the report must read, so it is never passed
+// over in silence.
 var knownHeadings = []string{
-	endedHeading, withdrawnHeading, "Closed", "Unread", "Unapproved", "Checks", "Production check",
+	endedHeading, withdrawnHeading, withdrawnRequestHeading, "Closed", "Unread", "Unapproved", "Checks", "Production check",
 	"Issues beneath", "Open children", "Reported defects", openHeading,
 }
 
@@ -588,28 +592,30 @@ func parseWait(markdown string) (waitVersion, error) {
 				}
 				version.open.requests = append(version.open.requests, id)
 			}
-		case withdrawnHeading:
+		case withdrawnHeading, withdrawnRequestHeading:
 			if !strings.HasPrefix(line, "- ") {
 				continue
 			}
 			m := withdrawnLine.FindStringSubmatch(line)
-			if m == nil {
-				return waitVersion{}, fmt.Errorf("its section %q lists %q, which is no withdrawal the daemon writes", withdrawnHeading, line)
+			if m == nil || record.DefectKind(m[1]) != withdrawnKinds[section] {
+				return waitVersion{}, fmt.Errorf("its section %q lists %q, which is no withdrawal the daemon writes", section, line)
 			}
-			id, err := strconv.ParseInt(m[1], 10, 64)
+			id, err := strconv.ParseInt(m[2], 10, 64)
 			if err != nil {
 				return waitVersion{}, err
 			}
-			at, err := time.Parse(waitTimeLayout, m[2])
+			at, err := time.Parse(waitTimeLayout, m[3])
 			if err != nil {
 				return waitVersion{}, err
 			}
-			reason, next, err := agentText(lines, i+1, reasonCutLine)
+			reason, next, err := agentText(lines, i+1, "  The "+m[1]+" was:")
 			if err != nil {
 				return waitVersion{}, fmt.Errorf("the withdrawal of %d: %w", id, err)
 			}
 			i = next
-			version.withdrawn = append(version.withdrawn, Withdrawal{Request: id, Reason: reason, At: at})
+			if record.DefectKind(m[1]) == record.DefectKindRequest {
+				version.withdrawn = append(version.withdrawn, Withdrawal{Request: id, Reason: reason, At: at})
+			}
 		}
 	}
 	switch {

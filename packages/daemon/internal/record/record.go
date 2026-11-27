@@ -3016,6 +3016,11 @@ type Store interface {
 	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
 	// this read and this write.
 	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
+	// ClearWaitEnded takes the end of a change out of issue's stored wait (StoredWait.Ended) where
+	// it is still shown, the end an uploaded version of close-wait.md said: the wait holds it until
+	// then, so a write of the wait between the end and that upload loses it from no version. The
+	// caller holds the lock the workflow writes the wait under, as for ClearWaitWithdrawals.
+	ClearWaitEnded(ctx context.Context, tx pgx.Tx, issue string, shown *WaitChangeEnd) error
 	// WithdrawDefect ends the open reported defect or request id of issue with reason, at at. It
 	// answers false where issue holds no such row: none of that id, a check's or a production
 	// check's reason, one already withdrawn, or one a merged change carried. The reason is

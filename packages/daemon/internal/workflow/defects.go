@@ -161,7 +161,7 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
 	if !ended {
 		return intake.Result{}, fmt.Errorf("withdraw defect %d of %s: the record read it open and ended none", defect.ID, issue.Key)
 	}
-	if err := e.waitNamesDefects(ctx, tx, issue, []record.WaitWithdrawal{{ID: defect.ID, Text: defect.Text, Reason: reason, At: now}}); err != nil {
+	if err := e.waitNamesDefects(ctx, tx, issue, []record.WaitWithdrawal{{ID: defect.ID, Kind: defect.Kind, Text: defect.Text, Reason: reason, At: now}}); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: a reported defect was withdrawn", "issue", issue.Key, "defect", defect.ID, "phase", issue.Phase)

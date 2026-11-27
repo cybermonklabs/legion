@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The bounds of the merge read: one bounded pass of GETs, resumed where it stopped.
@@ -268,7 +269,8 @@ func (r *outbox) answerMergeRead(ctx context.Context, row record.OutboxRow, payl
 
 // saveMergeRead saves progress under the row's lease and answers when the row runs next: at once
 // after a turn that left work, when its stage's retry is due, and a day on for a read that is
-// unread or stopped.
+// unread or stopped. A read that this save ends unread or stopped tells the workflow so once
+// (tellMergeUnread), so the controller hears of it at once, and the daily turn after that.
 func (r *outbox) saveMergeRead(ctx context.Context, row record.OutboxRow, progress record.MergeReadProgress, consumedRefresh bool, now time.Time) error {
 	saved, err := checkpointMergeRead(ctx, func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 		return store.Transact(ctx, r.pool, write)
@@ -278,6 +280,9 @@ func (r *outbox) saveMergeRead(ctx context.Context, row record.OutboxRow, progre
 	}
 	if !saved {
 		return fmt.Errorf("save the merge read of %s: %w", row.Issue, record.ErrOutboxLeaseLost)
+	}
+	if progress.State != "" {
+		r.tellMergeUnread(ctx, row, progress)
 	}
 	switch {
 	case progress.State != "":
@@ -294,6 +299,22 @@ func mergeReadCause(progress record.MergeReadProgress) string {
 		return "its " + progress.Stage + " stage failed three times: " + progress.Cause
 	}
 	return "no candidate answered with a merge that names the issue"
+}
+
+// tellMergeUnread posts the read's end with no answer (intake.MergeUnread) where the row stood
+// still reading when this turn leased it, so a read tells it once: a read that was unread or
+// stopped already, and only reads its links again, posts nothing. The workflow applies it under
+// the fact lock. A fact that fails to apply is logged, and the controller's daily turn tells the
+// controller instead (workflow's tellEachMergeUnread).
+func (r *outbox) tellMergeUnread(ctx context.Context, row record.OutboxRow, progress record.MergeReadProgress) {
+	var leased record.MergeRead
+	if err := json.Unmarshal(row.Payload, &leased); err != nil || leased.Progress.State != "" {
+		return
+	}
+	fact := intake.MergeUnread{Issue: leased.Issue, Generation: leased.Generation, Cause: workflow.MergeUnreadCause(progress)}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-unread:%s:%d:%d", row.Issue, row.ID, progress.Attempts), fact, r.handlers...); err != nil {
+		r.log.Error("outbox merge read could not tell that it found no merge; the daily turn tells it", "row", row.ID, "issue", row.Issue, "error", err)
+	}
 }
 
 // checkpointMergeRead writes progress over the row's progress in a transaction transact opens,
