@@ -1859,12 +1859,10 @@ UNIT_ALONE_TESTS = {
     "cmd/dispatch": [
         "TestAProcessReportsASilentNATSCutWithinSeconds",
         "TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce",
-        "TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering",
         "TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering",
         "TestHealthzAnswersWhilePostgresStopsAnswering",
         "TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument",
         "TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument",
-        "TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget",
     ],
     "internal/cistore": [
         "TestADeletedBucketFailsAWriteWithinTheBudget",

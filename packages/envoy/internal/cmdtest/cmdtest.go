@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // builds is the directory Run made for this test process's binaries, empty until Run has made it.
@@ -247,39 +248,55 @@ func (p *Process) Terminate(t testing.TB) time.Time {
 	return signalled
 }
 
-// WaitExit waits up to 30 s for the process to exit, and fails the test with its output when it is
-// still running; after names what it was waiting on.
+// WaitExit waits through the shared wait for the process to exit, and fails the test with its
+// output when it never does; after names what it was waiting on. Each ask reads only Exited: the
+// reading is the output buffer itself, which only the failure copies.
 func (p *Process) WaitExit(t testing.TB, after string) {
 	t.Helper()
-	select {
-	case <-p.Exited:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("%s was still running 30s after %s:\n%s", p.name, after, p.Output.String())
-	}
+	testwait.Until(t, fmt.Sprintf("%s to exit after %s", p.name, after), func() (*LockedBuffer, bool) {
+		select {
+		case <-p.Exited:
+			return p.Output, true
+		default:
+			return p.Output, false
+		}
+	})
 }
 
-// WaitForOutput waits up to 30 s for each of lines to appear in the process's output, and fails the
-// test when the process exits first or a line never appears.
+// WaitForOutput waits through the shared wait for each of lines to appear in the process's
+// output, and fails the test at once when the process exits before one has. That failure is
+// WaitForOutput's own, so it names the caller's line: the read inside the wait only reports the
+// exit, since a t.Fatalf inside it would name this file instead.
 func (p *Process) WaitForOutput(t testing.TB, lines ...string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	for _, line := range lines {
-		for !strings.Contains(p.Output.String(), line) {
+		read := testwait.Until(t, fmt.Sprintf("%s to log %q", p.name, line), func() (outputRead, bool) {
+			output := p.Output.String()
+			if strings.Contains(output, line) {
+				return outputRead{}, true
+			}
 			select {
 			case <-p.Exited:
 				// Exited closes only once the output is whole, so this read is final.
-				if strings.Contains(p.Output.String(), line) {
-					continue
+				if output = p.Output.String(); strings.Contains(output, line) {
+					return outputRead{}, true
 				}
-				t.Fatalf("%s exited before it logged %q:\n%s", p.name, line, p.Output.String())
+				return outputRead{output: output, exited: true}, true
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s never logged %q:\n%s", p.name, line, p.Output.String())
-			}
-			time.Sleep(20 * time.Millisecond)
+			return outputRead{output: output}, false
+		})
+		if read.exited {
+			t.Fatalf("%s exited before it logged %q:\n%s", p.name, line, read.output)
 		}
 	}
+}
+
+// outputRead is one read of WaitForOutput's wait: the process's output, and whether the process
+// had exited without the line.
+type outputRead struct {
+	output string
+	exited bool
 }
 
 // HeldPort is a loopback TCP port the kernel chose, held by a listening socket from the moment

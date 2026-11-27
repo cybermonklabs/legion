@@ -33,6 +33,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -509,7 +511,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, func() {
+		shutdown(clock.Real(), server.Config, documentService, database.Pool, func() {
 			close(entered)
 			<-release
 			background.Wait()
@@ -645,7 +647,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		shutdown(clock.Real(), server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
 	}()
 	select {
 	case <-done:
@@ -1025,11 +1027,14 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the document
 // service starts httpDrainBeforeDocuments after the signal, with no document to settle: the issue
 // it would create has none yet. Dispatch then gives up on the connection when silentProbes health
-// probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
-// runtime's grace period instead of being killed, and says why.
-func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (the shutdown budget the
-	// exit is compared against).
+// probes in a row have failed with no connection taken back meanwhile, so it exits instead of
+// being killed, and says why. The row proves the exit and its reasons on every run, and holds the
+// exit to no span of the machine's clock: the exit, the reap and this test's own scheduling all
+// stretch under load, while the moment the stop decides to exit is the sum of the waits it arms,
+// which TestAShutdownWithTheDatabaseUnansweringDecidesToExitInsideStopGrace holds inside stopGrace
+// on the product's clock. How long the exit took is logged, never judged.
+func TestSIGTERMWithTheDatabaseUnansweringExits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -1060,14 +1065,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	relay.freeze()
 	signalled := process.Terminate(t)
 	process.WaitExit(t, "SIGTERM with the database unanswering")
-	exited := time.Since(signalled)
-	t.Logf("exited %v after SIGTERM", exited)
-	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
-		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
-	}
+	t.Logf("exited %v after SIGTERM", time.Since(signalled))
 	output := process.Output.String()
 	if !strings.Contains(output, `msg="dispatch: settle documents with requests still in flight"`) {
 		t.Errorf("the issue create was not in flight when the document service started")
@@ -1082,6 +1080,153 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
+// A database that stops answering during a stop must not keep Dispatch running into the runtime's
+// kill: the stop decides to exit once silentProbes health probes in a row have failed, and it has
+// to decide inside stopGrace less the reserve its budget keeps there, the time the process has
+// left to exit in. The child-process row above runs this scene - a request in flight behind
+// another writer's lock when the relay in front of the database freezes - and proves that Dispatch
+// exits on every run, but its timers run on the machine's clock, which no reading of that row can
+// tell from the load around it. This row holds the decision on every run: it calls shutdown in this
+// process on a fake clock and moves the fake to each deadline the shutdown arms, so the moment it
+// returns is the sum of the waits it armed, which no load stretches.
+func TestAShutdownWithTheDatabaseUnansweringDecidesToExitInsideStopGrace(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturedLog).
+	ctx := context.Background()
+	database := storetest.Open(t)
+	// Nothing the frozen database holds comes back until the relay's own cleanup cuts its
+	// connections, and closing the pool waits for them, so the close is registered before the
+	// relay: cleanups run last first.
+	var pool *store.Pool
+	t.Cleanup(func() {
+		if pool == nil {
+			return
+		}
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			pool.Close()
+		}()
+		testwait.Receive(t, "every connection of the pool through the relay to come back, so the pool closes", closed)
+	})
+	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
+	config, err := testpool.ParseConfig(relay.url)
+	if err != nil {
+		t.Fatalf("parse the relay's URL: %v", err)
+	}
+	opened, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("open a pool through the relay: %v", err)
+	}
+	pool = store.NewPool(opened)
+	// The probe answers through the relay before it freezes, so its failures after are the freeze's.
+	if _, err := pool.Healthy(ctx); err != nil {
+		t.Fatalf("health probe through the relay: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('STOP', 'Shutdown', 'alice')`); err != nil {
+		t.Fatalf("create the project: %v", err)
+	}
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the lock holder: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if _, err := holder.Exec(ctx, `select 1 from projects where key = 'STOP' for no key update`); err != nil {
+		t.Fatalf("lock the project: %v", err)
+	}
+	// The request in flight takes its connection from the pool shutdown watches and queues behind
+	// the holder's lock on the project, as the issue create of the row above does.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the request in flight: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = pool.Exec(r.Context(), `select 1 from projects where key = 'STOP' for no key update`)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	go func() {
+		// It is never answered while the test runs, and its answer is not this test's.
+		if response, err := http.Post("http://"+listener.Addr().String()+"/", "text/plain", nil); err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+	storetest.WaitForLockWaiters(t, holder, 1)
+	documentService := docs.New(docs.Deps{Store: &store.Store{Pool: pool}, Events: events.NewBroker()})
+
+	relay.freeze()
+	logged := capturedLog(t)
+	// A fixed moment: nothing the shutdown arms on the fake is compared with the wall clock.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		shutdown(fake, server, documentService, pool, func() {}, func() {}, func() {}, nil)
+	}()
+	// The request holds the HTTP drain, so the first wait the shutdown arms is the drain's share.
+	drainEnds := testwait.Until(t, "the shutdown to arm the HTTP drain's share", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, len(armed) > 0
+	})[0]
+	if want := began.Add(httpDrainBeforeDocuments); !drainEnds.Equal(want) {
+		t.Fatalf("the first wait the shutdown armed ends %v after it began, want the HTTP drain's share, %v",
+			drainEnds.Sub(began), httpDrainBeforeDocuments)
+	}
+	fake.Set(drainEnds)
+	// The document service's timeout is armed next, at the moment the drain's share ended, and
+	// stays armed until shutdown returns. The service has no room to settle here and returns
+	// without waiting on it, so the row never moves the fake to it: a move made while the service
+	// was still returning would end its timeout under it. Every other wait - each probe's bound and
+	// each pause between the probes - the row moves the fake to in turn, earliest first, until
+	// shutdown returns.
+	documentsEnd := drainEnds.Add(documentShutdownTimeout)
+	type step struct {
+		to       time.Time
+		returned bool
+		// armed is every deadline pending when the step was read, which a wait that gives up prints.
+		armed []time.Time
+	}
+	for {
+		next := testwait.Until(t, "the shutdown to arm its next wait, or to return", func() (step, bool) {
+			select {
+			case <-done:
+				return step{returned: true}, true
+			default:
+			}
+			armed := fake.Armed()
+			for _, at := range armed {
+				if !at.Equal(documentsEnd) {
+					return step{to: at, armed: armed}, true
+				}
+			}
+			return step{armed: armed}, false
+		})
+		if next.returned {
+			break
+		}
+		if waited := fake.Now().Sub(began); waited > stopGrace {
+			t.Fatalf("the shutdown was still waiting %v after it began, past stopGrace (%v), the runtime's kill; its next wait ends %v after it began",
+				waited, stopGrace, next.to.Sub(began))
+		}
+		fake.Set(next.to)
+	}
+	decided := fake.Now().Sub(began)
+	t.Logf("the shutdown decided to exit %v after it began, on its clock", decided)
+	// httpDrainBeforeDocuments is sized so that the document service's budget ends this far inside
+	// stopGrace.
+	reserve := stopGrace - httpDrainBeforeDocuments - documentShutdownTimeout
+	if bound := stopGrace - reserve; decided > bound {
+		t.Errorf("the shutdown decided to exit %v after it began with the database unanswering, want at or before %v: stopGrace (%v) less the reserve its budget keeps inside it (%v)",
+			decided, bound, stopGrace, reserve)
+	}
+	if !strings.Contains(logged.String(), `msg="dispatch: settle documents with requests still in flight"`) {
+		t.Errorf("the request was not in flight when the document service started:\n%s", logged)
+	}
+	if !strings.Contains(logged.String(), "once the database stopped answering") {
+		t.Errorf("the shutdown did not say it exits because the database stopped answering:\n%s", logged)
+	}
+}
+
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
 // as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
 // waits for it. On a database that has stopped answering it never comes back, so closePool gives up
@@ -1089,9 +1234,11 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 // back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
 // every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
 // held by a ping the frozen database never answers without the test waiting out that second.
+// closePool's pauses and its probes' bounds run on a fake clock the row moves to each wait it arms,
+// so the give-up is read on that clock: no later than silentProbes pauses and probe bounds.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (the 3 x (250 ms + 2 s) + 3 s bound on closing the pool).
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturedLog).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -1122,20 +1269,58 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		}
 		taken <- err
 	}()
-	for deadline := time.Now().Add(10 * time.Second); pool.Use().InUse == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the late taker never took the idle shared connection")
-		}
-	}
+	testwait.Until(t, "the late taker to take the idle shared connection", func() (store.ConnectionUse, bool) {
+		use := pool.Use()
+		return use, use.InUse > 0
+	})
 
 	logged := capturedLog(t)
-	started := time.Now()
-	closePool(pool)
-	took := time.Since(started)
-	t.Logf("closePool returned %v after it began", took)
-	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
-		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
+	// A fixed moment: nothing closePool arms on the fake is compared with the wall clock.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		closePool(fake, pool)
+	}()
+	// healthProbeBound is the bound HealthyOn arms on each probe (store's healthProbeTimeout), and
+	// bound the latest closePool may give up, on its clock: silentProbes pauses and probe bounds.
+	const healthProbeBound = 2 * time.Second
+	bound := silentProbes * (drainPollInterval + healthProbeBound)
+	type step struct {
+		to       time.Time
+		returned bool
 	}
+	for {
+		var next step
+		testwait.Until(t, "closePool to arm its next wait, or to return", func() (string, bool) {
+			select {
+			case <-returned:
+				next = step{returned: true}
+				return "returned", true
+			default:
+			}
+			armed := fake.Armed()
+			if len(armed) == 0 {
+				return fmt.Sprintf("closePool has not returned, and no wait is armed on its clock at %v", fake.Now()), false
+			}
+			next = step{to: armed[0]}
+			return fmt.Sprintf("waits armed at %v", armed), true
+		})
+		if next.returned {
+			break
+		}
+		// A closePool that never gives up arms one wait after another, which this loop moves the
+		// fake to as fast as each is armed, so without this it would run until go test's -timeout
+		// panics the binary.
+		if waited := fake.Now().Sub(began); waited > bound {
+			t.Fatalf("closePool was still waiting %v after it began with the database unanswering, past %v: %d pauses of %v and %d probes of %v; its next wait ends %v after it began",
+				waited, bound, silentProbes, drainPollInterval, silentProbes, healthProbeBound, next.to.Sub(began))
+		}
+		fake.Set(next.to)
+	}
+	gaveUp := fake.Now().Sub(began)
+	t.Logf("closePool gave up %v after it began, on its clock", gaveUp)
 	select {
 	case err := <-taken:
 		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
@@ -1143,6 +1328,10 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	}
 	if !strings.Contains(logged.String(), "once the database stopped answering") {
 		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
+	}
+	if gaveUp > bound {
+		t.Errorf("closePool gave up %v after it began with the database unanswering, want within %v: %d pauses of %v and %d probes of %v",
+			gaveUp, bound, silentProbes, drainPollInterval, silentProbes, healthProbeBound)
 	}
 }
 

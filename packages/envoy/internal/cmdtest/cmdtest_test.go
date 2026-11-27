@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -24,6 +25,9 @@ const (
 	heldPortChildEnv = "CMDTEST_HELD_PORT_CHILD"
 	// heldPortFD is the variable Pass names the child's inherited socket in.
 	heldPortFD = "CMDTEST_LISTEN_FD"
+	// waitForOutputChildEnv makes TestWaitForOutputFailsAtItsCallersLineWhenTheProcessExitsFirst
+	// run as its own child: the run whose failure it reads.
+	waitForOutputChildEnv = "CMDTEST_WAIT_FOR_OUTPUT_CHILD"
 	// buildChildEnv makes this test binary's TestMain run its tests under Main ("main") or without
 	// it ("plain"): the processes the build rows (build_test.go) start, whose TestBuildChild builds
 	// hello.
@@ -222,5 +226,34 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 	}
 	if !exitedFirst {
 		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+}
+
+// WaitForOutput's failure for a process that exits before it logs the line names the caller's
+// line, as a failure of a helper marked t.Helper does, so a test that waits on one process twice
+// can tell which wait failed. The read inside testwait.Until only reports the exit; a t.Fatalf
+// inside it would name cmdtest.go. The row runs itself again in a binary of its own, as the child
+// whose failure it reads: there, with waitForOutputChildEnv set, it waits for a line a process that
+// exits at once never logs.
+func TestWaitForOutputFailsAtItsCallersLineWhenTheProcessExitsFirst(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(waitForOutputChildEnv) == "1" {
+		// -test.run=^$ makes this test binary run no test and exit 0; the variable is cleared for
+		// it, so it does not run this child again.
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(), waitForOutputChildEnv+"=")
+		exiting := Start(t, "the exiting child", cmd)
+		exiting.WaitForOutput(t, "a line it never logs")
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestWaitForOutputFailsAtItsCallersLineWhenTheProcessExitsFirst$", "-test.v")
+	child.Env = append(os.Environ(), waitForOutputChildEnv+"=1")
+	output, err := child.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s", output)
+	}
+	want := regexp.MustCompile(`(?m)^\s+cmdtest_test\.go:\d+: the exiting child exited before it logged "a line it never logs":`)
+	if !want.Match(output) {
+		t.Fatalf("the child's failure names no line of cmdtest_test.go, its caller's file; its output:\n%s", output)
 	}
 }
