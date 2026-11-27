@@ -19,7 +19,8 @@ import (
 // BROKER_MACHINE_LOGIN_URL and BROKER_JUDGE_DISPATCH_URL are held to a scheme and a host alone at
 // load, so each carries the probe's user and password in its user information and its token in
 // its query, and the two machine-login pages the token in their path too; BROKER_NATS_URLS is
-// refused at load with user information, so its entry carries the token in its query alone. A
+// refused at load with user information, a query or a fragment (hubURLRefusal), so its entry
+// carries the token in its path alone, which nats.go does not send to a nats:// server. A
 // second broker's two machine-login pages carry the token in their path alone, which the URL rule
 // prints as written (the twin shows it would): a page's path is where a credential would be, so a
 // line names the page by its setting. Each line still says what it says - the edge's own URL and
@@ -37,7 +38,7 @@ func TestTheBootLinesNameNoCredentialTheirURLSettingsCarry(t *testing.T) {
 	edgeMachineLogin := "https://" + userinfo + "dispatch.edge.example/credentials/machine/" + redacttest.Token + query
 	machineLogin := "https://" + userinfo + "dispatch.example/credentials/machine/" + redacttest.Token + query
 	judgeDispatch := "http://" + userinfo + strings.TrimPrefix(dispatch.URL, "http://") + "/" + query
-	hubEntry := hub + query
+	hubEntry := hub + "/" + redacttest.Token
 	edgePathOnly := "https://dispatch.edge.example/credentials/machine/" + redacttest.Token
 	machinePathOnly := "https://dispatch.example/credentials/machine/" + redacttest.Token
 	// broker is which of the two brokers logs the case's line; shows is what the line's field holds
