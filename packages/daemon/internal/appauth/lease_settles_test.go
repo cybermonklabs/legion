@@ -16,7 +16,10 @@ import (
 // A mint whose installation differs from the one the Manager holds for the owner, with no list
 // landing while it ran, is the lease: one exchange, not one exchange after another until the
 // caller's deadline. Here the configuration pins acme to installation 102, which GitHub lists under
-// globex, so the held id, 101 from the list, and the minted one never agree.
+// globex, so the held id, 101 from the list, and the minted one never agree. A later list of the
+// App's installations, which each rate-reading pass makes, keeps that lease: every mint of a
+// pinned owner asks for the pinned id, so no list replaces its installation, and a list that
+// dropped it would cost one exchange a pass.
 func TestAMintOnAPinnedInstallationTheListNamesOtherwiseMintsOnce(t *testing.T) {
 	now := time.Now()
 	_, key := testAppKey(t)
@@ -43,6 +46,15 @@ func TestAMintOnAPinnedInstallationTheListNamesOtherwiseMintsOnce(t *testing.T) 
 	}
 	if exchanges := len(github.exchanges()); exchanges != 1 {
 		t.Errorf("the mint made %d token exchanges, want one", exchanges)
+	}
+	if _, err := tokens.ListInstallations(context.Background(), Implement); err != nil {
+		t.Fatalf("list the App's installations again: %v", err)
+	}
+	if next, err := tokens.Token(ctx, Implement, "acme"); err != nil || next.Token != lease.Token {
+		t.Errorf("Token after another list = %q, %v, want the lease the pin minted, kept", next.Installation, err)
+	}
+	if exchanges := len(github.exchanges()); exchanges != 1 {
+		t.Errorf("the pinned owner made %d token exchanges over two lists, want the first alone", exchanges)
 	}
 }
 

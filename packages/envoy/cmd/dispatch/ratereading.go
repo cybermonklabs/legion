@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,17 +86,26 @@ func realClock() rateClock {
 
 // rateReading is what one process's reading keeps from pass to pass: the App's numeric id and
 // fallback slug from GET /app, the first repository each installation listed, whose answer the
-// core counter is read from, and each listed installation's known resets. A listed installation's
-// current slug takes precedence.
+// core counter is read from, and what it holds of each listed installation (held). A listed
+// installation's current slug takes precedence.
 type rateReading struct {
-	client       *githubapp.Client
-	log          *slog.Logger
-	process      string
-	clock        rateClock
-	appID        string
-	appSlug      string
-	repositories map[int64]repositoryName
-	resets       map[int64]counterResets
+	client        *githubapp.Client
+	log           *slog.Logger
+	process       string
+	clock         rateClock
+	appID         string
+	appSlug       string
+	repositories  map[int64]repositoryName
+	installations map[int64]readingHeld
+}
+
+// readingHeld is what the reading holds of one installation the App's last answered list held:
+// its two counters' known resets, and the owner and permissions that list gave it, which the
+// line of a pass whose list GitHub refuses names (refusedList).
+type readingHeld struct {
+	resets      counterResets
+	owner       string
+	permissions map[string]string
 }
 
 // counterResets is one installation's two counters' resets as the reading last read them.
@@ -135,7 +145,7 @@ func (k knownReset) untried(now time.Time) (time.Time, bool) {
 func newRateReading(client *githubapp.Client, log *slog.Logger, process string, clock rateClock) *rateReading {
 	return &rateReading{
 		client: client, log: log, process: process, clock: clock,
-		repositories: map[int64]repositoryName{}, resets: map[int64]counterResets{},
+		repositories: map[int64]repositoryName{}, installations: map[int64]readingHeld{},
 	}
 }
 
@@ -165,10 +175,11 @@ type repositoryName struct {
 // reading that must land before a reset is not kept behind the rest, and still reads every one. A
 // reading that fails logs its line with the error instead of the counters, so a pass logs as many
 // lines as the list held, and keeps the resets read before of every counter it did not read. A
-// list that fails, or that holds no installation, logs one line saying so, so no pass is silent: a
-// failed list keeps every known reset, marking tried each in its last minute, and an empty one,
-// which lists no installation, forgets them all. A pass cut short by the end of ctx, the process
-// stopping, logs nothing further.
+// list that fails logs one line for each installation it holds (refusedList), and one that holds
+// no installation logs one line saying so, so no pass is silent: a failed list keeps every known
+// reset, marking tried each in its last minute, and an empty one, which lists no installation,
+// forgets them all. A pass cut short by the end of ctx, the process stopping, logs nothing
+// further.
 func (r *rateReading) pass(ctx context.Context) []time.Time {
 	installations, err := r.client.ReadInstallations(ctx)
 	if ctx.Err() != nil {
@@ -178,19 +189,12 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 	line := githubrate.Reading{Program: "dispatch", Process: r.process, AppID: r.appID, AppSlug: r.appSlug}
 	switch {
 	case err != nil:
-		line.Error = "list the App's installations: " + err.Error()
-		at := r.clock.now()
-		for id, resets := range r.resets {
-			resets.core.observe(time.Time{}, at)
-			resets.graphql.observe(time.Time{}, at)
-			r.resets[id] = resets
-		}
+		r.refusedList(line, "list the App's installations: "+err.Error())
+		return r.untriedResets()
 	case len(installations) == 0:
 		line.Error = "GET /app/installations listed no installation of the App"
 		clear(r.repositories)
-		clear(r.resets)
-	}
-	if line.Error != "" {
+		clear(r.installations)
 		githubrate.Write(r.log, line)
 		return r.untriedResets()
 	}
@@ -200,7 +204,7 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		return lastMinuteFirst(r.inLastMinute(start, a.ID), r.inLastMinute(start, b.ID))
 	})
 	listed := make(map[int64]repositoryName, len(installations))
-	known := make(map[int64]counterResets, len(installations))
+	known := make(map[int64]readingHeld, len(installations))
 	for _, installation := range installations {
 		reading := line
 		reading.Owner = installation.AccountLogin
@@ -222,29 +226,60 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		// reading was taken in the last minute before one of them, so a failed reading in a last
 		// minute is a before_reset line carrying its error: that minute was tried and read nothing.
 		at := r.clock.now()
-		resets := r.resets[installation.ID]
-		resets.core.observe(reading.Core.Reset, at)
-		resets.graphql.observe(reading.GraphQL.Reset, at)
-		reading.BeforeReset = githubrate.InLastMinute(at, resets.core.at, resets.graphql.at)
+		held := r.installations[installation.ID]
+		held.resets.core.observe(reading.Core.Reset, at)
+		held.resets.graphql.observe(reading.GraphQL.Reset, at)
+		held.owner, held.permissions = installation.AccountLogin, installation.Granted
+		reading.BeforeReset = githubrate.InLastMinute(at, held.resets.core.at, held.resets.graphql.at)
 		if err != nil {
 			reading.Error = err.Error()
 		}
 		githubrate.Write(r.log, reading)
-		known[installation.ID] = resets
+		known[installation.ID] = held
 		if repository, ok := r.repositories[installation.ID]; ok {
 			listed[installation.ID] = repository
 		}
 	}
-	// An installation no longer listed is forgotten with its repository and its resets.
+	// An installation no longer listed is forgotten with its repository and what the reading held.
 	r.repositories = listed
-	r.resets = known
+	r.installations = known
 	return r.untriedResets()
+}
+
+// refusedList logs the lines of a pass whose list of the App's installations GitHub refused with
+// refusal, line being the pass's line before any installation: one error line for each
+// installation the reading holds, in the order of their ids, with the owner, the permissions and
+// the count the App's last answered list gave, and before_reset from the resets the reading knows
+// of that installation, so an owner whose list fails in a last minute still has a line for that
+// minute; and the one line naming no installation where the reading holds none. What the reading
+// holds is kept, each known reset among it marked tried where this pass is in its last minute, as
+// a failed reading marks it, so a list that keeps failing there schedules no pass at once after
+// pass. The daemon's reading does the same (internal/daemon's refusedList).
+func (r *rateReading) refusedList(line githubrate.Reading, refusal string) {
+	line.Error = refusal
+	if len(r.installations) == 0 {
+		githubrate.Write(r.log, line)
+		return
+	}
+	at := r.clock.now()
+	line.Installations = len(r.installations)
+	for _, id := range slices.Sorted(maps.Keys(r.installations)) {
+		held := r.installations[id]
+		reading := line
+		reading.Owner, reading.Permissions = held.owner, held.permissions
+		reading.InstallationID = strconv.FormatInt(id, 10)
+		reading.BeforeReset = githubrate.InLastMinute(at, held.resets.core.at, held.resets.graphql.at)
+		held.resets.core.observe(time.Time{}, at)
+		held.resets.graphql.observe(time.Time{}, at)
+		r.installations[id] = held
+		githubrate.Write(r.log, reading)
+	}
 }
 
 // inLastMinute is whether a counter of installation the reading knows, and has not tried in its
 // last minute, is in that minute at at.
 func (r *rateReading) inLastMinute(at time.Time, installation int64) bool {
-	resets := r.resets[installation]
+	resets := r.installations[installation].resets
 	for _, known := range []knownReset{resets.core, resets.graphql} {
 		if reset, untried := known.untried(at); untried && githubrate.InLastMinute(at, reset) {
 			return true
@@ -270,8 +305,8 @@ func lastMinuteFirst(a, b bool) int {
 func (r *rateReading) untriedResets() []time.Time {
 	now := r.clock.now()
 	var untried []time.Time
-	for installation, resets := range r.resets {
-		for _, known := range []*knownReset{&resets.core, &resets.graphql} {
+	for installation, held := range r.installations {
+		for _, known := range []*knownReset{&held.resets.core, &held.resets.graphql} {
 			if !known.at.After(now) {
 				*known = knownReset{}
 			}
@@ -279,7 +314,7 @@ func (r *rateReading) untriedResets() []time.Time {
 				untried = append(untried, reset)
 			}
 		}
-		r.resets[installation] = resets
+		r.installations[installation] = held
 	}
 	return untried
 }

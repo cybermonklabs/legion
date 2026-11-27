@@ -1117,6 +1117,57 @@ func TestARateReadingPassWithNoInstallationToReadLogsOneErrorLine(t *testing.T) 
 	}
 }
 
+// A refused list writes one error line for each installation the reading holds, with its owner,
+// its id, the permissions and the count the App's last answered list gave, so an owner whose list
+// fails has a line for that hour, and R10 reads it as UNKNOWN rather than finding no line at all.
+// The second pass's list is refused: installation 101, in its core counter's last minute, and 102
+// each get their line, and 101's says before_reset. The daemon's reading does the same
+// (TestRateReadingWritesALineForEachHeldInstallationOfARefusedList).
+func TestARefusedListWritesALineForEachHeldInstallation(t *testing.T) {
+	start := time.Now().Truncate(time.Second)
+	github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
+		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 11, coreLimit: 5000, graphQLLimit: 5000,
+			permissions: map[string]string{"contents": "read", "metadata": "read"}},
+		rateInstallation{id: 102, owner: "example-org", repository: "example-org/gadgets", coreUsed: 21, coreLimit: 5000, graphQLLimit: 5000,
+			coreReset: start.Add(time.Hour).Unix(), permissions: map[string]string{"metadata": "read"}},
+	)
+	clock := &steppedClock{at: start, passes: 2, between: func(int) {
+		github.mu.Lock()
+		defer github.mu.Unlock()
+		github.listRefused = true
+	}}
+	var written logtest.Buffer
+
+	lines := readPasses(t, rateReadingClient(t, base), &written, clock)
+
+	if got := installationsOf(lines); !slices.Equal(got, []string{"101", "102", "101", "102"}) {
+		t.Fatalf("the passes logged installations %v, want 101 and 102 at each of two:\n%s", got, written.String())
+	}
+	for n, want := range []struct {
+		owner       string
+		permissions map[string]any
+		beforeReset bool
+	}{
+		{"acme", map[string]any{"contents": "read", "metadata": "read"}, true},
+		{"example-org", map[string]any{"metadata": "read"}, false},
+	} {
+		line := lines[2+n]
+		cause, _ := line["error"].(string)
+		if !strings.Contains(cause, "list the App's installations") {
+			t.Errorf("the refused pass's line of %s has error %q, want the refused list", want.owner, cause)
+		}
+		if line["owner"] != want.owner || line["installations"] != float64(2) || line["before_reset"] != want.beforeReset {
+			t.Errorf("the refused pass's line is %v, want owner %s, installations 2 and before_reset %t", line, want.owner, want.beforeReset)
+		}
+		if got, _ := line["permissions"].(map[string]any); !maps.Equal(got, want.permissions) {
+			t.Errorf("%s's permissions are %v, want the last list's %v", want.owner, got, want.permissions)
+		}
+		if _, present := line["core_used"]; present {
+			t.Errorf("the refused pass's line carries a counter: %v", line)
+		}
+	}
+}
+
 // An installation that spent its core budget is the one whose reading before the reset matters
 // most, and it is the one the shared ledger holds (github_rate_limits): every read under the
 // installation's scope fails there with no request sent. The reading is sent past that hold, and

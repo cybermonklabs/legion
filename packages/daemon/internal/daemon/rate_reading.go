@@ -40,7 +40,8 @@ import (
 const (
 	// callerPullRequestReads is the per-issue read (readIssuePullRequest).
 	callerPullRequestReads = "pull_request_reads"
-	// callerMergeStateReads is the merge-state ladder's reads (readMergeState).
+	// callerMergeStateReads is the merge-state reads of both ladders: the per-issue one
+	// (readMergeState) and the per-base batches a push to a base owes (readBaseMergeStates).
 	callerMergeStateReads = "merge_state_reads"
 	// callerOutbox is every row the outbox runs (outbox.Run).
 	callerOutbox = "outbox"

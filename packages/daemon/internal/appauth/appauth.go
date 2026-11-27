@@ -492,14 +492,17 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // concurrent callers. A caller that waited on another's mint, which ended only because that
 // caller's own deadline did (a context error, or ErrCommandPending), asks again under its own
 // context rather than take that caller's failure as its own.
-// A mint whose installation a concurrent whole list replaced is also asked again, once, so neither
-// its first caller nor a waiter can publish an old installation's token after the replacement. The
-// lease is stale only when the id the Manager holds for the owner changed while its mint ran and
-// the mint's installation is not the one held now. A mint whose installation differs from a held
-// id that did not change gives the same id at every mint, so asking again would only mint again
-// until the caller's deadline: an owner the configuration pins to another owner's installation,
-// or a token_command's release for one owner after a reinstall, which moves no held id. A second
-// mint that is stale too is served to its callers and not cached.
+// A mint whose installation a concurrent whole list replaced is also asked again, once for each
+// caller that mints, so neither its first caller nor a waiter can publish an old installation's
+// token after the replacement. The lease is stale only when the id the Manager holds for the
+// owner changed while its mint ran and the mint's installation is not the one held now. A mint
+// whose installation differs from a held id that did not change gives the same id at every mint,
+// so asking again would only mint again until the caller's deadline: an owner the configuration
+// pins to another owner's installation, or a token_command's release for one owner after a
+// reinstall, which moves no held id. A second mint that is stale too is served to its callers and
+// not cached. A waiter that goes round takes its own count, so a Token call can mint a third time
+// where it becomes the minter and a further list moves the held id under it; each extra mint
+// needs a real change of that id, so no call mints on and on.
 //
 // A narrowing GitHub refused is remembered per scope for narrowingRefusalWindow and served from
 // that memory while it holds, GitHub asked nothing: it is GitHub's definitive answer about what
@@ -893,7 +896,10 @@ func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole, app con
 // App with found, keyed by the owner lowercased as a mint looks one up (installation), and returns
 // those keys sorted. Leases and narrowing refusals of a replaced installation are dropped, since
 // its token cannot stand in for the installation GitHub lists now. An unchanged or unlisted
-// owner's cached lease is left alone. It is the one way a whole installation read lands.
+// owner's cached lease is left alone, and so is the lease of an owner the configuration pins to an
+// installation (configuredInstallation): every mint of that owner asks for the pinned id,
+// whichever id GitHub lists, so its lease is of the installation the next mint would use and no
+// list can replace it. It is the one way a whole installation read lands.
 func (m *Manager) holdInstallations(role AppRole, found map[string]string) []string {
 	installations := make(map[string]string, len(found))
 	owners := make([]string, 0, len(found))
@@ -912,7 +918,8 @@ func (m *Manager) holdInstallations(role AppRole, found map[string]string) []str
 		previous := m.installations[heldRole]
 		maps.DeleteFunc(m.leases, func(key scope, lease Lease) bool {
 			installation := installations[key.owner]
-			return key.role == heldRole && installation != "" && lease.Installation != installation
+			return key.role == heldRole && installation != "" && lease.Installation != installation &&
+				configuredInstallation(heldApp, key.owner) == ""
 		})
 		maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
 			installation := installations[key.owner]
