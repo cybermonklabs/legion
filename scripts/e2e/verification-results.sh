@@ -265,7 +265,8 @@ fake_github_pid=''
 dispatch_pid=''
 listener_pid=''
 listener_url=''
-# The store of the NATS that runs (start_nats), which fresh_stack removes before the next one.
+# The store of the NATS that runs (start_nats), which fresh_stack removes before the next one and
+# cleanup removes at the end: one store exists at a time.
 nats_store=''
 # The build a head check's negative control names (control_build), and the server of each start
 # of a head check: that build, else the run's own.
@@ -292,9 +293,7 @@ cleanup() {
     if run_passed "$rc"; then
       rm -rf "$work"
     else
-      rm -rf "${work:?}/bin" "${work:?}/nats-store" "${work:?}/older-rows-nats-store" \
-        "${work:?}/first-start-tip-nats-store" "${work:?}/head-no-settings-nats-store" \
-        "${work:?}/head-from-github-nats-store" "${work:?}/github-outage-nats-store" \
+      rm -rf "${work:?}/bin" ${nats_store:+"$nats_store"} \
         "${work:?}/release-before" "${work:?}/release-before.git" "${work:?}/main-history.git" \
         "${work:?}/control" "${work:?}/control.git"
     fi
@@ -547,8 +546,8 @@ pass
 begin nats
 # start_nats STORE starts natsd with its store in STORE, on the port the kernel picks (`-p -1`),
 # read back from the line the server logs once it listens, and sets nats_url and nats_store.
-# older-rows runs on a NATS of its own, which older_rows_upgrade stops before it starts the run's
-# own, and so does each head check and first-start-tip (fresh_stack).
+# older-rows runs on a NATS of its own, and the cases after it, each head check and first-start-tip
+# each get one of their own in turn (fresh_stack).
 start_nats() {
   nats_store=$1
   start_process nats "$work/bin/natsd" -p -1 -store_dir "$1"
@@ -600,11 +599,11 @@ dispatch_url=http://127.0.0.1:$dispatch_port
 # start_dispatch INTERVAL [AT_START [BINARY [APP]]] starts envoy-dispatch with the delivery
 # reconcile ticking every INTERVAL and, unless AT_START is given empty, its first pass as it
 # starts, and waits for it to answer /healthz. BINARY is this checkout's build unless it names
-# another, which only older_rows_upgrade does, for the release before's. APP given empty starts it
-# with no GitHub App, so it runs no delivery intake: first_start_tip's start that makes the stream
-# alone does. dispatch_settings adds settings of the test hooks to the environment; only
-# first_start_tip sets it. Each start appends to $work/logs/dispatch.log, which the driver reads
-# (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+# another: older_rows_upgrade names the release before's, and head_check the build a head check's
+# negative control names (case_bin). APP given empty starts it with no GitHub App, so it runs no
+# delivery intake: first_start_tip's start that makes the stream alone does. dispatch_settings adds
+# settings of the test hooks to the environment; only first_start_tip sets it. Each start appends
+# to $work/logs/dispatch.log, which the driver reads (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
 dispatch_settings=()
 start_dispatch() {
   local app=(DISPATCH_APP_CLIENT_ID=Iv1.e2efake DISPATCH_APP_PEM_B64="$app_pem")
@@ -730,9 +729,9 @@ one_pass_phase() {
 # merged pull requests, under the repository's old name and then its new one, and the issues D(j).
 # It starts again with a pass at its start, which the driver waits for before it makes the issues
 # N(j), and stops. Then older-rows' two phases run on this checkout's build, the first with a read
-# before its pass. Last, the database is emptied again and the run's own NATS starts in place of
-# older-rows' own, so the cases and the phases after them start from nothing: the delivery
-# settings that only the release before needed go with it.
+# before its pass. Last, the cases get a stack of their own (fresh_stack), so they and the phases
+# after them start from nothing: the delivery settings that only the release before needed go
+# with older-rows' database.
 older_rows_upgrade() {
   local release=$work/bin/envoy-dispatch-release-before
   begin older-rows-release-before
@@ -748,22 +747,15 @@ older_rows_upgrade() {
   one_pass_phase older-rows --read-before-the-pass
   one_pass_phase older-rows-set-back
   begin after-older-rows
-  stop_dispatch
-  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
-  rm -f "$work/driver-state.json"
-  stop_pid "$nats_pid"
-  nats_pid=''
-  rm -rf "$work/older-rows-nats-store"
-  mv "$work/logs/nats.log" "$work/logs/older-rows-nats.log"
-  start_nats "$work/nats-store"
-  note "the database is empty again, and the run's own JetStream is on $nats_url"
+  fresh_stack cases
+  note "the database is empty again, and the cases' own JetStream is on $nats_url"
   pass
 }
 
-# fresh_stack NAME gives the case NAME a stack of its own: it stops the server of the step before,
-# if any, and the NATS, removes that NATS's store and keeps its log as nats-before-NAME.log,
-# empties the database and the driver's state file, and starts a NATS of NAME's own, with no
-# stream.
+# fresh_stack NAME gives NAME, a case or the cases, a stack of its own: it stops the server of the
+# step before, if any, and the NATS, removes that NATS's store and keeps its log as
+# nats-before-NAME.log, empties the database and the driver's state file, and starts a NATS of
+# NAME's own, with no stream.
 fresh_stack() {
   stop_dispatch
   stop_pid "$nats_pid"
@@ -794,11 +786,12 @@ start_listener() {
   listener_url=http://127.0.0.1:$listener_port
 }
 
-# head_check NAME runs the head check NAME (the driver's section "the head checks on a stack of
-# their own") on a stack of its own (fresh_stack). The driver seeds the fake while no server runs
-# (NAME-fixture); the server starts once, its delivery reconcile every five minutes from a moment
-# within its first five and no pass at its start, as a deployment's runs, so what the case reads is
-# the intake's; head-from-github's listener starts beside it; and the driver runs the case (NAME).
+# head_check NAME [--listener] runs the head check NAME (the driver's section "the head checks on
+# a stack of their own") on a stack of its own (fresh_stack). The driver seeds the fake while no
+# server runs (NAME-fixture); the server starts once, its delivery reconcile every five minutes from
+# a moment within its first five and no pass at its start, as a deployment's runs, so what the case
+# reads is the intake's; with --listener, the envoy-listener this checkout builds starts beside it,
+# for a case that publishes envelopes GitHub never sent; and the driver runs the case (NAME).
 # The server is the build a negative control names where its switch is set (case_bin).
 head_check() {
   begin "$1"
@@ -806,7 +799,7 @@ head_check() {
   driver --phase "$1-fixture"
   start_dispatch 5m '' "$case_bin"
   note "envoy-dispatch $case_bin started, with its delivery reconcile every 5m and no pass at its start"
-  if [ "$1" = head-from-github ]; then
+  if [ "${2:-}" = --listener ]; then
     start_listener
     note "envoy-listener on $listener_url"
   fi
@@ -887,7 +880,7 @@ if [ -n "$attribution" ]; then
   one_pass_phase limit-of-one
 fi
 [ -z "$head_no_settings" ] || head_check head-no-settings
-[ -z "$head_from_github" ] || head_check head-from-github
+[ -z "$head_from_github" ] || head_check head-from-github --listener
 [ -z "$github_outage" ] || head_check github-outage
 [ -z "$first_start_tip" ] || first_start_tip
 run_end
