@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -183,11 +184,14 @@ func testTools(t *testing.T) map[string]string {
 }
 
 // fileTransportWrapper writes dir/name, testTools' wrapper of the executable path, and returns it.
+// It writes it with execfile, as every script a parallel test runs is written: a test beside it
+// that starts a child while the file is open for writing would make its exec fail as "text file
+// busy".
 func fileTransportWrapper(t *testing.T, dir, name, path string) string {
 	t.Helper()
 	wrapper := filepath.Join(dir, name)
 	script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return wrapper

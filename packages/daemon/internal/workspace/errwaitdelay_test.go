@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -26,7 +27,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
 	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + pidFile + "\nexit 0\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
@@ -55,7 +56,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
 	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nexit 128\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
@@ -87,7 +88,7 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	started := filepath.Join(dir, "started")
 	fakeGit := filepath.Join(dir, "git")
 	script := "#!/bin/sh\n: >" + started + "\nexec sleep 30\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
@@ -209,7 +210,7 @@ func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 	})
 	t.Run("RunChecked", func(t *testing.T) {
 		fakeGit := filepath.Join(t.TempDir(), "git")
-		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
+		if err := execfile.Write(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})

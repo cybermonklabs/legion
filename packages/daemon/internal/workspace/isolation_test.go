@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -50,7 +51,7 @@ func plantHooks(t *testing.T, dir, sink string) {
 	}
 	script := "#!/bin/sh\nprintf '%s token-file=%s\\n' \"${0##*/}\" \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\nexit 0\n"
 	for _, hook := range gitHooks {
-		if err := os.WriteFile(filepath.Join(dir, hook), []byte(script), 0o755); err != nil {
+		if err := execfile.Write(filepath.Join(dir, hook), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,7 +188,7 @@ func recordingScript(t *testing.T, what, sink, tail string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), what)
 	script := "#!/bin/sh\nprintf '" + what + " token-file=%s\\n' \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\n" + tail + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path

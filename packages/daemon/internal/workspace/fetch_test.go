@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
@@ -1670,7 +1671,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 	script := "#!/bin/sh\nif [ -n \"${" + provisioningTokenFileEnv + ":-}\" ]; then\n" +
 		"  echo \"fatal: unable to access 'https://x-access-token:$(cat \"$" + provisioningTokenFileEnv + "\")@github.com/acme/widgets/': The requested URL returned error: 502\" >&2\n" +
 		"  kill -KILL $$\nfi\nexec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the stand-in git: %v", err)
 	}
 	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
@@ -2613,7 +2614,7 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 		"reads=$(scoped \"$@\" | tr '\\t\\n' ' ;')\n" +
 		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> '" + sink + "'\n" +
 		"exec '" + realGit + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	run.tools = testTools(t)

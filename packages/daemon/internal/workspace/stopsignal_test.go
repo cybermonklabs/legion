@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -122,7 +123,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		fakeGit := filepath.Join(dir, "git")
 		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
-		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		timeout := time.Second
