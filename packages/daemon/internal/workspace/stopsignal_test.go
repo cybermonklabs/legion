@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,11 +45,21 @@ func inFlight[T any](f func() T) <-chan T {
 // command that gave up on its own never reports, so no row passes by that end.
 const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
+// beatingLives is commandLives with a beat: on every turn of its loop, before that turn's sleep,
+// the shell writes the time since boot at the file the shell word at names (testexec.MarkNow). A
+// shell runs the trap of a signal that has come before it runs its next command, so a beat holds
+// a moment the shell reached with no SIGTERM taken: a beat past a moment shows that the command's
+// SIGTERM had not come by then. A machine that holds the shell only delays its beats; it cannot
+// make the shell write one after its SIGTERM.
+func beatingLives(at string) string {
+	return `ticks=0; while [ "$ticks" -lt 1200 ]; do ` + testexec.MarkNow(at) + `; sleep 0.05; ticks=$((ticks+1)); done`
+}
+
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
 // RunCommand never had before dispatch://INFRA-3098, waits the grace, and sends SIGKILL only
 // after it. The three cases are the three things that stop is: a command that handles SIGTERM
-// removes the lock it holds and the run ends well inside the grace; a helper the command forked is
+// removes the lock it holds and the run ends once it has left; a helper the command forked is
 // stopped with it, which only a group can do; and a command that handles SIGTERM and exits 0 at
 // the end of its budget is still reported as a timeout rather than as a command that could not be
 // run, which is execRunner.Run reading its kill before it propagates the run's own error.
@@ -60,6 +71,16 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // helper not yet ignoring SIGTERM. RunCommand's report still names the second its caller gave it
 // as the budget. execRunner's row hands its git a caller's context that never ends, so the git's
 // own Timeout is the only thing that can stop it, as in main's row (stopTimeout).
+//
+// The first row reads its stop from two facts of the run, never from the time the command took to
+// leave on its SIGTERM. That time is the command's own, and the machine holds it: on build nodes
+// on 2026-11-27 the trap's rm slept uninterruptibly, on no run queue, for up to 80 ms on the
+// node's ext4 journal (jbd2_log_do_checkpoint, __jbd2_log_wait_for_space) on one node and for
+// more than a second on another (dispatch://INFRA-5244). The run must return within a quarter of
+// the grace once the command's group is gone (watchGroupGone), which it does not where the grace
+// is slept out in full; and the command must not be seen running, with no SIGTERM taken, more
+// than a quarter of the grace after its budget passed (beatingLives), which it is where its
+// SIGTERM comes late.
 //
 // Each row holds the runner to the second main gave it, from just before the call to the moment
 // the command reports that it is running (ownBound, ownSpan), whatever the runner spent that
@@ -80,16 +101,18 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
-		readyAt := filepath.Join(dir, "ready-at")
+		readyAt, pidAt, beat := filepath.Join(dir, "ready-at"), filepath.Join(dir, "pid"), filepath.Join(dir, "beat")
 		budget := time.Second
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
-		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		// at the end is one the command's own SIGTERM handler removed. The command names its group
+		// first thing, by its own pid, and beats once it is running (beatingLives).
+		script := testexec.MarkStart(`"$3"`) + `; printf '%s\n' "$$" >"$5"; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + beatingLives(`"$6"`)
+		group := watchGroupGone(t, pidAt)
 
 		call := calling(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt, pidAt, beat})
 		returned := time.Now()
 		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
@@ -115,9 +138,26 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget ended the command, however cleanly it then left", err, elapsed)
 		}
-		if stopped := returned.Sub(passed); stopped > procgroup.StopGrace/2 {
-			t.Errorf("the run returned %s after its budget passed, past half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", stopped, procgroup.StopGrace)
+		gone, seen := group(testwait.Bounded(t, time.Minute, cutRunMargin))
+		if !seen {
+			t.Fatalf("the command's group was still there %s after the run returned: something of it outlived the stop (RunCommand = %v)", time.Since(returned), err)
 		}
+		if after := returned.Sub(gone); after > procgroup.StopGrace/4 {
+			t.Errorf("the run returned %s after the command's group was gone, past a quarter of the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span (RunCommand = %v)", after, procgroup.StopGrace, err)
+		}
+		// The budget passed at passed, on the clock the beats count on: the call's moment since boot
+		// and the span from the call to the pass.
+		passedAt := call.at + passed.Sub(started)
+		beatNote := "wrote no beat"
+		if last, beatErr := testexec.ReadNowMark(beat); beatErr == nil {
+			if late := last - passedAt; late > procgroup.StopGrace/4 {
+				t.Errorf("the command was still running, with no SIGTERM taken, %s after its budget passed, past a quarter of the %s grace: the budget's end must send the group its SIGTERM as it passes (RunCommand = %v)", late, procgroup.StopGrace, err)
+			}
+			beatNote = fmt.Sprintf("wrote its last beat %s after the budget passed", last-passedAt)
+		} else if !errors.Is(beatErr, os.ErrNotExist) {
+			t.Errorf("read the command's last beat: %v", beatErr)
+		}
+		t.Logf("the run returned %s after its budget passed and %s after the command's group was gone; the command %s", returned.Sub(passed), returned.Sub(gone), beatNote)
 	})
 
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
@@ -279,6 +319,46 @@ func budgetPassedOnceExists(t *testing.T, path string) context.Context {
 		cancel()
 	}()
 	return ctx
+}
+
+// watchGroupGone watches the process group of a command whose leader writes its own pid at pidAt
+// (`printf '%s\n' "$$"`), every testwait.Poll, until the group answers kill with ESRCH, which it
+// does once no member of it is left, its leader reaped (a zombie still answers), as procgroup's
+// rows read a group's end (its watchGroupGone). gone waits up to bound for the watch to see that,
+// and answers the moment it first did and whether it saw it at all.
+func watchGroupGone(t *testing.T, pidAt string) (gone func(bound time.Duration) (time.Time, bool)) {
+	seen, stop := make(chan time.Time, 1), make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		ticker := time.NewTicker(testwait.Poll)
+		defer ticker.Stop()
+		pid := 0
+		for pid == 0 || !errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH) {
+			if pid == 0 {
+				if raw, err := os.ReadFile(pidAt); err == nil {
+					pid, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
+				}
+				if pid > 0 {
+					continue
+				}
+				pid = 0
+			}
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+		seen <- time.Now()
+	}()
+	return func(bound time.Duration) (time.Time, bool) {
+		select {
+		case at := <-seen:
+			return at, true
+		case <-time.After(bound):
+			return time.Time{}, false
+		}
+	}
 }
 
 // ownBound is main's second: how much of its own time (ownSpan) these rows give the runner from
