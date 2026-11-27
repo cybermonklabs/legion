@@ -1703,12 +1703,12 @@ func TestRegistrarSettings(t *testing.T) {
 // alone alike. The exchange's, the registration route's and the NATS auth service's audiences,
 // each set and each different from every listed audience, load beside the list as one value each.
 func TestThePodTokenAudienceSettingIsAList(t *testing.T) {
-	const issuer = "https://oidc.eks.example.invalid/id/EXAMPLE"
 	user, account, curve, _ := natsSeeds(t)
-	// pod is validEnv with the cluster issuer, BROKER_K8S_OIDC_AUDIENCE as audiences, and set.
+	// issuer is the cluster issuer withK8sIssuer sets, which pod's rows read.
+	issuer := withK8sIssuer()["BROKER_K8S_OIDC_ISSUER"]
+	// pod is withK8sIssuer with BROKER_K8S_OIDC_AUDIENCE as audiences, and set.
 	pod := func(audiences string, set map[string]string) map[string]string {
-		e := validEnv()
-		e["BROKER_K8S_OIDC_ISSUER"] = issuer
+		e := withK8sIssuer()
 		e["BROKER_K8S_OIDC_AUDIENCE"] = audiences
 		maps.Copy(e, set)
 		return e

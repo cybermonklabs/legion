@@ -290,7 +290,7 @@ type Service struct {
 	// window. 0 is no carry: the next sweep ends every dormant enrollment it finds.
 	Carry time.Duration
 	// Pod verifies the cluster's projected ServiceAccount tokens against BROKER_K8S_OIDC_ISSUER and
-	// every audience BROKER_K8S_OIDC_AUDIENCE lists; nil on a broker that trusts no Kubernetes
+	// any audience BROKER_K8S_OIDC_AUDIENCE lists; nil on a broker that trusts no Kubernetes
 	// token issuer, which enrolls no pod and serves no Kubernetes token login.
 	Pod PodVerifier
 

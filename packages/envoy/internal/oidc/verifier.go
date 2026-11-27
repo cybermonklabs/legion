@@ -230,7 +230,7 @@ func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (C
 // dots, so the one serialization taken is the one whose middle segment is the signed payload.
 // This refusal is the only compact check the sign-in's verifier has, since its keys come from
 // go-oidc's own RemoteKeySet (newVerifier). A refusal's class is read from raw as given, as it
-// was before. The go-oidc verifier that checks the token is verifierOf's.
+// was before.
 func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Claims, error) {
 	compact := stripSpaces(raw)
 	if !compactSerialization(compact) {
@@ -272,10 +272,8 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 func (v *Verifier) verifierOf(compact string) *gooidc.IDTokenVerifier {
 	if len(v.verifiers) > 1 {
 		if claims, err := decodeUnverifiedClaims(compact); err == nil {
-			for i, listed := range v.audiences {
-				if slices.Contains(claims.Audience, listed) {
-					return v.verifiers[i]
-				}
+			if i := slices.IndexFunc(v.audiences, func(listed string) bool { return slices.Contains(claims.Audience, listed) }); i >= 0 {
+				return v.verifiers[i]
 			}
 		}
 	}

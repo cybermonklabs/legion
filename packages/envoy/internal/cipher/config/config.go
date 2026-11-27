@@ -690,11 +690,11 @@ type Config struct {
 	// whoever its login names, so the pod's verified service account is what proves the service,
 	// and an account bound to two names would prove neither. A namespace's default account
 	// (system:serviceaccount:<namespace>:default) is refused: every pod in the namespace whose spec
-	// names no account runs as it and can mount a token for the broker's audience, so it proves
-	// nothing about which pods are the service's. Keyed by account, each answering its service. A
-	// secret owned by a listed service goes at once to those pods and is refused to every other
-	// session. Unset, no service is registered, and a secret whose owner tag names one is refused
-	// as owner-tag-malformed.
+	// names no account runs as it and can mount a token of an audience BROKER_K8S_OIDC_AUDIENCE
+	// lists, so it proves nothing about which pods are the service's. Keyed by account, each
+	// answering its service. A secret owned by a listed service goes at once to those pods and is
+	// refused to every other session. Unset, no service is registered, and a secret whose owner tag
+	// names one is refused as owner-tag-malformed.
 	ServicesByAccount map[string]string
 	// BROKER_SERVICE_LOGINS: the ServiceAccounts that log in as a service with their own projected
 	// token (POST /v1/launcher-credentials/token), and that authenticate the routes a service
@@ -2062,17 +2062,19 @@ func exchangeListingRefusal(cfg *Config) error {
 // its own routes alone: the exchange's at the token exchange, the NATS auth service's at that
 // service and the NATS writer hold, and the registration audience at POST
 // /v1/oauth/exchange/pod-sessions. So a token of an audience two settings name would be spendable
-// on both settings' routes. A refusal of the registration audience quotes it, as it did before
-// the list; the others name the settings alone. Load calls it once, after it reads all four
-// settings.
+// on both settings' routes. A refusal of the registration audience quotes it; the others name the
+// settings alone. Load calls it once, after it reads all four settings.
 func clusterAudienceRefusal(cfg *Config) error {
 	others := []struct{ setting, audience, routes string }{
 		{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience, "the token exchange"},
 		{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience, "the NATS auth service and the NATS writer hold"},
 	}
+	registrationRefusal := func(other string) error {
+		return fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other)
+	}
 	for _, listed := range cfg.K8sOIDCAudiences {
 		if listed == cfg.PodRegistrationAudience {
-			return fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which BROKER_K8S_OIDC_AUDIENCE lists too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience)
+			return registrationRefusal("BROKER_K8S_OIDC_AUDIENCE lists")
 		}
 		for _, other := range others {
 			if listed == other.audience {
@@ -2085,7 +2087,7 @@ func clusterAudienceRefusal(cfg *Config) error {
 	}
 	for _, other := range others {
 		if cfg.PodRegistrationAudience == other.audience {
-			return fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
+			return registrationRefusal(other.setting + " is")
 		}
 	}
 	return nil
@@ -3008,7 +3010,6 @@ func Load(getenv func(string) string) (Config, error) {
 		ProjectAccessTokenFile:    strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
-		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
 		GoogleOIDCIssuer:          orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),

@@ -1850,14 +1850,14 @@ type verifiers struct {
 // in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
 // BROKER_K8S_OIDC_AUDIENCE), one verifier of every audience BROKER_K8S_OIDC_AUDIENCE lists for
 // both a pod's enrollment token and a service's login token, which are the same cluster's
-// projected tokens of those audiences, a token judged by the listed audience it carries, whose
-// key set it also answers for the RFC 8693 exchange, and on that key set a second where
-// BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod token of that audience; and
-// Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token, only when
-// BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's subject
-// token against, logging one line that names the issuer, the audience, the machine services and
-// how many machine entries the exchange holds. With no Google audience it reads and logs nothing
-// about Google, and answers no Google keys, so the broker registers no Google subject token type.
+// projected tokens of those audiences, whose key set it also answers for the RFC 8693 exchange, and
+// on that key set a second where BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod
+// token of that audience; and Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token,
+// only when BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's
+// subject token against, logging one line that names the issuer, the audience, the machine services
+// and how many machine entries the exchange holds. With no Google audience it reads and logs
+// nothing about Google, and answers no Google keys, so the broker registers no Google subject token
+// type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
 	if cfg.K8sOIDCIssuer != "" {

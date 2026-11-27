@@ -104,8 +104,8 @@ type readerWant struct {
 	says   []string
 }
 
-// podTokenReader is one member of the plan's "readers at the head": a route that verifies a
-// cluster token, and how a row drives it.
+// podTokenReader is a reader of BROKER_K8S_OIDC_AUDIENCE: a route that verifies a cluster token,
+// and how a row drives it.
 type podTokenReader struct {
 	name string
 	// take presents a token of kind, which the reader must take, and fails t unless it does.
@@ -168,20 +168,20 @@ func requireRefusal(t *testing.T, who string, got readerRefusal, want readerWant
 
 // TestEveryPodTokenReaderTakesEachListedAudience is the inventory of the readers of
 // BROKER_K8S_OIDC_AUDIENCE, on the real binary with the setting listing two audiences: each
-// member of the plan's "readers at the head", declared below in one list, takes a token of each
-// listed audience — the enrolment of a pod (M1) by a launcher logged in with it, the renewal of
-// that pod (M2), the token login of BROKER_SERVICE_LOGINS (M3), the registrar's own token at the
-// registration route and its release (M4), the pod token a registration carries (M5), which also
-// takes the registration audience, Dispatch's call as a caller of BROKER_API_ACCOUNTS (M6) and the
-// edge listener's GET /v1/project-repositories (M7). Each refuses an expired token of the second
-// listed audience as expired, and a token of an audience nobody lists, sound or expired, and one
-// of the exchange, registration or NATS audience, as invalid, each with the codes it answers one
-// audience today; the token login's refusal names both listed audiences. The renewal refuses
-// another pod's token of the second listed audience, and the enrolment one bound to no pod. The
-// token exchange (X1) refuses a pod's token of each listed audience as minted for another
-// audience and mints for the pod's token of its own. A broker with neither
-// BROKER_K8S_OIDC_ISSUER nor BROKER_K8S_OIDC_AUDIENCE has no token login and no account tokens.
-// The test fails for a member with no row.
+// reader, declared below in one list, takes a token of each listed audience — the enrolment of a
+// pod (M1) by a launcher logged in with it, the renewal of that pod (M2), the token login of
+// BROKER_SERVICE_LOGINS (M3), the registrar's own token at the registration route and its release
+// (M4), the pod token a registration carries (M5), which also takes the registration audience,
+// Dispatch's call as a caller of BROKER_API_ACCOUNTS (M6) and the edge listener's GET
+// /v1/project-repositories (M7). Each refuses an expired token of the second listed audience as
+// expired, and a token of an audience nobody lists, sound or expired, and one of the exchange,
+// registration or NATS audience, as invalid, each with the codes it answers one audience today; the
+// token login's refusal names both listed audiences. The renewal refuses another pod's token of the
+// second listed audience, and the enrolment one bound to no pod. The token exchange (X1) refuses a
+// pod's token of each listed audience as minted for another audience and mints for the pod's token
+// of its own. A broker with neither BROKER_K8S_OIDC_ISSUER nor BROKER_K8S_OIDC_AUDIENCE has no
+// token login and no account tokens. The test fails for a member with no row. M1 to M7 and X1 are
+// the plan's names for the readers (dispatch://INFRA-5514/artifact/plan-md).
 //
 // The token login spends its source address's bucket (a burst of 10) before it verifies the
 // token, and its account's (a burst of 5) once the token verifies, and each broker process holds
@@ -398,7 +398,7 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 			return readerWant{}, false
 		},
 	}
-	// The members of "The readers at the head", M1 to M7 and X1, in one list.
+	// The readers of BROKER_K8S_OIDC_AUDIENCE, M1 to M7 and X1, in one list.
 	members := []podTokenReader{m1, m2, m3, m4, m5, m6, m7, x1}
 
 	rows := map[string]int{}
@@ -446,7 +446,7 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 	})
 	for _, member := range members {
 		if rows[member.name] == 0 {
-			t.Errorf("%s, a member of the readers at the head, has no row", member.name)
+			t.Errorf("%s, a reader of BROKER_K8S_OIDC_AUDIENCE, has no row", member.name)
 		}
 	}
 
