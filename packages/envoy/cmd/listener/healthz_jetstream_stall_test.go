@@ -33,6 +33,8 @@ const healthzWithin = 3500 * time.Millisecond
 // prefixes, it drops each PUB or HPUB from the client whose subject starts with one, payload and
 // all, and forwards every other line: the server never sees those requests, so they get no
 // answer, while a core PING still gets its PONG. It is how JetStream alone stops answering.
+// stallFirst drops only the first few such requests and forwards the rest, which is how one
+// request is lost on a connection that stays up.
 type subjectStallRelay struct {
 	listener net.Listener
 	target   string
@@ -41,6 +43,10 @@ type subjectStallRelay struct {
 	mu       sync.Mutex
 	prefixes []string
 	conns    []net.Conn
+	// limited is set by stallFirst, which drops only left more requests; dropped counts every
+	// request the relay has dropped.
+	limited       bool
+	left, dropped int
 }
 
 func startSubjectStallRelay(t *testing.T, uri string) *subjectStallRelay {
@@ -115,7 +121,17 @@ func (r *subjectStallRelay) relay(client net.Conn) {
 func (r *subjectStallRelay) stalls(subject string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.ContainsFunc(r.prefixes, func(prefix string) bool { return strings.HasPrefix(subject, prefix) })
+	if !slices.ContainsFunc(r.prefixes, func(prefix string) bool { return strings.HasPrefix(subject, prefix) }) {
+		return false
+	}
+	if r.limited {
+		if r.left == 0 {
+			return false
+		}
+		r.left--
+	}
+	r.dropped++
+	return true
 }
 
 // stall drops every request from here on whose subject starts with one of prefixes.
@@ -123,6 +139,24 @@ func (r *subjectStallRelay) stall(prefixes ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.prefixes = prefixes
+	r.limited = false
+}
+
+// stallFirst drops the next n requests whose subject starts with one of prefixes, and forwards
+// every one after them.
+func (r *subjectStallRelay) stallFirst(n int, prefixes ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prefixes = prefixes
+	r.limited = true
+	r.left = n
+}
+
+// droppedRequests is how many requests the relay has dropped.
+func (r *subjectStallRelay) droppedRequests() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped
 }
 
 func (r *subjectStallRelay) close() {

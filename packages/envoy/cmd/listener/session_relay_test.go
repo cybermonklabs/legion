@@ -65,21 +65,31 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 
 // newRelayRigUnownedAs is newRelayRigUnowned whose relay is an edge listener's when edge is set,
 // as main starts it in edge mode (listenerDeliveryHandlerConfig.edge): its receipts arrive under
-// bus.RelayReplyPrefix.
+// its machine's receipt family (natsgrant.EdgeRelayReplyPrefix, under bus.RelayReplyPrefix).
 func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
 	t.Helper()
-	return newRelayRigUnownedOn(t, testnats.URL(t), first, max, edge)
-}
-
-// newRelayRigUnownedOn is newRelayRigUnownedAs on the NATS URL url, for a test that cuts or stops
-// the server behind it itself.
-func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration, edge *edgeGrant) *relayRig {
-	t.Helper()
+	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
+	return newRelayRigUnownedOnAs(t, client, url, first, max, edge)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnowned over client, the listener's main connection, which
+// the test opened to the server at url, or to a proxy of it, while the session-consumer
+// connection goes to url itself: a test that takes the main connection off NATS while the
+// session-consumer connection stays opens client through a testnats.Proxy.
+func newRelayRigUnownedOn(t *testing.T, client *bus.Client, url string, first, max time.Duration) *relayRig {
+	t.Helper()
+	return newRelayRigUnownedOnAs(t, client, url, first, max, nil)
+}
+
+// newRelayRigUnownedOnAs is newRelayRigUnownedOn whose relay is an edge listener's when edge is
+// set (newRelayRigUnownedAs).
+func newRelayRigUnownedOnAs(t *testing.T, client *bus.Client, url string, first, max time.Duration, edge *edgeGrant) *relayRig {
+	t.Helper()
 	rig := newSessionConsumerRigOn(t, client, url)
 	config := rig.harness.config
 	config.edge = edge
@@ -602,6 +612,130 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 		}
 	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the retry wait did not end on the wake sent before it")
+	}
+}
+
+// newRestartableRun registers a session in consumer mode on a relay rig that does not hold its
+// machine's durable binding, so no relay of the rig's own pulls the session's consumer, and
+// returns a run of that session's relay for the test to drive itself.
+func newRestartableRun(t *testing.T, prefix string) (*relayRig, *relayRun) {
+	t.Helper()
+	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	sessionID := prefix + id.New()
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	return rig, &relayRun{sessionID: sessionID, resume: make(chan uint64, 1)}
+}
+
+// restartRun restarts run's consumer at its ack floor as the relay does (sessionRelays.restart)
+// and stops the pull it starts, as a pull that fails at once leaves it; a restart that starts no
+// pull fails the test.
+func (rig *relayRig) restartRun(t *testing.T, run *relayRun) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, pull, outcome := rig.relays.restart(ctx, run)
+	if pull == nil {
+		t.Fatalf("the restart started no pull (outcome %d):\n%s", outcome, rig.harness.logs.String())
+	}
+	pull.Stop()
+}
+
+// A wake the loop sent while a run relayed, before a restart of the run that started its pull,
+// costs the run no step of its retry backoff: that restart read the session's stored topics after
+// the registration, so the retry wait of a failure after it runs in full (relayRun.dropWake).
+// Kept, the wake ended that wait at once, the restart after it met the same failure, and the
+// session waited the doubled backoff.
+func TestRelayRunWakeFromBeforeARestartCostsNoRetryStep(t *testing.T) {
+	t.Parallel()
+	rig, run := newRestartableRun(t, "ses_wake_before_restart_")
+	if !run.wake(rig.relays.delivery.mark()) {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	rig.restartRun(t, run)
+	const backoff = 300 * time.Millisecond
+	started := time.Now()
+	if !run.waitRetry(context.Background(), backoff) {
+		t.Fatal("the retry wait reported the run stopped")
+	}
+	if waited := time.Since(started); waited < backoff {
+		t.Fatalf("the retry wait after a restart that started its pull ended after %s, want its whole %s backoff: the wake sent before that restart cut it short", waited.Round(time.Millisecond), backoff)
+	}
+}
+
+// A wake sent after a run's restart started its pull is a registration that restart did not
+// read, and it still ends the retry wait of a failure after the restart at once: the restart
+// drops only the wake waiting when its pull starts (relayRun.dropWake), not every wake.
+func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
+	t.Parallel()
+	rig, run := newRestartableRun(t, "ses_wake_after_restart_")
+	rig.restartRun(t, run)
+	if !run.wake(rig.relays.delivery.mark()) {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
+	select {
+	case ok := <-goesOn:
+		if !ok {
+			t.Fatal("the retry wait reported the run stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry wait did not end on the wake sent after the restart that started the run's pull")
+	}
+}
+
+// A paused run waits its whole pause backoff out when the wake sent before the pause began is for
+// a registration heard before the frame it paused on went out (relayRun.waitPause takes that wake
+// and drops it), so such a registration costs the session no step of its backoff, and only one
+// heard after that frame ends it. The pause below is 300 ms and must last at least that long with
+// such a wake sent before it; an hour-long pause, with such a wake sent before it too, must still
+// be running 300 ms in and end within 5 s of the wakes sent during it, each heard after the frame.
+// Kept, the wake sent before ended each pause at once.
+func TestRelayRunPauseOutlastsAWakeHeardBeforeItsFrame(t *testing.T) {
+	t.Parallel()
+	// from is the mark of the frame the run paused on: a wake at or below it was heard before
+	// that frame went out, one above it after.
+	const from = 5
+	run := &relayRun{resume: make(chan uint64, 1)}
+	if !run.wake(from) {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	const pause = 300 * time.Millisecond
+	started := time.Now()
+	if goesOn, woken := run.waitPause(context.Background(), pause, from); !goesOn || woken {
+		t.Fatalf("the pause reported goesOn %t, woken %t, want the run going on, its backoff waited out", goesOn, woken)
+	}
+	if waited := time.Since(started); waited < pause {
+		t.Fatalf("the pause ended after %s, want its whole %s: the wake sent before it began cut it short", waited.Round(time.Millisecond), pause)
+	}
+
+	if !run.wake(from) {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() {
+		ok, _ := run.waitPause(context.Background(), time.Hour, from)
+		goesOn <- ok
+	}()
+	select {
+	case <-goesOn:
+		t.Fatalf("an hour-long pause ended within %s on the wake sent before it began", pause)
+	case <-time.After(pause):
+	}
+	// Woken again and again, so a wake lands after the pause has begun whenever it began.
+	ended := time.After(5 * time.Second)
+	for {
+		run.wake(from + 1)
+		select {
+		case ok := <-goesOn:
+			if !ok {
+				t.Fatal("the pause reported the run stopped")
+			}
+			return
+		case <-ended:
+			t.Fatal("the pause did not end on the wakes sent during it")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
@@ -1399,6 +1533,9 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
 		}
 	}
+	// Each stamp (startSessionStandInOn's arrived) is taken in the callback before that callback sends
+	// the nak reply, and the server's delay starts at the nak, so a late stamp delays the next arrival as
+	// much: the floors below hold whatever the lateness (an 800 ms late first stamp passed 5 of 5).
 	first := frames[1].arrived.Sub(frames[0].arrived)
 	second := frames[2].arrived.Sub(frames[1].arrived)
 	t.Logf("the refused frame came back after %s and then %s", first, second)

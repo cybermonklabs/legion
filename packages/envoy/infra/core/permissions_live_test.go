@@ -31,7 +31,7 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
-// The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
+// The live tests of the host grant: one nkey user holding HostPermissions, on the plain image and on
 // the hub's, each run with the hub's own server arguments. This branch's listener connects as that
 // user with the environment host:Listener gives it, and a session connects as the same user, as
 // every session on a host does.
@@ -280,7 +280,7 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 // its own relay subject, the subject the listener that owns the session publishes the session's
 // consumer messages on, and answers that frame on the inbox the listener named in it; the server
 // refuses it every notification topic beside that one, a subscribe to the reply inboxes and a
-// JetStream API request, on the 2.10 image and on the hub's. A session takes no message from a
+// JetStream API request, on the plain image and on the hub's. A session takes no message from a
 // notification subscription of its own: not notifications.>, not the agent subjects
 // (notifications.agent.*), not even its own agent subject. Request/reply from such a session is
 // refused by design, and it reads the stream through no call of its own.

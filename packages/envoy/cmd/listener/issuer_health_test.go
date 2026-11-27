@@ -9,17 +9,18 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // /healthz's issuer fields name each configured issuer's discovery and leave the answer they are
 // added to as it was: a pair that is not configured is null, a configured one is false until its
 // issuer is read, and the status code and every other field are the answer's own, a 503 included,
-// so the fields never decide the status. Both of healthzHandler's ways of writing an answer are
-// read: its own (the starting answer) and writeDependencyHealth's (an unhealthy one).
+// so the fields never decide the status. Two answers are read, each as writeHealth writes it: the
+// handler's own starting answer and a dependency's unhealthy one (dependencyHealth).
 func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
 	t.Parallel()
 	auth := listenerAPIAuth{verifier: oidc.NewLazyVerifier("http://127.0.0.1:1", listenerTestAudience)}
-	issuers := func() map[string]any { return issuerHealthFields(auth) }
+	issuers := func(health *listenerwire.Health) { issuerHealthFields(auth, health) }
 	var starting atomic.Pointer[listenerDeps]
 	for _, c := range []struct {
 		name   string
@@ -39,7 +40,7 @@ func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
 			name: "an unhealthy dependency",
 			answer: func(w http.ResponseWriter) {
 				w.Header().Set("Content-Type", "application/json")
-				writeDependencyHealth(w, "session kv", errors.New("probe failed"), true, issuers)
+				writeHealth(w, dependencyHealth("session kv", errors.New("probe failed"), true), issuers)
 			},
 			status: http.StatusServiceUnavailable,
 			fields: map[string]string{"status": `"unhealthy"`, "error": `"session kv unavailable: probe failed"`},

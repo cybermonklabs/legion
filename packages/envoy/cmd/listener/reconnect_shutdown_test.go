@@ -227,7 +227,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	// its subscription again, beside the main client's.
 	waitFor(t, "the listener and its role lane to reconnect", func() bool {
 		output := listener.Output.String()
-		return strings.Contains(output, "envoy nats reconnected name=envoy ") && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
+		return strings.Contains(output, `envoy nats reconnected name="envoy-listener `) && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
 	})
 	waitFor(t, "the restore to report the bind in flight", func() bool {
 		output := listener.Output.String()

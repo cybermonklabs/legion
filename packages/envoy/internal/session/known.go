@@ -56,11 +56,12 @@ const knownSessionSweepInterval = time.Hour
 const knownBucketOpenWait = 2 * time.Second
 
 // knownBucketServeWait is the wait every bucket call made after the open gets: the handle the
-// cache watcher reads and a write (RecordWithin) goes through, which its caller's own context
-// bounds besides (bus.Bounded). It is the 10 seconds the listener's other stores give their bucket
-// calls (store.Open, OpenSessionRegistry, kvwatch.Watcher.Rewatch): the short wait above is for
-// the attempt a start waits on, and giving a write or a watch that wait would make a cluster that
-// is merely slow look like one that refuses.
+// cache watcher reads and a write (RecordWithin) goes through, which its caller's own context and
+// the connection each call went out on bound besides (bus.BoundedOn). It is the 10 seconds the
+// listener's other stores give their bucket calls (store.Open, OpenSessionRegistry,
+// kvwatch.Watcher.Rewatch): the short wait above is for the attempt a start waits on, and giving
+// a write or a watch that wait would make a cluster that is merely slow look like one that
+// refuses.
 const knownBucketServeWait = 10 * time.Second
 
 // knownBucketRetryFirst and knownBucketRetryMax are the waits between the attempts the store's
@@ -187,11 +188,14 @@ type KnownSessions struct {
 	log *slog.Logger
 	// replicas is the copies the bucket is created with, kept for the attempts that follow a
 	// bucket that did not open; retryFirst and retryMax are the waits between them, and
-	// watchOptions what a test adds to the watcher's options.
-	replicas     int
-	retryFirst   time.Duration
-	retryMax     time.Duration
-	watchOptions []kvwatch.Option
+	// watchOptions what a test adds to the watcher's options. chunkBarrierWait bounds how long
+	// collectChunks waits for the copy to catch up with the bucket's stream; zero uses
+	// kvchunk.WriteBound, and only tests set it.
+	replicas         int
+	retryFirst       time.Duration
+	retryMax         time.Duration
+	watchOptions     []kvwatch.Option
+	chunkBarrierWait time.Duration
 
 	// mu guards records, chunks, markers and topics, which are kept in step: every record the copy
 	// stores or removes for the bucket's sake is indexed or unindexed through its rows
@@ -337,7 +341,7 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 // The handle it returns is opened on a context with the wait every other store of the listener
 // gives its bucket calls, since the store's writes and its cache watcher go through that handle
 // and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
-// context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
+// context (RecordWithin, bus.BoundedOn), and the open's short wait is for the attempt a start waits
 // on, not for the work that follows it.
 func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 	opening, err := knownJetStream(conn)
@@ -743,16 +747,17 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 }
 
 // RecordWithin writes record, stamped with the store's clock, its bucket write waiting no longer
-// than ctx (bus.Bounded): an HTTP route passes its request's own context. A record whose content
-// equals the one the store holds is not written while that one is younger than
+// than ctx, nor past the loss of the connection it goes out on (bus.BoundedOn): an HTTP route
+// passes its request's own context. A record whose content equals the one the store holds is not
+// written while that one is younger than
 // KnownSessionRefreshAge, so a session's 90-second heartbeat costs one write per refresh age
 // rather than one per heartbeat. What that skip compares is this listener's own copy of the record
-// (cached), never the bucket: the record as this listener's watcher last delivered it, or as this
-// listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored row). A
-// record another listener wrote is therefore compared as this listener's watcher last delivered
-// it: the throttle holds across every listener that serves the session once each one's watcher
-// has delivered the others' writes, and a write made before that compares an older copy, which
-// costs at most one write of a record the bucket already holds.
+// (cached), never the bucket: the record as this listener's watcher last delivered it, or
+// as this listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored
+// row). A record another listener wrote is therefore compared as this listener's watcher last
+// delivered it: the throttle holds across every listener that serves the session once each one's
+// watcher has delivered the others' writes, and a write made before that compares an older copy,
+// which costs at most one write of a record the bucket already holds.
 //
 // RecordWithin ignores the record's Principal and PrincipalRecorded, and writes the ones the
 // bucket holds: the routes that write here - an interest change, a role claim's narrowing of the
@@ -768,7 +773,8 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
 // it, are deleted once it lands; the store's sweep collects what a write that stopped part way
-// left (collectChunks).
+// left (collectChunks). That copy, not the bucket stream's leader, decides the delete:
+// internal/bus/kv_leader_read.go names it among the deletes a copy decides, and why it is safe.
 //
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.

@@ -28,8 +28,8 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// connectListenerBus opens the listener's main client. Its start, every listener's, an edge one's
-// included, waits out a refusal of its credential for up to start's wait (natsStart.option,
+// connectListenerBus opens the listener's main client as instance. Its start, every listener's, an
+// edge one's included, waits out a refusal of its credential for up to start's wait (natsStart.option,
 // bus.WithCredentialWait), handing each refusal to start, which /healthz answers 503 naming while
 // it lasts and which forgets it once the connect has got in (natsStart.admitted). Every listener
 // but an edge one (edge nil) owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it
@@ -45,12 +45,13 @@ import (
 // so each bucket is found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds
 // at fewer copies than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server
 // refused; no keeper raises a bucket after.
-func connectListenerBus(cfg config.Service, edge *edgeGrant, start *natsStart) (*bus.Client, error) {
+func connectListenerBus(cfg config.Service, edge *edgeGrant, instance string, start *natsStart) (*bus.Client, error) {
+	name := bus.WithName("envoy-listener " + instance)
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.option())...)
+		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), name, start.option())...)
 	}
 	readStream := bus.WithStartCheck(func(client *bus.Client) error { return edgeStreamPresent(client, edgeStreamRead) })
-	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), readStream, start.option())...)
+	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), name, readStream, start.option())...)
 }
 
 // edgeStreamRead bounds an edge listener's read of the stream at its start.

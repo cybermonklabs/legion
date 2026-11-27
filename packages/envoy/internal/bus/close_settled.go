@@ -21,8 +21,9 @@ type closeWatch struct {
 	handled chan struct{}
 }
 
-// runEventWork runs work on a goroutine of its own that eventWork counts: the recovery a close
-// starts (onClosed) and the run after a reconnect (onReconnect), so closeSettled can wait for
+// runEventWork runs work on a goroutine of its own that eventWork counts: the recovery a close or
+// a reconnect's work starts (onClosed, onReconnect) and the goroutine that works through the
+// queued reconnects (workThroughReconnects, from queueReconnect), so closeSettled can wait for
 // them.
 func (c *Client) runEventWork(work func()) {
 	c.eventWork.Add(1)

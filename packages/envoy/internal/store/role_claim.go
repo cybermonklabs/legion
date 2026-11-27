@@ -130,7 +130,7 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // record carries a grant id this call draws at random (RoleClaim.GrantID), so a hand-back that
 // read the claim before this one tells the two apart whatever millisecond each was stamped in.
 //
-// Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
+// Each bucket call waits no longer than ctx (bus.BoundedOn): POST /v1/roles/set passes its request's
 // own context. A call ctx abandoned may still land after this answer. Every claim writes with the
 // revision of the record it read (a create where it read none), so the record it writes over is
 // the one it read. A hard claim that names no IfClaimRevision is not refused for a conflict: it
@@ -244,7 +244,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// route's budget. A claim that meets a conflict at every try until its tries end writes
 		// nothing and is ErrRoleClaimContended, which its client meets as a 503 to retry.
 		var answered bool
-		revision, answered, err = bus.Bounded(tries, roles.Conn(), func() (uint64, error) {
+		revision, answered, err = bus.BoundedOn(tries, roles, func() (uint64, error) {
 			if oldClaim.Revision == 0 {
 				return roles.Create(req.Role, data)
 			}

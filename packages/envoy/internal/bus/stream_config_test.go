@@ -136,7 +136,7 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 	}
 	result := make(chan ended, 1)
 	go func() {
-		conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
+		conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", urls, nil, nil, connectCallbacks{}, nil)
 		reachedAtReturn := reached.Load()
 		if conn != nil {
 			conn.Close()
@@ -167,9 +167,9 @@ func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 	connectCtx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	reconnected := make(chan struct{}, 1)
-	conn, err := connectWithContext(connectCtx, slog.Default(), "reconnect-dialer-test", []string{uri}, nil, nil, func(*nats.Conn) {
-		reconnected <- struct{}{}
-	}, nil, nil, nil, nil)
+	conn, err := connectWithContext(connectCtx, slog.Default(), "reconnect-dialer-test", []string{uri}, nil, nil, connectCallbacks{
+		reconnected: func(*nats.Conn) { reconnected <- struct{}{} },
+	}, nil)
 	if err != nil {
 		t.Fatalf("connect with deadline: %v", err)
 	}

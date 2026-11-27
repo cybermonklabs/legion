@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    `listenerwire` now declares `Health`, `GET /healthz`'s answer, with the `google` and `oidc`
+    fields that say which identity token issuers it has read, and `RoleClaimRepair`, its
+    `role_claim_repair` field. Each answer writes the same bytes as before: `Health` declares its
+    fields in the order in which `encoding/json` wrote the keys of the map it replaces.
+time: 2026-11-19T00:00:00.000000000Z
+custom:
+    Issue: pr2404

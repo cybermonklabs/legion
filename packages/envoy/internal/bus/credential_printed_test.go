@@ -339,7 +339,7 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		for scheme := range splitTokens {
 			name := "printed-split-" + scheme
 			lookup := &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: splitHead, IsNotFound: true}}
-			options(logs.logger, name, splitURLs(scheme), nil, nil, nil, nil, nil).ReconnectErrCB(nil, lookup)
+			options(logs.logger, name, splitURLs(scheme), connectCallbacks{}, nil).ReconnectErrCB(nil, lookup)
 			var line map[string]any
 			for _, record := range logs.records(t) {
 				if record["name"] == name && record["msg"] == "envoy nats reconnect attempt failed" {

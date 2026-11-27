@@ -48,7 +48,9 @@ func boundInterest(key string, value []byte) (Interest, error) {
 // Get returns the Interest for a session. Cache first, direct KV read on miss.
 // The KV fallback also repopulates the cache, bridging the warm-up window after
 // Open() before watch() has fully populated the cache. A cache hit answers in the
-// caller's goroutine; only the bucket read on a miss waits on ctx (bus.Bounded). The cache holds
+// caller's goroutine; only the bucket read on a miss waits on ctx (bus.BoundedOn), and it
+// ends at once with bus.ErrRequestLostWithConnection when its connection is lost before the answer
+// comes, rather than waiting out ctx for an answer nothing will send. The cache holds
 // only records it decoded (interestCache.Apply evicts the rest), so only the bucket read can meet
 // a record this build cannot decode: that is ErrMalformedInterest, logged at WARN with the session
 // it belongs to. A record stored in chunks reads whole or not at all (decodeEntry). A read of a
@@ -156,8 +158,10 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 	var value []byte
 	var revision uint64
 	if read == readLeader {
-		leader, err := kv.ReadFromLeader(ctx, sessionID)
+		leader, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LeaderEntry, error) { return kv.ReadFromLeader(ctx, sessionID) })
 		switch {
+		case !answered:
+			return storedRow{}, 0, fmt.Errorf("read %s's interest record from the stream's leader: %w", sessionID, err)
 		case err != nil:
 			return storedRow{}, 0, err
 		case leader.Kind == bus.LeaderAbsent:
@@ -170,7 +174,7 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 		}
 		value, revision = leader.Value, leader.Revision
 	} else {
-		entry, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) {
+		entry, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) {
 			return kv.ReadStored(ctx, sessionID, rowOf(sessionID))
 		})
 		if !answered {

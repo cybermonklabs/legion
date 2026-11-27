@@ -1,6 +1,53 @@
 // The leader-answered reads of one key of a KV bucket (KeyValue.GetFromLeader,
 // KeyValue.NewestFromLeader), beside their test: the reads of this package that may not be a
 // direct get, because what they decide is a delete or the revision a write is fenced on.
+//
+// Three deletes are decided from a copy - a store's cache, fed by its watcher of the bucket, or
+// the list of chunk markers that watcher delivered - and not from the leader, and no
+// compare-and-swap refuses them where that copy is behind:
+//   - The collection of chunks no record names (internal/kvchunk, store's collectInterestChunks
+//     and session's collectChunks). No read of one key proves that no manifest of the bucket
+//     names a chunk, so the cache decides, and only for a chunk its copy has held for
+//     kvchunk.Grace (10 minutes) while no record named it, and only in a pass whose copy follows
+//     the bucket and whose current read has itself applied the bucket stream's last sequence,
+//     read at the pass's start, within kvchunk.WriteBound (1 minute) (kvchunk.CollectionReady,
+//     which says why that names every chunk a manifest stored before that read of the stream
+//     names, and kvwatch.Watcher.WaitCaughtUp the one window it waits out: a manifest the
+//     replaced watcher delivered and the current read swept; a pass whose copy stays behind is
+//     skipped with a WARN).
+//   - A known-session write's delete of the chunks of the record it replaces (session's
+//     KnownSessions.writeWithin, through kvchunk.Write), whose layout is this listener's copy of
+//     that record. The record itself is last-writer-wins, a plain Put that no compare-and-swap
+//     fences (main's #4325). Every generation is unique to one write, which names its chunks by a
+//     crypto/rand generation of its own. This listener's copy saw the head whose chunks it deletes
+//     before this write's own head landed, so that head comes earlier in the bucket than this
+//     write's head, and no later write names that generation again; the delete is made only once
+//     this write's head has landed, so no head of this record's key names the generation it
+//     deletes. The chunks of a head the copy had not taken, which landed between the two, are left
+//     for the collection, and so is a generation another record of the copy names (session's
+//     ownLayout). The delete is safe so far as the copy holds every head that names the
+//     generation: a manifest copied under another key, which any writer of the bucket can store
+//     and the server stores as its answer to a direct get that names that key's subject as its
+//     reply, still names the generation while this listener's copy has not taken it, and its
+//     chunks are deleted under it, so that key then reads as a damaged record. No record a write
+//     of this build stored loses a chunk so. Session's
+//     TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames pins it.
+//   - The known-session store's purge of the markers its chunk keys' deletes left (session's
+//     purgeChunkMarkers, kvchunk.PurgeMarkers), each one its watcher was delivered
+//     kvchunk.MarkerGrace (5 minutes) ago or more. A chunk key is never written again, since each
+//     write names a new generation, so the purge of a deleted chunk's subject takes no chunk a
+//     record names; and the grace is long enough that every running listener's watcher has been
+//     delivered the delete and dropped the chunk from its copy, so the purge takes nothing a copy
+//     still holds. A watcher that missed the delete drops the chunk at its next read of the bucket.
+//
+// A reaper's delete of a record its copy judged gone (session's SessionRegistry.deleteGone, store's
+// reapInterest) and an interest write's delete of the chunks of the row it replaced (store's
+// putInterestAt) are judged on a copy too, but the bucket decides each: the delete, or the write,
+// is a compare-and-swap at the revision the judgement read, which the bucket refuses once another
+// write has landed since, and the chunks it leaves unnamed are deleted only once it has landed.
+// The interest marker collector's purge is decided from the stream itself, its own scan of the
+// bucket and two reads of the stream's state, not from a store's cache (store's
+// interestMarkerCollector).
 
 package bus
 

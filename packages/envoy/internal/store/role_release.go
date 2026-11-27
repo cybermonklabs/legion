@@ -118,8 +118,8 @@ func (r *Registry) releaseRoleClaims(ctx context.Context, sessionID string, topi
 
 // releaseRoleClaim reads role's claim and, when release authorises freeing it from sessionID
 // (RoleReleaseAuthority.frees), deletes it (releaseReadRoleClaim), the read and the delete each
-// waiting no longer than ctx (bus.Bounded). A claim the release does not authorise is left
-// exactly as it stands and is not an error: the session is removing its interests either way,
+// waiting no longer than ctx (bus.BoundedOn). A claim the release does not authorise is not
+// freed and is not an error: the session is removing its interests either way,
 // and a release from another process of that session id, or one that names no process at all,
 // says nothing about the claim the holder's own process still holds. Such a claim is marked
 // handed back where the release is its caller's hand-back of this very role
@@ -176,7 +176,7 @@ const roleClaimReleaseAttempts = 3
 // markRoleClaimHandedBack, which states the claims it marks). Nothing else of the record
 // changes, and a release that is not a hand-back of this role leaves the claim untouched.
 //
-// The delete is conditional on the revision read and waits no longer than ctx (bus.Bounded). A
+// The delete is conditional on the revision read and waits no longer than ctx (bus.BoundedOn). A
 // delete ctx abandoned may still land after this answer, and that is safe: it deletes only the
 // revision it read, the claim this release authorised, and a claim written since is kept.
 //
@@ -350,7 +350,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 //
 // It makes no read of its own, so the reaper's pass, which weighed the holder in the claim its
 // scan carried, spends one bucket call on an expired claim, the conditional delete
-// (ReapRoleClaims). That delete waits no longer than ctx (bus.Bounded), the pass's loop context
+// (ReapRoleClaims). That delete waits no longer than ctx (bus.BoundedOn), the pass's loop context
 // there.
 //
 // The delete is conditional on the revision the caller's read returned, so a holder that claimed
@@ -372,7 +372,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	}
 	epoch := r.roleViewEpoch()
 	roles := r.roles()
-	_, _, err := bus.Bounded(ctx, roles.Conn(), func() (struct{}, error) {
+	_, _, err := bus.BoundedOn(ctx, roles, func() (struct{}, error) {
 		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))
 	})
 	switch {

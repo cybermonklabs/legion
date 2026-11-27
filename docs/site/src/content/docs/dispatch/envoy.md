@@ -590,6 +590,11 @@ credential is configured.
 The listener is `envoy-listener` in the `ghcr.io/cybermonklabs/legion/envoy` image. Pin it by digest and
 verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 
+It needs nats-server v2.15.0 or later, and the hubs this repository deploys run v2.15.1. An
+earlier server loses a message it is pushing to the listener's durable consumer as that
+consumer's only subscriber goes, as at a restart or a cut connection: it miscounts that push and
+drops the message at the ack wait, with no redelivery, so a session never receives it.
+
 | Setting | What it is |
 | --- | --- |
 | `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. A space in the id is a hyphen in the name, and a `.`, `*`, `>`, `/` or `\` is `%` and two hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`. The listener refuses to start with an id that holds `%`, since that id can name another machine's durable. |

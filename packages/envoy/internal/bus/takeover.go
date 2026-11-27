@@ -100,7 +100,9 @@ func handoverOf(subject string) (role, previous, successor string, ok bool) {
 // successor for as long as the stream keeps it, since the copies it made stay on the successor's
 // subject. A previous no session consumer can be named for (SessionConsumerName) has no record,
 // and answers none, as does a previous that no record names. Its errors are the stream's own,
-// named with the lane and previous.
+// named with the lane and previous. Each STREAM.INFO waits under a watch of the connection it went
+// out on (RequestOnConnection), as TakeoverRecords' does, so a read whose answer was lost with its
+// connection fails at the reconnect with ErrRequestLostWithConnection rather than at ctx's end.
 func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]string, error) {
 	if _, ok := SessionConsumerName(previous); !ok {
 		return nil, nil
@@ -110,7 +112,9 @@ func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]str
 	}
 	var successors []string
 	for _, filter := range []string{TakeoverSubjectPrefix + "*." + previous + ".*", TakeoverSubjectPrefix + "*.*." + previous + ".*"} {
-		info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+			return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("bus: read %s's handover records of %s: %w", Stream, previous, err)
 		}
@@ -260,6 +264,12 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 // reads the kept lanes, and one read of the newest message on each subject it names, except a
 // subject whose finished record this client holds (finishedTakeovers). A record no read can decode
 // is left out, since no pass can act on it. Its errors are the stream's own, named with the lane.
+// The STREAM.INFO waits under a watch of the connection it went out on (RequestOnConnection), as
+// each stored-message read waits under its own (requestConfirmed): nats.go fails no request whose
+// connection drops, so a read whose answer was lost with its connection fails at the reconnect
+// with ErrRequestLostWithConnection rather than holding its caller to ctx's end, which for the
+// claim route's handover (cmd/listener's runTakenRoleDrain) is a window of 10 minutes under the
+// role's guard.
 //
 // The rule of finishedTakeovers, which ErrTakeoverRecordFinished and WriteTakeoverRecordAt point
 // to: this client reads a finished record's subject again only when the STREAM.INFO count of its
@@ -277,7 +287,9 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 	if role != "" {
 		filter = TakeoverSubjectPrefix + role + ".>"
 	}
-	info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: read %s's takeover records: %w", Stream, err)
 	}

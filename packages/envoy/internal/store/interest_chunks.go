@@ -118,9 +118,10 @@ func (r *Registry) malformedRecordAs(msg, sessionID string, revision uint64, err
 // stored in, and whether the bucket took the write) and the epoch of the handle it was written
 // through. A bucket that refused the write holds another writer's row since, which is no error
 // here (bus.IsCASConflict, the wrong-last-sequence answer a Create and an Update share), and the
-// caller plans again over that row. Each call waits no longer than ctx (bus.Bounded); a write ctx
-// abandoned may still land, and is safe for the same reason a conditional delete is: it stores
-// only over the very revision it read, so it cannot undo a write that landed after it.
+// caller plans again over that row. Each call waits no longer than ctx and ends at the loss of
+// the connection it went out on (bus.BoundedOn, in kvchunk.Write); a write ctx abandoned may still
+// land, and is safe for the same reason a conditional delete is: it stores only over the very
+// revision it read, so it cannot undo a write that landed after it.
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
 // same compare-and-swap, and the chunks replaced named are deleted once it lands: replaced is the
@@ -250,12 +251,14 @@ func (r *Registry) deleteChunks(ctx context.Context, kv bus.KeyValue, sessionID 
 // collectInterestChunks deletes every chunk of the interest bucket that no row of the cache names
 // and that the chunk copy took longer ago than kvchunk.Grace (kvchunk.Chunks.Unnamed), and reports
 // how many it deleted: the chunks a crash, a call that did not answer or an earlier build's delete
-// of a manifest left behind, which no write of this build deletes. It judges nothing while the
-// cache does not follow its bucket (kvwatch.Watcher.Following), since a copy behind the bucket
-// could lack the manifest that names a chunk. Each delete waits no longer than ctx.
+// of a manifest left behind, which no write of this build deletes. It judges nothing in a pass
+// kvchunk.CollectionReady skips (a cache that does not follow its bucket, or that stays behind the
+// bucket stream's last sequence). Each delete waits no longer than ctx.
+// The cache, not the bucket stream's leader, decides these deletes, which
+// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe.
 func (r *Registry) collectInterestChunks(ctx context.Context) (int, error) {
-	if !r.watcher.Following() {
-		return 0, nil
+	if ready, err := kvchunk.CollectionReady(ctx, r.watcher, r.chunkBarrierWait, r.logger()); !ready {
+		return 0, err
 	}
 	cutoff := r.now().Add(-kvchunk.Grace)
 	r.mu.RLock()

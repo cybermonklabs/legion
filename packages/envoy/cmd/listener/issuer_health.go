@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A listener starts and serves while an identity token issuer cannot be read, and answers each
@@ -55,17 +56,17 @@ func registerIssuerGauge(met *metrics.Registry, auth listenerAPIAuth) {
 		})
 }
 
-// issuerHealthFields is the "oidc" and "google" fields of a /healthz answer: whether the listener
-// has read the discovery document of the ENVOY_OIDC_ISSUER pair's issuer and of Google's, each
-// null when that pair is not configured. healthzHandler adds them to every answer it writes
-// (writeHealth).
-func issuerHealthFields(auth listenerAPIAuth) map[string]any {
-	fields := map[string]any{"oidc": nil, "google": nil}
+// issuerHealthFields sets the "oidc" and "google" fields of the /healthz answer health
+// (listenerwire.Health's OIDC and Google): whether the listener has read the discovery document of
+// the ENVOY_OIDC_ISSUER pair's issuer and of Google's, each left null when that pair is not
+// configured. healthzHandler sets them on every answer it writes (writeHealth).
+func issuerHealthFields(auth listenerAPIAuth, health *listenerwire.Health) {
 	if auth.verifier != nil {
-		fields["oidc"] = auth.verifier.Discovered()
+		read := auth.verifier.Discovered()
+		health.OIDC = &read
 	}
 	if auth.google != nil {
-		fields["google"] = auth.google.verifier.Discovered()
+		read := auth.google.verifier.Discovered()
+		health.Google = &read
 	}
-	return fields
 }

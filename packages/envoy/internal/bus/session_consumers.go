@@ -208,7 +208,8 @@ type SessionConsumers struct {
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
 	// streamNext is the stream read the streamState calls made since the last one began wait for;
-	// nil when none waits. streamReading is set while a goroutine sends the reads.
+	// nil when none waits. streamReading is set while a goroutine starts the reads
+	// (readStreamStates).
 	streamNext    *streamRead
 	streamReading bool
 }
@@ -216,8 +217,10 @@ type SessionConsumers struct {
 // ConnectSessionConsumers opens SessionConsumers on a Client of its own, named
 // "envoy-session-consumers" unless options name it: it connects as Connect does, as the NATS user,
 // through the proxy and under the remote-NATS rule the environment names, reconnects forever, and
-// dials a replacement for a connection nats.go gave up on. A pull (Pull) started on a connection
-// that was replaced ends with an error, and its caller pulls again.
+// dials a replacement for a connection nats.go gave up on. A pull (Pull) in progress at a
+// connection event of that client -- a disconnect, a reconnect in place, a close, or a connection
+// dialled to replace a closed one -- ends with ErrSessionPullReconnected, and its caller pulls
+// again (SessionPull.take).
 //
 // Every consumer this handle creates or updates carries inactiveThreshold, and
 // SessionConsumerInactiveThreshold when that is zero or negative: the listener passes the
@@ -289,6 +292,12 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
 }
+
+// ForceReconnect has nats.go reconnect the connection in place, as it does when the server drops
+// it: every pull in progress ends (ErrSessionPullReconnected, SessionPull.take) and its caller
+// pulls again. It is a seam for tests, which measure what a relay does with a lost pull; nothing
+// else calls it.
+func (s *SessionConsumers) ForceReconnect() error { return s.client.Conn.ForceReconnect() }
 
 // SetDeleteAnswerFault makes every consumer delete the server answered call fault(consumer name)
 // and, when it returns an error, return that error in place of the answer, as a delete whose

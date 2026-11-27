@@ -12,8 +12,9 @@ import (
 // kernel has since given a listener here, does not reach this test's server through any listener
 // this package's in-process constructors open for a client to dial: the relay a test's URL names,
 // the nats-server's own client listener behind it (Start), a handshake hold's proxy (StartProxy)
-// and the hold's own relay between that proxy and the server (StartHandshakeHold), and a gate
-// (StartGate). Each listens on a loopback address of its own (testport.LoopbackIP). A container's
+// and the hold's own relay between that proxy and the server (StartHandshakeHold), a gate
+// (StartGate), and a relay that leaves one subject's requests unanswered (StartUnansweredRelayOn).
+// Each listens on a loopback address of its own (testport.LoopbackIP). A container's
 // published port (StartImageConfig) is chosen by testport.LoopbackPorts and is no row here: this
 // package's untagged tests start no container. The stray client dials as a leftover bus client
 // does, every 200 ms; each listener's control is the same client at the listener's own address,
@@ -58,6 +59,7 @@ func TestAClientDialingThisServersPortOnTheSharedLoopbackDoesNotReachIt(t *testi
 		{"a handshake hold's proxy", urlHost(t, hold.URL())},
 		{"the handshake hold's own relay", hold.listener.Addr().String()},
 		{"a gate", urlHost(t, StartGate(t, srv).URL())},
+		{"a relay that leaves a subject unanswered", urlHost(t, StartUnansweredRelayOn(t, uri, "loopback.unanswered").URL())},
 	}
 	for _, listener := range listeners {
 		t.Run(listener.name, func(t *testing.T) {

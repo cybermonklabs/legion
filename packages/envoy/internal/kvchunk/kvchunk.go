@@ -318,7 +318,9 @@ func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
 // ErrDamaged. A record whose chunks do not join into what its manifest names is ErrDamaged too. A
 // damaged record's layout is not returned: the chunks it names were never proved to be its, so the
 // write that replaces it deletes none of them, and the store's collection removes the ones the
-// bucket holds. Any other error is a read that did not answer. Each read waits no longer than ctx.
+// bucket holds. Any other error is a read that did not answer. Each read waits no longer than ctx
+// and ends at the loss of the connection it went out on (bus.BoundedOn), as the read of the key it
+// follows does: a store decides its write or its delete on what this answers.
 //
 // The read again of the record's key is a leader read too, so a rewrite that made the record a
 // whole value of more than three quarters of the max payload answers it base64-encoded past that
@@ -326,6 +328,9 @@ func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
 // max payload on what it forwards, would not. The hubs envoy-infra renders configure no leafnode
 // (infra/gcp's clustered hub turns its leafnode port off).
 func Read(ctx context.Context, kv bus.KeyValue, key string, value []byte, revision uint64) ([]byte, Layout, uint64, error) {
+	fromLeader := func(key string) (nats.KeyValueEntry, bool, error) {
+		return bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, key) })
+	}
 	for attempt := 1; ; attempt++ {
 		layout, err := ReadLayout(value)
 		if err != nil {
@@ -335,11 +340,13 @@ func Read(ctx context.Context, kv bus.KeyValue, key string, value []byte, revisi
 			return value, layout, revision, nil
 		}
 		record, err := layout.join(func(chunk string) ([]byte, error) {
-			read, err := kv.GetFromLeader(ctx, chunk)
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			read, answered, err := fromLeader(chunk)
+			switch {
+			case !answered:
+				return nil, fmt.Errorf("read %s from the stream's leader: %w", chunk, err)
+			case errors.Is(err, nats.ErrKeyNotFound):
 				return nil, fmt.Errorf("%w: the bucket holds no %s", errMissing, chunk)
-			}
-			if err != nil {
+			case err != nil:
 				return nil, err
 			}
 			return read.Value(), nil
@@ -350,8 +357,10 @@ func Read(ctx context.Context, kv bus.KeyValue, key string, value []byte, revisi
 		if !errors.Is(err, errMissing) {
 			return record, layout, revision, err
 		}
-		latest, readErr := kv.GetFromLeader(ctx, key)
+		latest, answered, readErr := fromLeader(key)
 		switch {
+		case !answered:
+			return nil, Layout{}, 0, fmt.Errorf("read %s again after a chunk was not there: %w", key, readErr)
 		case errors.Is(readErr, nats.ErrKeyNotFound):
 			return nil, Layout{}, 0, readErr
 		case readErr != nil:
@@ -389,14 +398,16 @@ type Written struct {
 // an error, and once the write passed WriteBound before sending head. A call that did not answer,
 // or failed in any other way, deletes nothing, since what it sent can still land, and leaves its
 // chunks to the store's collection, as a crash does. head's other errors are returned as they are.
-// Each call waits no longer than ctx (bus.Bounded), and waits within it for kv's connection while
-// nats.go reconnects it, so a call ctx ends in that wait was never sent. The read of the server's
-// max payload that lays the record out is one of those calls: it takes nats.go's connection lock
-// (bus.KeyValue.MaxPayload), which nats.go holds through a reconnect's handshake, so a write begun
-// during a handshake that ctx ends first sends nothing and answers the error Bounded gives, which
-// names the reconnect. now is the store's clock, and WriteBound is read off its wall time, so a
-// host that slept between the chunks and the head counts the sleep.
-// what names the record in the line a chunk left behind logs (Delete).
+// Each call waits no longer than ctx and ends at the loss of the connection it went out on
+// (bus.BoundedOn); a call lost with its connection is one that did not answer, since the server
+// may have taken it before its answer was lost. Each call also waits within ctx for kv's
+// connection while nats.go reconnects it, so a call ctx ends in that wait was never sent. The read
+// of the server's max payload that lays the record out is one of those calls (bus.Bounded): it
+// takes nats.go's connection lock (bus.KeyValue.MaxPayload), which nats.go holds through a
+// reconnect's handshake, so a write begun during a handshake that ctx ends first sends nothing and
+// answers the error Bounded gives, which names the reconnect. now is the store's clock, and
+// WriteBound is read off its wall time, so a host that slept between the chunks and the head
+// counts the sleep. what names the record in the line a chunk left behind logs (Delete).
 //
 // view is the store's view of the record for a reader that does not join chunks - an earlier
 // build - which the manifest carries beside its layout (layOut): called only for a record past one
@@ -419,7 +430,7 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view
 	started := now().Round(0)
 	keys := layout.Keys()
 	for index, chunk := range chunks {
-		_, answered, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) { return kv.Create(keys[index], chunk) })
+		_, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) { return kv.Create(keys[index], chunk) })
 		if !answered || err != nil {
 			if answered {
 				Delete(ctx, kv, keys[:index], log, what, key)
@@ -432,7 +443,7 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view
 		return Written{}, fmt.Errorf("write the %s %s: its %d chunks took %s, past the %s a write may take before its manifest",
 			what, key, len(chunks), took, WriteBound)
 	}
-	revision, answered, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) { return head(value) })
+	revision, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) { return head(value) })
 	if !answered {
 		return Written{}, fmt.Errorf("write the %s %s: %w", what, key, err)
 	}
@@ -452,12 +463,12 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view
 }
 
 // Delete deletes chunks, chunks of the record under key that no record names any more, each within
-// ctx. A chunk it could not delete is logged at WARN, naming what and key, and left to the store's
-// collection: the write or delete that unnamed it has already landed, and a chunk no record names
-// is read by nothing.
+// ctx and the connection it went out on (bus.BoundedOn). A chunk it could not delete is logged at
+// WARN, naming what and key, and left to the store's collection: the write or delete that unnamed
+// it has already landed, and a chunk no record names is read by nothing.
 func Delete(ctx context.Context, kv bus.KeyValue, chunks []string, log *slog.Logger, what, key string) {
 	for _, chunk := range chunks {
-		_, answered, err := bus.Bounded(ctx, kv.Conn(), func() (struct{}, error) { return struct{}{}, kv.Delete(chunk) })
+		_, answered, err := bus.BoundedOn(ctx, kv, func() (struct{}, error) { return struct{}{}, kv.Delete(chunk) })
 		if !answered || err != nil {
 			log.Warn("chunks of a record are left to the store's collection",
 				slog.String("record", what), slog.String("key", key), slog.String("chunk", chunk), slog.String("error", fmt.Sprint(err)))
@@ -467,10 +478,11 @@ func Delete(ctx context.Context, kv bus.KeyValue, chunks []string, log *slog.Log
 }
 
 // Collect deletes chunks, the keys a store's collection found no record names (Chunks.Unnamed),
-// each within ctx, and reports how many it deleted. A delete that failed ends it with that error.
+// each within ctx and the connection it went out on (bus.BoundedOn), and reports how many it
+// deleted. A delete that failed ends it with that error.
 func Collect(ctx context.Context, kv bus.KeyValue, chunks []string) (int, error) {
 	for collected, chunk := range chunks {
-		if _, answered, err := bus.Bounded(ctx, kv.Conn(), func() (struct{}, error) { return struct{}{}, kv.Delete(chunk) }); !answered || err != nil {
+		if _, answered, err := bus.BoundedOn(ctx, kv, func() (struct{}, error) { return struct{}{}, kv.Delete(chunk) }); !answered || err != nil {
 			return collected, fmt.Errorf("collect chunk %s: %w", chunk, err)
 		}
 	}

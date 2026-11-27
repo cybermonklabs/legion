@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // listenerCredentialWait is how long the listener's start waits out a refusal of its NATS
@@ -118,11 +119,11 @@ func startSessionDelivery(cfg config.Service, inactiveThreshold time.Duration, s
 
 // healthz is next, answering /healthz, behind the start's own answer while it waits out a refusal
 // of its credential: 503, "unhealthy", with an error naming the last refusal and, as every answer
-// does, the fields issuers adds (writeHealth). A readiness probe that runs curl -f against /healthz
+// does, the fields issuers sets (writeHealth). A readiness probe that runs curl -f against /healthz
 // so keeps a listener whose credential the hub refuses out of its Service, which a 200 "starting"
 // would not. Before the first refusal and once the connect that met it has got in (admitted), next
 // answers.
-func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) http.Handler {
+func (s *natsStart) healthz(next http.Handler, issuers func(*listenerwire.Health)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		refusal := s.refusal.Load()
 		if refusal == nil {
@@ -130,7 +131,10 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "nats credential refused: " + *refusal}, issuers)
+		writeHealth(w, healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{
+			Status: listenerwire.HealthUnhealthy,
+			Error:  "nats credential refused: " + *refusal,
+		}}, issuers)
 	})
 }
 
@@ -140,7 +144,7 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 //
 // /healthz is always reachable, before NATS setup as well as after it: start's answer while the
 // start waits out a refusal of the credential (natsStart.healthz), and healthzHandler's otherwise,
-// over deps. Every answer carries what issuers adds, the identity token issuers' fields
+// over deps. Every answer carries what issuers sets, the identity token issuers' fields
 // (issuerHealthFields), which never decide its status.
 //
 // /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
@@ -149,7 +153,7 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 // whose credential is refused waits for the hub to admit it, and a restart would only drop its
 // warm caches. /healthz stays the readiness route, the one that reads the bus, because its HTTP
 // status is what tells a starting pod from a serving one.
-func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], start *natsStart, issuers func() map[string]any) {
+func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], start *natsStart, issuers func(*listenerwire.Health)) {
 	mux.Handle("/healthz", start.healthz(healthzHandler(deps, issuers), issuers))
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 }

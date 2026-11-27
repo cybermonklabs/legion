@@ -26,7 +26,7 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	}
 	secrets := []string{"user-marker-0", "pw-marker-1", "tok-marker-2", "u-marker-5", "pw-marker-3", "127.0.0.1"}
 
-	options(logs.logger, "log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+	options(logs.logger, "log-url-test", urls, connectCallbacks{}, nil).ReconnectErrCB(nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
 
 	// Only records that name the client count, so the WARN must carry its client's name.
 	var mine []map[string]any
@@ -86,7 +86,7 @@ func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 	t.Cleanup(nc.Close)
 	logs := captureLogs()
 
-	options(logs.logger, "reconnected-url-test", []string{"nats://127.0.0.1:1", uri}, nil, nil, nil, nil, nil).ReconnectedCB(nc)
+	options(logs.logger, "reconnected-url-test", []string{"nats://127.0.0.1:1", uri}, connectCallbacks{}, nil).ReconnectedCB(nc)
 
 	var logged string
 	var record map[string]any

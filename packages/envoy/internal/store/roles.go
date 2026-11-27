@@ -898,7 +898,7 @@ const (
 // writeRoleClaim sends w over claim, the record its caller read, conditional on the revision
 // that read returned, and sends it again over a re-read of the record while the write loses
 // that condition and w allows another attempt. Each bucket call waits no longer than ctx
-// (bus.Bounded); a call ctx abandoned may still land after this answer, and it is conditional on
+// (bus.BoundedOn); a call ctx abandoned may still land after this answer, and it is conditional on
 // the revision it was sent at, so it touches no record written since - each caller says what
 // that costs it.
 //
@@ -913,7 +913,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 		}
 		at := claim
 		epoch := r.roleViewEpoch()
-		revision, answered, err := bus.Bounded(ctx, r.roles().Conn(), func() (uint64, error) { return w.send(at) })
+		revision, answered, err := bus.BoundedOn(ctx, r.roles(), func() (uint64, error) { return w.send(at) })
 		switch {
 		case !answered:
 			return roleClaimWriteFailed, claim, err
@@ -1043,7 +1043,7 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 	return fmt.Sprintf("role %s's claim is at revision %d, not the %d this claim required", e.Role, e.Actual, e.Expected)
 }
 
-// RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.Bounded). The
+// RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.BoundedOn). The
 // claim it returns carries the entry's revision (RoleClaim.Revision), which is what a conditional
 // claim and GET /v1/roles/<role> compare against; a role with no claim record returns a zero
 // claim without an error, so a zero revision names a role no record claims, and a record that is
@@ -1055,7 +1055,7 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 // claim.Revision, as releaseReadRoleClaim already does.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
-	entry, answered, err := bus.Bounded(ctx, roles.Conn(), func() (nats.KeyValueEntry, error) { return roles.Get(role) })
+	entry, answered, err := bus.BoundedOn(ctx, roles, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
 	if !answered {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	}
@@ -1081,10 +1081,17 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 // for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
 // message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
 // decodes from is.
+//
+// The read is bounded by its connection as RoleClaim's direct get is (bus.BoundedOn): one whose
+// connection is lost before the leader answers fails at the reconnect with
+// bus.ErrRequestLostWithConnection rather than waiting out ctx, since nats.go fails no request its
+// connection drops. A read that did not answer is an error, never the zero claim of a role no
+// record claims.
 func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
-	leader, err := r.roles().ReadFromLeader(ctx, role)
+	roles := r.roles()
+	leader, answered, err := bus.BoundedOn(ctx, roles, func() (bus.LeaderEntry, error) { return roles.ReadFromLeader(ctx, role) })
 	switch {
-	case err != nil:
+	case !answered, err != nil:
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
 		return RoleClaim{}, nil

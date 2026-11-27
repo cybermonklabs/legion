@@ -386,10 +386,11 @@ other line of the listener carries that field.
 `DELETE /v1/interests/{session_id}` and `DELETE /v1/sessions/{session_id}` do every store read and
 write inside the same 3.5 s budget taken from the request's own context, where a silent bus held
 each for the 10 s JetStream wait: nats.go's KV reads, writes and deletes take no context, so each
-bucket call waits through `bus.Bounded` (`internal/bus/kv.go`), which stops waiting when the
-context ends. While NATS reconnects, `bus.Bounded` first waits for the bucket's connection within
-the same context, since with the reconnect buffer off nats.go refuses every send at once then.
-Store work that did not answer, whatever it names, is
+bucket call waits through `bus.BoundedOn` (`internal/bus/kv.go`), which stops waiting when the
+context ends, and ends the call at the reconnect of the connection it went out on, with
+`bus.ErrRequestLostWithConnection`. While NATS reconnects, `bus.BoundedOn` first waits for the
+bucket's connection within the same context, since with the reconnect buffer off nats.go refuses
+every send at once then. Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
 (`writeStoreError`, `cmd/listener/api.go`). The reason of a call whose context ended in that
 wait, or had ended before the call started while NATS reconnects, or that the connection dropped

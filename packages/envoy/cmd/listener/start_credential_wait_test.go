@@ -42,10 +42,14 @@ import (
 // before the hub's servers have reloaded its new nkey connects once they have, rather than exiting
 // and being restarted.
 
-// listenerTryName is the name the listener's main client gives each connection it dials: the
-// bus's default, since main names that client nothing else. A server's connection listing (/connz)
-// tells the start's tries apart from the test's own connections by it.
-const listenerTryName = "envoy"
+// listenerTryInstance is the instance the listener's start these tests run names its main client
+// after (connectListenerBus), and listenerTryName the name that client gives each connection it
+// dials, `envoy-listener <instance>`. A server's connection listing (/connz) tells the start's
+// tries apart from the test's own connections by it.
+const (
+	listenerTryInstance = "start-try"
+	listenerTryName     = "envoy-listener " + listenerTryInstance
+)
 
 // streamInfoSubject is the request the stream's reconcile sends first, which a grant without it
 // refuses.
@@ -164,7 +168,7 @@ func newListenerStartRun(t *testing.T) *listenerStartRun {
 func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *natsStart) {
 	r.began = time.Now()
 	go func() {
-		client, err := connectListenerBus(cfg, edge, start)
+		client, err := connectListenerBus(cfg, edge, listenerTryInstance, start)
 		r.outcome <- startOutcome{client: client, err: err, at: time.Now()}
 	}()
 }
@@ -885,6 +889,9 @@ func startListenerChild(t *testing.T, uri, seed, machineID string, env func(port
 		"PORT=" + strconv.Itoa(held.Port),
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=" + machineID,
+		// The instance names the child's main client (connectListenerBus), so the server's record
+		// of its tries (listenerTries) finds them by listenerTryName.
+		"ENVOY_INSTANCE_ID=" + listenerTryInstance,
 		"NATS_URLS=" + uri,
 		startChildSeedFile + "=" + seedFile,
 	}, env(held.Port)...)

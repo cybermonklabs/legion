@@ -805,7 +805,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 }
 
 // The keeper of an owning client that connects in the background runs no pass before that
-// client's first reconcile has succeeded (ensureStreamOnce). The deployed stream holds
+// client's first reconcile has succeeded (startKeeperOnce). The deployed stream holds
 // notifications.github.*, which the reconcile replaces with this binary's notifications.github.>
 // (reconcileSubjects), and no byte limit, which the keeper restores. A pass that read the stream
 // before the reconcile's write and wrote after it would put the replaced subject back, and as the

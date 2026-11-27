@@ -101,7 +101,9 @@ func (s *KnownSessions) ownLayout(sessionID string, layout kvchunk.Layout) kvchu
 // again, and the bucket keeps a marker for its 30-day MaxAge, so without this pass a session whose
 // record is two chunks, rewritten every KnownSessionRefreshAge, leaves 8,640 marker subjects in
 // the bucket in 30 days; with it, the chunks of one rewrite and their markers for one grace or two.
-// A record's own key is never purged: its marker says the session's record was deleted.
+// A record's own key is never purged: its marker says the session's record was deleted. The
+// markers the watcher delivered decide each purge, not the bucket stream's leader:
+// internal/bus/kv_leader_read.go names it among the deletes a copy decides, and why it is safe.
 //
 // A pass that failed - a NATS user without STREAM.PURGE on the bucket's stream refuses every
 // purge - is logged at WARN once until a pass purges again, and keeps every marker it did not
@@ -141,13 +143,18 @@ func (s *KnownSessions) purgeChunkMarkers(ctx context.Context) (int, error) {
 // collectChunks deletes every chunk of the bucket that no record of the copy names and that the
 // chunk copy took longer ago than kvchunk.Grace (kvchunk.Chunks.Unnamed), and reports how many it
 // deleted: the chunks a write that stopped part way left behind, which no write deletes. It judges
-// nothing while the store's bucket is not open or its cache does not follow the bucket
-// (kvwatch.Watcher.Following), since a copy behind the bucket could lack the manifest that names
-// a chunk. Each delete waits no longer than ctx.
+// nothing while the store's bucket is not open, nor in a pass kvchunk.CollectionReady skips (a
+// cache that does not follow the bucket, or that stays behind the bucket stream's last sequence).
+// Each delete waits no longer than ctx.
+// The cache, not the bucket stream's leader, decides these deletes, which
+// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe.
 func (s *KnownSessions) collectChunks(ctx context.Context) (int, error) {
 	watcher := s.watch()
-	if watcher == nil || !watcher.Following() {
+	if watcher == nil {
 		return 0, nil
+	}
+	if ready, err := kvchunk.CollectionReady(ctx, watcher, s.chunkBarrierWait, s.logger()); !ready {
+		return 0, err
 	}
 	cutoff := s.now().Add(-kvchunk.Grace)
 	s.mu.RLock()

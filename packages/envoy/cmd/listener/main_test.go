@@ -156,17 +156,12 @@ func TestDependencyHealthStatus(t *testing.T) {
 		{name: "terminal watcher", terminal: true, statusCode: http.StatusServiceUnavailable, status: "unhealthy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rr := httptest.NewRecorder()
-			writeDependencyHealth(rr, "session kv", errors.New("probe failed"), tc.terminal, nil)
-			if rr.Code != tc.statusCode {
-				t.Fatalf("status code = %d, want %d", rr.Code, tc.statusCode)
+			answer := dependencyHealth("session kv", errors.New("probe failed"), tc.terminal)
+			if answer.code != tc.statusCode {
+				t.Fatalf("status code = %d, want %d", answer.code, tc.statusCode)
 			}
-			var body map[string]string
-			if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if body["status"] != tc.status {
-				t.Fatalf("status = %q, want %q", body["status"], tc.status)
+			if answer.body.Status != tc.status {
+				t.Fatalf("status = %q, want %q", answer.body.Status, tc.status)
 			}
 		})
 	}
@@ -1323,14 +1318,14 @@ func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	}
 
 	fields := sessionHealthFields(sessions)
-	if ready, _ := fields["session_cache_ready"].(bool); !ready {
-		t.Fatalf("expected session_cache_ready true, got %v", fields["session_cache_ready"])
+	if !fields.SessionCacheReady {
+		t.Fatalf("expected session_cache_ready true, got %v", fields.SessionCacheReady)
 	}
-	if size, _ := fields["session_cache_size"].(int); size != 1 {
-		t.Fatalf("expected session_cache_size 1, got %v", fields["session_cache_size"])
+	if fields.SessionCacheSize != 1 {
+		t.Fatalf("expected session_cache_size 1, got %v", fields.SessionCacheSize)
 	}
-	if we, _ := fields["session_watch_error"].(string); we != "" {
-		t.Fatalf("expected empty session_watch_error, got %q", we)
+	if fields.SessionWatchError != "" {
+		t.Fatalf("expected empty session_watch_error, got %q", fields.SessionWatchError)
 	}
 }
 

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -186,171 +184,6 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 		owner = clientOwning(streams.Conn())
 	}
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
-}
-
-// refusedOn is call, a request kv makes once in a while of its bucket's stream (a read of the
-// stream), read for the server's refusal of subjects as it arrives (refusedBy), in the record of
-// the client that owns kv's connection, found when kv was built. A handle on a connection no
-// client owns sends as call does.
-func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
-	return refusedBy(kv.owner, subjects, call)
-}
-
-// watchRefused is watch, the construction of a watcher whose consumer create has the shape create
-// describes, read for the server's refusal of a create of that shape as it arrives
-// (refusedByRecord), in the record of the client that owns kv's connection: a watch the grant
-// refuses ends at once naming its refusal, and one the grant allows returns its own watcher
-// whatever other request on the connection the server refuses meanwhile. A refusal that answers
-// the watch before its construction returns leaves that construction running to its own end, and
-// a watcher it then builds is stopped and read until it closes, since no caller holds it (a grant
-// that refuses a consumer by name is the one way to get there: watchCreate.matches). A handle on a
-// connection no client owns watches as watch does.
-func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
-	if kv.owner == nil {
-		return watch()
-	}
-	denied := func(sentAt time.Time) error { return kv.owner.deniedPublishMatching(create.matches, sentAt) }
-	return refusedByRecord(kv.owner, denied, watch, func(watcher jetstream.KeyWatcher) {
-		_ = watcher.Stop()
-		DrainWatcher(watcher)
-	})
-}
-
-// refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
-// serves, made on the caller's goroutine and read for the server's refusal of subjects only when
-// the server left it unanswered (refusedAfter): a call the server answers costs exactly what it
-// cost before, and a refused one names the refusal after its own wait, where it named only the
-// silence. Only the subjects the call sends are listed: a call takes the refusal of any subject it
-// lists, and one it does not send is another call's to answer.
-func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
-	return refusedAfter(kv.owner, subjects, call)
-}
-
-// keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.55.0
-// kv.go:383-385, the default KV prefix).
-func (kv KeyValue) keySubjects(key string) func() []string {
-	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
-}
-
-// getSubjects is the one request a read of key's last value sends: a direct get of the key's last
-// message through a handle that reads directly, and a get from the stream's leader through one
-// that does not (readsDirect; nats.go@v1.55.0 kv.go:642-686, js.go:210-217, jsm.go:1304-1332).
-// The other is not listed: a read takes the refusal of any subject it lists, and a refusal of a
-// request it never sends is another read's to answer.
-func (kv KeyValue) getSubjects(key string) func() []string {
-	return func() []string {
-		stream := "KV_" + kv.Bucket()
-		if readsDirect(kv.legacy) {
-			return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key)}
-		}
-		return []string{jsAPI("STREAM.MSG.GET", stream)}
-	}
-}
-
-// revisionSubjects is the one request a read of one revision sends: a direct get by sequence
-// through a handle that reads directly, and a get from the stream's leader through one that does
-// not (readsDirect; nats.go@v1.55.0 kv.go:642-668, js.go:210-214, jsm.go:1304-1332).
-func (kv KeyValue) revisionSubjects() []string {
-	stream := "KV_" + kv.Bucket()
-	if readsDirect(kv.legacy) {
-		return []string{jsAPI("DIRECT.GET", stream)}
-	}
-	return []string{jsAPI("STREAM.MSG.GET", stream)}
-}
-
-// natsPackage is the import path of nats.go, whose legacy KV handle readsDirect reads.
-var natsPackage = reflect.TypeFor[nats.Conn]().PkgPath()
-
-// readsDirect reports whether legacy, a legacy KV handle, sends its reads of a key and of a
-// revision as direct gets, which any copy of the bucket answers, rather than as gets from the
-// stream's leader. A handle this package wraps around nats.go's states it (statedReads), and is
-// asked first: an edge listener's (streamMessageReads, WithStreamMessageReads) sends every read
-// as a get from the stream's leader whatever its stream allows, so the nats.go handle inside it,
-// built for a stream that allows direct gets, would answer for a request it never sends. nats.go
-// decides that for its own handle once, as it builds the handle, from its stream's
-// AllowDirect, keeps it in the handle's unexported useDirect, and reports it through no method
-// (nats.go@v1.55.0 kv.go:562-574, 642-668, 1353-1364), so it is read off the handle: a read of the
-// stream now would cost a request, and could answer otherwise than the read the handle was built
-// from. Only an unanswered read asks this (refusedAfter), so a read the server answers pays
-// nothing for it.
-//
-// Any other handle nats.go did not build, a test's double (NewKeyValue), states nothing and is
-// taken to read directly, whatever handle it wraps, as nats.go's handle on every bucket this build
-// creates does (Get). So is a nats.go handle that holds no such field:
-// TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends fails on it, since its handle on a stream
-// without AllowDirect would then be read as a direct one.
-func readsDirect(legacy nats.KeyValue) bool {
-	if stated, ok := legacy.(statedReads); ok {
-		return stated.readsDirectly()
-	}
-	handle := reflect.ValueOf(legacy)
-	if handle.Kind() != reflect.Pointer || handle.IsNil() {
-		return true
-	}
-	kvs := handle.Elem()
-	if kvs.Kind() != reflect.Struct || kvs.Type().PkgPath() != natsPackage {
-		return true
-	}
-	useDirect := kvs.FieldByName("useDirect")
-	if useDirect.Kind() != reflect.Bool {
-		return true
-	}
-	return useDirect.Bool()
-}
-
-// statedReads is a legacy KV handle that states how it sends its reads of a key and of a revision,
-// which readsDirect asks before it reads nats.go's handle: one this package wraps around nats.go's
-// whose reads are not the requests nats.go's handle would send (streamMessageReads).
-type statedReads interface {
-	// readsDirectly reports whether the handle sends its reads as direct gets.
-	readsDirectly() bool
-}
-
-// watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
-// it (nats.go@v1.55.0 jetstream/kv.go:1356-1361, js.go:1877 and 1963-1969, jsm.go:505-525):
-// prefix, `$JS.API.CONSUMER.CREATE.KV_<bucket>.`, then the consumer's name, then, for a watch of
-// one key, a dot and filter, `$KV.<bucket>.<key>` (every key, `$KV.<bucket>.>`, for a watch given
-// none, jetstream/kv.go:1268-1274). A watch of several keys sends their filters in the request's
-// body and none in its subject, so its filter is empty.
-type watchCreate struct {
-	prefix, filter string
-}
-
-// watchCreate is the shape of the create a watch of keys through kv sends.
-func (kv KeyValue) watchCreate(keys []string) watchCreate {
-	create := watchCreate{prefix: jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket()) + "."}
-	switch len(keys) {
-	case 0:
-		create.filter = "$KV." + kv.Bucket() + "." + jetstream.AllKeys
-	case 1:
-		create.filter = "$KV." + kv.Bucket() + "." + keys[0]
-	}
-	return create
-}
-
-// matches reports whether subject is a create of this shape: prefix, one token for the name, and
-// then a dot and the filter, or nothing after the name when there is no filter. nats.go picks the
-// name at random as it sends the create (getHash(nuid.Next()), js.go:1968), so a grant cannot
-// tell two creates of one shape apart by it: the refusal of a create of this shape is the refusal
-// this watch's own create meets. A create of the bucket's stream of another shape -- a watch of
-// another key, or a watch of one key beside one of several -- is another request, which a grant can
-// refuse while it allows this watch's, so it never answers this watch. The one exception is a grant
-// that refuses one consumer by name, as it can a durable's: the refusal of that consumer's create
-// answers a watch of the same shape too, before the watch's own create, which the grant allows, has
-// built its watcher, and watchRefused stops that watcher.
-func (create watchCreate) matches(subject string) bool {
-	rest, ok := strings.CutPrefix(subject, create.prefix)
-	if !ok {
-		return false
-	}
-	name, filter, filtered := strings.Cut(rest, ".")
-	if name == "" {
-		return false
-	}
-	if create.filter == "" {
-		return !filtered
-	}
-	return filtered && filter == create.filter
 }
 
 // Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
@@ -558,6 +391,197 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	}
 	entry, err := refusedAfterOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
 	return entry, kvAnswer(key, err)
+}
+
+// BoundedOn is Bounded for call, a call on kv - a read, a write or a delete of its bucket, or any
+// run of them - that also ends when the connection kv's calls go out on is lost before call
+// answers: replaced by another its client dialled, closed, or reconnected in place
+// (connWatch.lostRequest). It then answers false with an error wrapping
+// ErrRequestLostWithConnection rather than waiting out ctx. nats.go's KV calls wait on its
+// shared response subscription until its own MaxWait and fail no request its connection drops
+// (it fails only the pending flushes, and only ForceReconnect and a close clear the requests),
+// while the server dropped the request or its answer with that connection, so no answer will
+// come; the caller sends it again on the connection that came back. A close, and so the
+// replacement that follows one, and a ForceReconnect are the exception: they clear the requests,
+// and nats.go fails the waiting call itself before it runs the callback the watch hears, with
+// nats.ErrConnectionClosed after a close and nats.ErrDisconnected after a ForceReconnect, which
+// leaves the connection open (nats.go@v1.55.0 nats.go:4962-4966, context.go:69-73), so BoundedOn
+// may answer true with that error instead.
+//
+// Everything else is Bounded's: call starts only once kv's connection can take it, waiting within
+// ctx while nats.go reconnects it (awaitConnected), and a ctx that ends in that wait, or has ended
+// once it is over, starts no call and answers false with Bounded's ErrReconnecting or ctx's error
+// (endedUnsent). Once call has started, answered is false when ctx ended first, with ctx's error,
+// and the abandoned call runs on to its own end, so a write or a delete it sent may still land
+// after the caller has answered, exactly as one whose ctx ended may. A call lost with its
+// connection is not answered either: the server may have taken it before its answer was lost. A
+// call nats.go failed with nats.ErrConnectionClosed or nats.ErrDisconnected is answered, and the
+// server may have taken it too. The one difference is a ctx that can never end: Bounded runs call
+// in the caller's goroutine then, with no wait for the connection, and BoundedOn waits for it from
+// another, since the connection can still end the wait.
+//
+// The watch is the one of the client that owns the connection kv was opened on (watchConnection);
+// a handle whose connection no client serves with - one a test opened on its own, or one its
+// client has since replaced, which is closed, so nats.go fails a call on it at once - is waited
+// for as Bounded waits. The watch is taken as BoundedOnConnection takes its own (boundedBeside),
+// on a goroutine of its own beside call, which starts at once, so the wait ends at ctx's end
+// whatever taking the watch costs. Finding that client (clientOwning) takes each live client's
+// lock in turn, and Client.ResendRefusedCore, the send the listener's self-health probe makes of
+// its role lane when it finds the lane inactive (cmd/listener's checkRoleLane), holds its client's
+// lock while it reads the connection's status through nats.go's connection lock, which nats.go
+// holds through a reconnect's dial and handshake. Client.CoreSubOK, which /healthz asks of that
+// lane, and the recovery's subscriptionsHealthy read that status with the lock released
+// (connOpen). Taken on the caller's goroutine, the watch kept call from starting until another
+// client's held handshake ended, up to its connect timeout (connectTimeout, 5 s), past the
+// caller's bound: the listener's role lane reads a claim within 2 s
+// (TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake). The cost is
+// BoundedOnConnection's: a reconnect after call sent its request and before the watch read the
+// connection's reconnect count is not seen, and call is then waited for until ctx ends, or, under
+// a ctx that can never end, until its own MaxWait.
+func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) (T, bool, error) {
+	conn := kv.Conn()
+	if conn == nil {
+		return Bounded(ctx, nil, call)
+	}
+	if ctx.Done() != nil {
+		var zero T
+		if err := awaitConnected(ctx, conn); err != nil {
+			return zero, false, err
+		}
+		if ctx.Err() != nil {
+			return zero, false, endedUnsent(ctx, conn)
+		}
+	}
+	return boundedBeside(ctx, func() connWatch {
+		// A connection no client serves with gets the zero watch, which follows none.
+		watch, _ := watchOwnedConnection(conn)
+		return watch
+	}, call)
+}
+
+// BoundedOnConnection is BoundedOn for a call on client's connection, the one client serves with
+// as the call starts, from a caller that holds the client rather than a handle opened on that
+// connection: a call that reaches its bucket through a handle it opens itself (roles.Buckets opens
+// its handle inside the read it bounds), or any other JetStream call. A client with no connection
+// is waited for as Bounded waits.
+//
+// As BoundedOn does, it reads no state of nats.go's on the caller's goroutine, and call starts at
+// once: the watch's reconnect count (watchConnection) and each later read of whether the
+// connection is lost (connWatch.lostRequest) wait for nats.go's connection lock, which nats.go
+// holds through a reconnect's dial and handshake. So the watch is taken on a goroutine of its own
+// beside call and read on another (connWatch.bound), and the wait ends at ctx's end however long
+// nats.go holds that lock: a roles.Buckets read made during a held handshake begins its bucket's
+// open and answers its caller at its own bound (TestABucketsOpenHoldsNoLockAcrossAHeldHandshake).
+// The cost is the order of the watch and the send: a reconnect after call sent its request and
+// before the watch read the count is not seen, and the call is then waited for until ctx ends, as
+// Bounded waits. That window is the time from the send to the watch's read, which only nats.go's
+// lock stretches; a request sent while a handshake holds the lock waits for it too and goes out
+// after the reconnect, which the count then includes. The one caller, roles.Buckets, hands it
+// within's ctx: readTimeout (2 s) from the read's start, or the caller's own deadline when that is
+// sooner (Dispatch's outbox resolving a role's holder, roles.ResolveHolder: one such read of the
+// claim and one of the holder's session). So a loss missed that way costs one read at most 2 s,
+// where a loss seen costs it the reconnect.
+func BoundedOnConnection[T any](ctx context.Context, client *Client, call func() (T, error)) (T, bool, error) {
+	return boundedBeside(ctx, client.watchConnection, call)
+}
+
+// boundedBeside is the wait of BoundedOn and BoundedOnConnection: call starts at once on a
+// goroutine of its own, watch, which reads nats.go's state, runs on another, and the wait ends at
+// the first of call's answer, ctx's end and the loss of the connection the watch follows, which
+// connWatch.bound reads on a third. ctx wins over a loss seen at the same moment, and the
+// abandoned call runs on to its own end, as Bounded's does. A watch on no connection follows
+// none, and call is then waited for as Bounded waits.
+func boundedBeside[T any](ctx context.Context, watch func() connWatch, call func() (T, error)) (T, bool, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, false, err
+	}
+	type answer struct {
+		value T
+		err   error
+	}
+	answers := make(chan answer, 1)
+	watches := make(chan connWatch, 1)
+	go func() { watches <- watch() }()
+	go func() {
+		value, err := call()
+		answers <- answer{value: value, err: err}
+	}()
+	// lost stays nil, and so never ready, until the watch is taken on a connection.
+	var lost <-chan struct{}
+	stop := func() {}
+	defer func() { stop() }()
+	for {
+		select {
+		case got := <-answers:
+			return got.value, true, got.err
+		case <-ctx.Done():
+			return zero, false, ctx.Err()
+		case taken := <-watches:
+			if taken.conn == nil {
+				continue
+			}
+			var bounded context.Context
+			bounded, stop = taken.bound(ctx)
+			lost = bounded.Done()
+		case <-lost:
+			// bounded ends with ctx too, and ctx wins over a loss seen at the same moment.
+			if err := ctx.Err(); err != nil {
+				return zero, false, err
+			}
+			return zero, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
+		}
+	}
+}
+
+// RequestOnConnection makes request, a JetStream request on client's connection that waits on the
+// context it is handed (a nats.Context option of the legacy JetStream context), in the caller's
+// goroutine: it answers request's own answer, ctx's error when ctx ends first, and an error
+// wrapping ErrRequestLostWithConnection as soon as the connection is lost (replaced, closed, or
+// reconnected in place) before the answer comes, so a caller that retries sends it again on the
+// connection that came back at once rather than at the request's deadline. A close, and so the
+// replacement that follows one, and a ForceReconnect are the exception: nats.go fails the waiting
+// request itself before it runs the callback the watch hears, with nats.ErrConnectionClosed after
+// a close and nats.ErrDisconnected after a ForceReconnect (BoundedOn), and this answers that error
+// when it comes before the watch sees the event. The context request is handed ends at that loss,
+// and request returns when its context ends, so nothing it sent waits on past this call. It takes
+// no deadline of its own: a deadline ctx carries is request's bound, and a request on a context
+// without one waits the JetStream context's MaxWait, as it does without this. A client with no
+// connection hands request ctx itself. The watch's read of the connection waits for nats.go's
+// connection lock, so it is made within ctx (watchConnectionWithin): a read ctx ends first sends
+// nothing and answers as a wait for a reconnecting connection that ctx ended.
+func RequestOnConnection[T any](ctx context.Context, client *Client, request func(context.Context) (T, error)) (T, error) {
+	watch, read := client.watchConnectionWithin(ctx)
+	if !read {
+		var zero T
+		return zero, reconnectWaitEnded(ctx)
+	}
+	if watch.conn == nil {
+		return request(ctx)
+	}
+	requestCtx, stopWatching := watch.bound(ctx)
+	defer stopWatching()
+	value, err := request(requestCtx)
+	if err != nil && ctx.Err() == nil && lostWithConnection(requestCtx) {
+		var zero T
+		return zero, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
+	}
+	return value, err
+}
+
+// watchOwnedConnection watches conn through the client that serves with it (clientOwning), and
+// reports false when no client does, or when that client serves with another connection by the
+// time the watch reads it.
+func watchOwnedConnection(conn *nats.Conn) (connWatch, bool) {
+	owner := clientOwning(conn)
+	if owner == nil {
+		return connWatch{}, false
+	}
+	watch := owner.watchConnection()
+	if watch.conn != conn {
+		return connWatch{}, false
+	}
+	return watch, true
 }
 
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is
@@ -832,11 +856,14 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // ErrReconnecting, and the step ends on that answer as it ends on any answer that is not a silence
 // (unanswered). A call that waits for its client's connection itself passes a nil conn too: a send
 // window's first pin (window.pinFirst). So does a call that reads its connection's state itself, an
-// intake's flush of its hand-backs (delivery's flushHandBacks), and a read of roles.Buckets, which
-// begins its bucket's open at once (roles.within). So does the listener's flush that /healthz and
-// /readyz share (cmd/listener busAnswers): a flush takes nats.go's connection lock before it waits
-// on its context, and again to forget its PING once that context ends, so a reconnect's handshake
-// would otherwise hold the check past its budget.
+// intake's flush of its hand-backs (delivery's flushHandBacks). A read of roles.Buckets, which
+// begins its bucket's open at once (roles.within), waits for no connection either: it is bounded
+// on its client's connection (BoundedOnConnection). The listener's flush that /healthz and
+// /readyz share passes a nil conn too (cmd/listener busAnswers): a flush takes nats.go's connection lock
+// before it waits on its context, and again to forget its PING once that context ends, so a
+// reconnect's handshake would otherwise hold the check past its budget. A call on a bucket
+// handle that must also end at its connection's loss is BoundedOn, which waits for the connection
+// as this does before it starts the call.
 //
 // Once call has started, answered is false when ctx ended first, and err is then ctx's error; the
 // abandoned call runs on to its own end and its answer is dropped. So a write or a delete that was

@@ -237,24 +237,25 @@ func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *te
 
 // A read of the client's connection state holds no lock of the client's while it waits for
 // nats.go's connection lock, so a bounded send made beside it during a reconnect's handshake
-// answers at its bound. Client.Connected, SubOK and a recovery's subscriptionsHealthy each read the
-// connection's status, which waits for nats.go's lock, and none holds the client's lock across that
-// read. Every send takes the client's lock to read its connection (ensureConnWithContext,
-// Connection). A read that held the client's lock across the status read would make a keeper pass,
-// a /healthz read or a recovery during a handshake hold every bounded send until the attempt ends,
-// at the client's connect timeout (connectTimeout, 5 s).
+// answers at its bound. SubOK and a recovery's subscriptionsHealthy each read the connection's
+// status, which waits for nats.go's lock, and neither holds the client's lock across that read.
+// Client.Connected waits on neither lock: it reads the flag the connection's events keep
+// (connected_test.go). Every send takes the client's lock to read its connection
+// (ensureConnWithContext, Connection). A read that held the client's lock across the status read
+// would make a /healthz read or a recovery during a handshake hold every bounded send until the
+// attempt ends, at the client's connect timeout (connectTimeout, 5 s).
 //
-// The row starts the three reads while one handshake is held. Once they have been kept waiting for
+// The row starts the two reads while one handshake is held. Once they have been kept waiting for
 // nats.go's lock (testnats.RequireLockHeld), it makes three bounded sends at once, each under a ctx
 // bounded at 300 ms: ensureConnWithContext, Bounded on the connection Connection reads, and
 // LastStoredMessage. Each answers `bus: NATS is reconnecting: context deadline exceeded` once its
 // bound has passed, and not before, within the 300 ms bound and a margin of 700 ms (answerByName).
 // The Bounded call never starts.
 //
-// The controls: before the hold the client reads its connection as connected; the three reads are
+// The controls: before the hold the client reads its connection as connected; the two reads are
 // still waiting when the sends have answered, so the sends answered beside them; and each read
 // answers once the hold is released. The negative control holds the client's lock across the
-// status read of each of the three reads: then no send answers within the bound and the margin.
+// status read of each of the two reads: then no send answers within the bound and the margin.
 func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) {
 	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
@@ -268,7 +269,6 @@ func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) 
 		what string
 		read func() bool
 	}{
-		{what: "Connected", read: client.Connected},
 		{what: "SubOK", read: client.SubOK},
 		{what: "subscriptionsHealthy", read: client.subscriptionsHealthy},
 	}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,8 +50,10 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	beforeRequestWait           func(loss <-chan struct{})
 	beforeCoreSendFlush         func()
 	afterCoreSendFlush          func()
+	watchWentOn                 func()
 	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
@@ -432,16 +435,16 @@ type recoverableSubscription struct {
 	// refused is set when the server refused the subscription the client last sent for this
 	// registration on its current connection (onAsyncError), and cleared each time it is sent
 	// again: by the bind of a registration or of a restore, and by nats.go itself on a reconnect in
-	// place (onReconnect). ResendRefusedCore clears it only once the server has accepted what it
-	// sent. nats.go keeps a refused subscription valid, so without it a lane the server will not
-	// deliver to would read as subscribed. Only the core registration is ever marked.
+	// place (countConnectionEvent). ResendRefusedCore clears it only once the server has accepted
+	// what it sent. nats.go keeps a refused subscription valid, so without it a lane the server will
+	// not deliver to would read as subscribed. Only the core registration is ever marked.
 	refused bool
 	// sentOn and sentReconnects name the connection session the subscription was last sent on: the
 	// connection and its reconnect count (nats.Conn.Stats) at that send. Each bind records them, and
-	// so does each reconnect in place (onReconnect), where nats.go sends every subscription again.
-	// ResendRefusedCore answers only a refusal on that session. Once nats.go has reconnected, and
-	// until onReconnect runs, the mark it would read is the previous session's, of a subscription
-	// nats.go has already sent again to the new server.
+	// so does each reconnect in place (countConnectionEvent), where nats.go sends every subscription
+	// again. ResendRefusedCore answers only a refusal on that session. Once nats.go has reconnected,
+	// and until countConnectionEvent runs, the mark it would read is the previous session's, of a
+	// subscription nats.go has already sent again to the new server.
 	sentOn         *nats.Conn
 	sentReconnects uint64
 	// pendingMsgs and pendingBytes, when set, are the pending limits of a core subscription,
@@ -481,12 +484,22 @@ type Client struct {
 	// (WithReconnectWaitTick, export_test.go) to know a publish is inside that wait, or to act at
 	// the moment the wait ends.
 	reconnectWaitTick func()
+	// afterInstall, when not nil, runs once an install has set the connected flag and let go of
+	// mu (afterInstallForTest). It is nil outside tests: a test sets it to deliver a connection
+	// event in that moment.
+	afterInstall func(*nats.Conn)
 	// beforeRequestFlush, when not nil, runs on the goroutine that flushes a Request's publish,
 	// right before that flush begins, while the wait for the request's answer runs beside it
 	// (window.request). It is nil outside tests: a test sets it (WithBeforeRequestFlush,
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
+	// beforeRequestWait, when not nil, runs on a Request's wait for its answer each time the wait
+	// is about to sleep, with the channel whose close is the loss the wait answers: the end of the
+	// life its window pinned (window.request). It is nil outside tests: a test sets it
+	// (WithBeforeRequestWait, export_test.go) to end that life only once the wait sleeps on a loss
+	// it has not yet seen. Its cost in production is one nil check on each turn of the wait.
+	beforeRequestWait func(loss <-chan struct{})
 	// replyWaitBegins, when set, runs as a request this client builds itself begins its wait for
 	// the reply, its publish and flush confirmed (requestConfirmedOn, RequestCore). It is nil
 	// outside tests: a row sets it to know each request waits for its reply before it holds a
@@ -507,6 +520,12 @@ type Client struct {
 	// of the request's timeout and its flush it settles first, so the order of the two is the
 	// test's and not the scheduler's.
 	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
+	// watchWentOn, when not nil, runs on the goroutine of a connection watch (connWatch.lost,
+	// connWatch.bound) each time a connection event it woke on left its request unlost, once it
+	// has taken the channel it waits on next. It is nil outside tests: a test sets it
+	// (WithWatchWentOn, export_test.go) to land the reconnect that follows a disconnect there,
+	// the moment a watch that took its next channel only after its read of the connection missed.
+	watchWentOn func()
 	// closedHook, when not nil, runs at the start of onClosed, before the recovery a close starts.
 	// It is nil outside tests: a test sets it (WithClosedHook, export_test.go) to hold the work a
 	// close sets off, so a caller that returned before that work ran is caught reading too early.
@@ -518,8 +537,9 @@ type Client struct {
 	mu               sync.Mutex
 
 	// eventWork counts the goroutines the client's connection events start, each recovery
-	// (recover, from onClosed) and each run after a reconnect (afterReconnect), so the close of a
-	// failed start can wait for them and for every line they log (closeSettled).
+	// (recover, from onClosed and onReconnect) and the goroutine that works through the queued
+	// reconnects (workThroughReconnects, from queueReconnect), so the close of a failed start can
+	// wait for them and for every line they log (closeSettled).
 	eventWork sync.WaitGroup
 	// lastClosed is the last connection whose close onClosed has handled, and closeWatch the close
 	// closeSettled waits for, both under mu (closeHandled). lastClosed keeps that one closed
@@ -534,15 +554,15 @@ type Client struct {
 	// only the violation that landed last and left every other denied send to its acknowledgement
 	// timeout; and nats-server reports one violation per refused message, so a record of one
 	// violation per subject would leave every send but one of a subject a window sent twice to
-	// that same timeout. It belongs to the connection in Conn: a reconnect (onReconnect) clears it
-	// (clearPublishDenials), and install, which runs only from the constructor before any
-	// connection is the client's, finds it empty. A connection ensureConnWithContext dials after a
-	// close does not clear it, and need not: a send takes only a violation of its own subject
-	// recorded at or after its own send time (deniedPublish), so a violation the closed connection
-	// left can answer a send on the new one only when that send's clock was read before the
-	// replacement, and then it is a refusal of the same subject under the same credentials. A
-	// record retention has spent and anything past publishDenialDepth are dropped when the next
-	// one is recorded, and a read takes the violation it answers with out.
+	// that same timeout. It belongs to the connection in Conn: a reconnect clears it
+	// (clearPublishDenials, from countConnectionEvent under c.mu), and install, which runs only
+	// from the constructor before any connection is the client's, finds it empty. A connection
+	// ensureConnWithContext dials after a close does not clear it, and need not: a send takes only
+	// a violation of its own subject recorded at or after its own send time (deniedPublish), so a
+	// violation the closed connection left can answer a send on the new one only when that send's
+	// clock was read before the replacement, and then it is a refusal of the same subject under
+	// the same credentials. A record retention has spent and anything past publishDenialDepth are
+	// dropped when the next one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
 	// refusal is the channel closed when the next refusal of a publish is recorded, which every send
 	// waiting on an answer selects on beside it (refusalSignal): recordPublishDenial closes it and
@@ -602,6 +622,42 @@ type Client struct {
 	// reconnectWaits counts the waits ensureConnWithContext makes for a connection nats.go is
 	// reconnecting, one per pass of its loop that waits; a test reads it to bound them.
 	reconnectWaits atomic.Uint64
+
+	// connectedConn is the connection the client serves with while it is connected, and nil while
+	// it is not. It is outside mu, and outside nats.go's own connection lock, so Connected
+	// answers without waiting on either: nats.go holds its connection's lock across every
+	// reconnect dial and the connect init after it, which a route that drops the process's
+	// packets leaves hanging for the connect timeout, and nats.Conn.Status waits for that lock.
+	//
+	// The connection's own events are its only source: nothing asks a connection whether it is
+	// connected, since that read waits on the lock above. Every connect, reconnect, disconnect and
+	// close callback records what it reports for its connection (noteConnection, the state callback
+	// of options), installed or not, and moves this field only for the connection the client has
+	// installed. An install (markConnected) sets the field from what its connection's events have
+	// reported so far, or from how the dial returned when they have reported nothing yet. Both
+	// writers take connFlagMu, so an event lands wholly before an install or wholly after it: one
+	// before is in the record the install reads, and one after moves the field itself. A late
+	// callback of a connection the client has replaced records only into the record, which the next
+	// install prunes. Readers take no lock: Connected and ConnectedConn load this field alone.
+	connectedConn atomic.Pointer[nats.Conn]
+	// connFlagMu orders the writers of connectedConn (noteConnection, markConnected). installedConn
+	// is the connection the client last made c.Conn, and connUp what each connection's events have
+	// reported last, connected or not; both are under connFlagMu. No holder of connFlagMu calls
+	// into nats.go or takes mu, so a callback never waits behind a dial or the client's lock.
+	connFlagMu    sync.Mutex
+	installedConn *nats.Conn
+	connUp        map[*nats.Conn]bool
+
+	// reconnectQueue holds the connections whose connection event has still to be worked through
+	// (onReconnect), oldest first, and reconnectRunning whether a goroutine of the client's is
+	// working through it; both are under reconnectQueueMu. The work of a connection event -
+	// restoring the subscriptions and running the reconnect hooks, which make requests of the
+	// server - must not run on nats.go's callback goroutine: that goroutine runs every callback
+	// of the connection one at a time, so a disconnect that lands during the work would wait
+	// behind it and the connected flag would read up throughout (queueReconnect).
+	reconnectQueueMu sync.Mutex
+	reconnectQueue   []*nats.Conn
+	reconnectRunning bool
 
 	// streamConfig is the stream an owning client ensures on its first connect and on every
 	// connection event after it (ensureStreamOn); nil for a client that owns no stream.
@@ -682,7 +738,7 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	}
 	settings := opts.connectionSettings(credential)
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(opts.logger, name, dialled, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
+		return connect(opts.logger, name, dialled, allOf(settings, first), dialer, connectCallbacks{}, opts.reconnectErrClock)
 	}
 	if opts.background {
 		return connectFirstInBackground(opts.logger, name, dialled, opts.reconnectErrClock, dial, nil, nil)
@@ -860,8 +916,10 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		beforeRequestWait:           opts.beforeRequestWait,
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
+		watchWentOn:                 opts.watchWentOn,
 		streamMessageReads:          opts.streamMessageReads,
 		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
@@ -875,7 +933,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		c.streamConfig = &stream
 	}
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connectTrying(context.Background(), tries, wait, c.log(), c.name, urls, allOf(c.connectionSettings, first), dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		return connectTrying(context.Background(), tries, wait, c.log(), c.name, urls, allOf(c.connectionSettings, first), dialer, c.callbacks(), c.reconnectErrClock)
 	}
 	if opts.background {
 		c.awaitingConnection = true
@@ -893,9 +951,11 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		// install that fails returns no client, so it stops the client before
 		// connectFirstInBackground closes the connection, as the foreground path does below. At
 		// nats.go v1.55.0 it cannot fail: JetStream with these options returns no error, and
-		// there is no stream to ensure here. The stop guards a nats.go whose JetStream can.
+		// there is no stream to ensure here. The stop guards a nats.go whose JetStream can. The
+		// dial returned a connection nats.go has yet to connect, so it reads disconnected until its
+		// first connect reports itself (markConnected).
 		install := func(nc *nats.Conn) error {
-			if err := c.install(nc, false); err != nil {
+			if err := c.install(nc, false, false); err != nil {
 				c.stop()
 				return err
 			}
@@ -911,7 +971,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	if err != nil {
 		return nil, stepDial, err
 	}
-	if err := c.install(nc, ownsStream); err != nil {
+	if err := c.install(nc, ownsStream, true); err != nil {
 		// The constructor returns no client, so no caller can Close it: the client is stopped
 		// before nc closes, so the recovery nc's close begins (onClosed) finds it stopped and dials
 		// nothing. Running, that recovery would dial and install a connection held by no one, which
@@ -946,11 +1006,13 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 // stops or natsversion.VersionWait passes, rather than decide on the empty version one answers:
 // install with ensure runs in the constructor's foreground start alone, never on nats.go's
 // callback goroutine (the background start installs with no ensure). Installing it is a
-// connection event (ConnectionChanged). It is also where the client enters the registry of live
-// clients (registerClient), the constructor's own step: install runs only from the constructor and
-// only a client it returns gets this far, so a caller holding a connection can find the client
-// that owns it (clientOwning) for as long as that client is a caller's to use.
-func (c *Client) install(nc *nats.Conn, ensure bool) error {
+// connection event (ConnectionChanged). dialedUp is whether the dial returned nc connected, which
+// the connected flag takes until nc's own events say otherwise (markConnected). It is also where
+// the client enters the registry of live clients (registerClient), the constructor's own step:
+// install runs only from the constructor and only a client it returns gets this far, so a caller
+// holding a connection can find the client that owns it (clientOwning) for as long as that client
+// is a caller's to use.
+func (c *Client) install(nc *nats.Conn, ensure, dialedUp bool) error {
 	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
@@ -973,6 +1035,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	}
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
+	c.markConnected(nc, dialedUp)
 	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
@@ -981,6 +1044,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	c.clearPublishDenials()
 	c.mu.Unlock()
 	registerClient(c)
+	c.afterInstallForTest(nc)
 	return nil
 }
 
@@ -1020,21 +1084,93 @@ func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, def
 // hooks that waited out that outage would keep the next reconnect's run behind it (rewatch). A
 // connection reports no version only when it is not CONNECTED, so the run that met it is
 // superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
-// connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
-// request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
-// connection that drops ends with it, and the ensure's waits on the server end with it too. It
-// waits for no election it did not cause (atReconnect): a stream it finds with no leader is left to
-// elect one, so the hooks after it run, unless the stream must be reconciled, an update that fails
-// at once while the cluster has no quorum, as at main; a create or a raise it makes is waited out.
+// connection event brings makes the ensure again (onReconnect, onClosed).
+//
+// Every request of the ensure is made under ctx, the run's context (whileConnected), and each but
+// the role-lane migration's consumer listing (js.ConsumerNames) also ends as soon as conn is lost
+// under it (connectionBoundJetStream), so one sent on a connection that drops ends with it, and the
+// ensure's waits on the server end with ctx too. The hooks run one at a time and this one runs
+// first, so a request whose answer died with a connection that dropped again mid-ensure would
+// otherwise hold every hook after it - the KV rewatches among them - for the JetStream
+// context's whole 10 s wait. It waits for no election it did not cause (atReconnect): a stream it
+// finds with no leader is left to elect one, so the hooks after it run, unless the stream must be
+// reconciled, an update that fails at once while the cluster has no quorum, as at main; a create or
+// a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := JetStreamOn(conn, nats.MaxWait(10*time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js), atReconnect)
+		err = c.ensureStreamReported(lookOnce(), ctx, conn, connectionBoundJetStream{JetStreamContext: js, client: c, ctx: ctx}, atReconnect)
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
 	}
 	return nil
+}
+
+// connectionBoundJetStream is a JetStream context on the client's connection whose requests the
+// stream's ensure makes (ensureStreamWithConfig: the stream's read, create, update and purge, and
+// the consumer reads and updates of the role-lane migration) each end at ctx's end, the run's
+// context a reconnect hook is given (whileConnected), and with ErrRequestLostWithConnection as
+// soon as that connection is lost before the answer comes (RequestOnConnection), rather than
+// waiting out MaxWait for an answer the server dropped with the old socket. The ensure counts a
+// request lost that way as unanswered: a read or a create is sent again at once on the connection
+// that came back (sentAgain), and an update is read back there (updateStream). The role-lane
+// migration's consumer listing (ConsumerNames) ends at ctx's end alone; every other call is the
+// JetStream context's own.
+type connectionBoundJetStream struct {
+	nats.JetStreamContext
+	client *Client
+	ctx    context.Context
+}
+
+// boundRequest makes call, a request of js's JetStream context, on its client's connection under
+// js.ctx (RequestOnConnection), handing call opts with the request's context appended in a slice
+// of its own, so the caller's opts are left as they were.
+func boundRequest[T any](js connectionBoundJetStream, opts []nats.JSOpt, call func(...nats.JSOpt) (T, error)) (T, error) {
+	return RequestOnConnection(js.ctx, js.client, func(ctx context.Context) (T, error) {
+		return call(append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+}
+
+func (js connectionBoundJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.StreamInfo(stream, opts...)
+	})
+}
+
+func (js connectionBoundJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.AddStream(cfg, opts...)
+	})
+}
+
+func (js connectionBoundJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
+	})
+}
+
+func (js connectionBoundJetStream) PurgeStream(name string, opts ...nats.JSOpt) error {
+	_, err := boundRequest(js, opts, func(opts ...nats.JSOpt) (struct{}, error) {
+		return struct{}{}, js.JetStreamContext.PurgeStream(name, opts...)
+	})
+	return err
+}
+
+func (js connectionBoundJetStream) ConsumerInfo(stream, name string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.ConsumerInfo(stream, name, opts...)
+	})
+}
+
+func (js connectionBoundJetStream) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
+	})
+}
+
+func (js connectionBoundJetStream) ConsumerNames(stream string, opts ...nats.JSOpt) <-chan string {
+	return requestsUnder(js.ctx, js.JetStreamContext).ConsumerNames(stream, opts...)
 }
 
 // ensureStreamReported ensures the stream through js with what conn's server reports it is
@@ -1180,18 +1316,82 @@ func (c *Client) JS() nats.JetStreamContext {
 	return c.js
 }
 
-// Connected reports whether the client currently has a live NATS connection.
-//
-// It reads the connection under the client's lock (Connection) and its status with that lock
-// released. The status read waits for nats.go's connection lock, which nats.go holds through a
-// reconnect's dial and handshake. Held across that read, the client's lock kept every call that
-// takes it waiting until the attempt ended: the wait of a send for a connection
-// (ensureConnWithContext), Connection and JS, and the reads of the server's refusals. So a
-// Connected call made during a handshake waits for the attempt, and no other call waits behind it.
-// The keeper's pass, an outbox batch's check and a /healthz read call it.
+// Connected reports whether the client currently has a live NATS connection. It reads the flag
+// the connection's events keep (connectedConn, noteConnection) rather than the connection
+// itself, so it waits neither on the client's lock nor on nats.go's, which nats.go holds through a
+// reconnect's dial and handshake, up to the connect timeout at a time. So a Connected call made
+// during a handshake answers at once, and no other call waits behind it. The keeper's pass, an
+// outbox batch's check and a /healthz read call it.
 func (c *Client) Connected() bool {
-	conn := c.Connection()
-	return conn != nil && conn.Status() == nats.CONNECTED
+	return c.ConnectedConn() != nil
+}
+
+// ConnectedConn is the connection the client is installed on and connected over now, and nil
+// while it has none: the flag Connected reads, as the connection it names. A caller that holds a
+// connection of its own compares the two to tell whether it is still the client's, which no read
+// of nats.Conn can answer: a connection the client replaced goes on reading connected while
+// nats.go reconnects it. It is one atomic load, so it waits on no lock either.
+func (c *Client) ConnectedConn() *nats.Conn {
+	return c.connectedConn.Load()
+}
+
+// noteConnection is how a connection's own events move the client's connected flag: nc connected
+// or reconnected (connected set), or nc disconnected or closed. It records the report for nc,
+// installed or not, so an install that comes after it reads it (markConnected), and moves the
+// flag only when nc is the connection the client has installed: nats.go reports the connect of a
+// connection the client dialled before the client has made it c.Conn, and a flag set then would
+// read connected while c.Conn still names the connection before it. A late report of a
+// connection the client has since replaced moves nothing, and a report cannot land after a later
+// one of its own connection: nats.go runs a connection's callbacks in order on one goroutine of
+// that connection's, the client dials a replacement only for a connection that is closed, and
+// the close is the last event of one.
+func (c *Client) noteConnection(nc *nats.Conn, connected bool) {
+	c.connFlagMu.Lock()
+	defer c.connFlagMu.Unlock()
+	if c.connUp == nil {
+		c.connUp = map[*nats.Conn]bool{}
+	}
+	c.connUp[nc] = connected
+	if c.installedConn != nc {
+		return
+	}
+	if connected {
+		c.connectedConn.Store(nc)
+		return
+	}
+	c.connectedConn.Store(nil)
+}
+
+// markConnected records nc as the connection the client has installed and sets the connected
+// flag from what nc's events have reported so far (noteConnection), or from dialedUp, how the dial
+// returned nc, when they have reported nothing yet. It runs under c.mu, after c.Conn names nc, so a
+// reader that sees the flag sees c.Conn too. An event of nc that the install did not see takes
+// connFlagMu after it and moves the flag itself, so no order of the two leaves the flag at odds
+// with nc's last event. It forgets every other connection's reports: none of them moves the flag
+// again.
+func (c *Client) markConnected(nc *nats.Conn, dialedUp bool) {
+	c.connFlagMu.Lock()
+	defer c.connFlagMu.Unlock()
+	up, reported := c.connUp[nc]
+	if !reported {
+		up = dialedUp
+	}
+	c.connUp = map[*nats.Conn]bool{nc: up}
+	c.installedConn = nc
+	if up {
+		c.connectedConn.Store(nc)
+		return
+	}
+	c.connectedConn.Store(nil)
+}
+
+// afterInstallForTest runs the client's afterInstall test hook, when one is set, once an install
+// has set the connected flag and let go of c.mu: the moment a connection event can land after the
+// install. Nothing outside a test sets it.
+func (c *Client) afterInstallForTest(nc *nats.Conn) {
+	if c.afterInstall != nil {
+		c.afterInstall(nc)
+	}
 }
 
 // log is the logger the client writes its lines to: WithLogger's, or followsDefault, which also
@@ -1500,7 +1700,7 @@ const drainWatchStep = 10 * time.Millisecond
 //
 // The session the drain began in is conn read CONNECTED with reconnects as its count, both read
 // after changed was taken and before the drain. A wake does not by itself say that session ended:
-// nats.go queues a reconnect's callback, which reports the event (onReconnect), under the
+// nats.go queues a reconnect's callback, which reports the event (queueReconnect), under the
 // connection's lock and runs it later on its callback goroutine, so a flush that waited for that
 // lock can return, and a drain begin, on the reconnected session before the callback has run. The
 // event it then reports is that reconnect, one the drain began after, and an unsubscribe there
@@ -1687,7 +1887,8 @@ func (c *Client) CoreSubOK() bool {
 // server delivered before the revocation, the unsubscribe would drop them, and its handler takes
 // them first. On a connection that is not connected, the reconnect sends every subscription again.
 // And when the refusal is of an earlier session of the connection (sentOn, sentReconnects):
-// nats.go has reconnected and sent the subscription again, and onReconnect has not run yet.
+// nats.go has reconnected and sent the subscription again, and countConnectionEvent has not run
+// yet.
 func (c *Client) ResendRefusedCore() error {
 	c.mu.Lock()
 	conn, js := c.Conn, c.js
@@ -1758,8 +1959,8 @@ func (c *Client) ResendRefusedCore() error {
 	if err := c.endBind(subscription, sub, err, false); err != nil {
 		// No group accepted it, or a reconnect overtook the send (errSendSuperseded): the refused
 		// subscription the client held stays in place, and so does its mark. After a reconnect,
-		// nats.go has sent that subscription again and onReconnect has cleared the mark, so the
-		// new server's answer to it decides, as for any reconnect.
+		// nats.go has sent that subscription again and countConnectionEvent has cleared the mark,
+		// so the new server's answer to it decides, as for any reconnect.
 		if errors.Is(err, errNoQueueAccepted) || errors.Is(err, errSendSuperseded) {
 			return nil
 		}
@@ -1770,8 +1971,8 @@ func (c *Client) ResendRefusedCore() error {
 	c.mu.Lock()
 	c.subscriptionsMu.Lock()
 	if subscription.active == sub {
-		// A reconnect during the send has cleared the mark (onReconnect), and the new server's
-		// answer to the subscriptions nats.go sent it again is the one that counts.
+		// A reconnect during the send has cleared the mark (countConnectionEvent), and the new
+		// server's answer to the subscriptions nats.go sent it again is the one that counts.
 		if c.Conn == conn && reconnectsOf(conn) == reconnects {
 			subscription.refused = false
 		}
@@ -1905,10 +2106,10 @@ func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
 }
 
 // connOpen reports whether the client holds a connection nats.go has not closed. It reads the
-// connection under the client's lock and its status with that lock released, as Connected does:
-// the status read waits for nats.go's connection lock, which a reconnect's handshake holds, and no
-// lock of the client's is held across it. SubOK and CoreSubOK read it for a /healthz answer, and a
-// recovery reads it each pass (subscriptionsHealthy).
+// connection under the client's lock and its status with that lock released: the status read
+// waits for nats.go's connection lock, which a reconnect's handshake holds, and no lock of the
+// client's is held across it. SubOK and CoreSubOK read it for a /healthz answer, and a recovery
+// reads it each pass (subscriptionsHealthy).
 func (c *Client) connOpen() bool {
 	conn := c.Connection()
 	return conn != nil && conn.Status() != nats.CLOSED
@@ -1917,9 +2118,10 @@ func (c *Client) connOpen() bool {
 // subscriptionRefusal reads the server's refusal of a subscription: the subject, the queue group
 // when there is one, and the sid when the refusal is a configuration reload's revocation of a
 // subscription it had accepted. A refusal of a subscription the client sent reads `Permissions
-// Violation for Subscription to "<subject>" using queue "<queue>"` (nats-server v2.10.29
-// client.go:4959-4964); a revocation reads `Permissions Violation for Subscription to "<subject>"
-// (sid "<sid>")` (client.go:5300) and names no queue group whether the subscription had one or not.
+// Violation for Subscription to "<subject>" using queue "<queue>"` (nats-server v2.15.1
+// client.go:5915-5919); a revocation reads `Permissions Violation for Subscription to "<subject>"
+// (sid "<sid>")`, with `using queue "<queue>"` before the sid when the subscription has one
+// (client.go:6268-6271; nats-server before v2.15.0 named no queue group in a revocation at all).
 // The server writes each name with %q, so each is matched as a whole Go-quoted string, escapes
 // included, and unquoted before it is compared: a name holding a double quote or a backslash
 // reaches the text escaped. nats.go's own reading (permissionsRe and permissionsQueueRe, nats.go
@@ -1940,15 +2142,16 @@ var subscriptionRefusal = regexp.MustCompile(`Subscription to ("(?:[^"\\]|\\.)*"
 // answered its own denial (window.acknowledged).
 //
 // A refusal of a subscription the client sent names its subject and, when it has one, its queue
-// group, and both must be the core registration's. A reload's revocation names the subject and the
-// sid but never the queue group, so its subject alone identifies the core registration: the client
-// holds one core subscription, and nats.go itself leaves that refusal unrecorded on a queue
-// subscription and the subscription valid, though the server has removed it.
+// group, and both must be the core registration's. A reload's revocation names the subject, the
+// sid, and from v2.15.0 the queue group, so a revocation that names none is identified by its
+// subject alone: the client holds one core subscription, and nats.go itself leaves that refusal
+// unrecorded on a queue subscription and the subscription valid, though the server has removed it.
 //
 // The mark cannot outlive the refusal: nats.go queues the reconnect callback, which clears it
-// (onReconnect), before any refusal of the subscriptions it re-sent, since it holds the
-// connection's lock from the re-send until that callback is queued and reads the server's -ERR
-// only under that lock, and both callbacks run in order on one goroutine. c.mu is held across the
+// (countConnectionEvent, on the callback goroutine, before the event's own work is queued),
+// before any refusal of the subscriptions it re-sent, since it holds the connection's lock from
+// the re-send until that callback is queued and reads the server's -ERR only under that lock,
+// and both callbacks run in order on one goroutine. c.mu is held across the
 // mark so a replacement connection cannot be installed between the check and the mark.
 func (c *Client) onAsyncError(nc *nats.Conn, err error) {
 	if errors.Is(err, nats.ErrSlowConsumer) {
@@ -2068,6 +2271,9 @@ func (c *Client) Close() {
 	c.stop()
 	c.mu.Lock()
 	if c.Conn != nil {
+		// The close reports itself (noteConnection), but only once nats.go has run its callback:
+		// a read right after this call answers that the client has no connection either way.
+		c.noteConnection(c.Conn, false)
 		c.Conn.Close()
 	}
 	c.mu.Unlock()
@@ -2109,6 +2315,9 @@ func (c *Client) Drain(timeout time.Duration) error {
 	c.mu.Lock()
 	c.stop()
 	conn := c.Conn
+	// A draining connection is no connection to serve with, as it read before this flag
+	// (nats.Conn.Status reads DRAINING_SUBS, never CONNECTED).
+	c.noteConnection(conn, false)
 	c.drainedReconnects = conn.Stats().Reconnects
 	c.mu.Unlock()
 	defer c.awaitKeeper()
@@ -2215,6 +2424,16 @@ func (c *Client) ensureConn() error {
 	return c.ensureConnWithContext(context.Background())
 }
 
+// AwaitConnected returns once the client has a usable connection, waiting within ctx for one
+// nats.go is reconnecting, as every call of the client's own does first (ensureConnWithContext).
+// A caller that reads through the client's connection by a handle opened outside this package,
+// a KV read with the reconnect buffer off (connect.go's options), would otherwise fail at once
+// while the connection reconnects; it waits here first instead. Its error is ctx's, or the
+// client's stop, or the dial of a replacement for a closed connection.
+func (c *Client) AwaitConnected(ctx context.Context) error {
+	return c.ensureConnWithContext(ctx)
+}
+
 // reconnectRecheck is how long ensureConnWithContext's wait for a reconnect goes without reading
 // the connection's own status again. nats.go runs a connection's callbacks one after another on
 // one goroutine, so the reconnect's event (ConnectionChanged) can wait behind a slow callback
@@ -2297,7 +2516,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 
-		nc, err := connectWithContext(ctx, c.log(), c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		nc, err := connectWithContext(ctx, c.log(), c.name, c.urls, c.connectionSettings, c.dialer, c.callbacks(), c.reconnectErrClock)
 		if err != nil {
 			return err
 		}
@@ -2332,9 +2551,12 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		c.Conn = nc
 		c.noteSeverable(nc)
 		c.js = c.readsOwnRefusals(nc, js)
+		// connectWithContext returns only a connection that connected.
+		c.markConnected(nc, true)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()
+		c.afterInstallForTest(nc)
 		return nil
 	}
 }

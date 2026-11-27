@@ -62,6 +62,21 @@ func LiveChunkKeys(t *testing.T, kv natsgo.KeyValue) []string {
 	return keys
 }
 
+// HeadLayout is the layout the head under key names, read from the bucket through kv, a raw
+// handle, so no store's copy answers it. It fails the test unless that head is a manifest.
+func HeadLayout(t *testing.T, kv natsgo.KeyValue, key string) kvchunk.Layout {
+	t.Helper()
+	head, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read %s's head from the bucket: %v", key, err)
+	}
+	layout, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !layout.Chunked() {
+		t.Fatalf("%s's head holds %.60q (%v), want a manifest", key, head.Value(), err)
+	}
+	return layout
+}
+
 // LiveKeys reads every key kv still holds a message for, and what that message is.
 func LiveKeys(t *testing.T, kv natsgo.KeyValue) map[string]natsgo.KeyValueOp {
 	t.Helper()

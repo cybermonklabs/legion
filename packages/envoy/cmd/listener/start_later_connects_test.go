@@ -256,7 +256,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			cfg := config.Service{MachineID: "start-later-connects", NATSURLs: []string{uri}, NATSReplicas: 1}
 			start := newNATSStart(listenerCredentialWait)
 			base := serveStartRoutes(t, start)
-			client, err := connectListenerBus(cfg, nil, start)
+			client, err := connectListenerBus(cfg, nil, listenerTryInstance, start)
 			if err != nil {
 				t.Fatalf("the start's main client did not connect while the server admitted its nkey: %v", err)
 			}

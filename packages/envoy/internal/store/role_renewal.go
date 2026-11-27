@@ -104,7 +104,7 @@ type RoleRenewal struct {
 // session writes. The caller is a heartbeat and must not fail over any of them (subscribeHandler
 // logs and goes on).
 //
-// Each bucket call waits no longer than ctx (bus.Bounded): the route passes its request's own
+// Each bucket call waits no longer than ctx (bus.BoundedOn): the route passes its request's own
 // context. A write ctx abandoned may still land after this answer, which is safe - it is
 // conditional on the revision it read and renews that claim alone.
 //

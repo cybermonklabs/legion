@@ -265,7 +265,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 			return bind, err
 		}
 		// A reconnect during the wait re-subscribes the subscription the failed attempt registered
-		// (bus.Client.afterReconnect, off nats.go's callback goroutine and never under a hook run's
+		// (bus.Client.workThroughReconnects, off nats.go's callback goroutine and never under a hook run's
 		// context), which binds it once the durable is free. Another attempt would replace that
 		// handle with a bind racing the server's release of it, which can be refused with "consumer
 		// is already bound to a subscription".

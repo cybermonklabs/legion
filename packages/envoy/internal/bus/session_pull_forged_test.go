@@ -78,7 +78,7 @@ func forgedWait(t *testing.T) context.Context {
 // everything the connection sent before the PING, the subscription among it.
 func requireSubscribed(t *testing.T, ctx context.Context, pull *SessionPull) {
 	t.Helper()
-	if err := pull.conn.FlushWithContext(ctx); err != nil {
+	if err := pull.watch.conn.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flush the pull's connection, so the server holds its inbox subscription: %v", err)
 	}
 }

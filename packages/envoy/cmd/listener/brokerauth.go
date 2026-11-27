@@ -309,11 +309,11 @@ type spentProofs struct {
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
 	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
 	key := hex.EncodeToString(sum[:])
-	// Bounded ends the wait with the request, as every other bucket call this listener makes
-	// does, and waits within it for a connection nats.go is reconnecting; the abandoned create
-	// may still land once sent, which is the right way round for a record whose whole purpose is
-	// to be there.
-	revision, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (uint64, error) {
+	// BoundedOn ends the wait with the request, or with the connection the create went out on, as
+	// the session, interest and role-claim bucket calls a request makes do, and waits within it for
+	// a connection nats.go is reconnecting; the abandoned create may still land once sent, which is
+	// the right way round for a record whose whole purpose is to be there.
+	revision, _, err := bus.BoundedOn(ctx, s.kv, func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})
 	if bus.IsCASConflict(err) {
@@ -357,14 +357,15 @@ func withProofSpend(ctx context.Context, spend *proofSpend) context.Context {
 // release gives the proof back: it deletes the record this request's create made, and no other,
 // since the delete is made against that create's revision. The proof can then be presented once
 // more inside its window, as the first presentation could. It runs on a context the request's own
-// end does not cancel, bounded by proofReleaseBudget, and a spend with no record is no call.
+// end does not cancel, bounded by proofReleaseBudget and by the connection the delete went out on
+// (bus.BoundedOn), and a spend with no record is no call.
 func (s *proofSpend) release(ctx context.Context) error {
 	if s.key == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
-	_, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (struct{}, error) {
+	_, _, err := bus.BoundedOn(ctx, s.kv, func() (struct{}, error) {
 		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
 	})
 	s.key = ""

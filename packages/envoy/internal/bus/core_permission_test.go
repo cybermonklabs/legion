@@ -259,10 +259,11 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 
 // A reload that takes the grant away revokes the core subscription the server had accepted, and
 // the server says so in a refusal of its own form (`Permissions Violation for Subscription to
-// "<subject>" (sid "<sid>")`), naming no queue group: CoreSubOK reads it as refused while the
-// connection stays up, though nats.go keeps the subscription valid and leaves the refusal of a
-// queue subscription unrecorded. A restart onto a configuration that grants it again, to which the
-// client re-sends the subscription, makes it OK again.
+// "<subject>" using queue "<queue>" (sid "<sid>")`, which from nats-server v2.15.0 names the
+// queue group a revoked queue subscription has and before it named none): CoreSubOK reads it as
+// refused while the connection stays up, though nats.go keeps the subscription valid and leaves
+// the refusal of a queue subscription unrecorded. A restart onto a configuration that grants it
+// again, to which the client re-sends the subscription, makes it OK again.
 func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	const (
 		subject = "notifications.>"
@@ -462,7 +463,7 @@ func TestCoreSubOKStaysFalseThroughAResendTheServerRefuses(t *testing.T) {
 
 // A refusal of the session before a reconnect is not answered. Once nats.go has reconnected, it has
 // sent the subscription again to the new server, but the mark it set on the old session stays until
-// the reconnect callback clears it (onReconnect). A send in that gap sent a second SUB and
+// the reconnect callback clears it (countConnectionEvent). A send in that gap sent a second SUB and
 // unsubscribed the one the new server had just accepted. Here a disconnect hook holds nats.go's
 // callback goroutine, so the reconnect callback waits while the client is connected to the
 // restarted server, which grants the subscription: ResendRefusedCore sends nothing, and the server

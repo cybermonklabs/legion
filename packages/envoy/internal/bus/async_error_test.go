@@ -29,7 +29,7 @@ func TestAConsumerNotActiveReportIsAWarning(t *testing.T) {
 	t.Parallel()
 	logs := captureLogs()
 
-	report := options(logs.logger, "async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
+	report := options(logs.logger, "async-error-test", nil, connectCallbacks{}, nil).AsyncErrorCB
 	report(nil, &nats.Subscription{Subject: "_INBOX.watcher"}, nats.ErrConsumerNotActive)
 	report(nil, &nats.Subscription{Subject: "_INBOX.other"}, nats.ErrSlowConsumer)
 	report(nil, &nats.Subscription{Subject: "_INBOX.recreate"}, fmt.Errorf("%w: recreating ordered consumer", nats.ErrConsumerNotFound))
@@ -109,7 +109,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 
 			name := "handshake-" + row.name + "-test"
 			url := "nats://" + listener.Addr().String()
-			opts := options(logs.logger, name, []string{url}, nil, nil, nil, nil, nil)
+			opts := options(logs.logger, name, []string{url}, connectCallbacks{}, nil)
 			opts.ReconnectWait = 50 * time.Millisecond
 			nc, err := opts.Connect()
 			if err != nil {
@@ -147,7 +147,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 
 	// The same EOF for a connection that is connected, and a slow consumer, stay ERRORs.
 	other := captureLogs()
-	report := options(other.logger, "other-async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
+	report := options(other.logger, "other-async-error-test", nil, connectCallbacks{}, nil).AsyncErrorCB
 	report(&nats.Conn{}, nil, io.EOF)
 	report(nil, &nats.Subscription{Subject: "_INBOX.slow"}, nats.ErrSlowConsumer)
 	var levels []string

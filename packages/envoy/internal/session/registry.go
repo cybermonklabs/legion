@@ -859,7 +859,7 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 	return r.PutWithin(context.Background(), sessionID, entry)
 }
 
-// PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.Bounded): an
+// PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.BoundedOn): an
 // HTTP route passes its request's own context. While nats.go reconnects the bucket's connection a
 // call waits for it within ctx, and a ctx that ends first fails it as bus.ErrReconnecting with
 // nothing sent, so it never lands after this answer. A write ctx abandoned once it was sent may
@@ -1025,7 +1025,7 @@ var errEntryWritesLost = fmt.Errorf("%d conditional writes lost to other writers
 var errUndecodableEntry = errors.New("the stored value is no session entry")
 
 // readEntry reads sessionID's entry from the bucket by a direct get through kv, waiting no longer
-// than ctx (bus.Bounded), with the revision it was read at: revision 0 and no error for a key the
+// than ctx (bus.BoundedOn), with the revision it was read at: revision 0 and no error for a key the
 // bucket holds no entry under, and the revision with errUndecodableEntry for a value DecodeEntry
 // refuses for the key. A direct get can answer a record the server stored as its copy of another
 // key, which names that other key: DecodeEntry refuses a session_id that is null, empty or another
@@ -1035,7 +1035,7 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // refused for good, since the record carries another stream's first Nats-Sequence header; PutWithin
 // reads the stream leader on the retry (readEntryFromLeader), which reports the true sequence.
 func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
-	got, _, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, _, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return SessionEntry{}, 0, nil
 	}
@@ -1051,7 +1051,7 @@ func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionE
 
 // writeEntryAt is the one write of sessionID's entry every write of it sends (PutWithin,
 // PutClearingGap, rewriteStoredEntry): entry, created where revision is 0 and updated at revision otherwise,
-// waiting no longer than ctx (bus.Bounded), and put in the copy through epoch once it lands
+// waiting no longer than ctx (bus.BoundedOn), and put in the copy through epoch once it lands
 // (kvwatch.Copy.Put), so a write made through a handle on a bucket since recreated is dropped
 // rather than fencing out the new bucket's rows. lost reports a write another writer landed first,
 // as bus.IsCASConflict reads it (it reads a replicated bucket's answer too): the entry is left as
@@ -1070,7 +1070,7 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 	if err != nil {
 		return false, err
 	}
-	written, _, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) {
+	written, _, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
 		if revision == 0 {
 			return kv.Create(sessionID, buf)
 		}
@@ -1097,10 +1097,10 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // a delete or purge marker, a put the server wrote (bus.LeaderServerWritten), and a put DecodeEntry
 // refuses for sessionID - a record the server stored at the key's subject, a direct get's copy or
 // a RePublish among them, which no write of the entry may take for a writer's. A read the leader
-// refused or did not answer is the error, since no write may proceed over a key it could not read
-// from the leader.
+// refused or did not answer, the loss of its connection among them (bus.BoundedOn), is the error,
+// since no write may proceed over a key it could not read from the leader.
 func readEntryFromLeader(ctx context.Context, kv bus.KeyValue, sessionID string) (entry SessionEntry, revision uint64, found bool, err error) {
-	leader, err := kv.ReadFromLeader(ctx, sessionID)
+	leader, _, err := bus.BoundedOn(ctx, kv, func() (bus.LeaderEntry, error) { return kv.ReadFromLeader(ctx, sessionID) })
 	if err != nil {
 		return SessionEntry{}, 0, false, err
 	}
@@ -1278,8 +1278,8 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key alphabet and which an
 // earlier build or a direct bucket write could leave as a role holder. Any other error is a read
 // that did not answer, ctx's end among them: nats.go's KV read takes no context and waits out
-// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and lets that read
-// finish on its own (bus.Bounded).
+// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends, or when the read's
+// connection is lost (bus.BoundedOn), and lets that read finish on its own.
 //
 // A direct get of a clustered bucket is answered by any copy near enough to current, so this
 // read can report a record the bucket holds as missing while the copy answering catches up. A
@@ -1294,7 +1294,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
@@ -1304,23 +1304,28 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // RefreshFromLeader is Refresh with the leader of the session bucket's stream answering the read
 // (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches: it
 // applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
-// every error the same way, ctx's end included.
+// every error the same way, ctx's end included. It is bounded as Refresh is (bus.BoundedOn):
+// nats.go fails no request its connection drops, so a leader read lost with its connection ends
+// at the loss, with bus.ErrRequestLostWithConnection, rather than holding its caller until ctx ends.
 //
-// It is the read for the callers that cannot afford a stale miss, because a miss makes them take
-// something away from the session on the strength of the session having no record at all: the
-// listener's delete of a session's JetStream consumer, which re-reads this bucket under the
-// session's lock and deletes only where the session is gone from it; the interest and role claim
-// reapers' test of a session the cache does not hold (cmd/listener's sessionMayBeLive); and a
-// soft role claim's reads of the holder it would take the role from (cmd/listener's
-// roleSupersessionVerdict). A copy that has not applied a relaunch's registration would answer
-// that read "not found", and the delete would then remove the consumer of a live relaunch, whose
-// relay stops until it registers again, the reaper a live session's interest or role, or the soft
-// claim a live holder's role. Every other caller asks Refresh, which costs the server less: a
-// direct get is answered by any copy that is near enough to current, where this read is one more
-// thing for the leader to do.
+// It is the read for the callers that cannot afford a stale answer, because they take something
+// away from the session on a miss or decide a write on the record: the listener's delete of a
+// session's JetStream consumer, which re-reads this bucket under the session's lock and deletes
+// only where the session is gone from it; the interest and role claim reapers' test of a session
+// the cache does not hold (cmd/listener's sessionMayBeLive); a soft role claim's reads of the
+// holder it would take the role from (roleSupersessionVerdict); the claim route's read of its
+// claimant (POST /v1/roles/set), which decides the claim's write; and the registration view of GET
+// /v1/registry/<session_id> (bucketSessionEntry), whose caller names the instance id it reads in
+// the delete that follows. A copy behind the leader would answer "not found" for a live session,
+// or an instance id it has replaced, and a live session would lose its consumer, interest or role,
+// a claimant be refused, or a stop be kept as another instance's. Every other caller asks Refresh,
+// which costs the server less: a direct get is answered by any copy near enough to current.
 func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, err := kv.GetFromLeader(ctx, sessionID)
+	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, sessionID) })
+	if !answered {
+		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

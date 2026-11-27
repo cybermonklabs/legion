@@ -17,15 +17,17 @@ import (
 
 // deleteInterest deletes sessionID's interest at the revision the bucket stream's leader reports
 // (bus.KeyValue.DeleteAtRead, whose read is never a copy's), each bucket call waiting no longer
-// than ctx (bus.Bounded), and then the chunks of the record it deleted when that record is the row
-// the cache holds, joined, for the session. A manifest the delete read but no read of this listener
-// joined into the session's row names chunks never proved to be this record's, so they are left to
-// the reaper's collection, which takes only chunks no row names. A delete ctx abandoned may still
-// land after this answer, and that is safe: it deletes only the revision it read, so a write that
-// landed since is kept, and its chunks are left to the reaper's collection. A record the read found
-// absent is left alone, delete and all, so a registration that stored the session's row between
-// that read and this delete keeps it; the cache is brought in line with the bucket either way
-// (reconcileDeleted).
+// than ctx (bus.BoundedOn), and then the chunks of the record it deleted when that record is the
+// row the cache holds, joined, for the session. Which record the delete took is the leader's
+// answer, never the cache's: the cache's row only proves that the chunks of that generation are
+// this session's, so a cache behind the bucket, holding another generation, deletes none of them.
+// A manifest the delete read but no read of this listener joined into the session's row names
+// chunks never proved to be this record's, so they are left to the reaper's collection, which
+// takes only chunks no row names. A delete ctx abandoned may still land after this answer, and that
+// is safe: it deletes only the revision it read, so a write that landed since is kept, and its
+// chunks are left to the reaper's collection. A record the read found absent is left alone, delete
+// and all, so a registration that stored the session's row between that read and this delete keeps
+// it; the cache is brought in line with the bucket either way (reconcileDeleted).
 func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
@@ -34,7 +36,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	revision := r.cache.FenceFor(epoch, sessionID)
 	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, kv.Conn(), func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -66,7 +68,8 @@ func rowOf(sessionID string) func(value []byte) bool {
 // that row stands. layout is the layout of the record read at revision, a row of this session (the
 // cache's rows and a bucket read's both decode through decodeRecord, which gives a layout only to a
 // record boundInterest binds to its key), whose chunks a delete the bucket took deletes after
-// it (deleteChunks). Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
+// it (deleteChunks): the delete landing at revision is what proves that record was the one the
+// bucket held. Each bucket call waits no longer than ctx (bus.BoundedOn). A delete ctx abandoned
 // may still land after this answer, and that is safe: it deletes the one revision it names, so a
 // write that landed since is kept, and the chunks of the record it deleted are left to the
 // reaper's collection.
@@ -81,7 +84,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 		return false, nil
 	}
 	kv, epoch := r.watcher.Handle()
-	_, answered, err := bus.Bounded(ctx, kv.Conn(), func() (struct{}, error) {
+	_, answered, err := bus.BoundedOn(ctx, kv, func() (struct{}, error) {
 		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
@@ -154,7 +157,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 }
 
 // UpsertWithin merges topics into item.SessionID's interest record (mergeForUpsert) and writes it,
-// stamped with the registry's clock, each bucket call waiting no longer than ctx (bus.Bounded): an
+// stamped with the registry's clock, each bucket call waiting no longer than ctx (bus.BoundedOn): an
 // HTTP route passes its request's own context. It returns the record as it now stands. A record
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
 // registry logs that at WARN naming the session.
@@ -570,17 +573,23 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 // roleClaimFromLeader is RoleClaim with the leader of the role bucket's stream answering the read
 // (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches, so it
 // answers the newest claim the bucket took, also one written a moment ago. ctx bounds the whole
-// read. It answers as RoleClaim answers: a zero claim for a role no record claims (a marker
-// included), the record's revision on the claim, ErrMalformedRoleClaim for a record that is not a
-// claim, and the refusal of a key NATS refuses (bus.ErrRefused). A role bucket handle whose legacy
-// half answers the leader's read itself (leaderReader) is read through it.
+// read, and so does its connection (bus.BoundedOn): a read whose connection is lost before the
+// leader answers fails at the reconnect rather than waiting out ctx, since nats.go fails no
+// request its connection drops. It answers as RoleClaim answers: a zero claim for a role no record
+// claims (a marker included), the record's revision on the claim, ErrMalformedRoleClaim for a
+// record that is not a claim, and the refusal of a key NATS refuses (bus.ErrRefused). A role
+// bucket handle whose legacy half answers the leader's read itself (leaderReader) is read through
+// it.
 func (r *Registry) roleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
 	read := roles.GetFromLeader
 	if reader, answers := roles.Legacy().(leaderReader); answers {
 		read = reader.GetFromLeader
 	}
-	entry, err := read(ctx, role)
+	entry, answered, err := bus.BoundedOn(ctx, roles, func() (nats.KeyValueEntry, error) { return read(ctx, role) })
+	if !answered {
+		return RoleClaim{}, fmt.Errorf("read role %s's claim from the bucket's stream leader: %w", role, err)
+	}
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return RoleClaim{}, nil
 	}
@@ -631,7 +640,7 @@ func (h LaneHolders) Keeps(sessionID, topic string) bool {
 
 // Remove releases the role claims of sessionID that release authorises (RoleReleaseAuthority)
 // and removes topics from its interest record, or deletes the record when topics is empty, each
-// bucket call waiting no longer than ctx (bus.Bounded): an HTTP route passes its request's own
+// bucket call waiting no longer than ctx (bus.BoundedOn): an HTTP route passes its request's own
 // context. A write or delete ctx abandoned may still land after this answer;
 // releaseReadRoleClaim, deleteInterest and removeInterestTopics each say why that is safe. A
 // record this build cannot decode (ErrMalformedInterest) is deleted all the same; removing some

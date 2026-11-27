@@ -1452,10 +1452,14 @@ func maxConsumersRefused(err error) bool {
 	return err != nil && strings.Contains(err.Error(), maxConsumersRefusal)
 }
 
-// unanswered reports whether err is a JetStream request's wait running out with no answer, rather
-// than the server's refusal.
+// unanswered reports whether err is a JetStream request that drew no answer, rather than the
+// server's refusal: its wait ran out, or it was lost with its connection
+// (ErrRequestLostWithConnection, which the stream's ensure on a connection event answers through
+// connectionBoundJetStream). A lost request is sent again at once (sentAgain), since its wait ended
+// at the reconnect that dropped it rather than at its deadline, and the send after it goes out on
+// the connection that came back.
 func unanswered(err error) bool {
-	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRequestLostWithConnection)
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of

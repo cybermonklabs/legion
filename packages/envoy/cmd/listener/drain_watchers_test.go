@@ -67,6 +67,8 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 // server to remove.
 func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 	t.Parallel()
+	// instance is the listener's instance, which names its main client (mainConnection).
+	const instance = "drain-watchers-pod"
 	binary := cmdtest.Build(t, "envoy-listener")
 	for _, test := range []struct {
 		name string
@@ -88,7 +90,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			srv, uri := testnats.Start(t)
 			testnats.Connect(t, uri).Close()
-			listener := startListenerProcess(t, binary, uri, "drain-watchers")
+			listener := startListenerProcess(t, binary, uri, "drain-watchers", "ENVOY_INSTANCE_ID="+instance)
 			listener.waitHealthy(t)
 
 			admin := testnats.Connect(t, uri)
@@ -120,7 +122,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 			// Each bucket's replacement is waited for once both are lost, so the waits overlap.
 			if test.replaced {
 				for _, bucket := range buckets {
-					awaitReplacedConsumer(t, js, listener, "KV_"+bucket, deleted[bucket])
+					awaitReplacedConsumer(t, js, listener, instance, "KV_"+bucket, deleted[bucket])
 				}
 			}
 			if test.frozen {
@@ -129,7 +131,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				// The client pings every second and calls the connection stale at the second
 				// ping unanswered (bus/connect.go), and then reconnects, which a frozen server
 				// never completes.
-				lost := func() bool { lostAtDrain, _ := mainConnection(listener.Output.String()); return lostAtDrain }
+				lost := func() bool { lostAtDrain, _ := mainConnection(listener.Output.String(), instance); return lostAtDrain }
 				if !testwait.Holds(listenerWaitBound(t), 100*time.Millisecond, lost) {
 					t.Fatalf("the listener's connection never read as lost under a frozen server:\n%s", listener.Output.String())
 				}
@@ -147,7 +149,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				}
 			}
 			everyRecord := func(map[string]any) bool { return true }
-			lostAtDrain, remade := mainConnection(output)
+			lostAtDrain, remade := mainConnection(output, instance)
 			leftToServer := 0
 			for _, watcher := range listenerKVWatchers {
 				ended := countRecords(listener, watcher+" watcher ended", everyRecord) > 0
@@ -260,19 +262,27 @@ func busRecords(output string, msgs ...string) []map[string]string {
 	return records
 }
 
-// mainConnection reads the listener's main client's connection (the client named envoy) from
-// internal/bus's own records in output, in the order it wrote them. lostAtDrain: a disconnect
-// carrying the error that ended the connection came after its last reconnect, so the connection was
-// still lost when the shutdown drained it. A disconnect with no error is a close, which leaves a
-// lost connection lost: nats.go's close reports one whenever the connection has a socket (nats.go
-// v1.55.0 nats.go, close), and a reconnect to a frozen server has one, since the kernel still
-// accepts the dial, so the drain's close of a connection still reconnecting can log one after the
-// loss. remade: it reconnected at least once, which makes every KV watcher again (the reconnect
-// hook's rewatch).
-func mainConnection(output string) (lostAtDrain, remade bool) {
+// mainConnection reads the connection of the main client of the listener running as instance from
+// internal/bus's own records in output, in the order it wrote them. That client is named
+// `envoy-listener <instance>` (connectListenerBus), and the bus writes in a line's name field the
+// name its connection presents (bus.WithName): that name, followed by a space and the binary's
+// build when the binary records one (connectionName). cmdtest builds the listener with none
+// (-buildvcs=false, no stamped commit), so the field is `envoy-listener <instance>` alone, which
+// slog quotes for its space. It is compared whole, since the listener's other clients write the
+// same lines under names of their own: the role lane's `envoy-role-lane`, the session consumers'
+// `envoy-session-consumers` and the relay sockets' `envoy-relay-sockets`. lostAtDrain: a
+// disconnect carrying the error that ended the connection came after its last reconnect, so the
+// connection was still lost when the shutdown drained it. A disconnect with no error is a close,
+// which leaves a lost connection lost:
+// nats.go's close reports one whenever the connection has a socket (nats.go v1.55.0 nats.go,
+// close), and a reconnect to a frozen server has one, since the kernel still accepts the dial, so
+// the drain's close of a connection still reconnecting can log one after the loss. remade: it
+// reconnected at least once, which makes every KV watcher again (the reconnect hook's rewatch).
+func mainConnection(output, instance string) (lostAtDrain, remade bool) {
+	name := "envoy-listener " + instance
 	for _, fields := range busRecords(output, "envoy nats disconnected", "envoy nats reconnected") {
 		switch {
-		case fields["name"] != "envoy":
+		case fields["name"] != name:
 		case fields["msg"] == "envoy nats reconnected":
 			lostAtDrain, remade = false, true
 		case fields["error"] != "":
@@ -284,14 +294,18 @@ func mainConnection(output string) (lostAtDrain, remade bool) {
 
 // mainConnection reads the main connection's state from the bus's records alone: the error a
 // disconnect carries, the order of the lines and the client's name, not a line's text elsewhere.
+// The name it reads is the listener's main client's whole name field, `envoy-listener <instance>`
+// (mainConnection says why), which slog's text handler quotes for its space; the role lane's line,
+// under a name of its own, is not read.
 func TestTheShutdownTestReadsTheMainConnectionAtTheDrain(t *testing.T) {
 	t.Parallel()
 	const (
-		mainLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name=envoy error="nats: stale connection"`
-		mainClosed = `2026/11/18 07:00:02 INFO envoy nats disconnected name=envoy`
-		mainBack   = `2026/11/18 07:00:03 INFO envoy nats reconnected name=envoy url=nats://127.0.0.1:4222`
+		instance   = "pod-a"
+		mainLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name="envoy-listener pod-a" error="nats: stale connection"`
+		mainClosed = `2026/11/18 07:00:02 INFO envoy nats disconnected name="envoy-listener pod-a"`
+		mainBack   = `2026/11/18 07:00:03 INFO envoy nats reconnected name="envoy-listener pod-a" url=nats://127.0.0.1:4222`
 		laneLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name=envoy-role-lane error="nats: stale connection"`
-		jsonQuote  = `{"time":"2026-11-18T07:00:01Z","level":"INFO","msg":"envoy nats disconnected name=envoy error=x"}`
+		jsonQuote  = `{"time":"2026-11-18T07:00:01Z","level":"INFO","msg":"envoy nats disconnected name=\"envoy-listener pod-a\" error=x"}`
 	)
 	for _, row := range []struct {
 		name                string
@@ -306,7 +320,7 @@ func TestTheShutdownTestReadsTheMainConnectionAtTheDrain(t *testing.T) {
 		{name: "lost and made again before the drain", lines: []string{mainLost, mainBack, mainClosed}, remade: true},
 		{name: "made again, then lost again at the drain", lines: []string{mainLost, mainBack, mainLost, mainClosed}, lostAtDrain: true, remade: true},
 	} {
-		lostAtDrain, remade := mainConnection(strings.Join(row.lines, "\n"))
+		lostAtDrain, remade := mainConnection(strings.Join(row.lines, "\n"), instance)
 		if lostAtDrain != row.lostAtDrain || remade != row.remade {
 			t.Errorf("%s: mainConnection = lost at the drain %t, remade %t; want %t, %t", row.name, lostAtDrain, remade, row.lostAtDrain, row.remade)
 		}
@@ -374,12 +388,12 @@ func cacheWatcherConsumer(t *testing.T, js jetstream.JetStream, stream string) s
 // (js.go:2520). Such a run cannot judge nats.go's reset. Without a reconnect only nats.go's consumer
 // counts, so a broken ordered reset still fails the row. It logs, under -v, which consumer replaced
 // the deleted one.
-func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, listener *listenerProcess, stream, deleted string) {
+func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, listener *listenerProcess, instance, stream, deleted string) {
 	t.Helper()
 	var by string
 	remade := false
 	replaced := func() bool {
-		_, remade = mainConnection(listener.Output.String())
+		_, remade = mainConnection(listener.Output.String(), instance)
 		for _, consumer := range streamConsumerInfos(t, js, stream) {
 			switch {
 			case replacedByNATS(consumer):

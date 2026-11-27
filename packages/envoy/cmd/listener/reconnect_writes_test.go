@@ -133,11 +133,14 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		return `{"topic":"` + topic + `","message":"a publish through a NATS reconnect"}`
 	}
 	// lines counts the main client's lines of kind (bus.Client's connection callbacks, in Go's text
-	// format); the role lane's connection logs the same lines under name=envoy-role-lane.
+	// format). That client is named `envoy-listener <instance>` (connectListenerBus), which slog
+	// quotes for its space. The listener's other connections log the same lines under names of
+	// their own, the role lane's `envoy-role-lane` and the session consumers'
+	// `envoy-session-consumers`.
 	lines := func(kind string) int {
-		return strings.Count(listener.Output.String(), "envoy nats "+kind+" name=envoy ")
+		return strings.Count(listener.Output.String(), "envoy nats "+kind+` name="envoy-listener `)
 	}
-	// stop stops the server and returns once the listener's client has seen it go.
+	// stop stops the server and returns once the listener's main client has seen it go.
 	stop := func(t *testing.T) {
 		t.Helper()
 		disconnects := lines("disconnected")
@@ -394,10 +397,16 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 	)
 	_, handOverFailed := relayHandOverLines(relayCancelBindingLost)
 	server, uri := testnats.Start(t)
-	// The listener reaches the server through a proxy the row can cut. The session's stand-in
-	// reaches it directly, so it stays connected while the listener's connections are cut.
+	// The listener reaches the server through a proxy the row can cut, its main connection and
+	// its session-consumer connection alike. The session's stand-in reaches it directly, so it
+	// stays connected while the listener's connections are cut.
 	proxy := testnats.StartProxy(t, uri)
-	rig := newRelayRigUnownedOn(t, proxy.URL(), relayPauseFirst, relayPauseMax, nil)
+	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener through the proxy: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newRelayRigUnownedOn(t, client, proxy.URL(), relayPauseFirst, relayPauseMax)
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frames
 	// it holds, before the row takes the session away.
 	rig.relays.receiptWait = time.Minute

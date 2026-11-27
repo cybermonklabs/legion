@@ -36,8 +36,10 @@ func TestARegistrationThroughANATSReconnectFailsByName(t *testing.T) {
 	listener.waitHealthy(t)
 	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 
+	// disconnected counts the main client's disconnect lines. That client is named
+	// `envoy-listener <instance>` (connectListenerBus), which slog quotes for its space.
 	disconnected := func() int {
-		return strings.Count(listener.Output.String(), "envoy nats disconnected name=envoy ")
+		return strings.Count(listener.Output.String(), `envoy nats disconnected name="envoy-listener `)
 	}
 	before := disconnected()
 	server.Stop(t)
