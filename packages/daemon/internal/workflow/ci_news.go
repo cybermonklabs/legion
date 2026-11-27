@@ -379,8 +379,8 @@ func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if err := e.eachRecipient(issue.Project, []roleRecipient{{issue: r.issue, role: r.role, row: issue.Key}}, func(to roleRecipient, token claim.Token) error {
 			prompt := record.CINews{Purpose: record.CINewsState, Role: string(token), Generation: issue.Generation, Task: w.Task,
 				Repo: fact.Repo, PullRequest: pr.Number, Head: fact.Head, Reader: &reader, States: states, Checks: checks}
-			_, err := e.store.EnqueueReadPrompt(ctx, tx, to.row, prompt, e.now())
-			return err
+			prompt.Body = record.ReadPromptBody(issue.Key, fact.Head, nil)
+			return e.enqueue(ctx, tx, to.row, prompt)
 		}); err != nil {
 			return err
 		}
