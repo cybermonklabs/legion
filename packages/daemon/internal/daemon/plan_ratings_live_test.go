@@ -8,7 +8,7 @@
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server, with NATS off.
-// The daemon is the whole daemon (run, through startDaemonWithin) with dispatch_url at that
+// The daemon is the whole daemon (run, through startDaemonLogging) with dispatch_url at that
 // server, so each plan and each rating it writes goes through its outbox and its Dispatch client to
 // the real routes. The issues walk as the package's whole-daemon tests walk them (stepRecordsRig,
 // step_records_test.go, and walkThreeRated, plan_ratings_test.go). The reader is the real

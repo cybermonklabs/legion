@@ -159,15 +159,20 @@ type bootClaim struct {
 }
 
 // fakeDaemon serves POST /legion/v1/claims/register and /ready as the real routes will: the boot
-// token resolves to a claim or the registration is refused. registeredAt holds, for each
-// registration, how many readies had come before it.
+// token resolves to a claim or the registration is refused, and each registration gets a secret
+// of its own, which its agent's ready carries back.
 type fakeDaemon struct {
-	server       *httptest.Server
-	mu           sync.Mutex
-	claims       map[string]bootClaim
-	registers    []claim.RegisterRequest
-	registeredAt []int
-	readies      []claim.ReadyRequest
+	server    *httptest.Server
+	mu        sync.Mutex
+	claims    map[string]bootClaim
+	registers []registered
+	readies   []claim.ReadyRequest
+}
+
+// registered is one registration and the secret minted for it.
+type registered struct {
+	claim.RegisterRequest
+	secret string
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -186,11 +191,11 @@ func newFakeDaemon() *fakeDaemon {
 			return
 		}
 		d.mu.Lock()
-		d.registers = append(d.registers, body)
-		d.registeredAt = append(d.registeredAt, len(d.readies))
+		secret := fmt.Sprintf("capability-%d", len(d.registers)+1)
+		d.registers = append(d.registers, registered{RegisterRequest: body, secret: secret})
 		d.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(claim.RegisterResponse{
-			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: "capability",
+			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: secret,
 		})
 	})
 	mux.HandleFunc("POST /legion/v1/claims/ready", func(w http.ResponseWriter, req *http.Request) {
@@ -216,21 +221,21 @@ func (d *fakeDaemon) resolve(bootToken string) (bootClaim, bool) {
 }
 
 // awaitReady waits for the agent holding bootToken to register and then declare itself ready,
-// returning its registration. Only a ready that came after that registration counts: a resumed
-// agent registers as the session its previous incarnation was, whose ready came before, and a
-// wait that took that ready returned before the resumed agent had written its report or
-// declared itself ready.
+// returning its registration. The ready is the one carrying that registration's secret: a resumed
+// agent registers as the session of the incarnation before it, and that incarnation's ready names
+// the same session, so a match on the session passed before the resumed agent had written its
+// report, let alone declared itself ready.
 func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRequest {
 	t.Helper()
 	var registration claim.RegisterRequest
 	testwait.Eventually(t, "the agent to register and declare ready", func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		for i, r := range d.registers {
+		for _, r := range d.registers {
 			if r.BootToken == bootToken {
-				registration = r
-				for _, ready := range d.readies[d.registeredAt[i]:] {
-					if ready.SessionID == r.SessionID {
+				registration = r.RegisterRequest
+				for _, ready := range d.readies {
+					if ready.Secret == r.secret && ready.SessionID == r.SessionID {
 						return true
 					}
 				}
@@ -522,8 +527,9 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
 	// server, and the new-session that starts it returned only once that file had run: a `run`
 	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
-	// on a loaded machine, against 0.1 s with no file, and the new-session of each Spawn or
-	// Resume waited for it. What an operator configures is no part of what these tests prove.
+	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
+	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
+	// these tests prove.
 	home := filepath.Join(dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
@@ -540,10 +546,7 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	r.rt = r.newRuntime(adjust...)
 	t.Cleanup(func() {
 		_, _ = r.tmux("kill-server")
-		// The watchdog is its own session and process-group leader (armOrphanWatchdog), and it
-		// runs `sleep 3` as a child of that group. Killing the shell alone orphans that sleep,
-		// which then outlives the test binary by up to three seconds. Kill the whole group.
-		_ = syscall.Kill(-watchdog.Process.Pid, syscall.SIGKILL)
+		_ = watchdog.Process.Kill()
 		r.stream.listener.Close()
 		r.daemon.server.Close()
 	})
@@ -903,11 +906,11 @@ func descendant(t *testing.T, root int, name string) int {
 	return found
 }
 
-// readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in writes it
-// as it starts, which is after the pane exists and after its agent registered, so the report is
-// waited for rather than read once. The wait ends on a report that parses and names pid. The
-// stand-in renames the report into place whole, so the file this finds is never one it is still
-// writing; the parse and the pid are what the wait reads either way.
+// readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in renames the
+// report into place whole as it starts (omp-standin.go's writeWhole), which is after the pane
+// exists and after its agent registered, so the report is waited for rather than read once. The
+// wait ends on a report that parses and names pid, a fact an empty or half-written file cannot
+// hold, should a stand-in ever write the file in place again.
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
@@ -2140,15 +2143,12 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// workspace is not (this test's own directory is a clone of sjawhar's). PUBLIC_LEAK_CHECK is
 	// copied with the rest because the guard resolves the shared check from the environment the
 	// `legion gh` this shell starts was handed, and a call that resolves none is refused.
-	shell := exec.Command("/bin/sh", "-c", "command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list")
-	shell.Dir = t.TempDir()
+	shellEnv := make([]string, 0, 6)
 	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "PUBLIC_LEAK_CHECK"} {
-		shell.Env = append(shell.Env, name+"="+env[name])
+		shellEnv = append(shellEnv, name+"="+env[name])
 	}
-	out, err := shell.CombinedOutput()
-	if err != nil {
-		t.Fatalf("legion and gh in the pane environment: %v: %s", err, out)
-	}
+	out := paneShell(t, "legion and gh in the pane environment", t.TempDir(),
+		"command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list", shellEnv)
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	root := runtime.GHConfigDir(r.stateDir, spec.Claim)
 	if len(lines) != 5 || lines[0] != launcher || !strings.HasPrefix(lines[1], "legion ") || lines[2] != filepath.Join(bin, "gh") ||
@@ -2192,23 +2192,46 @@ func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), append([]string{git}, fixturegit.InitWorkTree(repo, "")[1:]...)...)
 	session := "tmux-pane-" + randomHex(t, 4)
-	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
-	shell.Dir = repo
+	shellEnv := make([]string, 0, 10)
 	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "LEGION_ROLE"} {
-		shell.Env = append(shell.Env, name+"="+env[name])
+		shellEnv = append(shellEnv, name+"="+env[name])
 	}
-	shell.Env = append(shell.Env, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
+	shellEnv = append(shellEnv, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
 		"GIT_AUTHOR_NAME=Pane test", "GIT_AUTHOR_EMAIL=pane-test@example.invalid",
 		"GIT_COMMITTER_NAME=Pane test", "GIT_COMMITTER_EMAIL=pane-test@example.invalid")
-	out, err := shell.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git in the pane environment: %v: %s", err, out)
-	}
+	out := paneShell(t, "git in the pane environment", repo, "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B", shellEnv)
 	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 	want := []string{filepath.Join(bin, "git"), "pane", "", "Omp-Session: " + session, "Legion-Role: architect"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the pane's git and its commit = %q, want %q", got, want)
 	}
+}
+
+// paneShell runs script under /bin/sh in dir with env alone, as the agent's bash tool runs a
+// command in a pane, and answers what it printed. what names the call in a failure. The shell and
+// every process it starts run in a process group of their own, which is killed once the test's
+// waits give up (testwait.Context: the test binary's deadline less testwait's margin), so a call
+// that never returns fails the test by name instead of holding the package until go test's alarm,
+// which names nothing: one such call ran 17 minutes under load and was killed with no stack.
+func paneShell(t *testing.T, what, dir, script string, env []string) []byte {
+	t.Helper()
+	ctx := testwait.Context(t)
+	shell := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	shell.Dir, shell.Env = dir, env
+	shell.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	shell.Cancel = func() error { return syscall.Kill(-shell.Process.Pid, syscall.SIGKILL) }
+	// A process that left the group and still holds the output pipe would keep the read open after
+	// the kill; the wait for it ends here, once the test has already failed.
+	shell.WaitDelay = 5 * time.Second
+	started := time.Now()
+	out, err := shell.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s did not return within %s, the test binary's deadline less testwait's margin, and its process group was killed: `%s` in %s printed %q", what, time.Since(started).Round(time.Millisecond), script, dir, out)
+	}
+	if err != nil {
+		t.Fatalf("%s: %v: %s", what, err, out)
+	}
+	return out
 }
 
 // Releasing a claim lets go of everything the runtime watches for it, whether or not its process
