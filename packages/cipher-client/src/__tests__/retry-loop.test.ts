@@ -12,7 +12,7 @@
 // every other row gives a trade the client's own 30 s, so no machine is slow enough to turn a
 // trade the broker answered into one it did not. Real time bounds a wait only to name a hang.
 
-import { expect, jest, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
@@ -519,6 +519,13 @@ const ROWS: [string, Row][] = [
 /** When the registration of the last row lands, on the row's clock. */
 const LANDS_AT = { at: Number.POSITIVE_INFINITY };
 
+// A fake clock left behind stops the timers of every file the same worker runs after this. A row
+// whose `rig` throws, or that its guard ends while it awaits the client, never reaches its own
+// `finally`, so the real clock comes back here, after every row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 test.each(ROWS)(
   "%s",
   async (_name, row) => {
@@ -528,8 +535,6 @@ test.each(ROWS)(
       await row.drive(one);
     } finally {
       one.client.close();
-      // A fake clock left behind stops the timers of every file the same worker runs after this.
-      jest.useRealTimers();
     }
   },
   20_000
