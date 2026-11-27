@@ -772,13 +772,15 @@ func TestAKeptRowNamingAClaimIsDecidedByThatClaimAndNotByItsRole(t *testing.T) {
 				st := migratedStore(t)
 				ctx := context.Background()
 				openRunningTree(t, st)
-				// named is a key's agent on a step of message.role, so its own role is another one
-				// and the row reaches it by its token alone. byRole is that role's own claim.
+				// Both claims below hold message.role, which is the case the token match exists for:
+				// two claims of one issue holding one role (record.WorkerClaim). The role fallback
+				// would match either of them, so only the claim the row names by its token decides.
+				// named is the key's agent, whose name carries the -2 its second claim takes.
 				named := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
 				for _, c := range []supervise.Claim{
 					{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue,
 						Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle},
-					{Token: named, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RolePlanner,
+					{Token: named, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: message.role,
 						TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.named},
 					{Token: claim.Token("legion-legion-legion-208-" + string(message.role)), Project: "legion", Tree: rootIssue,
 						Issue: rootIssue, Role: message.role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.byRole},
