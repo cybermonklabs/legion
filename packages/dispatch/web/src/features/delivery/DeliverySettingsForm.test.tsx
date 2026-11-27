@@ -417,13 +417,11 @@ test("another writer's save keeps the line break a reader typed after a list's l
   }
 });
 
-// The fields this tab's save sent follow the record from its landing on, unless the reader types
-// in one after the save went. A save Dispatch took with no answer to give (`409 KEY_COMMITTED`)
-// keeps its fields as typed until the read its landing started answers, and the reader can type
-// meanwhile: text typed then - here a name typed and taken back, which leaves the very text the
-// save sent - stays as typed when that read's record arrives, with the caret where the reader
-// left it.
-test("text a reader types after their save went stays as typed when that save's record arrives", async () => {
+// The fields this tab's save sent follow its answer from its landing on, and the reader types once
+// it has landed - the fields are disabled while it is out. A line break typed then after the
+// list's last entry stays as typed when the read the landing started answers the same record,
+// with the caret where the reader left it, so the next name is an entry of its own.
+test("text a reader types after their save landed stays as typed when the read that landing started answers", async () => {
   const user = userEvent.setup();
   const saved = {
     ...record,
@@ -434,22 +432,18 @@ test("text a reader types after their save went stays as typed when that save's 
   const getDeliverySettings = spyOn(api, "getDeliverySettings")
     .mockResolvedValueOnce(record)
     .mockReturnValue(reread.promise);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
-  );
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
   try {
     const queryClient = renderForm();
     await screen.findByDisplayValue("acme/widgets");
-    await replace(user, "Population authors", "alice\nbob\n");
+    await replace(user, "Population authors", "alice, bob\n");
     await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
-    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    await user.type(field("Population authors"), "c{Backspace}");
+    expect(field("Population authors").value).toBe("alice\nbob");
+    await user.type(field("Population authors"), "\n");
     reread.resolve(saved);
     await waitFor(() =>
-      expect(queryClient.getQueryData<DeliverySettings | null>(["delivery-settings"])).toEqual(
-        saved
-      )
+      expect(queryClient.getQueryState(["delivery-settings"])?.fetchStatus).toBe("idle")
     );
     expect(field("Population authors").value).toBe("alice\nbob\n");
     await user.keyboard("carol");
@@ -505,9 +499,11 @@ test("a landed save whose own record never arrives follows another writer's newe
 });
 
 // This tab's save lands, and the read its landing starts has not answered: the record read before
-// the save still stands in the cache. Dispatch's answer is the record from the landing on, so the
-// list shows as the save stored it, one entry per line, and a second Save sends it, rather than
-// the record from before the save, which would undo the reader's own save.
+// the save still stands in the cache. Dispatch's answer is the record from the landing on. The
+// row holds the display - the list as the save stored it, one entry per line, where a form that
+// kept the fields as typed until that read answered still shows `alice, bob\n` - and the payload,
+// against a form that retires the fields at the landing without writing the answer, whose second
+// Save sends the record from before the save (`octocat`) and so undoes the reader's own save.
 test("a second Save before the read a landed save started answers sends the first save's value", async () => {
   const user = userEvent.setup();
   const saved = {
@@ -598,10 +594,10 @@ test("every commit from a save's landing draws the saved value, while the form's
   }
 });
 
-// Dispatch took the save and had no answer to give for it (`409 KEY_COMMITTED`): the record it
-// now holds is the read its landing started, so the fields the save sent stay as typed until that
-// read answers - not the record from before the save - and then follow it.
-test("a save landed with no answer keeps its fields as typed until the read its landing started answers", async () => {
+// The save lands with its answer while the read its landing started is still out: the fields it
+// sent show that answer from the landing on - neither as typed nor as the record from before the
+// save - and still show it once that read answers the same record.
+test("a landed save's fields show its answer before the read its landing started answers, and after", async () => {
   const user = userEvent.setup();
   const saved = {
     ...record,
@@ -612,9 +608,7 @@ test("a save landed with no answer keeps its fields as typed until the read its 
   const getDeliverySettings = spyOn(api, "getDeliverySettings")
     .mockResolvedValueOnce(record)
     .mockReturnValue(reread.promise);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
-  );
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
 
   try {
     const queryClient = renderForm();
@@ -624,9 +618,13 @@ test("a save landed with no answer keeps its fields as typed until the read its 
     await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(field("Population authors").value).toBe("alice, bob\n");
+    expect(queryClient.getQueryState(["delivery-settings"])?.fetchStatus).toBe("fetching");
+    expect(field("Population authors").value).toBe("alice\nbob");
     reread.resolve(saved);
-    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["delivery-settings"])?.fetchStatus).toBe("idle")
+    );
+    expect(field("Population authors").value).toBe("alice\nbob");
   } finally {
     reread.resolve(saved);
     cleanup();

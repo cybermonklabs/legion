@@ -519,9 +519,9 @@ test("a landed rename whose delta never arrives follows another tab's later rena
 
 // Dispatch took this card's Rename and had no answer to give for it (`409 KEY_COMMITTED`): the
 // group stands as the reads that landing starts answer it, so the draft stays as typed until a
-// version of the group other than the one the Rename was made over arrives - the group as it
+// version of the group other than the one in effect at that landing arrives - the group as it
 // was, redrawn, is no answer - and then follows the group's name.
-test("a rename landed with no answer keeps its draft until a version of the group other than the one it was sent over arrives", async () => {
+test("a rename landed with no answer keeps its draft until a version of the group other than the one at its landing arrives", async () => {
   const user = userEvent.setup();
   const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
@@ -549,6 +549,44 @@ test("a rename landed with no answer keeps its draft until a version of the grou
     expect(nameOf("Release crew").value).toBe("Ship crew ");
     editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
     expect(nameOf("Day crew").value).toBe("Day crew");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Another tab renames the group while this card's Rename is out, and this Rename then lands with
+// no answer to give (`409 KEY_COMMITTED`). The other tab's rename is the version in effect at the
+// landing, no answer to this Rename: the draft stays as typed until the read the landing starts
+// answers a version after it, and then follows the group's name.
+test("a rename landed with no answer waits for the read its landing starts, past another tab's rename that arrived while it was out", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Ship crew ");
+    answer.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" }));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(nameOf("Day crew").value).toBe("Ship crew ");
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:06Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew");
   } finally {
     cleanup();
     update.mockRestore();

@@ -39,16 +39,15 @@ interface GroupChange {
 }
 
 /** A card's rename draft, as the reader typed it, and its newest Rename while the draft is still
- *  as that Rename sent it: the press, so only that Rename's own landing clears the draft, and the
- *  group it was made over, to tell a later version apart where Dispatch answers it none. */
+ *  as that Rename sent it: the press, so only that Rename's own landing clears the draft, and,
+ *  once that Rename landed with no group of its own to clear the draft by, the version of the
+ *  group in effect at that landing (`over`), to tell a later version apart. */
 interface RenameDraft {
-  /** Whether that Rename landed with no group of its own to clear the draft by. */
-  readonly awaiting: boolean;
   readonly draft: string | null;
-  readonly sent: { readonly over: DeliverySessionGroup; readonly press: object } | null;
+  readonly sent: { readonly over?: DeliverySessionGroup; readonly press: object } | null;
 }
 
-const NO_RENAME: RenameDraft = { awaiting: false, draft: null, sent: null };
+const NO_RENAME: RenameDraft = { draft: null, sent: null };
 
 /** The Delivery page's reads that hold the groups: its timeline, an entry per view
  *  (`deliveryTimelineQuery`). */
@@ -56,7 +55,20 @@ const GROUP_READS = { queryKey: ["delivery", "timeline"] };
 
 /** The later of two versions of a group, by when Dispatch wrote each (`updated_at`): `held`, as
  *  the editor was handed it or a read holds it, and `other`, which may be newer - a Rename's
- *  answer, or the group as another read holds it - and wins a tie. */
+ *  answer, or the group as another read holds it - and wins a tie.
+ *
+ *  This order can be wrong today, and why: `updated_at` is the transaction's start. Dispatch's
+ *  `UpdateSessionGroup` (`packages/envoy/internal/dispatch/delivery/groups.go`) writes it as
+ *  `now()`, which Postgres fixes when the transaction begins, before `lockSessionGroups` takes
+ *  the groups' lock, so a write that began first and waited for the lock commits last with the
+ *  older time. Where that write is another tab's and the newer time is this tab's Rename, this
+ *  tab's answer wins here over the group Dispatch holds, in two places: the card shows this tab's
+ *  name, and `writeGroup` puts this tab's answer over the other tab's newer delta in the cache's
+ *  groups reads where that delta landed first. Both stand until a later version of that group
+ *  reaches the editor, or the editor is opened again. A Rename's answer carries no place in
+ *  Dispatch's change log, so the card cannot order by that instead. A server change under
+ *  INFRA-5200 makes the update time follow commit order (`UpdateSessionGroup`, `groups.go`):
+ *  taken after the lock, it makes this rule exact, and the window above goes with it. */
 function laterGroup(
   held: DeliverySessionGroup,
   other: DeliverySessionGroup | undefined
@@ -88,8 +100,8 @@ function writeGroup(queryClient: QueryClient, group: DeliverySessionGroup): void
   });
 }
 
-/** Whether `group` is a version other than `over`, the one a card's Rename was made over: a card
- *  whose Rename landed with no answer holds its draft until such a version arrives. */
+/** Whether `group` is a version other than `over`, the one in effect when a card's Rename landed
+ *  with no answer: the card holds its draft until such a version arrives. */
 function arrivedSince(over: DeliverySessionGroup, group: DeliverySessionGroup): boolean {
   return group.updated_at !== over.updated_at || group.name !== over.name;
 }
@@ -134,16 +146,20 @@ function GroupCard({
   // draft, and its answer (`landed`) is the group from then on, until the editor is handed a newer
   // one. Taken in the render the draft clears in, it shows while TanStack Query has not yet told
   // the editor's host of the write - in a browser, a timer later. Where Dispatch had no answer to
-  // give, the draft stays until a version of the group other than the one the Rename was made
-  // over arrives. A rename that arrives while the Rename is out is no answer to it, and keeps the
-  // draft as typed.
+  // give, the draft stays until a version of the group other than the one in effect at that
+  // landing arrives: the read the landing starts, never a rename from another tab that arrived
+  // while the Rename was out. A rename that arrives while the Rename is out is no answer to it,
+  // and keeps the draft as typed.
   const [rename, setRename] = useState<RenameDraft>(NO_RENAME);
   const [landed, setLanded] = useState<DeliverySessionGroup | undefined>(undefined);
   const current = laterGroup(group, landed);
+  // The version this render draws, which a landing with no answer reads as the one in effect then.
+  const currentRef = useRef(current);
+  currentRef.current = current;
   if (
     rename.draft !== null &&
     (rename.draft === current.name ||
-      (rename.awaiting && rename.sent !== null && arrivedSince(rename.sent.over, current)))
+      (rename.sent?.over !== undefined && arrivedSince(rename.sent.over, current)))
   ) {
     setRename(NO_RENAME);
   }
@@ -164,9 +180,7 @@ function GroupCard({
         <input
           className={fieldClass}
           id={`${id}-name`}
-          onChange={(event) =>
-            setRename({ awaiting: false, draft: event.target.value, sent: null })
-          }
+          onChange={(event) => setRename({ draft: event.target.value, sent: null })}
           value={name}
         />
         <button
@@ -174,10 +188,9 @@ function GroupCard({
           disabled={pending || name.trim() === "" || name.trim() === current.name}
           onClick={() => {
             // This Rename, by identity: its own landing, and no rename that arrives meanwhile,
-            // clears the draft, and only while the draft is still as this Rename sent it. The
-            // group it is made over tells a later version apart where Dispatch answers it none.
+            // clears the draft, and only while the draft is still as this Rename sent it.
             const press = {};
-            setRename({ awaiting: false, draft: name, sent: { over: current, press } });
+            setRename({ draft: name, sent: { press } });
             write(
               {
                 group,
@@ -195,10 +208,12 @@ function GroupCard({
                     // as the reads this landing starts answer it - the editor's own `onSuccess`
                     // asks the delivery reads again, the write store reads every query again for
                     // a landing with no answer, and Dispatch sends its delta - so the draft stays
-                    // as typed until a version other than the one it was made over arrives, and
-                    // never takes that one back.
+                    // as typed until a version other than the one in effect now arrives, and
+                    // never takes that one back. A rename from another tab that arrived while
+                    // this one was out is that version, and no answer to this Rename.
+                    const over = currentRef.current;
                     setRename((now) =>
-                      now.sent?.press === press ? { ...now, awaiting: true } : now
+                      now.sent?.press === press ? { ...now, sent: { over, press } } : now
                     );
                     return;
                   }
