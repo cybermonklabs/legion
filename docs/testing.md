@@ -672,12 +672,14 @@ says on its first line, in a `// Not parallel:` comment, why it cannot:
 
 The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
 `t.Setenv`, `` `took >= time.Second` ``, `JudgeRowReserve`'s one second), never a line of a file
-(`logtest.go:36`, `:85`, `line 85`), which the next edit above that line makes false. A test that
-says it is not parallel and then calls `t.Parallel()` in its own code breaks the rule too; a subtest
-of a serial test may still run in parallel, and a test that runs itself again alone
-(`internal/alonetest`) calls `t.Parallel()` only in the branch of the run that starts the other. go test starts no parallel test until every
-serial one has run, so a test with neither the call nor the comment runs alone for no reason, as
-46 of `internal/daemon`'s did by 2026-11-25.
+(`logtest.go:36`, `logtest.go#L36`, `:85`, `line 85`), which the next edit above that line makes
+false; an address goes in with its host (`127.0.0.1:8080`), since a bare `:8080` reads as a line.
+A test that says it is not parallel and then calls `t.Parallel()` in its own code breaks the rule
+too, wherever the call is: a guard around it, `if` or any other, is no exemption. A subtest of a
+serial test may still run in parallel. A test that runs itself again alone (`internal/alonetest`)
+is serial in both runs: the run that starts the other only waits, so one marker holds for both.
+go test starts no parallel test until every serial one has run, so a test with neither the call
+nor the comment runs alone for no reason, as 46 of `internal/daemon`'s did by 2026-11-25.
 
 Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot` (`parallel_rule_test.go`,
 or the five daemon packages' `main_test.go`) calls `packages/envoy/testparallel`'s `Require`, which reads every

@@ -218,15 +218,15 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 		first.SerialNumber.Text(16), first.NotBefore.UTC().Format(time.RFC3339), first.NotAfter.UTC().Format(time.RFC3339),
 		due.UTC().Format(time.RFC3339), due.Sub(first.NotBefore))
 
-	// A minute before: the broker reads its clock file at least once a second, so a few seconds
-	// on it has read the move and still holds the first.
+	// The clock stops a minute short of the due moment, and nothing waits for the broker to read
+	// it: a wait for a thing not to happen passes on a loaded runner where the broker has not
+	// read the file yet, which is no check at all. What the check rests on is the moment of the
+	// renewal itself, which the certificate carries. The clock then moves a minute past due, and
+	// the broker takes its next intermediate; the stand issues from this same clock, caBackdate
+	// (5 minutes) before its own reading of it, so a renewal made while the clock stood a minute
+	// short would start more than 5 minutes before due, and one made once 2 days remained starts
+	// within 5 of it. Either is read from one certificate, under any load.
 	setOffset(time.Until(due.Add(-time.Minute)))
-	time.Sleep(4 * time.Second)
-	if got := len(stand.Issued()); got != 1 {
-		t.Fatalf("a minute before 2 days remain the stand has issued %d intermediates; want the first alone", got)
-	}
-	t.Logf("clock at %s, a minute before: still the first intermediate alone", clock.Now().UTC().Format(time.RFC3339))
-
 	setOffset(time.Until(due.Add(time.Minute)))
 	var second *x509.Certificate
 	testwait.Until(t, "the broker to take its next intermediate once 2 days remain", func() (string, bool) {
@@ -240,6 +240,15 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 	t.Logf("clock at %s, a minute after: next intermediate %s, %s to %s",
 		clock.Now().UTC().Format(time.RFC3339), second.SerialNumber.Text(16),
 		second.NotBefore.UTC().Format(time.RFC3339), second.NotAfter.UTC().Format(time.RFC3339))
+	// The stand issues from this clock, 5 minutes before its reading (proxyrulestest's
+	// caBackdate), so a renewal a minute early would start more than 5 minutes before due.
+	if earliest := due.Add(-6 * time.Minute); second.NotBefore.Before(earliest) {
+		t.Errorf("the next intermediate starts %s, before %s: the broker renewed while 2 days and a minute remained, not once 2 days did",
+			second.NotBefore.UTC().Format(time.RFC3339), earliest.UTC().Format(time.RFC3339))
+	}
+	if got := len(stand.Issued()); got != 2 {
+		t.Errorf("the stand has issued %d intermediates; want the first and its renewal", got)
+	}
 	requireHealthy(t, broker.Addr)
 }
 

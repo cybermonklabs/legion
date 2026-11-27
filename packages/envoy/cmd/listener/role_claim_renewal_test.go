@@ -395,14 +395,13 @@ const reduceAllocsPerTopic = 3
 // TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim's count.
 //
 // The count runs in a run of the test binary of its own (alonetest), since the package's other
-// tests leave servers and watchers running that allocate meanwhile. The run that starts it is
-// parallel: it measures nothing and only waits. The run alone is not, because
-// testing.AllocsPerRun refuses to measure in a parallel test.
+// tests leave servers and watchers running that allocate meanwhile. The run that starts it only
+// waits, as role_frame_test.go's does, and runs alone with it: one marker then holds for both
+// runs, and the rule needs no reading of a branch.
 func TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair(t *testing.T) {
 	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
-	// during a parallel test; only the run that starts it (alonetest.Run) calls t.Parallel.
+	// during a parallel test.
 	if !alonetest.Child(reduceAllocsChildEnv) {
-		t.Parallel()
 		alonetest.Run(t, reduceAllocsChildEnv, 2)
 		return
 	}

@@ -32,9 +32,11 @@ import (
 // in hex (NewDatabaseName): it is random because every test of every package sharing one server
 // takes a name there.
 //
-// Both statements run on adminURL itself, which is exact for every caller because a caller passes
-// the URL its own statements run on, and that URL and the result differ only in the database they
-// select and the pairs set adds. Each opens a connection of its own, so no pool outlives the test.
+// Its three statements — the create, the `alter database … set jit = off` after it (WithoutJIT,
+// since a copy keeps none of its template's settings) and the drop in the test's cleanup — all run
+// on adminURL itself, which is exact for every caller because a caller passes the URL its own
+// statements run on, and that URL and the result differ only in the database they select and the
+// pairs set adds. Each opens a connection of its own, so no pool outlives the test.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).

@@ -44,15 +44,18 @@ func (f foundTest) at() string {
 const (
 	forgetsBoth  = "neither calls t.Parallel() as its first statement nor gives a reason in a `// Not parallel:` comment on its first line"
 	contradicted = "calls t.Parallel() under a `// Not parallel:` comment"
-	citesALine   = "names a line in its `// Not parallel:` comment, which the next edit above that line makes false: name the call or the bound"
+	citesALine   = "names a line in its `// Not parallel:` comment, which the next edit above that line makes false: name the call or the bound, and write an address with its host"
 )
 
-// citedLine is a line a comment names: a file's (logtest.go:36), a bare one (:85, after a space,
-// a line's start or a parenthesis, so that an address's port such as 127.0.0.1:1 and a time such
-// as 10:30 are not read as one), or one in words (line 85, lines 85-90, with any space between, a
-// line break included). It is matched against the comment's text with each line's // dropped
-// (ast.CommentGroup.Text), so a citation on the comment's second line counts as one on its first.
-var citedLine = regexp.MustCompile(`(?im)\.go:\d+|(?:^|[\s(]):\d+\b|\blines?\s+\d+`)
+// citedLine is a line a comment names: a file's, by colon or by GitHub's anchor (logtest.go:36,
+// logtest.go#L36), a bare one (:85, after a space, a line's start or a parenthesis, so that an
+// address's port such as 127.0.0.1:1 and a time such as 10:30 are not read as one), or one in
+// words (line 85, lines 85-90, with any space between, a line break included). A bare address
+// such as :8080 reads as a line, so a reason that names one writes it with its host (127.0.0.1:8080),
+// which both reads better and keeps the rule. It is matched against the comment's text with each
+// line's // dropped (ast.CommentGroup.Text), so a citation on the comment's second line counts as
+// one on its first.
+var citedLine = regexp.MustCompile(`(?im)\.go(?::|#L)\d+|(?:^|[\s(]):\d+\b|\blines?\s+\d+`)
 
 // Require fails t, naming each top-level test of the package in dir that breaks the rule
 // (serialTests), and logs each test that runs alone with the reason its first line gives. It also
@@ -198,11 +201,9 @@ func callsParallelFirst(param *ast.Ident, body *ast.BlockStmt) bool {
 // method value taken to call later (p := t.Parallel). A function literal that declares a parameter
 // of param's name, as a subtest's func(t *testing.T) does, is passed over, since that name is
 // another *testing.T there and a subtest may run in parallel under a serial test; one that
-// captures param is read as the test's own code. The branches of an if statement are passed over
-// too, and its condition is read: a test that runs itself again in a run of the test binary of its
-// own (internal/alonetest) calls t.Parallel() only in the branch of the run that starts the other,
-// which measures nothing and only waits, and its `// Not parallel:` comment gives the reason of the
-// run alone, which cannot run beside anything.
+// captures param is read as the test's own code. Every other statement is read, a branch of an if
+// included: a test that says it is not parallel and calls t.Parallel() anywhere in its own code
+// says the opposite of what it does, whatever guards the call.
 func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 	if param == nil {
 		return false
@@ -218,12 +219,6 @@ func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
 			return !declares(n.Type, param.Name)
-		case *ast.IfStmt:
-			if n.Init != nil {
-				ast.Inspect(n.Init, visit)
-			}
-			ast.Inspect(n.Cond, visit)
-			return false
 		case *ast.SelectorExpr:
 			if isParallelOf(param, n) {
 				found = true

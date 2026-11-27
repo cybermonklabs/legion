@@ -173,6 +173,11 @@ func TestPlantedBreaksCitingALineAfterATab(t *testing.T) {
 	_ = t.TempDir()
 }
 
+func TestPlantedBreaksCitingAFilesLineByAnchor(t *testing.T) {
+	// Not parallel: it reads the default logger back (slog.SetDefault at logtest.go#L36).
+	_ = t.TempDir()
+}
+
 func TestPlantedKeepsAnAddressAndATimeUnderItsMarker(t *testing.T) {
 	// Not parallel: it sets an environment variable of the whole process.
 	// The stand-in listens on 127.0.0.1:1, which nothing serves, from 10:30 on.
@@ -181,8 +186,10 @@ func TestPlantedKeepsAnAddressAndATimeUnderItsMarker(t *testing.T) {
 `
 
 // splitTests is a test file of the planted package whose one test runs itself again alone, as an
-// internal/alonetest test does: its marker gives the reason of the run alone, and only the branch
-// of the run that starts it calls t.Parallel(), which keeps the rule.
+// internal/alonetest test does. Its marker gives the reason of the run alone, and the branch of
+// the run that starts it calls t.Parallel(): that breaks the rule, since the comment says the
+// opposite of what the test does, and a guard around the call is no exemption. Its neighbour
+// keeps the rule by waiting in both runs under one marker, as cmd/listener's two such tests do.
 const splitTests = `package planted
 
 import (
@@ -190,10 +197,18 @@ import (
 	"testing"
 )
 
-func TestPlantedKeepsSplittingItsRunAlone(t *testing.T) {
+func TestPlantedBreaksSplittingItsRunAloneAndCallingParallel(t *testing.T) {
 	// Not parallel: its run alone counts allocations with testing.AllocsPerRun.
 	if os.Getenv("PLANTED_RUN_ALONE") == "" {
 		t.Parallel()
+		return
+	}
+	_ = t.TempDir()
+}
+
+func TestPlantedKeepsSplittingItsRunAlone(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun.
+	if os.Getenv("PLANTED_RUN_ALONE") == "" {
 		return
 	}
 	_ = t.TempDir()
@@ -252,8 +267,9 @@ func (f *failures) Errorf(format string, args ...any) {
 // its first line or its second, a bare one, or one in words, on one line or across two, singular
 // or plural, after a tab). A test that says it is not parallel and runs a subtest in parallel
 // keeps the rule, and so do one whose marker is followed by a comment holding an address's port
-// and a time of day, and one that calls t.Parallel() only in the branch of an if, as a test that
-// runs itself again alone does. It lists the tests that keep the rule by running alone, each with its reason.
+// and a time of day, and one that runs itself again alone and waits in both runs. A test that
+// says it is not parallel and calls t.Parallel() in the branch of an if breaks it, since a guard
+// is no exemption. It lists the tests that keep the rule by running alone, each with its reason.
 // A function that is not a test is not counted.
 func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 	t.Parallel()
@@ -274,6 +290,7 @@ func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 		"cited_test.go:26 TestPlantedBreaksCitingLinesInWords",
 		"cited_test.go:31 TestPlantedBreaksCitingALineAcrossTwoLines",
 		"cited_test.go:37 TestPlantedBreaksCitingALineAfterATab",
+		"cited_test.go:42 TestPlantedBreaksCitingAFilesLineByAnchor",
 		"dotted_test.go:5 TestPlantedBreaksDotted",
 		"e2e_test.go:7 TestPlantedBreaksBehindATag",
 		"outside_test.go:5 TestPlantedBreaksOutside",
@@ -294,14 +311,16 @@ func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 		"planted_test.go:97 TestPlantedBreaksSayingWhyNotAndCallingParallelThroughAMethodValue",
 		"planted_test.go:103 TestPlantedBreaksWithAnUnnamedParameter",
 		"planted_test.go:105 TestPlantedBreaksEmpty",
+		"split_test.go:8 TestPlantedBreaksSplittingItsRunAloneAndCallingParallel",
 	}
-	if read != 35 || !slices.Equal(named, want) {
-		t.Fatalf("serialTests read %d tests and named\n\t%s\nwant 35 tests read and\n\t%s", read, strings.Join(named, "\n\t"), strings.Join(want, "\n\t"))
+	if read != 37 || !slices.Equal(named, want) {
+		t.Fatalf("serialTests read %d tests and named\n\t%s\nwant 37 tests read and\n\t%s", read, strings.Join(named, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	for _, b := range broken {
 		want := forgetsBoth
 		switch {
-		case strings.HasPrefix(b.name, "TestPlantedBreaksSayingWhyNotAndCallingParallel"):
+		case strings.HasPrefix(b.name, "TestPlantedBreaksSayingWhyNotAndCallingParallel"),
+			b.name == "TestPlantedBreaksSplittingItsRunAloneAndCallingParallel":
 			want = contradicted
 		case strings.HasPrefix(b.name, "TestPlantedBreaksCiting"):
 			if !strings.HasPrefix(b.note, citesALine) {
@@ -318,10 +337,10 @@ func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 		alone = append(alone, b.at()+" "+b.note)
 	}
 	wantAlone := []string{
-		"cited_test.go:42 TestPlantedKeepsAnAddressAndATimeUnderItsMarker it sets an environment variable of the whole process.",
+		"cited_test.go:47 TestPlantedKeepsAnAddressAndATimeUnderItsMarker it sets an environment variable of the whole process.",
 		"planted_test.go:15 TestPlantedKeepsSayingWhyNot it sets an environment variable of the whole process.",
 		"planted_test.go:20 TestPlantedKeepsSayingWhyNotWithAParallelSubtest it sets an environment variable of the whole process.",
-		"split_test.go:8 TestPlantedKeepsSplittingItsRunAlone its run alone counts allocations with testing.AllocsPerRun.",
+		"split_test.go:17 TestPlantedKeepsSplittingItsRunAlone its run alone counts allocations with testing.AllocsPerRun.",
 	}
 	if !slices.Equal(alone, wantAlone) {
 		t.Errorf("serialTests listed the tests that run alone as\n\t%s\nwant\n\t%s", strings.Join(alone, "\n\t"), strings.Join(wantAlone, "\n\t"))
