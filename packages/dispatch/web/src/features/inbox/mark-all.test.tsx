@@ -259,15 +259,17 @@ test("a read of the list asked before Mark all read does not put back the rows t
     // The read answers as Dispatch held the rows when it was asked: both unread.
     await act(async () => {
       asked.resolve(threadsRead(before));
-      await read;
     });
     expect(unread()).toBe("0");
     expect(listed()).toBe("2");
     // The list the press asked for again waits for its answer, and has asked Dispatch nothing.
     expect(listMyReplies).toHaveBeenCalledTimes(1);
 
+    // The refresh asked before the press, whose read the press gave up, answers once the list
+    // asked again has (`DispatchQueryClient`).
     await act(async () => {
       settle.resolve({ marked: 2 });
+      await read;
     });
     // That read and the press's own refresh of the list and the count each ask after the mark.
     await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));
@@ -307,14 +309,16 @@ test("a read of the unread count asked before Mark all read does not put back th
     // The read answers as Dispatch held the count when it was asked: two unread.
     await act(async () => {
       asked.resolve(repliesAnswer({ limit: 1 }, before));
-      await read;
     });
     expect(inboxCount()).toBe("0");
     // The count the press asked for again waits for its answer, and has asked Dispatch nothing.
     expect(listMyReplies).toHaveBeenCalledTimes(1);
 
+    // The refresh asked before the press, whose read the press gave up, answers once the count
+    // asked again has (`DispatchQueryClient`).
     await act(async () => {
       settle.resolve({ marked: 2 });
+      await read;
     });
     // That read and the press's own refresh of the list and the count each ask after the mark.
     await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));

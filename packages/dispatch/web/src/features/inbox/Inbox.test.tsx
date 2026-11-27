@@ -5911,6 +5911,95 @@ test("a thread read that answers no rows at all (`rows: null`) still lets the co
   }
 });
 
+// A dismiss takes its row off the list at once, so the row the column showed goes at the next
+// commit. Where it was the last row, the list then holds no row, and the address must not keep
+// the dismissed row's name: a reload or a link reads it.
+test("a dismiss of the last row beside the column leaves the address naming no row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  let threads = [replyRow("thread-1")];
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async () => {
+    threads = [];
+    return { dismissed: 1 };
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-1"]));
+    expect(address()).toBe("/?item=reply%3Athread-1");
+
+    await user.keyboard("e");
+
+    await screen.findByRole("region", { name: "Inbox empty state" });
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/"));
+  } finally {
+    unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A search that leaves no row hides the item being read; it does not take it away. The selection
+// and the address keep it while nothing is listed, so the reader who clears the text is back on
+// that item rather than on the first row.
+test("a search that leaves no row keeps the selection and ?item=, so clearing it is back on the item being read", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?item=ask-b");
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // No row holds a "z", so the first letter already leaves the list empty.
+    await user.keyboard("f");
+    const box = screen.getByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveFocus();
+    await user.keyboard("zephyr");
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    expect(empty).toHaveTextContent("Nothing matches this text");
+    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
+    expect(address()).toBe("/?item=ask-b&q=zephyr");
+
+    await user.clear(box);
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    expect(selectedIds()).toEqual(["ask-b"]);
+    expect(address()).toBe("/?item=ask-b");
+    expect(within(await screen.findByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 test("?item= naming a row in the folded Later band opens the band and selects it", async () => {
   const narrow = widenToReadingPane();
   const open = inboxIssue("ask-a", "CORE-1", "Which approach?");

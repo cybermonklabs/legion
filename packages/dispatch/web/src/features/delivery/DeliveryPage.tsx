@@ -39,6 +39,7 @@ import {
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
+import { DELIVERY_TIMELINE_NOT_LOADED } from "./delivery-words";
 import {
   buildColorScale,
   COLOR_COUNT_KEYS,
@@ -851,7 +852,7 @@ export function DeliveryPage(): ReactNode {
           {query.isPending ? <p className={textMutedOnCanvas}>Loading delivery timeline…</p> : null}
           {query.isError ? (
             <QueryError
-              message="Couldn't load the delivery timeline."
+              message={DELIVERY_TIMELINE_NOT_LOADED}
               onRetry={() => void query.refetch()}
             />
           ) : null}

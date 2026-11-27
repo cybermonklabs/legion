@@ -19,6 +19,7 @@ import {
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { DELIVERY_TIMELINE_NOT_LOADED } from "./delivery-words";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
@@ -230,10 +231,10 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  * The form itself, over a record `DeliverySettingsForm` has read or its caller holds. Its groups,
  * in this order: Fields - Deploy repository, Deploy workflow, Production jobs, Production apply
  * step, the three Pipeline job names, PR checks workflow, Population authors and Excluded
- * repositories, each one item - then Save, and under them the refusal of a save. Fields are two
- * columns from `sm` and one below it; Save stays on its own line under them. A one-line value
- * longer than its field ends in an ellipsis with the whole value as its title; a list wraps
- * inside its own box.
+ * repositories, each one item - then Save, and under them the refusal of a save, or why the
+ * timeline a save brings is not drawn. Fields are two columns from `sm` and one below it; Save
+ * stays on its own line under them. A one-line value longer than its field ends in an ellipsis
+ * with the whole value as its title; a list wraps inside its own box.
  *
  * Save and the fields are held while the save is out - and, where the caller holds the record
  * (`replacedByCaller`), as the Delivery page's live view does, drawing the timeline in the form's
@@ -247,7 +248,9 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  * submit sends nothing while Save is held. The `refused:` variant paints a held Save as a disabled
  * one. The form, its fields and its Save stay the same elements through the save, so the focus
  * stays where the reader pressed; a form the caller replaces goes while Save is held, so the
- * control the reader pressed from keeps the focus until the form goes. A refusal lets them go at
+ * control the reader pressed from keeps the focus until the form goes. A caller that has not
+ * replaced the form by the write deadline after the save landed lets them go then, with the
+ * reason its timeline is not drawn under the form (`useHoldUntilDrawn`). A refusal lets them go at
  * once, with its reason under the form.
  */
 function DeliverySettingsFields({
@@ -295,7 +298,9 @@ function DeliverySettingsFields({
   const version = record?.updated_at ?? null;
   // The write time of the record the newest press was made over.
   const [pressedOver, setPressedOver] = useState(version);
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
+  // `undrawn` is why the timeline a save brings is not drawn once the hold for it ran out, which
+  // only a caller that holds the record puts on.
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(version);
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -551,7 +556,13 @@ function DeliverySettingsFields({
             }
           />
         </div>
-      ) : null}
+      ) : undrawn === undefined ? null : (
+        <div className="mt-4">
+          {/* The timeline the save brings and is not drawn is said in the words the page says
+              for a read of it that failed. */}
+          <QueryError message={`${DELIVERY_TIMELINE_NOT_LOADED} ${undrawn}.`} />
+        </div>
+      )}
     </>
   );
 }

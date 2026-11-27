@@ -304,11 +304,19 @@ export function AskRecipients({
   // stopped, and what its landing reads again, are of that press's ask, not of the one the card
   // shows.
   // Each write stays pending through the read its landing starts, for the request deadline at
-  // the most (`useReadBound`), and `unsettled` is why such a read has not settled once its hold
-  // ran out. The read waits on a fetch the network had already paused too
-  // (`invalidateWaitingForPaused`), which the bound ends as well. The hold is the press's the
-  // write began under (`pressOfWrite`), never a later press of the reader's on the card.
-  const [unsettled, holdThrough] = useReadBound();
+  // the most (`useReadBound`): an Unfollow through the read of the ask's thread, which lists its
+  // followers, and an Unsubscribe through the read of the owner's subscribers. Each read has one
+  // hold for every card of it, and `unsettled` is why such a read has not settled once its hold
+  // ran out, until it settles or the next write of the same read lands. The read waits on a fetch
+  // the network had already paused too (`invalidateWaitingForPaused`), which the bound ends as
+  // well. The hold is the press's the write began under (`pressOfWrite`), never a later press of
+  // the reader's on the card.
+  const [unfollowUnsettled, holdUnfollowThrough] = useReadBound(["ask-thread", askId]);
+  const [unsubscribeUnsettled, holdUnsubscribeThrough] = useReadBound([
+    "subscribers",
+    subscription?.id,
+  ]);
+  const unsettled = unfollowUnsettled ?? unsubscribeUnsettled;
   const unfollow = useKeyedWrite({
     method: "DELETE",
     write: (press: { askId: string; sessionId: string }, bounds) =>
@@ -316,7 +324,10 @@ export function AskRecipients({
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
     onMutate: pressOfWrite,
     onSuccess: (_result, press, writePress: WritePress) =>
-      holdThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId]), writePress),
+      holdUnfollowThrough(
+        invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId]),
+        writePress
+      ),
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
@@ -336,7 +347,7 @@ export function AskRecipients({
       `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
     onMutate: pressOfWrite,
     onSuccess: (_result, press, writePress: WritePress) =>
-      holdThrough(
+      holdUnsubscribeThrough(
         invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id]),
         writePress
       ),

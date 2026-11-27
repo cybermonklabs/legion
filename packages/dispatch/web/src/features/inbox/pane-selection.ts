@@ -372,9 +372,23 @@ export function usePaneSelection({
    *  that leaves hands the selection to where it was heading. Otherwise the selection is the
    *  reader's, and the address follows it. */
   const settleBesideList = (): void => {
-    // Before the Inbox's read has landed there are no rows to read `?item=` against, so it is
-    // left unread.
-    if (listedRows.current.length === 0) return;
+    // A list that holds nothing - still loading, failed, or genuinely empty - answers no
+    // address: `?item=` is left unread until there are rows to read it against. A selected row
+    // that went with the rest - the last row dismissed, or taken away by the server, so that no
+    // candidate is that row any more - leaves the selection and the address, unless the column
+    // keeps its question for the reader's answer. A row the typed text or the filter fields only
+    // hide is still a candidate: it stays selected and named in the address, so taking that
+    // narrowing off brings the reader back to the item they were reading.
+    if (listedRows.current.length === 0) {
+      if (
+        selectedId !== undefined &&
+        paneSubject.current?.kept !== true &&
+        !candidates.some((row) => rowId(row) === selectedId)
+      ) {
+        select(undefined);
+      }
+      return;
+    }
     const visible = presented.current;
     const address = readAddress(visible);
     if (address === "listed") return;

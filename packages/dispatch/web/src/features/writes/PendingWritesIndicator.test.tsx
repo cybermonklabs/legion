@@ -2,11 +2,12 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
+import { watchMoves } from "../../__tests__/laid-out-rows";
 import { answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type WriteBounds, type WriteMethod } from "../../api/client";
@@ -200,9 +201,10 @@ async function lateInlineWrite(writes: Writes, attempt: Promise<never>): Promise
 // Stop trying, pressed by keyboard, keeps the focus while the write's last attempt is out: it
 // reads Stopping… and refuses a press (`aria-disabled`) rather than turn disabled, which in
 // Chromium would move the focus to the page's body (`emulateChromiumFocusFixup` does that here),
-// so a second Enter stops nothing more. Once that attempt fails the write is refused, its own
-// surface shows the refusal, and the indicator goes: the focus goes back to the control it came
-// from, rather than staying on the page's body.
+// so a second Enter stops nothing more. Once that attempt fails - at once here, while Stopping…
+// still holds the press live (`armHandOff`) - the write is refused, its own surface shows the
+// refusal, and the indicator goes: the focus goes back to the control it came from, rather than
+// staying on the page's body.
 test("a Stop trying pressed by keyboard keeps the focus while it stops, and gives it back as the indicator goes", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -230,6 +232,7 @@ test("a Stop trying pressed by keyboard keeps the focus while it stops, and give
     expect(stop).toHaveFocus();
 
     attempt.reject(refusal);
+    await settle();
     await jump(30 * 60_000);
     expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
@@ -328,6 +331,7 @@ test("a press that leaves the indicator drawn keeps the focus in it, in the same
     expect(secondStop).toHaveFocus();
 
     second.reject(refusal);
+    await settle();
     await jump(30 * 60_000);
     const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
     const stopped = within(line.closest("li") as HTMLElement);
@@ -508,6 +512,7 @@ test("a key after a pointer press no click ended lets the indicator note where t
     await settle();
 
     attempt.reject(refusal);
+    await settle();
     await jump(30 * 60_000);
     expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
@@ -521,7 +526,8 @@ test("a key after a pointer press no click ended lets the indicator note where t
 // A touch that scrolls the indicator's list ends in a `pointercancel` and no `click`, which ends
 // the press as a key does: the focus a Stop trying pressed by keyboard hands to its row's Retry,
 // once its write is refused, is noted as the focus coming in, so the Discard the reader then
-// presses gives the focus back to where it came from as the indicator goes.
+// presses gives the focus back to where it came from as the indicator goes. The touch starts on
+// the Stopping… the reader pressed, which leaves that press armed (`armHandOff`).
 test("a touch press on the indicator that the browser cancels lets it note the focus it hands on", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -536,17 +542,18 @@ test("a touch press on the indicator that the browser cancels lets it note the f
     const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
     act(() => elsewhere.focus());
     await user.tab();
-    expect(within(indicator).getByRole("button", { name: "Stop trying" })).toHaveFocus();
+    const stop = within(indicator).getByRole("button", { name: "Stop trying" });
+    expect(stop).toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
-    const list = within(indicator).getByRole("list");
     act(() => {
       for (const type of ["pointerdown", "pointercancel"]) {
-        list.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch" }));
+        stop.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch" }));
       }
     });
 
     attempt.reject(refusal);
+    await settle();
     await jump(30 * 60_000);
     expect(within(indicator).getByRole("button", { name: "Retry" })).toHaveFocus();
     await user.tab();
@@ -589,6 +596,7 @@ test("a press elsewhere that leaves the focus in the indicator keeps where the f
     expect(stop).toHaveFocus();
 
     attempt.reject(refusal);
+    await settle();
     await jump(30 * 60_000);
     expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
@@ -596,6 +604,193 @@ test("a press elsewhere that leaves the focus in the indicator keeps where the f
     other.removeEventListener("mousedown", keepFocus);
     unmount();
     stopBlurring();
+    realClock();
+  }
+});
+
+// A write that ends by itself is no press of the reader's: with nothing armed (`armHandOff`), the
+// going of its Stop trying while it holds the focus leaves the focus where the browser puts it, on
+// the page's body, and the indicator asks for no focus and no scroll - neither the other write's
+// Stop trying, which the reader did not choose and may not see, once the write lands, nor the
+// Retry its refusal draws in the same row, once Dispatch refuses it.
+test("a write that lands by itself, or is refused, while its Stop trying holds the focus leaves the focus on the body, with no scroll", async () => {
+  for (const end of ["lands", "is refused"] as const) {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const second = Promise.withResolvers<unknown>();
+    const { unmount, writes } = mountOnPage();
+    const moves = watchMoves();
+    try {
+      indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => new Promise(() => undefined));
+      indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => second.promise);
+      await settle();
+      await jump(SEND_DEADLINE_MS);
+      const indicator = screen.getByTestId("pending-writes");
+      const [, secondStop] = within(indicator).getAllByRole("button", { name: "Stop trying" });
+      act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
+      await user.tab();
+      await user.tab();
+      expect(secondStop).toHaveFocus();
+
+      const asked = moves.focused.length;
+      if (end === "lands") second.resolve(null);
+      else second.reject(verdict);
+      await settle();
+      expect(secondStop, `the write that ${end} kept its Stop trying`).not.toBeInTheDocument();
+      expect(document.body, `a write that ${end} by itself moved the focus`).toHaveFocus();
+      expect(moves.focused.slice(asked)).toEqual([]);
+      expect(moves.scrolled).toEqual([]);
+    } finally {
+      moves.restore();
+      unmount();
+      realClock();
+    }
+  }
+});
+
+/** Lays the indicator's list out as a browser draws it, which happy-dom does not: a box that
+ *  scrolls (`overflow-y-auto`), scrolled so that each row whose words `away` matches stands above
+ *  its top, out of the reader's sight, and every other row inside it; and the control the reader
+ *  comes to the indicator from (`Elsewhere`) scrolled off the window's top. Answers what gives
+ *  happy-dom its own boxes back. */
+function scrollAway(away: RegExp): () => void {
+  const style = document.createElement("style");
+  style.textContent = ".overflow-y-auto{overflow-y:auto}";
+  document.head.append(style);
+  const real = Element.prototype.getBoundingClientRect;
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.matches('[data-testid="pending-writes"] ul')) return new DOMRect(0, 400, 400, 192);
+    if (this.matches("button") && this.textContent === "Elsewhere") {
+      return new DOMRect(0, -200, 80, 28);
+    }
+    const row = this.closest("[data-pending-write]");
+    if (row === null) return real.call(this);
+    return new DOMRect(0, away.test(row.textContent ?? "") ? 300 : 450, 80, 28);
+  });
+  return () => {
+    boxes.mockRestore();
+    style.remove();
+  };
+}
+
+/** Focuses `control` as a keyboard reader reaches it: from `Elsewhere`, a Tab at a time. */
+async function tabTo(user: UserEvent, control: HTMLElement): Promise<void> {
+  act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
+  for (let tabs = 0; tabs < 10 && document.activeElement !== control; tabs += 1) {
+    await user.tab();
+  }
+  expect(control).toHaveFocus();
+}
+
+// The reader's own press arms the indicator's hand-off (`armOnPress`). Stop trying once its write
+// is refused, Retry and Discard at once, each pressed by keyboard, take away the row the press was
+// made in, and the focus goes on, with nothing scrolled, to the first control of the indicator the
+// reader can see: past the row before it, scrolled out of the list's sight, to the row after it.
+// Where no control of the indicator is in sight, nor the control they came to it from, the focus
+// goes to the page's main region.
+for (const press of ["Stop trying", "Retry", "Discard"] as const) {
+  test(`a ${press} pressed by keyboard that takes its row away puts the focus on a control of the indicator in sight, else on the main region`, async () => {
+    for (const shown of [true, false]) {
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const last = Promise.withResolvers<never>();
+      const { unmount, writes } = mountOnPage();
+      const laidOut = scrollAway(/CORE-1/);
+      const moves = watchMoves();
+      try {
+        indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+        if (press === "Stop trying") {
+          act(() => {
+            void writes
+              .run({
+                detail: null,
+                inline: true,
+                kind: plainWrite,
+                label: "CORE-2 set to done",
+                method: "PATCH",
+                presentation: "indicator",
+                write: () => last.promise,
+              })
+              .catch(() => undefined);
+          });
+        } else {
+          let attempts = 0;
+          indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => {
+            attempts += 1;
+            return attempts === 1 ? Promise.reject(verdict) : last.promise;
+          });
+        }
+        if (shown) {
+          indicatorWrite(writes, "CORE-3 set to done", "PATCH", () => Promise.reject(verdict));
+        }
+        await settle();
+        if (press === "Stop trying") await jump(SEND_DEADLINE_MS);
+        const indicator = screen.getByTestId("pending-writes");
+        const second = within(indicator)
+          .getByText(/CORE-2/)
+          .closest("li") as HTMLElement;
+        await tabTo(user, within(second).getByRole("button", { name: press }));
+
+        const asked = moves.focused.length;
+        await user.keyboard("{Enter}");
+        if (press === "Stop trying") last.reject(refusal);
+        await settle();
+        expect(within(indicator).queryByText(/CORE-2/)).not.toBeInTheDocument();
+        const landed = shown
+          ? within(
+              within(indicator)
+                .getByText(/CORE-3/)
+                .closest("li") as HTMLElement
+            ).getByRole("button", { name: "Retry" })
+          : document.getElementById("main-content");
+        expect(landed).toHaveFocus();
+        expect(moves.focused.slice(asked)).toEqual([
+          { options: { preventScroll: true }, target: landed },
+        ]);
+        expect(moves.scrolled).toEqual([]);
+      } finally {
+        moves.restore();
+        laidOut();
+        unmount();
+        realClock();
+      }
+    }
+  });
+}
+
+// A press whose row stays takes nothing away: Stop trying pressed by keyboard stays in its row,
+// reading Stopping… while its write's last attempt is out, and keeps the focus, though the press
+// armed the indicator's hand-off and the row before it is scrolled out of sight; the indicator
+// asks for no focus and no scroll.
+test("a Stop trying pressed by keyboard whose row stays keeps the focus, with nothing moved", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { unmount, writes } = mountOnPage();
+  const laidOut = scrollAway(/CORE-1/);
+  const moves = watchMoves();
+  try {
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+    indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => new Promise(() => undefined));
+    await settle();
+    await jump(SEND_DEADLINE_MS);
+    const stop = within(screen.getByTestId("pending-writes")).getByRole("button", {
+      name: "Stop trying",
+    });
+    await tabTo(user, stop);
+
+    const asked = moves.focused.length;
+    await user.keyboard("{Enter}");
+    await settle();
+    expect(stop).toHaveTextContent("Stopping…");
+    expect(stop).toHaveFocus();
+    expect(moves.focused.slice(asked)).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    laidOut();
+    unmount();
     realClock();
   }
 });

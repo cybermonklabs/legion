@@ -10,7 +10,7 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams } from "../../api/queries";
+import { advancesIssuesParams, advancesIssuesQuery, projectIssuesQuery } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
@@ -197,8 +197,13 @@ export function useIssueTableActions({
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
-  // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
-  const [unsettled, holdThrough] = useReadBound();
+  // Why the read of this table's listing after an action has not settled, once its hold ran out,
+  // which the next action takes away as its hold begins: one hold for every table of the listing
+  // (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound(
+    ("project" in listing ? projectIssuesQuery(listing.project, []) : advancesIssuesQuery(listing))
+      .queryKey
+  );
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
   // writes are for, from the reader's press that began it (`perform`, and `askTarget` while its dry
