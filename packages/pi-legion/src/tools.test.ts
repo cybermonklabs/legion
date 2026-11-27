@@ -915,12 +915,14 @@ const ownAsk = (
  * `versionOpener`, the block's opening line in the spec's version 4; `liveAsks`, the `asks` of
  * the spec's live text; and `liveOpener`, the block's opening line in that text, one with none of
  * an ask's attributes where there is no `liveOpener`. A Dispatch of the release before serves no
- * `asks` and writes them on that line instead: such a block gives no `liveAsks`. */
+ * `asks` and writes them on that line instead: such a block gives no `liveAsks`. `routes` are
+ * further routes the Dispatch answers, such as a copy's source ask and its document. */
 interface DecisionBlock {
   readonly asks: readonly unknown[];
   readonly versionOpener: string;
   readonly liveAsks?: readonly unknown[];
   readonly liveOpener?: string;
+  readonly routes?: Readonly<Record<string, unknown>>;
 }
 
 /** The root's decision block with its ask open: in the asks list, in version 4 and live. */
@@ -994,6 +996,7 @@ function treeDispatch(block?: DecisionBlock) {
               version: 4,
               ...(block.liveAsks === undefined ? {} : { asks: block.liveAsks }),
             },
+            ...block.routes,
           }),
     },
   });
@@ -1523,6 +1526,80 @@ test("register_gate on a basis waits for the saved version to record an answered
   });
   expect(settledCopyBefore.isError).toBe(false);
   expect(registrations(settledCopyBefore.calls)).toHaveLength(1);
+});
+
+// A Dispatch of the release before writes a changed answer at once onto the source ask and onto the
+// source block's live opening line. A copy's opening lines, live and in its latest version, keep
+// the earlier answer until the copy's own settlement writes it: INFRA-5570's tester observed this
+// on envoy-dispatch built at main e40deb104a, with the copy's live opener holding the earlier
+// answered_at while GET /api/v1/asks/{id} and the source's live opener held the new one. The
+// copy's latest version does not record the answer the server holds, and the version that copy's
+// settlement writes next ends a basis registered on this one. So register_gate on a basis is
+// refused, before the daemon is asked anything, and goes ahead once the source holds the answer
+// the copy's version records.
+test("register_gate on a basis waits for a copy whose source's answer changed on a Dispatch of the release before", async () => {
+  const earlier = { user: "alice", at: "2026-11-20T10:00:00Z" };
+  const changed = { user: "alice", at: "2026-11-20T10:05:00Z" };
+  const recorded = (at: string) => ` state="answered" answered_by="alice" answered_at="${at}"`;
+  const copyOpener = (at: string) =>
+    `:::ask{#b-1 urgency="med" multiple="false"${recorded(at)} copied_from="ask-source" copied_from_document="dispatch://LEGION-100/spec"}`;
+  // The source ask and its document as a Dispatch of the release before serves them once the
+  // source holds the answer given at `at`.
+  const source = (answer: { readonly user: string; readonly at: string }) => ({
+    "/api/v1/asks/ask-source": {
+      ask: {
+        id: "ask-source",
+        kind: "question",
+        block_id: "b-src",
+        block_artifact: { id: ANCESTOR_SPEC },
+        state: "answered",
+        question: OPEN_QUESTION,
+        answer: { ...answer, selected: [], text: null },
+      },
+    },
+    [`/api/v1/artifacts/${ANCESTOR_SPEC}/text`]: {
+      markdown: `## Source\n\n:::ask{#b-src urgency="med" multiple="false"${recorded(answer.at)}}\n${OPEN_QUESTION}\n:::`,
+      token: "sha256:source",
+      version: 3,
+    },
+  });
+  const runWith = async (block: DecisionBlock) => {
+    const { calls, daemon } = recordingDaemon({});
+    const { dispatch } = treeDispatch(block);
+    const result = await gateTool(daemon, dispatch).execute(
+      "",
+      basisCall,
+      undefined,
+      undefined,
+      context()
+    );
+    const [first] = result.content;
+    return {
+      calls,
+      isError: result.isError === true,
+      text: first?.type === "text" ? first.text : "",
+    };
+  };
+
+  const lagging = await runWith({
+    asks: [],
+    versionOpener: copyOpener(earlier.at),
+    liveOpener: copyOpener(earlier.at),
+    routes: source(changed),
+  });
+  expect(lagging.calls).toEqual([]);
+  expect(lagging.isError).toBe(true);
+  expect(lagging.text).toContain("a copy of ask dispatch://LEGION-100/ask/ask-source");
+  expect(lagging.text).toContain("wait for that version");
+
+  const settled = await runWith({
+    asks: [],
+    versionOpener: copyOpener(changed.at),
+    liveOpener: copyOpener(changed.at),
+    routes: source(changed),
+  });
+  expect(settled.isError).toBe(false);
+  expect(registrations(settled.calls)).toHaveLength(1);
 });
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
