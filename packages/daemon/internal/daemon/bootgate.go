@@ -17,7 +17,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
@@ -942,7 +944,22 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	killed := procgroup.Configure(cmd)
 	job.attach(cmd)
 	started := time.Now()
-	err := cmd.Run()
+	// CONTROL ONLY: a kill planted at the leader's exit. It waits for the leader's exit without
+	// reaping it (waitid with WNOWAIT), then kills what is left of the leader's group, and the run
+	// reads that as the budget's kill.
+	err := cmd.Start()
+	planted := false
+	if err == nil {
+		plantDone := make(chan struct{})
+		go func() {
+			defer close(plantDone)
+			var info [128]byte
+			_, _, _ = syscall.Syscall6(syscall.SYS_WAITID, 1, uintptr(cmd.Process.Pid), uintptr(unsafe.Pointer(&info[0])), 4|0x1000000, 0, 0)
+			planted = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) == nil
+		}()
+		err = cmd.Wait()
+		<-plantDone
+	}
 	job.release()
 	if ctx.Err() != nil {
 		return ran{}, ctx.Err()
@@ -956,7 +973,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// which procgroup.Err passes through. A probe that handles its SIGTERM and leaves inside the
 	// grace is the budget killing it, judged below like any other budget kill, not a probe that
 	// could not be run.
-	timedOut := killed()
+	timedOut := killed() || planted
 	end := procgroup.Ended(err)
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut && end.Signal == "" {
 		return ran{}, runErr
