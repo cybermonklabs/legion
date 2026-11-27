@@ -1052,7 +1052,9 @@ export function createLegionTool(deps: {
         "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
         "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
         "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
-        "claim recorded. " +
+        "claim recorded. The one exception is a fresh_session of an agent that was suspended before it, whose session " +
+        "was already left behind when that suspension refused its resume: the answer is a success with the refusal, " +
+        "naming the operator's command, in phaseNotRestarted. " +
         "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
@@ -1097,6 +1099,8 @@ export function createLegionTool(deps: {
         "claim's state, and the request leaves the agent as it was, but where fresh_session's own suspension of the " +
         "agent ran first, or where fresh_session left behind the session its claim recorded, so the agent starts in a " +
         "new session once it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+        "Where fresh_session had left that session behind before the operator's suspension refused its resume, the answer " +
+        "is a success, not SUSPENDED_BY_OPERATOR, with that refusal in phaseNotRestarted. " +
         "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +

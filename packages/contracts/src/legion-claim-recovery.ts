@@ -33,10 +33,14 @@ const nonEmptyString = z.string().min(1);
  * request leaves the agent as it was, but where `fresh_session` went further before that suspension
  * took the agent over: its own suspension of the agent ran, which that suspension then took over,
  * and the agent keeps the session its claim recorded; or it left behind the session its claim
- * recorded, so the agent starts in a new session once it is started. `compact` alone is let past
- * the operator's suspension, since a compaction lifts nothing: an agent that suspension holds takes
- * the compaction's own refusal below, whose sentence names the operator's `legion claims resume` as
- * what starts the agent.
+ * recorded, so the agent starts in a new session once it is started. One request is answered no
+ * code: a `fresh_session` of an agent that was suspended before it, whose forget had already left
+ * the session behind when the operator's suspension refused its resume, answers 200 with that
+ * refusal, naming the operator's command, in `phaseNotRestarted` (dispatch://INFRA-5649 R2), as
+ * every refusal after that forget does; a plugin below the claim-start contract entry still reads
+ * `SUSPENDED_BY_OPERATOR` there. `compact` alone is let past the operator's suspension, since a
+ * compaction lifts nothing: an agent that suspension holds takes the compaction's own refusal
+ * below, whose sentence names the operator's `legion claims resume` as what starts the agent.
  *
  * While the project is paused, every action of the door that would start a turn of an agent —
  * `resume_agent`, `retry` and `fresh_session`, which start its session again, and `compact`,
