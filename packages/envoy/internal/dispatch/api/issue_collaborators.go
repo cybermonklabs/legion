@@ -233,7 +233,8 @@ func (s *server) tallyCollaboratorEvents(
 }
 
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
-// "unavailable" when there is no listener or it did not answer within the client's window.
+// "unavailable" when there is no listener, it did not answer within the client's window, or it
+// answered an error, a registry record it cannot decode among them (the listener's 500).
 func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
 	if s.deps.Envoy == nil {
 		return nil, legionRegistryUnavailable

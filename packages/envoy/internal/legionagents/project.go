@@ -59,7 +59,8 @@ func (s *Store) PutProject(ctx context.Context, project string, record Project) 
 	return record, nil
 }
 
-// Project reads project's answering record; found is false when the bucket holds none.
+// Project reads project's answering record; found is false when the bucket holds none. A record
+// that does not decode is ErrMalformedRecord naming the project.
 func (s *Store) Project(ctx context.Context, project string) (record Project, found bool, err error) {
 	if err := ValidateProject(project); err != nil {
 		return Project{}, false, err
@@ -75,7 +76,7 @@ func (s *Store) Project(ctx context.Context, project string) (record Project, fo
 		return Project{}, false, fmt.Errorf("read legion project %s: %w", project, err)
 	}
 	if err := json.Unmarshal(stored.Value(), &record); err != nil {
-		return Project{}, false, fmt.Errorf("decode legion project %s: %w", project, err)
+		return Project{}, false, fmt.Errorf("%w: legion project %s: %w", ErrMalformedRecord, project, err)
 	}
 	return record, true, nil
 }

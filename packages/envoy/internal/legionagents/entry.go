@@ -76,6 +76,13 @@ var ErrInvalid = errors.New("invalid legion agent")
 // ErrNotFound is a session the registry holds no entry for.
 var ErrNotFound = errors.New("unknown legion agent")
 
+// ErrMalformedRecord is a record the registry's bucket holds and this build cannot decode: a
+// session's entry (session.<session_id>), an index key's (issue.<ISSUE>.<session_id>,
+// role.<role_token>.<session_id>) or a project's answering record (project.<legion_project>). The
+// bucket answered it, so it is not a read that failed, and reading it again returns the same
+// record; each error wrapping it names the session, the key or the project.
+var ErrMalformedRecord = errors.New("malformed legion agent registry record")
+
 // ErrTooMany is a batch of more than MaxBatch entries.
 var ErrTooMany = fmt.Errorf("a batch takes at most %d legion agents", MaxBatch)
 

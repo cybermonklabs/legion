@@ -239,8 +239,8 @@ func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessi
 
 // legionProjectAnswers reports whether project last stated that its daemon answers for its
 // stopped agents: its answering record's flag, false when it holds none. Its error is a record the
-// bucket did not answer, which the read answers as it answers any read the bucket did not answer
-// (writeLegionAgentError).
+// bucket did not answer or one that does not decode (legionagents.ErrMalformedRecord), which the
+// read answers as it answers either of those on any other record (writeLegionAgentError).
 func legionProjectAnswers(ctx context.Context, registry *legionagents.Store, project string) (bool, error) {
 	record, found, err := registry.Project(ctx, project)
 	return found && record.Answering, err
@@ -257,8 +257,10 @@ func legionAgentReadContext(r *http.Request) (context.Context, context.CancelFun
 // legionAgentErrorStatus is the status a registry failure answers: a session moved to another issue
 // or role is a 409, an invalid name or entry a 400 naming the rule (and, in a batch, the entry's
 // index), a batch past legionagents.MaxBatch a 413, a key NATS refuses as writeNATSError answers it
-// (a 413 too large, a 400 otherwise), and anything else a read or write the bucket did not answer, a
-// 503 to retry.
+// (a 413 too large, a 400 otherwise), a record the bucket holds that does not decode
+// (legionagents.ErrMalformedRecord) listenerwire.FaultStatus, since the bucket answered and will
+// answer the same record again, and anything else a read or write the bucket did not answer, a 503
+// to retry.
 func legionAgentErrorStatus(err error) int {
 	var conflict *legionagents.ConflictError
 	switch {
@@ -270,21 +272,28 @@ func legionAgentErrorStatus(err error) int {
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, bus.ErrRefused):
 		return http.StatusBadRequest
+	case errors.Is(err, legionagents.ErrMalformedRecord):
+		return listenerwire.FaultStatus
 	default:
 		return http.StatusServiceUnavailable
 	}
 }
 
 // writeLegionAgentError answers a registry call that failed with legionAgentErrorStatus's status. A
-// 503 carries `Retry-After: 1`, and a batch that failed after its checks
-// (legionagents.PartialWriteError) answers how many entries it wrote whole as `written`, whatever
-// its status.
+// 503 carries `Retry-After: 1` and says the registry did not answer; a record that does not decode
+// (listenerwire.FaultStatus) carries no Retry-After, since asking again reads the same record, and
+// says the registry holds a record it cannot decode, which the error names. A batch that failed
+// after its checks (legionagents.PartialWriteError) answers how many entries it wrote whole as
+// `written`, whatever its status.
 func writeLegionAgentError(w http.ResponseWriter, err error) {
 	status := legionAgentErrorStatus(err)
 	message := err.Error()
-	if status == http.StatusServiceUnavailable {
+	switch status {
+	case http.StatusServiceUnavailable:
 		w.Header().Set("Retry-After", "1")
 		message = "envoy: the legion agent registry did not answer: " + message
+	case listenerwire.FaultStatus:
+		message = "envoy: the legion agent registry holds a record it cannot decode: " + message
 	}
 	var partial *legionagents.PartialWriteError
 	if errors.As(err, &partial) {
