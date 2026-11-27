@@ -17,9 +17,11 @@ import (
 // and the decision that does leaves the session (supervise's revive). A start that leaves no
 // session, or one the claim no longer records, and a claim that already runs nothing, ask nothing.
 //
-// A start of a step's entry asks the suspension with the step's standing, as reroleForStep does
-// (supervise.Standing, stepStands): a step the issue left before the machine's lock is
-// supervise.ErrStepLeft, with nothing of the claim changed.
+// A start of a step's entry asks the suspension with the step's standing, which its one caller,
+// readyClaimForStart, builds once and hands in ctx (supervise.Standing, stepStands): a step the
+// issue left before the machine's lock is supervise.ErrStepLeft, with nothing of the claim changed.
+// It is the one place that asks whether the start leaves a session and whether the claim still
+// runs a process: after reroleForStep has suspended the claim, it finds the claim running nothing.
 func suspendToLeave(ctx context.Context, machine *supervise.Machine, token claim.Token, issue string,
 	role claim.Role, work supervise.StartWork) error {
 	if !machine.Leaves(work) || machine.Claim().RunsNothing() {
