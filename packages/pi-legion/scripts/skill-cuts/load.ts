@@ -217,8 +217,14 @@
  * The refusals above for a skill a plugin or an agent definition puts into the session are made
  * before any model call, each naming the profile.
  * A task whose run file holds its judged runs, or has used its extra runs, is skipped, so a
- * command started again goes on from what was saved. A task whose context needs a directory no
- * read can give (context.ts's UnreadableDirectory: the commit holds no such directory, or GitHub
+ * command started again goes on from what was saved. A task whose run file holds runs but lacks
+ * some makes them with the saved capture those runs were made with, never with one made again:
+ * where that capture's body or record is gone, or it lists the tested skill under another line
+ * than its runs record (LoadRun's `listed`, the one value a run keeps of its capture: a run records
+ * no digest of the body), the command is refused before any capture or run (exit 2), naming the
+ * task, its run file, the capture and both lines (`heldCaptureFault`). A task whose context
+ * needs a directory no read can give (context.ts's UnreadableDirectory: the commit holds no such
+ * directory, or GitHub
  * cuts a level of its tree short even read alone) is dropped: its line says so, `summary.json`
  * gives its reason as the task's `dropped` (`unreadable-directory: ` and the error, which names
  * the repository, the commit and the path), a command started again skips it while its profile
@@ -1932,15 +1938,50 @@ interface ListedUnder {
 /** What a task's summary says of the source of a line whose Oh My Pi capture record names none. */
 const NO_SOURCE = "not recorded: the capture was made before its record named each line's source";
 
-/** What the summary reads of a saved capture's record: the line a Claude Code record lists the
- *  tested skill under, and each listed skill's line of an Oh My Pi record with its source
- *  (capture.ts's CaptureRecord `hints`). */
+/** What the summary, and a task with saved runs (`heldCaptureFault`), read of a saved capture's
+ *  record: the line a Claude Code record lists the tested skill under, each listed skill's line of
+ *  an Oh My Pi record with its source (capture.ts's CaptureRecord `hints`), and the line an Oh My
+ *  Pi record lists each skill under (its `listing`, which `ompCapture` reads the tested skill's
+ *  from; a Claude Code record's entries give a description in its place). */
 const SavedListed = z.looseObject({
   listed: z.string().optional(),
   hints: z
     .array(z.looseObject({ skill: z.string(), hint: z.string(), source: z.string().optional() }))
     .optional(),
+  listing: z.array(z.looseObject({ name: z.string(), hint: z.string().optional() })).optional(),
 });
+
+/** Why task `taskId`, whose run file under `out` holds `runs`, may not take its saved capture on
+ *  `host` for its further runs, or undefined. Those runs replayed that capture, and a run made now
+ *  must replay it too, never one made again: so both its files must be there, and, since a run
+ *  records no digest of its capture's body, the capture must list the tested skill (`name`) under
+ *  the line each of those runs records it was listed under (LoadRun's `listed`, the one value a
+ *  run takes from its capture; the profile a capture or run was made under is checked apart). */
+function heldCaptureFault(
+  out: string,
+  host: Host,
+  taskId: string,
+  name: string,
+  runs: readonly LoadRun[]
+): string | undefined {
+  const files = loadCapturePaths(out, host, taskId);
+  const lines = [...new Set(runs.map((run) => JSON.stringify(run.listed)))].join(" and ");
+  const held = `task ${taskId}'s run file ${loadRunFile(out, taskId)} holds ${counted(runs.length, "run")}, whose capture ${files.body} listed ${name} under ${lines}`;
+  const absent = [files.body, files.record].filter((file) => !existsSync(file));
+  if (absent.length > 0) {
+    return `${held}; ${absent.join(" and ")} ${absent.length === 1 ? "is" : "are"} not there`;
+  }
+  let saved: z.infer<typeof SavedListed>;
+  try {
+    saved = SavedListed.parse(JSON.parse(readFileSync(files.record, "utf8")));
+  } catch (error) {
+    return `${held}; its record ${files.record} cannot be read: ${messageFor(error)}`;
+  }
+  const listed =
+    host === "omp" ? saved.listing?.find((entry) => entry.name === name)?.hint : saved.listed;
+  if (runs.every((run) => run.listed === listed)) return undefined;
+  return `${held}; the capture there lists it under ${listed === undefined ? "no line" : JSON.stringify(listed)}`;
+}
 
 /** Adds only the tested line of `name` to the recorded prompt `blocks` when it was absent. The
  *  capture substitutes the drawn hint using its normal recorded-prompt rule. */
@@ -3120,6 +3161,21 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   /** A task's outcome from the runs it has so far. */
   const outcomeOf = (task: Task): TaskOutcome =>
     taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs);
+  // A task whose run file holds runs makes its further runs with the saved capture those runs were
+  // made with: one whose capture is gone, or lists the tested skill under another line, is refused
+  // before any capture or run (`heldCaptureFault`), so no capture is made over saved runs. A task
+  // that is dropped, or whose run file is complete, takes no capture.
+  const heldFaults = profiled.flatMap(({ task, profile }) => {
+    const runs = runsOf.get(task.id) ?? [];
+    if (runs.length === 0 || dropped.has(task.id) || outcomeOf(task).toStart === 0) return [];
+    const fault = heldCaptureFault(o.out, o.host, task.id, profile.tested.name, runs);
+    return fault === undefined ? [] : [fault];
+  });
+  if (heldFaults.length > 0) {
+    throw new Refused(
+      `${heldFaults.join("; ")}: a task whose run file holds runs makes its further runs with the saved capture those runs were made with, and makes no capture over them, so that no task's runs mix two requests; a run records of its capture the line it lists the tested skill under, which that capture must list it under. Put each capture back as it was saved, or use another --out`
+    );
+  }
   let peak = 0;
   // Each task's hint dollars, and the line its capture lists the tested skill under with where
   // that line came from, from its capture's record: read at the start, and again after the task's

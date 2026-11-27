@@ -1365,6 +1365,112 @@ describe("skill-cuts load with saved captures", () => {
   });
 });
 
+// Catches: a load started again over a task's saved runs whose saved capture is gone making a new
+// capture of it (given --models) and sending the task's further runs with that; and one that sends
+// them with a saved capture that lists the tested skill under another line than its runs went
+// with: two requests in one task's runs.
+test("a task whose run file holds runs is refused before any model call, naming the task, its run file and its capture, when its saved capture is gone or lists the tested skill under another line than its runs record; with the capture as saved it goes on, and a task with no runs and no capture goes to make one", async () => {
+  const dir = path.join(scratch, "held-capture");
+  const made = setup(dir);
+  const skill = path.join(dir, "alpha");
+  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  const tasks = path.join(dir, "tasks.jsonl");
+  const lines = [
+    { id: "need-1", text: NEED, label: "need", source: "written" },
+    { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
+  ];
+  writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+  const cache = path.join(dir, "cache");
+  const out = path.join(dir, "out");
+  saveCaptures(out, lines, profileContext(BETA_PROFILE, cache));
+  // An Oh My Pi that answers --version, and a models.yml: a command given them could make a
+  // capture where a task has none.
+  const ompStandIn = path.join(dir, "omp");
+  writeFileSync(ompStandIn, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+  const models = path.join(dir, "models.yml");
+  writeFileSync(models, ANTHROPIC_MODELS);
+  const args = [
+    ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+    ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+    ...["--scratch", path.join(dir, "scratch"), "--cache-dir", cache],
+  ];
+  const withModels = [...args, "--omp", ompStandIn, "--models", models];
+  answer = () => TEXT;
+  const first = await cli(args);
+  expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
+  // near-1 stopped after 2 of its 3 runs.
+  const runFile = loadRunFile(out, "near-1");
+  writeFileSync(
+    runFile,
+    `${readFileSync(runFile, "utf8").trim().split("\n").slice(0, 2).join("\n")}\n`
+  );
+  const files = loadCapturePaths(out, "omp", "near-1");
+  const body = readFileSync(files.body, "utf8");
+  const record = readFileSync(files.record, "utf8");
+  const held = `task near-1's run file ${runFile} holds 2 runs, whose capture ${files.body} listed alpha under "Use for the alpha checklist."`;
+
+  rmSync(files.body);
+  let before = recorder.requests.length;
+  const gone = await cli(withModels);
+  expect({
+    code: gone.code,
+    stderr: gone.stderr,
+    requests: recorder.requests.length - before,
+  }).toEqual({
+    code: 2,
+    stderr: expect.stringContaining(`${held}; ${files.body} is not there`),
+    requests: 0,
+  });
+  expect(savedRuns(out, "near-1")).toHaveLength(2);
+
+  writeFileSync(files.body, body);
+  const other = JSON.parse(record);
+  other.listing = [
+    { name: "alpha", hint: "Use for another alpha checklist." },
+    ...other.listing.slice(1),
+  ];
+  writeFileSync(files.record, JSON.stringify(other));
+  before = recorder.requests.length;
+  const differs = await cli(args);
+  expect({
+    code: differs.code,
+    stderr: differs.stderr,
+    requests: recorder.requests.length - before,
+  }).toEqual({
+    code: 2,
+    stderr: expect.stringContaining(
+      `${held}; the capture there lists it under "Use for another alpha checklist."`
+    ),
+    requests: 0,
+  });
+  expect(savedRuns(out, "near-1")).toHaveLength(2);
+
+  // Catches: the check refusing the capture the saved runs were made with.
+  writeFileSync(files.record, record);
+  before = recorder.requests.length;
+  const resumed = await cli(args);
+  expect({ code: resumed.code, stderr: resumed.stderr }).toEqual({ code: 0, stderr: "" });
+  expect(recorder.requests.length - before).toBe(1);
+  expect(savedRuns(out, "near-1").map((run) => [run.run, run.listed])).toEqual([
+    [1, "Use for the alpha checklist."],
+    [2, "Use for the alpha checklist."],
+    [3, "Use for the alpha checklist."],
+  ]);
+
+  // Catches: the check refusing a task with no runs, which goes to make its capture as before.
+  for (const file of [runFile, files.body, files.record]) rmSync(file);
+  before = recorder.requests.length;
+  const none = await cli(args);
+  expect(none.code).toBe(1);
+  expect(none.stderr).toContain(
+    `load: task near-1 (near-miss, written): it has no capture in ${path.dirname(files.body)}, and no --models is given to make one`
+  );
+  expect(none.stderr).not.toContain("holds 2 runs");
+  expect(recorder.requests.length).toBe(before);
+});
+
 // Catches: a summary and a report that do not say where each task's listing line of the tested
 // skill came from, so a verdict that rests on drawn hints reads as one that rests on the lines
 // the sessions recorded.
