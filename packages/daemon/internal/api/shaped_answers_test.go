@@ -595,10 +595,17 @@ func valueStripCases() map[string]valueStripCase {
 				served := phaseWordsServed(t, mixed)
 				for place, word := range phaseWordsServed(t, whole) {
 					got, carried := served[place]
+					// The pod is below deploymentRolesContract too, so a hold from step and a task
+					// queued for step are served as of implementing (shaping.go's
+					// withoutDeploymentRoles), a band that runs before this strip.
+					want := word
+					if word == string(phase.Step) {
+						want = string(phase.Implementing)
+					}
 					switch {
-					case word != string(phase.AwaitingChildren) && got != word:
+					case word != string(phase.AwaitingChildren) && got != want:
 						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip takes only the word its process refuses",
-							pauseContract, entryNumber(gateBasisContract), place, got, word)
+							pauseContract, entryNumber(gateBasisContract), place, got, want)
 					case word == string(phase.AwaitingChildren) && strings.HasSuffix(place, " phase") && got != string(phase.Admitted):
 						t.Errorf("the {%d, %d} pod is served %s as %q, want admitted: the issue's own phase is a key every reader requires",
 							pauseContract, entryNumber(gateBasisContract), place, got)

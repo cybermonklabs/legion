@@ -51,17 +51,16 @@ package api
 // the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`), and the
 // plan's `added`, the ids of the tasks the version adds over the version in force, in the plan's
 // order, every task of a generation's first version, `[]` for none (`api.RegisteredPlan`): the
-// workflow's apply of the plan answers them, and records them on the version
-// (`store/migrations/20261123200630_plan_added.up.sql`), so a registration given again answers the
-// same. Whether a registration is one already taken is the record's to say (intake.ApplyFact): a
-// version the store holds is answered `200` as taken, with what its first registration answered,
-// a version given at generation 0 and carried to the issue's generation by its first step among
-// them, which was answered `409 PLAN_VERSION_OLD` there; a version the issue's first step passed
-// over since, given again, is judged and stored as any version is, where it was answered `200`
-// and stored nothing. No request or answer shape changes with it. A caller below this entry is
-// served neither `needs` nor `added` (shaping.go's withoutNeedsOrAdded); the reader of 219 parses
-// the plan and a task as zod objects,
-// which drop the keys, so a plugin before it reads either body.
+// workflow records them on the version (`store/migrations/20261123200630_plan_added.up.sql`).
+// Whether a registration is one already taken is the workflow's judgment under the fact lock, not
+// its id: it judges every give against the record. The version in force is answered `200` with its
+// original additions; a version below it is refused `409 PLAN_VERSION_OLD`, even where an earlier
+// registration took it; and a version the issue's first step passed over since is judged and stored
+// as a new version. A version given at generation 0 and carried to the issue's generation by its
+// first step is the version in force there. No request or answer shape changes with it. A caller
+// below this entry is served neither `needs` nor `added` (shaping.go's withoutNeedsOrAdded); the
+// reader of 219 parses the plan and a task as zod objects, which drop the keys, so a plugin before
+// it reads either body.
 // The same change adds the notice kind `task-join-failed`, to the issue's architect, for a task
 // whose join of its needs waits for a need's branch GitHub does not have (`record.validNoticeKinds`).
 // An outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and

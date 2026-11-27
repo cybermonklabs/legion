@@ -385,19 +385,16 @@ func registeredAdded(t *testing.T, h *harness, grant, issue, doc string, version
 	return *answer.Plan.Added
 }
 
-// register_plan's answer names each task its version adds over the version in force, in the
-// plan's order (`plan.added`): every task of the generation's first version, the one task a later
-// version adds and no task beside it, and none, an empty list and never null, for a version that
-// changes a task's steps and adds no task. A registration given again is the fact already applied,
-// answered what its apply answered, though a later version is in force by then. Each answer is
-// the workflow's apply of the plan (planGiven), through the route.
+// register_plan's answer names each task its version adds over the version in force, in the plan's
+// order (`plan.added`): every task of the generation's first version, the one task a later version
+// adds and no task beside it, and none, an empty list and never null, for a version that changes a
+// task's steps and adds no task. The version in force, given again, is answered with what it first
+// added. A version below it is refused, even when the store still holds that version.
 //
-// The faults it catches are an answer built from the given document, which names every task of
-// each version (its control: the route answering every task of the plan given as added, under
-// which version 2 answers a, b and c), and an answer computed again for a registration given
-// again, against the version in force then, which names none (its control: the duplicate answering
-// the tasks the given plan adds over the plan in force, under which version 2 given again answers
-// none).
+// The faults it catches are an answer built from the given document, which names every task of each
+// version (its control: the route answering every task of the plan given as added, under which
+// version 2 answers a, b and c), and a version below the one in force answered with its old
+// additions (its control: versionRefusal treating every stored version as the version in force).
 func TestRegisterPlanNamesTheTasksItsVersionAdds(t *testing.T) {
 	h, _, statuses := planHarness(t)
 	serveTheEngine(h, statuses)
@@ -416,13 +413,17 @@ func TestRegisterPlanNamesTheTasksItsVersionAdds(t *testing.T) {
 		{1, []string{"a", "b"}, "the generation's first version adds every task"},
 		{2, []string{"c"}, "version 2 adds c and keeps a and b as they were"},
 		{3, []string{}, "version 3 changes the steps of b and adds no task"},
-		{2, []string{"c"}, "version 2 given again is the registration taken, answered what its apply answered, though version 3 is in force"},
-		{1, []string{"a", "b"}, "version 1 given again is the registration taken, answered what its apply answered"},
-		{3, []string{}, "version 3 given again is the registration taken, answered what its apply answered"},
 	} {
 		if got := registeredAdded(t, h, architect.grant(t), "LEGION-208", planDoc, tc.version); !slices.Equal(got, tc.want) {
 			t.Errorf("register version %d answers added %q, want %q: %s", tc.version, got, tc.want, tc.why)
 		}
+	}
+	for _, version := range []int{2, 1} {
+		refusal := intake.PlanVersionOld("LEGION-208", 3, version)
+		refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, version), refusal.Status, refusal.Code, refusal.Message)
+	}
+	if got := registeredAdded(t, h, architect.grant(t), "LEGION-208", planDoc, 3); !slices.Equal(got, []string{}) {
+		t.Errorf("register version 3 given again answers added %q, want []: the version in force keeps its first answer", got)
 	}
 }
 
@@ -569,18 +570,17 @@ func TestAPlanVersionPassedOverIsTakenWhenItsOwnerGivesItAgain(t *testing.T) {
 	takenBy(t, h, sub)
 }
 
-// A give of a version the store holds is the version already taken, whoever gives it and whatever
-// generation's give the store recorded it by: it stores nothing and is answered as its first
-// registration was, 200 with the tasks that registration added, which for a version that added
-// none is []. The sub-architect's version 1 given again by itself and by the root's architect, and
-// version 2, which changes the steps of b, given again, are such gives; so is version 1 of a
-// child given at generation 0, before the daemon recorded it, and given again at its own
-// generation once its first step carried the version there, whose id the store never marked.
+// A give of the version in force is answered with the tasks that version first added. A giver the
+// version already names changes no row, and another owner becomes its last giver; a version below
+// the version in force is refused. A version given at generation 0 and carried to the issue's
+// generation by its first step is in force there, so its giver receives its original additions
+// again under the generation's new id.
 //
-// The fault it catches is a give of a version the store holds judged again as a later version
-// (its control: intake.ApplyFact running the plan's apply for every give, under which each give
-// again is refused 409 PLAN_VERSION_OLD).
-func TestAGiveOfAVersionTheStoreHoldsStoresNothing(t *testing.T) {
+// The faults it catches are a give of the version in force judged again as a later version (its
+// control: versionRefusal taking no give as the version in force, under which each give again is
+// refused 409 PLAN_VERSION_OLD), and an earlier version treated as taken after a later version
+// reached the store.
+func TestAGiveOfAVersionInForceReturnsItsOriginalAdditions(t *testing.T) {
 	const steps = "implementer:i reviewer:r"
 	ref := func(id string) string { return "dispatch://LEGION-209/artifact/plan-md#b-" + id }
 	given := func(t *testing.T, h *harness, grant string, version int, want []string, why string) {
@@ -594,7 +594,7 @@ func TestAGiveOfAVersionTheStoreHoldsStoresNothing(t *testing.T) {
 		}
 	}
 
-	t.Run("a version taken at the issue's generation, given again by its owner and by another", func(t *testing.T) {
+	t.Run("a version taken at the issue's generation, given again by its giver and by another", func(t *testing.T) {
 		h, _, statuses := planHarness(t)
 		serveTheEngine(h, statuses)
 		seedMember(t, h, "LEGION-209", "LEGION-208")
@@ -607,12 +607,25 @@ func TestAGiveOfAVersionTheStoreHoldsStoresNothing(t *testing.T) {
 			t.Fatalf("premise: version 1 answers added %q, want [a b]", got)
 		}
 		given(t, h, sub.grant(t), 1, []string{"a", "b"}, "the sub-architect gives the version it gave")
-		given(t, h, root.grant(t), 1, []string{"a", "b"}, "the root's architect gives the version the sub-architect gave")
+		before := planRowsOf(t, h, "LEGION-209", 1)
+		if got := registeredAdded(t, h, root.grant(t), "LEGION-209", childDoc, 1); !slices.Equal(got, []string{"a", "b"}) {
+			t.Errorf("the root's architect's version 1 answers added %q, want [a b]", got)
+		}
+		if after := planRowsOf(t, h, "LEGION-209", 1); reflect.DeepEqual(after, before) {
+			t.Errorf("the root's architect's give changed no row, want it added as a giver")
+		}
 		if got := registeredAdded(t, h, root.grant(t), "LEGION-209", childDoc, 2); !slices.Equal(got, []string{}) {
 			t.Fatalf("premise: version 2 answers added %q, want []", got)
 		}
-		given(t, h, sub.grant(t), 2, []string{}, "version 2 added no task")
-		given(t, h, root.grant(t), 1, []string{"a", "b"}, "version 1 is held below version 2, which is in force")
+		before = planRowsOf(t, h, "LEGION-209", 1)
+		if got := registeredAdded(t, h, sub.grant(t), "LEGION-209", childDoc, 2); !slices.Equal(got, []string{}) {
+			t.Errorf("the sub-architect's version 2 answers added %q, want []", got)
+		}
+		if after := planRowsOf(t, h, "LEGION-209", 1); reflect.DeepEqual(after, before) {
+			t.Errorf("the sub-architect's give changed no row, want it added as a giver")
+		}
+		refusal := intake.PlanVersionOld("LEGION-209", 2, 1)
+		refusedSaying(t, registerPlan(h, root.grant(t), "LEGION-209", childDoc, 1), refusal.Status, refusal.Code, refusal.Message)
 	})
 
 	t.Run("a version given at generation 0 and carried to the issue's generation by its first step", func(t *testing.T) {
@@ -671,15 +684,16 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
 // nobody defines, and 80,659 steps `acceptance:k`, each with a key but owner on acceptance and
 // with no implementer before it. Each answer is within perKind bytes for each kind it holds, and
-// counts the rest of each kind past the bound, in its sentence too. Three more quote or list long
+// counts the rest of each kind past the bound, in its sentence too. Four more quote or list long
 // values, each within perLongKind for each kind, a bound computed from those constants: a ring of
 // 40,000 tasks, each needing a word that names no task too, whose reasons are those words and the
-// cycle through the tasks, its chain cut; a task whose id is 900 KB; and a task whose one need is
-// a word of 1 MiB, each of the last two quoted with its mark. The faults are an answer with a
-// reason for each cause and one that quotes or lists a value whole; the controls take out plan's
+// cycle through the tasks, its chain cut; the same 40,000 tasks needing nothing, whose one reason
+// lists the tasks that no task needs, its list cut; a task whose id is 900 KB; and a task whose one
+// need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an answer with
+// a reason for each cause and one that quotes or lists a value whole; the controls take out plan's
 // bound of the reasons, under which the first two versions are answered in 34 and 44 MB, and
-// quoted's cut with chainOf's, under which the long id and the long need are answered whole. It
-// holds the counts and the size, and no sentence.
+// quoted's cut with listed's and chainOf's, under which the list of the 40,000 tasks, the long id
+// and the long need are answered whole. It holds the counts and the size, and no sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
 	// `error` and in `reasons`) at under 200 bytes with its JSON.
@@ -720,6 +734,11 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	for i := range ring {
 		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d x%05d", (i+1)%ringSize, i))
 	}
+	// The same tasks, t00000 to t39999, needing nothing: each is a task that no task needs.
+	sinks := make([]dispatch.DocumentBlock, ringSize)
+	for i := range sinks {
+		sinks[i] = taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer")
+	}
 	longID := strings.Repeat("a", 900<<10)
 	longNeed := strings.Repeat("x", mib)
 	for _, tc := range []struct {
@@ -740,6 +759,8 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
 		// Two kinds: the word of each task that names no task, and the one cycle, its chain cut.
 		{"a ring of 40,000 tasks", ring, 2 * perLongKind, plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},
+		// One kind: the tasks that no task needs, the list of them cut.
+		{"40,000 tasks that no task needs", sinks, perLongKind, 1, []int{ringSize - plan.MostReasons}, ""},
 		// The id alone is refused; with steps that each name it, a whole id gave tens of MB.
 		{"a task whose id is 900 KB", []dispatch.DocumentBlock{taskBlock(longID, "tester:k tester:k")},
 			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longID))},

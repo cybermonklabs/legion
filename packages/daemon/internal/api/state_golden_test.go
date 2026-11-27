@@ -885,6 +885,12 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
+				// The spec row its architect registered is served as its design gate too, as every
+				// registered spec row is (record.SpecGate), with no person's approval of it.
+				DesignGate: &GateView{
+					ArtifactID:     "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+					CurrentVersion: 2,
+				},
 				GatedSteps: []GatedStepView{{
 					Step:           record.DesignStepSpec,
 					ArtifactID:     "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
@@ -1366,12 +1372,14 @@ func populatedState(t *testing.T) State {
 	// LEGION-209, a child, carries no such key. LEGION-208's tree and LEGION-210's run, its root
 	// held or not, and so does LEGION-212's, whose root a person answered and which waits in the
 	// line for its resume, and so do the trees of the reviewing roots LEGION-218 and LEGION-219,
-	// whose rounds wait on GitHub. LEGION-211's tree has not been opened, since its root waits in
-	// the line for that; LEGION-214's tree is no live tree; and LEGION-207's has finished and
-	// lingers. So the fixture carries both values, each on a root whose shape is the one
-	// record.TreeRuns answers it for.
+	// whose rounds wait on GitHub, and those of LEGION-240, at step, and LEGION-241, held from that
+	// step, each a live tree whose root holds its slot. LEGION-211's tree has not been opened, since
+	// its root waits in the line for that; LEGION-214's tree is no live tree; and LEGION-207's has
+	// finished and lingers. So the fixture carries both values, each on a root whose shape is the
+	// one record.TreeRuns answers it for.
 	for key, runs := range map[string]bool{
 		"LEGION-208": true, "LEGION-210": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true,
+		"LEGION-240": true, "LEGION-241": true,
 		"LEGION-211": false, "LEGION-214": false, "LEGION-207": false,
 	} {
 		issue := state.Issues[key]

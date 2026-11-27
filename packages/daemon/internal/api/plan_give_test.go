@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -73,19 +72,21 @@ func newPlanWorld(t *testing.T, recorded bool) planWorld {
 		sub: newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect), third: newLiveClaimIn(t, h, "LEGION-208", "LEGION-212", claim.RoleArchitect)}
 }
 
-// planAnswer is register_plan's answer to version of childDoc, as the route answers a give it took
-// or answers as taken: the plan given.
-func planAnswer(version int) string {
-	return `{"plan":{"version":` + strconv.Itoa(version) + `,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
-}
-
 // taken fails unless giver's give of version of childDoc for LEGION-209 is answered 200 with the
-// plan.
+// plan at this daemon's contract: the version, its added list and its one task with its steps and
+// empty needs list.
 func (w planWorld) taken(t *testing.T, giver liveClaim, version int, why string) {
 	t.Helper()
 	answer := registerPlan(w.h, giver.grant(t), "LEGION-209", childDoc, version)
-	if body := strings.TrimSpace(answer.Body.String()); answer.Code != http.StatusOK || body != planAnswer(version) {
-		t.Fatalf("version %d given by %s = %d %s, want 200 with the plan: %s", version, giver.token, answer.Code, body, why)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("version %d given by %s = %d %s, want 200 with the plan: %s", version, giver.token, answer.Code, strings.TrimSpace(answer.Body.String()), why)
+	}
+	var got PlanRegisterResponse
+	decodeInto(t, answer, &got)
+	needs := []string{}
+	want := []RegisteredTask{{ID: "a", Steps: []string{"implementer", "reviewer"}, Needs: &needs}}
+	if got.Plan.Version != version || got.Plan.Added == nil || !reflect.DeepEqual(got.Plan.Tasks, want) {
+		t.Fatalf("version %d given by %s = 200 %s, want 200 with its added list and task: %s", version, giver.token, jsonOf(t, got), why)
 	}
 }
 
