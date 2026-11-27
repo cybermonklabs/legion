@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
@@ -278,6 +279,123 @@ func TestEnsureScratchMakesEveryDirectoryTheRoleIsToldToWriteUnder(t *testing.T)
 			t.Fatalf("EnsureScratch = %v, want a refusal naming GOCACHE and %s", err, blocked)
 		}
 	})
+}
+
+// The issue's volume carries the pod's fsGroup, and the kubelet's ownership change for it sets
+// the set-group-ID bit on each of its directories, so Linux gives every directory made under one
+// that bit too, whatever mode its maker asked for. A role's tool that makes a directory 0700 under
+// TMPDIR then finds 02700: OSSV-775's four mode assertions failed in a pod's shared TMPDIR, and
+// passed under a 0700 temporary directory off that volume. So the role's setup leaves TMPDIR
+// without the bit — made new under a setgid parent, or found with it on a retained volume at a
+// role's relaunch — and a child its role makes 0700 is exactly 0700. The parent, the other
+// directories of the set, TMPDIR's own access bits and its group are left as they were.
+//
+// Each run reads first that the filesystem under the test gives a new directory its parent's
+// set-group-ID bit, since on one that does not the defect cannot show and every check below
+// would pass blind; and its control sets the bit back on TMPDIR and reads the child mode
+// assertion fire.
+func TestEnsureScratchLeavesTheSharedTemporaryDirectoryWithoutTheSetGroupIDBit(t *testing.T) {
+	// childMode is the mode a directory made 0700 directly under dir gets: what a role's own
+	// tool finds when it makes one in its TMPDIR.
+	childMode := func(t *testing.T, dir string) fs.FileMode {
+		t.Helper()
+		child, err := os.MkdirTemp(dir, "child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode() &^ fs.ModeDir
+	}
+	// setgidScratch is the issue's scratch as the kubelet leaves it: a directory with the
+	// set-group-ID bit, on a filesystem shown to pass the bit to a directory made under it.
+	setgidScratch := func(t *testing.T) string {
+		t.Helper()
+		scratch := filepath.Join(t.TempDir(), "scratch")
+		if err := os.Mkdir(scratch, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(scratch, 0o775|fs.ModeSetgid); err != nil {
+			t.Fatal(err)
+		}
+		if mode := childMode(t, scratch); mode&fs.ModeSetgid == 0 {
+			t.Fatalf("a directory made 0700 under the set-group-ID directory %s is %v: this filesystem does not pass the bit on, so this test cannot see the defect", scratch, mode)
+		}
+		return scratch
+	}
+	modeOf := func(t *testing.T, path string) fs.FileMode {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode() &^ fs.ModeDir
+	}
+	groupOf := func(t *testing.T, path string) uint32 {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Sys().(*syscall.Stat_t).Gid
+	}
+	for _, tc := range []struct {
+		name string
+		// retained is the TMPDIR an earlier release made, at its mode, before the role starts;
+		// 0 makes none, as on a new volume.
+		retained fs.FileMode
+		want     fs.FileMode
+	}{
+		{"a new TMPDIR under a set-group-ID parent", 0, 0o700},
+		{"a retained TMPDIR that has the bit, at a relaunch", 0o2700, 0o700},
+		{"a retained TMPDIR that has the bit and other access bits, which stay", 0o2750, 0o750},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := setgidScratch(t)
+			tmp, cache := filepath.Join(scratch, "tmp"), filepath.Join(scratch, "cache")
+			if tc.retained != 0 {
+				if err := os.Mkdir(tmp, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(tmp, tc.retained.Perm()|fs.ModeSetgid); err != nil {
+					t.Fatal(err)
+				}
+				if mode := modeOf(t, tmp); mode&fs.ModeSetgid == 0 {
+					t.Fatalf("the retained TMPDIR %s is %v, want it set up with the set-group-ID bit", tmp, mode)
+				}
+			}
+			group := groupOf(t, scratch)
+
+			if err := EnsureScratch([]string{"TMPDIR=" + tmp, "XDG_CACHE_HOME=" + cache}); err != nil {
+				t.Fatal(err)
+			}
+			if mode := modeOf(t, tmp); mode != tc.want {
+				t.Errorf("TMPDIR %s is %v after the role's setup, want %v: no set-group-ID bit, its access bits as they were", tmp, mode, tc.want)
+			}
+			if mode := childMode(t, tmp); mode != 0o700 {
+				t.Errorf("a directory the role makes 0700 in its TMPDIR is %v, want exactly 0700", mode)
+			}
+			if mode := modeOf(t, scratch); mode&fs.ModeSetgid == 0 {
+				t.Errorf("the scratch %s, TMPDIR's parent, is %v after the role's setup, want it left with its set-group-ID bit", scratch, mode)
+			}
+			if mode := modeOf(t, cache); mode&fs.ModeSetgid == 0 {
+				t.Errorf("XDG_CACHE_HOME %s is %v, want it left as the volume makes it, with the set-group-ID bit: the fix is TMPDIR's alone", cache, mode)
+			}
+			if got := groupOf(t, tmp); got != group {
+				t.Errorf("TMPDIR's group is %d, want the scratch's %d, unchanged", got, group)
+			}
+
+			// The control: the bit set back on TMPDIR, the child assertion above fires.
+			if err := os.Chmod(tmp, tc.want|fs.ModeSetgid); err != nil {
+				t.Fatal(err)
+			}
+			if mode := childMode(t, tmp); mode == 0o700 {
+				t.Errorf("control: a directory made 0700 in a TMPDIR with the set-group-ID bit is %v; the check above could not have failed", mode)
+			}
+		})
+	}
 }
 
 // On the pinned Oh My Pi, a repository's own settings reach the agent under Apply's environment as

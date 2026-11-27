@@ -382,7 +382,7 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
+// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of eleven
 // tabs with each tab's box measured, at 390 px and back, then the comment margin hidden and shown
 // again.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
@@ -404,8 +404,8 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(10);
-  // Every tab lies whole inside the tablist, which never scrolls sideways: ten tabs that do not
+  await expect(tabs).toHaveCount(11);
+  // Every tab lies whole inside the tablist, which never scrolls sideways: eleven tabs that do not
   // fit its width wrap onto a further line (dispatch://INFRA-5200, the layout rule's 4). A tab is
   // one line, at most 48 px tall: the tabs wrap between tabs, never inside one.
   const wholeInTablist = (tab: Locator) =>
@@ -431,6 +431,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
+    "Dashboard",
     "Spec",
     "Verification",
     "Plan",
@@ -442,7 +443,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Decisions",
     "Collaborators",
   ]);
-  // At 390 px the ten tabs take more than one line.
+  // At 390 px the eleven tabs take more than one line.
   const tops = await tabs.evaluateAll((nodes) =>
     nodes.map((node) => Math.round(node.getBoundingClientRect().top))
   );
@@ -469,10 +470,10 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { name: "Spec" });
-  await expect(specTab).toBeFocused();
-  await wholeInTablist(specTab);
-  expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  const dashboardTab = page.getByRole("tab", { exact: true, name: "Dashboard" });
+  await expect(dashboardTab).toBeFocused();
+  await wholeInTablist(dashboardTab);
+  expect((await dashboardTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("End");
   await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
@@ -484,7 +485,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await activityTab.click();
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "Show margin" }).click();
-  // The count of ten above settled the tabs, so one read lists them all.
+  // The count of eleven above settled the tabs, so one read lists them all.
   for (const tab of await tabs.all()) {
     await wholeInTablist(tab);
   }

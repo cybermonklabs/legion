@@ -3,7 +3,7 @@ import { checkFacts, resultFacts } from "../check-facts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import { type PresetView, presetView } from "../presets";
-import { blockNodeId, checkStanding } from "../tree-drafts";
+import { blockNodeId, checkStanding } from "../statement-rules";
 
 /**
  * The reads the Verification filter's body is drawn from, as the page holds them: checks of the

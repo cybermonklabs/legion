@@ -31,9 +31,12 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 		"The other way is to write LEGION-310 as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
 	root := record.Issue{Key: heldTaskRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: heldTaskProject, Tree: heldTaskRoot, Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "A"}
+	// The deployment gates spec, so a person approves the step the approval kept is of: a kept
+	// approval is named only while a person approves its step (record.TakesStep).
+	steps := []record.DesignStep{record.DesignStepSpec}
 	// A held task of an entry is the derivation's, so its rewrite carries the first act again: the
 	// fresh tree's, since nothing of this root's tree has run and it holds no gate row.
-	firstAct := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: root})
+	firstAct := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: root, Gate: record.TreeGate{Steps: steps}})
 	for _, tc := range []struct {
 		name     string
 		at       phase.Phase
@@ -70,7 +73,7 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 			if err != nil {
 				t.Fatalf("encode what the task names: %v", err)
 			}
-			runtime := &workflowRuntime{pool: pool, records: records}
+			runtime := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
 			task, kept, _, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot},
 				supervise.Delivery{ID: "outbox-71", Task: "a person decided on the tree", Kept: named, Entry: tc.entry})
 			if err != nil {

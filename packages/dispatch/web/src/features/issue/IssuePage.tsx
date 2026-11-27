@@ -1,3 +1,4 @@
+import * as React from "react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
@@ -45,6 +46,11 @@ import { SpecToolbar } from "./SpecToolbar";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
+
+/** Dashboard, today's first tab, in a chunk of its own that the browser fetches only when the
+ *  reader opens the tab (dispatch://INFRA-5702/spec#b-r-today-tab): this is the one import of
+ *  today's page that reaches it (R14). */
+const DashboardTab = React.lazy(() => import("../dashboard/DashboardTab"));
 
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
@@ -351,6 +357,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     children: activeTab === "children",
     collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
+    dashboard: activeTab === "dashboard",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
@@ -469,6 +476,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           ) : undefined
         }
       />
+      <div
+        aria-hidden={activeTab !== "dashboard"}
+        aria-labelledby="issue-dashboard-tab"
+        hidden={activeTab !== "dashboard"}
+        id="issue-dashboard-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.dashboard ? (
+          <React.Suspense fallback={null}>
+            <DashboardTab issueKey={issueKey} page="today" />
+          </React.Suspense>
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "spec"}
         aria-labelledby="issue-spec-tab"

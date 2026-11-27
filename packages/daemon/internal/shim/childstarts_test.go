@@ -79,7 +79,7 @@ func TestEveryChildTheShimWaitsForStartsThroughItsGuard(t *testing.T) {
 		plantShim(t, overlay, "agentsecrets.go", "procgroup.Run(cmd, s.children.Starter())", "cmd.Run()")
 		plantShim(t, overlay, "agentsecrets.go", "pid, err := s.children.Start(cmd)", "pid, err := 0, cmd.Start()")
 		plantShim(t, overlay, "commands.go", "start := s.children.Starter()", "start := procgroup.Starter(procgroup.NoReaper)")
-		plantShim(t, overlay, "../workspace/codegraph.go", "err := procgroup.Run(cmd, start)", "err := cmd.Run()")
+		plantShim(t, overlay, "../workspace/codegraph.go", "done, err := start(cmd)", "done, err := func() {}, cmd.Start()")
 		starts := shimProcessStarts(t, overlay)
 		for _, want := range []struct{ what, caller string }{
 			{"Oh My Pi's spawn with a bare cmd.Start", "(*" + shimPackage + ".shim).spawnOnce"},

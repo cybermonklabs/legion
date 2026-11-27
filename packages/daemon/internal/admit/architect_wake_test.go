@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -387,25 +388,27 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 //     of generation 1: the start of the row's entry is written, derived again from the record;
 //   - a root in planning whose row stands at an entry a resume raised, whose claim still holds
 //     the task of the entry before, of the same run: the start of the resume's entry is written,
-//     carrying the resume's own text;
+//     the resume's own start built from the wait the row keeps, whose send names the answer;
 //   - the control, a root whose claim holds the task of the row's own entry, which it was given:
 //     the sweep writes nothing for it, and the arm names it;
 //   - a root in planning whose row stands at an entry the derivation raised: the reach leaves it
 //     out past admitted, so nothing is written and nothing is named.
 func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *testing.T) {
 	const resumed = "A person answered your ask ask-q; read it."
+	answered := &record.Awaiting{Ask: "ask-q", Since: seqMark(10), AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	for _, tc := range []struct {
 		name   string
 		change func(*architectWakeFixture)
 		// resume raises the architect's row to entry seededEntry+1 carrying the resume's text,
-		// marked to be sent as written where verbatim is set.
-		resume, verbatim bool
-		want             []record.ArchitectStallArm
-		// sent is the entry of the one start the passes write, 0 for none, and task the text it
-		// carries where the case names one.
-		sent int64
-		task string
-		why  string
+		// keeping awaiting beside it where a resume's raise does.
+		resume   bool
+		awaiting *record.Awaiting
+		want     []record.ArchitectStallArm
+		// sent is the entry of the one start the passes write, 0 for none, and names what its
+		// task, as its send renders it, says where the case names it.
+		sent  int64
+		names string
+		why   string
 	}{
 		{
 			name: "the task of the run before the root's re-admission",
@@ -418,9 +421,9 @@ func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *te
 				"never queued the row's entry to take",
 		},
 		{
-			name: "the task of the entry below a resume's entry", resume: true, verbatim: true,
+			name: "the task of the entry below a resume's entry", resume: true, awaiting: answered,
 			change: func(f *architectWakeFixture) { f.stands = phase.Planning },
-			sent:   seededEntry + 1, task: resumed,
+			sent:   seededEntry + 1, names: "ask-q",
 			why: "the resume's entry keeps the root in the reach past admitted until its claim is given it, and the task of the " +
 				"entry before is one that entry has moved past",
 		},
@@ -449,7 +452,7 @@ func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *te
 				inTx(t, pool, func(tx pgx.Tx) {
 					if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
 						Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: resumed,
-						EntryVerbatim: tc.verbatim, EntryRaisedAt: fixedNow.Add(-pastTheHandshake)}); err != nil {
+						EntryAwaiting: tc.awaiting, EntryRaisedAt: fixedNow.Add(-pastTheHandshake)}); err != nil {
 						t.Fatalf("raise the architect's entry of %s above the entry its claim was given: %v", root, err)
 					}
 				})
@@ -473,10 +476,11 @@ func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *te
 				t.Fatalf("the architect starts of %s after two passes = %+v, want the one start of entry %d: %s", root, starts, tc.sent, tc.why)
 			}
 			start := starts[0]
-			if start.Entry != tc.sent || start.Generation != architectWakeGeneration || start.Task == "" ||
-				(tc.task != "" && start.Task != tc.task) {
-				t.Fatalf("the architect start of %s = entry %d of generation %d carrying %q, want the work of entry %d of generation %d: %s",
-					root, start.Entry, start.Generation, start.Task, tc.sent, architectWakeGeneration, tc.why)
+			sent := startText(t, pool, root, config.DesignGateRootIssues, start)
+			if start.Entry != tc.sent || start.Generation != architectWakeGeneration || sent == "" ||
+				!strings.Contains(sent, tc.names) {
+				t.Fatalf("the architect start of %s = entry %d of generation %d carrying %q, want the work of entry %d of generation %d naming %q: %s",
+					root, start.Entry, start.Generation, sent, tc.sent, architectWakeGeneration, tc.names, tc.why)
 			}
 		})
 	}
