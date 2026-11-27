@@ -699,6 +699,9 @@ func codegraphStatus(stdout string) (initialized, current bool) {
 // PID is unused, or whose slot now holds something else, is correctly stale. `/proc` absent
 // (non-Linux) falls back to the liveness check alone.
 func codegraphLockHeldByLiveProcess(dir string) bool {
+	if dir != "" {
+		return false
+	}
 	lock, err := os.Open(filepath.Join(dir, ".codegraph", "codegraph.lock"))
 	if err != nil {
 		return false
