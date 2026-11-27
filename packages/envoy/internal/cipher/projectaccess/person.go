@@ -25,15 +25,21 @@ import (
 // bound. A failure is no answer, and the read is asked again once it passes.
 const failureTTL = 2 * time.Second
 
-// cachedPerson is one answer of the person route: the member kind as Dispatch answered it, held
-// as redact.RemoteText with the question's record (readPerson), so it is told apart as it came
-// (knownKind) and an unknown one prints only as the rule reads it, with the account token the
-// question carried redacted; whether Dispatch holds the person, as it answered it (nil for an
-// answer with no held field, from a Dispatch older than the hold), the as_of it answered with
-// (zero when it named none), the not_held_until it answered with (zero when it named none), and
-// when it was asked.
+// cachedPerson is one answer of the person route, kept as words and not as another party's text:
+// the member kind read from the answer with the question's record (readPerson) and kept both ways
+// a reader needs it, so nothing this client holds between calls holds a redact.RemoteText. known
+// is the one of MemberFull, MemberRestricted and MemberNone the field was, told apart as it came
+// (knownKind), and "" for any other kind; kind is the field as the rule reads it
+// (redact.RemoteText.String), which is Dispatch's own spelling for every kind of plain words, the
+// three this broker knows among them, and holds no run of the account token the question carried,
+// so an unknown kind prints only as the rule read it (MemberKind's ErrUnknownMemberKind) and is
+// kept and passed on only that way (Keeper.KeepPersonAnswer, PersonAnswer.MemberKind). Beside
+// them: whether Dispatch holds the person, as it answered it (nil for an answer with no held
+// field, from a Dispatch older than the hold), the as_of it answered with (zero when it named
+// none), the not_held_until it answered with (zero when it named none), and when it was asked.
 type cachedPerson struct {
-	kind  redact.RemoteText
+	kind  string
+	known string
 	held  *bool
 	asOf  time.Time
 	until time.Time
@@ -112,7 +118,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
 	}
 	answer, err := c.personAnswer(ctx, person, func(cached cachedPerson) time.Duration {
-		if knownKind(cached.kind) == "" {
+		if cached.known == "" {
 			return failureTTL
 		}
 		return CacheTTL
@@ -123,15 +129,16 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 		}
 		return "", err
 	}
-	kind := knownKind(answer.kind)
-	if kind == "" {
+	if answer.known == "" {
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.kind, person)
 	}
-	return kind, nil
+	return answer.known, nil
 }
 
-// knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind is, compared as it
-// came, and "" for any other kind.
+// knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind, the member kind
+// as the answer carried it, is, compared as it came, and "" for any other kind. It is read once,
+// where the answer is read (readPerson), and kept beside the rule's reading of the field
+// (cachedPerson), so no reader of a kept answer holds the field itself.
 func knownKind(kind redact.RemoteText) string {
 	for _, known := range []string{MemberFull, MemberRestricted, MemberNone} {
 		if kind.Equal(known) {
@@ -141,16 +148,10 @@ func knownKind(kind redact.RemoteText) string {
 	return ""
 }
 
-// stored is the member kind as the broker keeps it and passes it on (Keeper.KeepPersonAnswer,
-// PersonAnswer.MemberKind): the kind as the rule reads it (redact.RemoteText.String), which is the
-// kind as Dispatch spelled it for every kind of plain words, the three this broker knows among
-// them, and holds no run of the account token the question carried.
-func (p cachedPerson) stored() string { return p.kind.String() }
-
 // PersonAnswer is Dispatch's answer on its person route for one person, as Person reads it.
 type PersonAnswer struct {
 	// MemberKind is the member kind Dispatch answered, passed on whatever it is, as the rule reads
-	// it (cachedPerson.stored): MemberKind is the check of it.
+	// it (cachedPerson.kind): MemberKind is the check of it.
 	MemberKind string
 	// Held is whether Dispatch holds the person's credentials until they sign in again.
 	Held bool
@@ -198,7 +199,7 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 	case answer.asOf.IsZero():
 		return PersonAnswer{}, fmt.Errorf("projectaccess: dispatch's answer for %s names held and no as_of", person)
 	}
-	read := PersonAnswer{MemberKind: answer.stored(), Held: *answer.held, AsOf: answer.asOf, NotHeldUntil: answer.until, AskedAt: answer.at}
+	read := PersonAnswer{MemberKind: answer.kind, Held: *answer.held, AsOf: answer.asOf, NotHeldUntil: answer.until, AskedAt: answer.at}
 	if read.Held {
 		read.Unkept = c.keepHeldAgain(ctx, person)
 	}
@@ -326,9 +327,11 @@ func (c *Client) settleLocked(person string, answer cachedPerson, err error) {
 }
 
 // readPerson asks Dispatch's person route about person, a call bounded by requestTimeout, and
-// answers what it said as it said it, stamped asked: the member kind held as redact.RemoteText,
-// which get decodes with the question's record (redact.Answer.Decode). A 404, whatever its code,
-// is no answer about a person.
+// answers what it said, stamped asked. The member kind is decoded as redact.RemoteText, which get
+// fills with the question's record (redact.Answer.Decode), and read here, where that record is at
+// hand, into the two words a cachedPerson keeps: the kind of the closed set it came as
+// (knownKind), and the rule's reading of the field. The field itself is left here, so no answer
+// this client keeps holds it. A 404, whatever its code, is no answer about a person.
 func (c *Client) readPerson(ctx context.Context, person string, asked time.Time) (cachedPerson, error) {
 	var answer struct {
 		MemberKind   redact.RemoteText `json:"member_kind"`
@@ -343,5 +346,5 @@ func (c *Client) readPerson(ctx context.Context, person string, asked time.Time)
 	if status == http.StatusNotFound {
 		return cachedPerson{}, fmt.Errorf("projectaccess: dispatch answered %d with no answer for %s", status, person)
 	}
-	return cachedPerson{kind: answer.MemberKind, held: answer.Held, asOf: answer.AsOf, until: answer.NotHeldUntil, at: asked}, nil
+	return cachedPerson{kind: answer.MemberKind.String(), known: knownKind(answer.MemberKind), held: answer.Held, asOf: answer.AsOf, until: answer.NotHeldUntil, at: asked}, nil
 }

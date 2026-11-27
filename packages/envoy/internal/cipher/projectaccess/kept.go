@@ -307,7 +307,7 @@ func (c *Client) keepPerson(ctx context.Context, person string, answer cachedPer
 // write took. c.kept is set.
 func (c *Client) writePerson(ctx context.Context, person string, answer cachedPerson) error {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepTimeout)
-	err := c.kept.keeper.KeepPersonAnswer(writeCtx, person, answer.stored(), answer.held, answer.asOf, deadline(answer))
+	err := c.kept.keeper.KeepPersonAnswer(writeCtx, person, answer.kind, answer.held, answer.asOf, deadline(answer))
 	cancel()
 	c.mu.Lock()
 	c.kept.settleLocked(person, answer, err)
@@ -336,8 +336,8 @@ func (k *keeping) settleLocked(person string, answer cachedPerson, err error) {
 	switch remembered, ok := k.unkept[person]; {
 	case err == nil && ok && !remembered.asOf.After(answer.asOf):
 		delete(k.unkept, person)
-	case err != nil && !answer.kind.Equal(MemberFull) && (!ok || answer.asOf.After(remembered.asOf)):
-		k.unkept[person] = unkeptKind{kind: answer.stored(), asOf: answer.asOf}
+	case err != nil && answer.known != MemberFull && (!ok || answer.asOf.After(remembered.asOf)):
+		k.unkept[person] = unkeptKind{kind: answer.kind, asOf: answer.asOf}
 	}
 	if answer.held == nil {
 		return
