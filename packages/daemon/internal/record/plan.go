@@ -220,8 +220,10 @@ type ReturnCounts struct {
 // into its branch, which the task's own work there makes at a start again (SetJoinUnmerged).
 // StartReason is why the step the task stands at was started: a start again at its first step, or
 // a move back to an earlier step (SetStartReason), "" for a first start and after any later move:
-// the step that starts after a wait reads it (the workflow's startAfterWait). Needs and
-// JoinConflicts are nil where they hold none.
+// the step that starts after a wait reads it (the workflow's startAfterWait). StartTask is the task
+// the return out of awaiting_children hands the start of the step it takes the task to
+// (SetStartTask), "" for every other start and after any later move: the step that starts after a
+// wait for its agent is told it as written. Needs and JoinConflicts are nil where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -248,6 +250,7 @@ type PlanTask struct {
 	StepWaitSince  *time.Time
 	StepWaitFrom   phase.Phase
 	StartReason    string
+	StartTask      string
 }
 
 // BranchOf is the GitHub branch task works on, for the task of the issue keyed issueKey: the branch
@@ -728,7 +731,7 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
 	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
-	plan_tasks.step_wait_since, plan_tasks.step_wait_from, plan_tasks.start_reason`
+	plan_tasks.step_wait_since, plan_tasks.step_wait_from, plan_tasks.start_reason, plan_tasks.start_task`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -742,7 +745,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
 			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StepWaitFrom,
-			&task.StartReason); err != nil {
+			&task.StartReason, &task.StartTask); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -855,8 +858,9 @@ func plansInForceWhere(ctx context.Context, store Store, tx pgx.Tx, issue Issue,
 // givers and the tasks it recorded it added, every task and every step. carried is a hand-over
 // that carries its run, whose tasks go on where they stood, so each task keeps its state, its
 // hold's reason, its place, its step's wait, since when and the phase the start that waits moved
-// the issue from, its counts, its branch and the needs whose join conflicted, and the generation
-// every name it gave a task (AssignTaskBranch), since the run goes on in those branches. Without
+// the issue from, why its step started and the task a return hands that start, its counts, its
+// branch and the needs whose join conflicted, and the generation every name it gave a task
+// (AssignTaskBranch), since the run goes on in those branches. Without
 // carried, the plan starts from its start: each task waits at no act with no hold, no step wait,
 // every count 0 and no branch, and to has given no name yet. The names from gave stay given to the
 // issue (AssignTaskBranch reads them at every generation), so no task of a plan of several takes
@@ -887,10 +891,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, step_wait_from, pass, rounds,
-			conflict_rounds, backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
+			conflict_rounds, backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, start_task)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, step_wait_from, pass, rounds,
-			conflict_rounds, backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
+			conflict_rounds, backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, start_task
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}

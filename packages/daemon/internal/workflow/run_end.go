@@ -251,13 +251,16 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (startAtFirstStep, transition). Its entry names the phase the start that waited moved the issue
-// from (record.PhaseRow.EntryFrom), which that start kept on its task's row
-// (record.PlanTask.StepWaitFrom, waitsFrom), read on s's plan, as that start's own entry would
-// have named it: so an entry a role's move back raised out of retro or merging names that phase
-// after a wait for its agent too, and the admission pass leaves its start alone (acceptedEntry).
-// said is the log line, which names the issue, the task, its place and role, the reason and that
-// phase, and args.
+// (startAtFirstStep, transition). Where it was the return out of awaiting_children, the task is
+// told the return's own task as written (record.PlanTask.StartTask: the task the wait held, with
+// the children that merged during it), and its entry counts as a move back too, as the return's
+// start would have had it waited for nothing (ReturnFromChildren). Its entry names the phase the
+// start that waited moved the issue from (record.PhaseRow.EntryFrom), which that start kept on its
+// task's row (record.PlanTask.StepWaitFrom, waitsFrom), as that start's own entry would have named
+// it: so an entry a role's move back raised out of retro or merging names that phase after a wait
+// for its agent too, and the admission pass leaves its start alone (acceptedEntry). Both rows'
+// values are read on s's plan. said is the log line, which names the issue, the task, its place and
+// role, the reason, whether a return's task is told, that phase, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
@@ -266,14 +269,19 @@ func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, sai
 	}
 	reason := w.StartReason
 	var from phase.Phase
+	var returned string
 	if row, ok := s.plan.TaskOf(w.Task); ok {
-		from = row.StepWaitFrom
+		from, returned = row.StepWaitFrom, row.StartTask
 	}
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
-		"reason", reason, "from", from}, args...)...)
-	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
+		"reason", reason, "returned", returned != "", "from", from}, args...)...)
+	told := func(at Standing) string {
 		return task(view, at, record.PhaseRow{}, reason)
-	}, from, reason != "")
+	}
+	if returned != "" {
+		told = func(Standing) string { return returned }
+	}
+	return e.start(ctx, tx, s, role, taskPull{}, told, from, reason != "" || returned != "")
 }
 
 // agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for
