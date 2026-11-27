@@ -3,9 +3,9 @@ description: >-
   The step after the harness pool's wait step of every job of ci.yaml's run that queues shell
   harnesses through .github/scripts/harness-pool.sh: it uploads the pool's record of when each
   line of each harness's log was written, the files `$RUNNER_TEMP/harness-pool/<entry>.lines`,
-  `.lines.end`, `.logbytes`, `.name`, `.started`, `.seconds`, `.exit` and `.bound`, with the
-  `judged` file every wait writes (the number of harnesses it judged, 0 for none, which is how a
-  reader tells a job that queued none from one whose record was lost), as the
+  `.lines.end`, `.logbytes`, `.name`, `.started`, `.ended`, `.seconds`, `.exit` and `.bound`,
+  with the `judged` file every wait writes (the number of harnesses it judged, 0 for none, which
+  is how a reader tells a job that queued none from one whose record was lost), as the
   artifact `harness-times-<the job's check run id>`, the id the jobs API and the job's URL give,
   so a reader fetches one job's record by that id (docs/testing.md, "When each shell harness ran
   its cases"). Call it with `if: always()`, so a failed, timed-out or cancelled job's record is
@@ -41,6 +41,7 @@ runs:
           ${{ runner.temp }}/harness-pool/*.logbytes
           ${{ runner.temp }}/harness-pool/*.name
           ${{ runner.temp }}/harness-pool/*.started
+          ${{ runner.temp }}/harness-pool/*.ended
           ${{ runner.temp }}/harness-pool/*.seconds
           ${{ runner.temp }}/harness-pool/*.exit
           ${{ runner.temp }}/harness-pool/*.bound

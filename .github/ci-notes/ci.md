@@ -2386,7 +2386,7 @@ bytes it read; the recorder writes the log's own size beside it, and the wait dr
 where the log has grown since (a process the harness left behind), so a reader can tell a whole
 record from a part. The step "Upload the harness case
 times" (.github/actions/harness-times-upload, `if: always()`) keeps those files, with each
-entry's name, start, seconds, status and bound and the wait's count of what it judged, as the
+entry's name, start, exact end (`.ended`), seconds, status and bound and the wait's count of what it judged, as the
 artifact `harness-times-<the job's check
 run id>` for 90 days, and .github/scripts/harness_case_times.py reads one run's cases out of
 them (docs/testing.md#when-each-shell-harness-ran-its-cases). The record decides nothing: the

@@ -1324,10 +1324,10 @@ When the harness ends, the recorder first gives up the harness's slot (`<entry>.
 The stamper reads the log to its end, checks what it stamped against the log's own bytes, and writes the bytes it read to `<entry>.lines.end`; the recorder writes the log's size to `<entry>.logbytes`, and the entry's exit status is written last of all, which is what the wait waits for.
 A reader takes the record as whole only when those two numbers agree, and the wait drops `<entry>.logbytes` where a harness's log has grown since — a process the harness left behind — so that record reads as a part rather than as a whole one.
 
-The job uploads those files, with each entry's `.name`, `.started`, `.seconds`, `.exit` and `.bound` and the wait's `judged` (how many harnesses it judged, which tells a job that queued none from one whose record was lost), as the artifact `harness-times-<job id>` with `.github/actions/harness-times-upload` (`if: always()`, so a failed, timed-out or cancelled job keeps what was stamped).
+The job uploads those files, with each entry's `.name`, `.started`, `.ended` (the exact moment its command returned, `date +%s.%N`), `.seconds`, `.exit` and `.bound` and the wait's `judged` (how many harnesses it judged, which tells a job that queued none from one whose record was lost), as the artifact `harness-times-<job id>` with `.github/actions/harness-times-upload` (`if: always()`, so a failed, timed-out or cancelled job keeps what was stamped).
 The harnesses' own logs are not uploaded: `.lines` carries every line's text beside its time, and the wait step still prints each log into the job's log.
-The artifact is kept for 90 days, this repository's default: the two artifacts of run 45965019783, made on 2026-11-27, carry `expires_at` 2027-02-25.
-They are small — 185 KB for the test job's 55 harnesses and 74 KB for envoy-go-checks' 26, as GitHub stores them.
+The artifact is kept for 90 days, this repository's default: the two artifacts of run 46012863918, made on 2026-11-27, carry `expires_at` 2027-02-25.
+They are small — 185,506 bytes for the test job's harnesses and 74,536 for envoy-go-checks', as GitHub stored them in that run.
 
 To read one run's cases, each with the time it started and ended:
 
@@ -1337,7 +1337,9 @@ To read one run's cases, each with the time it started and ended:
 
 It prints one JSON line per case — the job, the harness, the case's name, its status, its start, its end and its seconds — where a case is a `PASS:`/`FAIL:`, `ok`/`not ok`, `case: <name>` or `<name>: PASS` line of the harness's own output, a case ends at its line and starts at the previous case's line, and the first case of a harness starts when the harness did.
 A harness that printed no case line gets one row for the whole harness.
-A harness that exited non-zero always has a row of its own, `kind` `harness`, `status` `fail`, from its last case line to its end, and a passing harness whose end is past its last case line by more than a poll has a passing one.
+A harness that exited non-zero always has a row of its own, `kind` `harness`, `status` `fail`, from its last case line to its end, and a passing harness gets a passing one when its end is more than 0.05 s after its last case line.
+Its end is the exact time in `<entry>.ended`; only an artifact without that file falls back to `.started` plus the wall seconds, which are rounded to a tenth, too coarse to decide the 0.05 s.
+Every row of a harness whose status was read carries it as `exit`, UNKNOWN rows included, so a failure shows however the rest of its record went.
 
 It prints an UNKNOWN row for a job that ran a pool wait step and has no artifact — an upload that failed included — and for a harness whose record is missing or does not cover its whole log — a stamper that was killed, or a harness still running when the job ended.
 It exits 1 when any row is UNKNOWN, and 3 when any row failed and nothing is UNKNOWN.
