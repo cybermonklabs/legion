@@ -5912,6 +5912,11 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
+        "file": "packages/envoy/githubrate/githubrate.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
         "file": "packages/envoy/internal/cipher/ciphertest/client.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
@@ -5989,7 +5994,7 @@
       {
         "file": "packages/envoy/natsconn/connection.go",
         "callee": "(interface).Unwrap",
-        "why": "relayed's read of the one error an error wraps, which it compares with the NATS client's nats.ErrPermissionViolation and prints none of: an error that wraps one prints as its own text (ConnectionClass) only where what it wraps is that error itself and its text is that error's words and a server's permissions -ERR, the NATS client's permissions violation (processErr's fmt.Errorf(\"%w: %s\", ErrPermissionViolation, \u2026)); golang.org/x/oauth2/google.AuthenticationError wraps an *oauth2.RetrieveError alone (newAuthenticationError), so no library refusal is relayed"
+        "why": "relayed's read of the one error an error wraps, which it compares with the NATS client's nats.ErrPermissionViolation and prints none of: an error that wraps one prints as its own text (ConnectionClass) only where what it wraps is that error itself and its text is that error's words and a server's permissions -ERR, the NATS client's permissions violation (processErr's fmt.Errorf(\"%w: %s\", ErrPermissionViolation, …)); golang.org/x/oauth2/google.AuthenticationError wraps an *oauth2.RetrieveError alone (newAuthenticationError), so no library refusal is relayed"
       }
     ],
     "required": [
@@ -16530,7 +16535,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/ref-no-sha",
-      "production": "githubapp Client.Ref: a 200 that is no 40-hex SHA leaves Ref through neither its answer nor its error \u2014 the one line GitHub sent is read as the rule prints it (RemoteText.SendBack, empty for a text the rule changes) and the error names no part of it",
+      "production": "githubapp Client.Ref: a 200 that is no 40-hex SHA leaves Ref through neither its answer nor its error — the one line GitHub sent is read as the rule prints it (RemoteText.SendBack, empty for a text the rule changes) and the error names no part of it",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Ref",
       "capture": "githubapp.answer-words/ref-no-sha",
       "mutation": {
@@ -21656,7 +21661,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/census-query-key",
-      "production": "dispatch store census (Census): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has \u2026\", never pgx's ParseConfigError",
+      "production": "dispatch store census (Census): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has …\", never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.census",
       "capture": "store.postgres-url/census-query-key",
       "mutation": {
@@ -21670,7 +21675,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/census-user",
-      "production": "dispatch store census (Census, pgx.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; \u2026\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
+      "production": "dispatch store census (Census, pgx.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.census",
       "capture": "store.postgres-url/census-user",
       "mutation": {
@@ -21684,7 +21689,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/versions-query-key",
-      "production": "dispatch store CheckVersions (it printed pgx.Connect's error as \"connect: ...\"): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has \u2026\", never pgx's ParseConfigError",
+      "production": "dispatch store CheckVersions (it printed pgx.Connect's error as \"connect: ...\"): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has …\", never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.CheckVersions",
       "capture": "store.postgres-url/versions-query-key",
       "mutation": {
@@ -21698,7 +21703,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/versions-user",
-      "production": "dispatch store CheckVersions (pgx.Connect; it printed pgx.Connect's error as \"connect: ...\"): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; \u2026\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
+      "production": "dispatch store CheckVersions (pgx.Connect; it printed pgx.Connect's error as \"connect: ...\"): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.CheckVersions",
       "capture": "store.postgres-url/versions-user",
       "mutation": {
@@ -21740,7 +21745,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/open-declares-query-key",
-      "production": "dispatch store Open, before its first read of the URL (declaresPoolSize, pgx.ParseConfig): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has \u2026\", never pgx's ParseConfigError",
+      "production": "dispatch store Open, before its first read of the URL (declaresPoolSize, pgx.ParseConfig): a URL holding the token as a query key with no '=' (pgx's wrapped error quotes it alone) is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has …\", never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.Open",
       "capture": "store.postgres-url/open-declares-query-key",
       "mutation": {
@@ -21754,7 +21759,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/open-declares-user",
-      "production": "dispatch store Open's first read of the URL (declaresPoolSize, pgx.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; \u2026\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
+      "production": "dispatch store Open's first read of the URL (declaresPoolSize, pgx.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.declaresPoolSize",
       "capture": "store.postgres-url/open-declares-user",
       "mutation": {
@@ -21768,7 +21773,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/open-pool-query-key",
-      "production": "dispatch store Open, before its pool read of the URL (pgxpool.ParseConfig): a URL holding the token as a query key with a value beside a pool_min_conns pgxpool refuses is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has \u2026\", never pgx's ParseConfigError",
+      "production": "dispatch store Open, before its pool read of the URL (pgxpool.ParseConfig): a URL holding the token as a query key with a value beside a pool_min_conns pgxpool refuses is refused by pgdsn.Refusal before pgx reads it, \"DATABASE_URL cannot be read: a key of its query holds a character no keyword or parameter name has …\", never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.Open",
       "capture": "store.postgres-url/open-pool-query-key",
       "mutation": {
@@ -21782,7 +21787,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/store",
       "test": "TestAPostgresURLPgxCannotReadPrintsNoneOfIt/open-pool-user",
-      "production": "dispatch store Open's pool read of the URL (pgxpool.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside a pool_min_conns pgxpool refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; \u2026\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
+      "production": "dispatch store Open's pool read of the URL (pgxpool.ParseConfig): a URL holding the probe's user and password as user information and its token as an access token's value, beside a pool_min_conns pgxpool refuses, is refused as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …\" (pgdsn.ConnectError), never pgx's ParseConfigError, which keeps the user name and every query pair",
       "function": "github.com/sjawhar/envoy/internal/dispatch/store.Open",
       "capture": "store.postgres-url/open-pool-user",
       "mutation": {
@@ -21803,7 +21808,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/dispatch",
       "test": "TestADatabaseURLPgxCannotReadIsNamedByItsSetting/query-key",
-      "production": "cmd/dispatch loopbackDatabase (dev sign-in's check of DATABASE_URL): a URL holding the token as a query key with no '=' is refused as \"connect to the configured Postgres: the driver's error is not printed: \u2026\" (pgdsn.ConnectError of a URL pgdsn.Refusal refuses), never pgx's ParseConfigError",
+      "production": "cmd/dispatch loopbackDatabase (dev sign-in's check of DATABASE_URL): a URL holding the token as a query key with no '=' is refused as \"connect to the configured Postgres: the driver's error is not printed: …\" (pgdsn.ConnectError of a URL pgdsn.Refusal refuses), never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/cmd/dispatch.loopbackDatabase",
       "capture": "dispatch.database-url/query-key",
       "mutation": {
@@ -21817,7 +21822,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/dispatch",
       "test": "TestADatabaseURLPgxCannotReadIsNamedByItsSetting/user",
-      "production": "cmd/dispatch loopbackDatabase (dev sign-in's check of DATABASE_URL): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused by its setting as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; \u2026\" (pgdsn.ConnectError), never pgx's ParseConfigError",
+      "production": "cmd/dispatch loopbackDatabase (dev sign-in's check of DATABASE_URL): a URL holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, is refused by its setting as \"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …\" (pgdsn.ConnectError), never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/cmd/dispatch.loopbackDatabase",
       "capture": "dispatch.database-url/user",
       "mutation": {
@@ -21838,7 +21843,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/store",
       "test": "TestADSNPgxCannotReadPrintsNoneOfIt/open-user",
-      "production": "daemon store Open (PoolConfig's pgxpool.ParseConfig error through pgdsn.ConnectError, the road of the boot's store.Open and daemon.CheckStart): a DSN holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, prints as \"connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; \u2026\", which still unwraps to pgx's error, never pgx's ParseConfigError",
+      "production": "daemon store Open (PoolConfig's pgxpool.ParseConfig error through pgdsn.ConnectError, the road of the boot's store.Open and daemon.CheckStart): a DSN holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, prints as \"connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; …\", which still unwraps to pgx's error, never pgx's ParseConfigError",
       "function": "github.com/sjawhar/legion/daemon/internal/store.Open",
       "capture": "store.dsn/open-user",
       "mutation": {
@@ -21852,7 +21857,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/store",
       "test": "TestADSNPgxCannotReadPrintsNoneOfIt/connect-error-user",
-      "production": "pgdsn.ConnectError of pgx.Connect's own error (the road of ompsessions.ConnectURL): a DSN holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, prints as \"connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; \u2026\", which still unwraps to pgx's error, never pgx's ParseConfigError",
+      "production": "pgdsn.ConnectError of pgx.Connect's own error (the road of ompsessions.ConnectURL): a DSN holding the probe's user and password as user information and its token as an access token's value, beside an sslmode pgx refuses, prints as \"connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; …\", which still unwraps to pgx's error, never pgx's ParseConfigError",
       "function": "github.com/sjawhar/envoy/pgdsn.ConnectError",
       "capture": "store.dsn/connect-error-user",
       "mutation": {
@@ -24567,14 +24572,14 @@
       "id": "reference-depth-bounded-amp-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text-timing.test.ts",
-      "test": "readRemoteText of a 1 MiB field nested as &amp;amp;amp;\u2026 reads it as not readable within the bound",
+      "test": "readRemoteText of a 1 MiB field nested as &amp;amp;amp;… reads it as not readable within the bound",
       "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
     },
     {
       "id": "reference-depth-bounded-legacy-amp-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text-timing.test.ts",
-      "test": "readRemoteText of a 1 MiB field nested as &ampampamp\u2026; reads it as not readable within the bound",
+      "test": "readRemoteText of a 1 MiB field nested as &ampampamp…; reads it as not readable within the bound",
       "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
     },
     {
@@ -24609,7 +24614,7 @@
       "id": "reference-name-bounded-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text-timing.test.ts",
-      "test": "readRemoteText of a 256 KiB field that is one long reference (&ampampamp\u2026;) reads it as not readable within the bound",
+      "test": "readRemoteText of a 256 KiB field that is one long reference (&ampampamp…;) reads it as not readable within the bound",
       "production": "readRemoteText step 0, decodeSeparators, CHARACTER_REFERENCE: a name of at most 32 letters; the read stays linear in the field"
     },
     {
@@ -24630,14 +24635,14 @@
       "id": "field-limit-bounded-numeric-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text-timing.test.ts",
-      "test": "readRemoteText of a 64 MiB field that is one long numeric reference (&amp;amp;amp;amp;amp;&#000\u202601;) refuses it within the bound",
+      "test": "readRemoteText of a 64 MiB field that is one long numeric reference (&amp;amp;amp;amp;amp;&#000…01;) refuses it within the bound",
       "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
     },
     {
       "id": "field-limit-bounded-name-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text-timing.test.ts",
-      "test": "readRemoteText of a 64 MiB field that is one long name (&ampampamp\u2026;) refuses it within the bound",
+      "test": "readRemoteText of a 64 MiB field that is one long name (&ampampamp…;) refuses it within the bound",
       "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
     },
     {
@@ -27230,7 +27235,7 @@
       "guard": "groups-directory-url-query"
     },
     {
-      "site": "githubapp Client: every call's URL was the configured API base's text with the call's path appended (c.base + \"/repos/\u2026\", sixteen sites), so a base with a query took the path into the query's last value and GitHub was asked the base's own path",
+      "site": "githubapp Client: every call's URL was the configured API base's text with the call's path appended (c.base + \"/repos/…\", sixteen sites), so a base with a query took the path into the query's last value and GitHub was asked the base's own path",
       "source": "the round-9 decisions of #4368",
       "guard": "githubapp-api-base-query"
     },
