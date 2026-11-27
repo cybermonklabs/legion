@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -275,6 +276,105 @@ func TestReadSideBySideAnswersTheFirstErrorAndEndsTheOtherReads(t *testing.T) {
 	}
 	if err := testwait.Receive(t, "the end of the read beside the failed one", sibling); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the read beside the failed one ended with %v, want context.Canceled from the failed read's group", err)
+	}
+}
+
+// readTree runs a call tree of side-by-side reads the way the delivery population's read does: a
+// group of four reads, two of which each open a group of three of their own (ReadSideBySide
+// nested in ReadSideBySide, as delivery.ReadWindowRows is in the population's group), and answers
+// the most leaves that ran at once and how many ran. Each leaf stands for a statement on a
+// connection: it holds its running count for a few milliseconds, so leaves that are allowed to
+// overlap do.
+func readTree(ctx context.Context) (peak, ran int32, err error) {
+	var running, highest, done atomic.Int32
+	leaf := func(context.Context) error {
+		now := running.Add(1)
+		for {
+			seen := highest.Load()
+			if now <= seen || highest.CompareAndSwap(seen, now) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		running.Add(-1)
+		done.Add(1)
+		return nil
+	}
+	nested := func(ctx context.Context) error { return ReadSideBySide(ctx, leaf, leaf, leaf) }
+	err = ReadSideBySide(ctx, leaf, nested, leaf, nested)
+	return highest.Load(), done.Load(), err
+}
+
+// A read limit holds every group a call tree opens to its places together: the reads of a group
+// nested in a group are no more places than the limit names, the read that opened the group lets
+// go of its place while it waits for the group and takes one again after, so every leaf runs and
+// none waits for a place a read waiting for it holds. The delivery routes' reads run so (api's
+// readDeliveryRows): a timeline holds at most two request-pool connections, the weight admission
+// counts it at, however many reads its population makes at once and however deep they nest.
+func TestAReadLimitHoldsEveryGroupOfACallTreeToItsPlaces(t *testing.T) {
+	t.Parallel()
+	for _, places := range []int{1, 2, 3} {
+		ctx := WithReadLimit(WithTransactionTracking(testwait.Context(t)), places)
+		peak, ran, err := readTree(ctx)
+		if err != nil {
+			t.Fatalf("%d places: the call tree's reads failed: %v", places, err)
+		}
+		if int(peak) > places {
+			t.Errorf("%d places: %d leaves ran at once, want at most %d", places, peak, places)
+		}
+		if ran != 8 {
+			t.Errorf("%d places: %d leaves ran, want all 8", places, ran)
+		}
+		if peak < 1 || (places > 1 && peak < 2) {
+			t.Errorf("%d places: at most %d leaves ran at once, want the limit used, which a read that waited on a place its parent held never reaches", places, peak)
+		}
+	}
+}
+
+// The same call tree under no limit overlaps its leaves past the two places the limited run holds
+// them to, so the row above measures the limit and not a tree too narrow to overlap.
+func TestACallTreeUnderNoReadLimitOverlapsPastTwoLeaves(t *testing.T) {
+	t.Parallel()
+	peak, ran, err := readTree(WithTransactionTracking(testwait.Context(t)))
+	if err != nil || ran != 8 {
+		t.Fatalf("the unlimited call tree: ran %d leaves, error %v, want all 8 and none", ran, err)
+	}
+	if peak <= 2 {
+		t.Fatalf("the unlimited call tree ran at most %d leaves at once, want more than two for the limited row to mean anything", peak)
+	}
+}
+
+// A context that carries a limit keeps it: a read that is itself a limited group's, asking for a
+// limit of its own, is given no places beside the ones it holds, so the limit stays one number
+// for the call tree and a function that sets it is safe to call under another that did.
+func TestAReadLimitIsSetOnceForACallTree(t *testing.T) {
+	t.Parallel()
+	ctx := WithReadLimit(WithTransactionTracking(testwait.Context(t)), 1)
+	peak, ran, err := readTree(WithReadLimit(ctx, 8))
+	if err != nil || ran != 8 || peak != 1 {
+		t.Fatalf("a limit of 8 asked under a limit of 1: ran %d leaves, at most %d at once, error %v, want 8, 1 and none", ran, peak, err)
+	}
+}
+
+// A read waiting for a place of its limit stops waiting when its context ends, and the group
+// answers the cause rather than hold the caller for a place that never comes.
+func TestAReadWaitingForAPlaceEndsWithItsContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(WithReadLimit(WithTransactionTracking(testwait.Context(t)), 1))
+	var once sync.Once
+	released, started := make(chan struct{}), make(chan struct{})
+	holder := func(context.Context) error {
+		once.Do(func() { close(started) })
+		<-released
+		return nil
+	}
+	answered := make(chan error, 1)
+	go func() { answered <- ReadSideBySide(ctx, holder, holder) }()
+	testwait.Receive(t, "a read holding the only place", started)
+	cancel(errors.New("the request ended"))
+	close(released)
+	if err := testwait.Receive(t, "the group's answer", answered); err == nil || !strings.Contains(err.Error(), "the request ended") {
+		t.Fatalf("the group answered %v, want the cause of its context's end", err)
 	}
 }
 

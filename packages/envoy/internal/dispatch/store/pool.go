@@ -268,6 +268,9 @@ func (p *readPlace) take(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
 	select {
 	case p.limit <- struct{}{}:
 		p.held.Store(true)
