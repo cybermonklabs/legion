@@ -456,9 +456,10 @@ function viewWords(page: Page): Promise<string[]> {
 // Row 1
 // =============================================================================================
 
-// SLOW(>=2s): the whole seed, then at each width three loads with the view row's presses and
-// chords and a record opened and closed; at 1440 px a reply target held in Conversation, each
-// counted thread opened until its read mark is written, and five widths read for scrolling.
+// SLOW(>=2s): the whole seed, then at each width four loads with the view row's presses and
+// chords, a record opened and closed and Dashboard read at rest; at 1440 px a reply target held in
+// Conversation, each counted thread opened until its read mark is written, and five widths read
+// for scrolling.
 test("Threads is the control after Decisions, a press or t t opens and closes it, and its count is the rows of Waiting on me @phone", async ({
   browser,
 }) => {
@@ -529,6 +530,15 @@ test("Threads is the control after Decisions, a press or t t opens and closes it
       await expect(page, `t t in Threads did not return to Conversation ${at}`).toHaveURL(
         endsWith(presetPath(key, "conversation"))
       );
+
+      // R16: Dashboard at rest draws neither the box at the foot nor the issue's read mark. B
+      // holds Dashboard and INFRA-5702's fix of its foot, so a row that read this alone would
+      // pass at B; read here, once R1's control is proved, the row fails at B on its own
+      // assertion, as c-before-after asks of every row but row 14.
+      await gotoIssue(page, presetPath(key, "dashboard"));
+      await expectActivePreset(page, PRESET_NAMES.dashboard);
+      await expect(composer(page), `Dashboard at rest draws the box ${at}`).toBeHidden();
+      await expect(outlineEnd(page), `Dashboard at rest draws the read mark ${at}`).toHaveCount(0);
     }
     if (test.info().project.name === "iphone") return;
     await page.setViewportSize(viewportAt(DESKTOP_WIDTH));
@@ -577,27 +587,6 @@ test("Threads is the control after Decisions, a press or t t opens and closes it
     await expect(presetRow(page), "the Threads control draws its words at 0").not.toContainText(
       NEW_REPLIES
     );
-  });
-});
-
-test.skip("Threads is the control after Decisions, a press or t t opens and closes it, and its count is the rows of Waiting on me: Dashboard at rest draws neither the box nor the read mark @owed", {
-  annotation: {
-    description:
-      "Owed on dispatch://INFRA-5702: the foot draws its box and the issue's read mark at rest on Dashboard until that branch holds the fix of its join with INFRA-3949 (decision 428), so this reading is skipped until then.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
-  await phase(browser, seedThreads, async (page, seed) => {
-    for (const width of rowWidths()) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, presetPath(seed.key, "dashboard"));
-      await expectActivePreset(page, PRESET_NAMES.dashboard);
-      await expect(composer(page), `Dashboard at rest draws the box at ${width} px`).toBeHidden();
-      await expect(
-        outlineEnd(page),
-        `Dashboard at rest draws the read mark at ${width} px`
-      ).toHaveCount(0);
-    }
   });
 });
 
