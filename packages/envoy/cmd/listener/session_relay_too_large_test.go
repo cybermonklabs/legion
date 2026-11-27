@@ -45,36 +45,60 @@ func storeEnvelopeOfSize(t *testing.T, rig *relayRig, subject string, size int) 
 //
 // A stored message can fit the server's max payload while its relay frame, the same bytes with
 // the relay's headers, does not, and NATS refuses that frame however often it is sent. The relay
-// acknowledges such a message, writes one WARN naming the session, the event and the stream
-// sequence, and goes on, so the session's next message arrives. A relay that restarted at the ack
-// floor at each refusal would deliver the session nothing after that message until the stream's
-// retention took it (dispatch://INFRA-3918). The refused frame never went out, so the relay waits
-// for no receipt of it: under a receipt wait shorter than the row's own wait, the relay does not
-// pause the session. The controls: a message half the limit is relayed as any other, with no
-// WARN; and a session that answers no frame is paused once its receipt wait has passed, with one
-// line.
+// sends the session a notice in the frame's place, under the frame's headers and reply subject,
+// naming the message by its event id and stream sequence, and writes one WARN; the session's done
+// to the notice acknowledges the message, and the session's next message follows. A relay that
+// restarted at the ack floor at each refusal would deliver the session nothing after that message
+// until the stream's retention took it (INFRA-3918), and one that acknowledged the message with no
+// notice would leave the session never told of it. The session answers the notice as any frame,
+// so under a receipt wait shorter than the row's own wait the relay does not pause the session.
+// The controls: a message half the limit is relayed as any other, with no WARN; and a session that
+// answers no frame is paused once its receipt wait has passed, with one line.
 func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 500*time.Millisecond)
 	limit := int(rig.harness.client.Conn.MaxPayload())
 
-	t.Run("a message 64 bytes under the limit is acknowledged with one WARN", func(t *testing.T) {
+	t.Run("a message 64 bytes under the limit is sent as a notice the session's done settles, with one WARN", func(t *testing.T) {
 		const sessionID = "ses_near_limit"
 		agent := contracts.LegacyAgentSubject(sessionID)
 		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		large, largeSeq := storeEnvelopeOfSize(t, rig, agent, limit-64)
 		marker, markerSeq := rig.storeEvent(t, agent)
+		notice := noticeEventOf(t, rig, largeSeq)
 
+		var first relayedFrame
+		select {
+		case first = <-standIn.frames:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("the session received nothing within 15s, want the notice of event %s at stream sequence %d in the message's place", large.EventID, largeSeq)
+		}
+		if first.item.EventID != notice.EventID {
+			t.Fatalf("the session's first frame is %s at stream sequence %d, want the notice %s of event %s in the message's place", first.item.EventID, first.seq, notice.EventID, large.EventID)
+		}
+		if first.seq != largeSeq {
+			t.Errorf("the notice goes under a frame of stream sequence %d, want the message's own %d: the session answers it as it would the frame", first.seq, largeSeq)
+		}
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
 		standIn.none(t, time.Second)
-		awaitAcked(t, rig.consumers, sessionID, markerSeq)
 		warnings := edgeSessionLogLines(rig.harness.logs.String(), "WARN", relayTooLargeLine, sessionID)
 		if len(warnings) != 1 || warnings[0]["event_id"] != large.EventID || warnings[0]["stream_seq"] != float64(largeSeq) {
-			t.Fatalf("the relay wrote %+v, want one WARN %q naming event %s at stream sequence %d", warnings, relayTooLargeLine, large.EventID, largeSeq)
+			t.Errorf("the relay wrote %+v, want one WARN %q naming event %s at stream sequence %d", warnings, relayTooLargeLine, large.EventID, largeSeq)
 		}
 		if n := len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)); n != 0 {
-			t.Fatalf("the relay paused the session %d times; want no receipt wait for a frame that never went out:\n%s", n, rig.harness.logs.String())
+			t.Errorf("the relay paused the session %d times; want none, the session having answered the notice as any frame:\n%s", n, rig.harness.logs.String())
 		}
+		// The acknowledgements are read last: a message the session's done left unsettled is
+		// delivered again after the consumer's ack wait, which a wait for its acknowledgement can
+		// outlast, and its second notice is no fault of the checks above.
+		bound := listenerWaitBound(t)
+		if !waitForAckFloor(t, rig.consumers, sessionID, largeSeq, bound) {
+			t.Errorf("the consumer's ack floor did not pass stream sequence %d within %s of the notice: the session's done to it settled nothing", largeSeq, bound)
+		} else if !waitForAckFloor(t, rig.consumers, sessionID, markerSeq, bound) {
+			t.Errorf("the consumer's ack floor passed the message at %d but not the later one at %d within %s", largeSeq, markerSeq, bound)
+		}
+		// The notice's payload, read last since it fails the row where it stands.
+		requireTooLargePayload(t, first, large, agent, largeSeq, limit-64, int64(limit))
 	})
 
 	t.Run("a message half the limit is relayed with no WARN", func(t *testing.T) {

@@ -2865,12 +2865,8 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // an envelope published here reaches the sessions that follow its topic whole. Both are refused
 // before the subject check, the wait for a reconnect or the read of ctx, the stored bound first,
 // so a message past the max payload by itself is named as such; the send then goes through
-// sendStoredWithin, which checks nothing again. Not every stored write is held to the frame: a
-// publish window's sends of an envelope on its own topic (Dispatch's outbox), PublishStoredAck and
-// PublishStoredAs (a role's kept copy, a delivery exception), the raw writes, and the forwards no
-// sender waits on (the kept lane's walk, the role lane's delivery) keep the stream's bound alone,
-// and a message they store with less room than the frame needs reaches a session as the relay's
-// notice in its place (RelayFrameHeaderBytes names them).
+// sendStoredWithin, which checks nothing again. Not every stored write is held to the frame:
+// RelayFrameHeaderBytes names those that keep the stream's bound alone.
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	data, err := json.Marshal(item)
 	if err != nil {
@@ -3170,14 +3166,12 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // duplicate, which counts as stored. A forward past the server's max payload, its header
 // included, is ErrTooLarge before the wait for a connection or anything else (checkSend): a role
 // forward carries a message a caller sent. The forward is held to the stream's bound alone, not to
-// its relay frame, since it is also how the forwards no sender waits on reach their holder - the
-// kept lane's walk, which hands on a copy the stream already holds, and the role lane's delivery of
-// a role message it took from its core-NATS subscription, whose publisher waits for no answer - and
-// a refusal there would answer no sender and hand the holder nothing, where the stored copy reaches
-// its holder whole or as the relay's notice. A caller whose sender is still waiting asks
-// RelayFrameTooLarge first. An error here is the publish's own, before any reply could arrive (a
-// refused, denied or invalid forward, a connection that never came back within timeout); every
-// returned forward must be waited for, which releases its reply subscription.
+// its relay frame: it is also how the forwards no sender waits on reach their holder
+// (RelayFrameHeaderBytes names them, and cmd/listener's sendToRole says why they make no frame
+// check), so a caller whose sender is still waiting asks RelayFrameTooLarge first. An error here is
+// the publish's own, before any reply could arrive (a refused, denied or invalid forward, a
+// connection that never came back within timeout); every returned forward must be waited for,
+// which releases its reply subscription.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)

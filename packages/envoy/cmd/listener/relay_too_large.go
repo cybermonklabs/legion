@@ -116,12 +116,15 @@ func (m *sessionRelays) publishTooLargeNotice(ctx context.Context, sessionID str
 //
 // The notice fits by construction. The stored message is read only here and can hold any bytes a
 // publisher gave it, so each text the notice copies is bounded (noticeTexts.carried), and the rest
-// is fixed in size, so the notice is a few kilobytes at most. It is then measured against room,
-// and a notice past it is built again bare: every text of the message left out and the topic the
-// stored subject. A bare notice still past room, which only a server with a max payload of a few
-// kilobytes makes, is errRelayNoticeTooLarge, and nothing is published. Both notices are built
-// from the same parts, and each names in its cut every text it does not carry as the message holds
-// it (noticeTexts.cut).
+// is fixed in size. The largest part is the topic, up to contracts.SubjectMaxBytes, each byte of
+// which JSON may escape to six (`<` is written \u003c): the envelope's topic carries it escaped
+// once and the payload's original_topic, a string inside the envelope, escaped again at seven bytes
+// a byte, so such a topic takes some 52 KB of the notice, and the texts cut to one line some 10 KB
+// more, under 64 KB in all. The notice is then measured against room, and a notice past it is
+// built again bare: every text of the message left out and the topic the stored subject. A bare
+// notice still past room is errRelayNoticeTooLarge, and nothing is published. Both notices are
+// built from the same parts, and each names in its cut every text it does not carry as the message
+// holds it (noticeTexts.cut).
 func relayTooLargeNotice(msg bus.SessionMessage, streamID string, frameSize, maxPayload, room int64) ([]byte, relayTooLargePayload, error) {
 	// A message that does not decode, or decodes in part, still has its notice: the fields it
 	// does not name are left out, and the notice names it by the subject and sequence it was

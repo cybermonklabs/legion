@@ -63,10 +63,10 @@ func storeSized(t *testing.T, rig *relayRig, subject string, size int) (contract
 //
 // That message is the largest the stream takes under no message id. The listener's own checks took
 // it before they counted the relay's headers (bus.RelayFrameHeaderBytes), and no route takes it
-// now, so it is stored by a publish of the stream's own. It stands for a message this build's
-// writes held to the stream's bound alone still store - a publish window's send of Dispatch's
-// outbox, a delivery exception, a role's kept copy - for one an older build stored, and for one
-// stored under a max payload the server has since lowered.
+// now, so it is stored by a publish of the stream's own. It stands for a message one of this
+// build's writes held to the stream's bound alone still stores (bus.RelayFrameHeaderBytes names
+// them), for one an older build stored, and for one stored under a max payload the server has
+// since lowered.
 type tooLargeRig struct {
 	*relayRig
 	sessionID, agent string
@@ -606,10 +606,8 @@ func TestTheLargestMessageTheRouteAcceptsIsRelayedWholeAndOneBytePastIs413(t *te
 // and reaches the holder whole, byte for byte the forward the stream stored (requireRelayedWhole);
 // one byte more is the 413 naming the frame's size and the max payload, with nothing forwarded. The
 // route's own size check of the role message passes both, since a role lane is no stored topic, so
-// only the forward's check can tell them apart. The forwards no sender waits on are held to the
-// stream's bound alone - the kept lane's walk, which hands on a copy the stream already holds, and
-// the role lane's delivery of a role message it took from its core-NATS subscription - and their
-// holder is handed them whole or as the relay's notice.
+// only the forward's check can tell them apart. The forwards no sender waits on make no such check
+// (sendToRole says why), and their holder is handed them whole or as the relay's notice.
 func TestARoleSendWhoseForwardCouldNotBeRelayedWholeIs413(t *testing.T) {
 	t.Parallel()
 	rig := newRelayRig(t)

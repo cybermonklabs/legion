@@ -9,20 +9,22 @@ body: |-
   received nothing more until the stream's 72-hour retention removed it. The relay now sends a
   notice in the frame's place, under the frame's own headers and reply subject, so the session's
   `done` acknowledges the message and its `nak` has the server send it again, and the later messages
-  arrive. The notice is the listener's own envelope on the message's own topic, and its payload
-  names the message: `reason` `too_large`, its `event_id`, `original_topic`, `stream_seq`, `size`,
-  the `frame_size` those bytes make with the headers, and the server's `max_payload`. It is built to
-  fit its own frame whatever the message holds: each text it copies is cut to one line of 160
-  characters, a `repo` past GitHub's own limits or named in a way readers disagree on and a role
-  mark it would cut are left out, and a topic past what NATS takes as a subject gives way to the
-  subject the stream stored the message on. `cut` names each text the notice does not carry as the
-  message held it, the topic among them, by the payload's field name or, for the role mark and the
-  trace id, the notice envelope's. A notice still past its frame's room is sent bare, with every
-  text of the message left out and named in `cut`. The listener's size checks also keep the relay's
-  headers their room now, so a message either message route accepts, and a role send's forward to a
-  live holder, reaches a session whole, and one past that room is answered `413` naming the
-  message's size, its frame's size and the max payload. The writes that keep the stream's bound
-  alone - a role's kept copy and the kept lane's walk that forwards it, the role lane's forward of a
-  role message no sender waits on, a publish window's send of Dispatch's outbox, a delivery
-  exception - are not held to that room, and their message reaches its session whole or as the
-  notice.
+  arrive. The relay acknowledges nothing itself, so a notice that cannot be published leaves the
+  message to be sent again rather than acknowledged with the session never told of it. The notice
+  is the listener's own envelope on the message's own topic, and its payload names the message:
+  `reason` `too_large`, its `event_id`, `original_topic`, `stream_seq`, `size`, the `frame_size`
+  those bytes make with the headers, and the server's `max_payload`. It is built to fit its own
+  frame whatever the message holds: each text it copies is cut to one line of 160 characters, a
+  `repo` past GitHub's own limits or named in a way readers disagree on and a role mark it would cut
+  are left out, and a topic past what NATS takes as a subject gives way to the subject the stream
+  stored the message on. `cut` names each text the notice does not carry as the message held it,
+  the topic among them, by the payload's field name or, for the role mark and the trace id, the
+  notice envelope's. A notice still past its frame's room is sent bare: it carries none of the
+  message's texts, and its topic is the subject the stream stored the message on, so `cut` names
+  each text the message held, and the topic only where the message's topic is not that subject;
+  where it is, as it usually is, the topic is neither left out nor named. The listener's size
+  checks also keep the relay's headers their room now, so a message either message route accepts,
+  and a role send's forward to a live holder, reaches a session whole, and one past that room is
+  answered `413` naming the message's size, its frame's size and the max payload. The writes that
+  keep the stream's bound alone, which `bus.RelayFrameHeaderBytes` names, are not held to that
+  room, and their message reaches its session whole or as the notice.

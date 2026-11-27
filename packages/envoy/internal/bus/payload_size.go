@@ -46,12 +46,8 @@ func (c *Client) checkSend(msg *nats.Msg) error {
 // (publishJetStream), a forward its own of the stream's bound alone (checkSend), and a caller
 // whose sender still waits for a forward asks RelayFrameTooLarge of it first.
 func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
-	maxPayload := c.maxPayload.Load()
-	if maxPayload <= 0 {
-		return nil
-	}
-	size, encoded := encodedBytes(item)
-	if !encoded {
+	size, maxPayload, measured := c.measured(item)
+	if !measured {
 		return nil
 	}
 	if c.publishPathOf(item.Topic) != overJetStream {
@@ -66,15 +62,25 @@ func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 // none. It sends nothing. cmd/listener's role send asks it of its forward to a live holder, whose
 // sender is still waiting for the answer.
 func (c *Client) RelayFrameTooLarge(subject string, item contracts.Envelope) error {
-	maxPayload := c.maxPayload.Load()
-	if maxPayload <= 0 {
-		return nil
-	}
-	size, encoded := encodedBytes(item)
-	if !encoded {
+	size, maxPayload, measured := c.measured(item)
+	if !measured {
 		return nil
 	}
 	return relayFrameTooLarge(size, subject, maxPayload)
+}
+
+// measured is item's size as a send encodes it (encodedBytes) and the max payload the client last
+// read, the two numbers TooLargeToPublish and RelayFrameTooLarge hold a message to, and false when
+// there is nothing to hold it to: the client knows no max payload, which it reads as 0, or the
+// envelope does not encode. The max payload is read first, so a client that knows none encodes
+// nothing.
+func (c *Client) measured(item contracts.Envelope) (size, maxPayload int64, ok bool) {
+	maxPayload = c.maxPayload.Load()
+	if maxPayload <= 0 {
+		return 0, 0, false
+	}
+	size, ok = encodedBytes(item)
+	return size, maxPayload, ok
 }
 
 // ownTopicTooLarge is the rule a publish of an envelope of size bytes on topic, a topic the stream
@@ -94,13 +100,14 @@ func ownTopicTooLarge(size int64, header nats.Header, topic string, maxPayload i
 
 // relayFrameTooLarge is the ErrTooLarge of a message of data bytes stored on subject whose relay
 // frame, its data and the relay's headers (RelayFrameHeaderBytes), is past maxPayload, and nil for
-// one within it or for a maxPayload of 0, which a client that knows no max payload reads.
+// one within it or for a maxPayload of 0, which a client that knows no max payload reads. The
+// refusal's Size is the frame, the bytes held against maxPayload, and its Data the message's own.
 func relayFrameTooLarge(data int64, subject string, maxPayload int64) error {
 	frame := data + int64(RelayFrameHeaderBytes(subject))
 	if maxPayload <= 0 || frame <= maxPayload {
 		return nil
 	}
-	return &MessageTooLargeError{Size: data, Frame: frame, MaxPayload: maxPayload}
+	return &MessageTooLargeError{Size: frame, Data: data, MaxPayload: maxPayload}
 }
 
 // encodedBytes is the size of item as a send encodes it (json.Marshal), counted rather than kept,
@@ -117,15 +124,15 @@ func encodedBytes(item contracts.Envelope) (int64, bool) {
 	return int64(encoded) - 1, true
 }
 
-// refused names nats.go's refusal of msg for its size as the ErrTooLarge it is, in the words of
-// every size refusal (MessageTooLargeError), and its refusal of a send while it reconnects the
-// connection as the ErrReconnecting it is (Reconnecting): a send can still meet that refusal after
-// its wait for the connection, when the connection drops again before the send. It takes the
-// message rather than a size so that no caller can measure it by another rule than checkSend's
-// (MessageBytes). A send meets the size refusal only when its own check let the message through
-// because the client's max payload was not the one of the server the message went to: a reconnect
-// to a server that takes less, in the moment before onReconnect reads it. checkSubject has already
-// refused every subject nats.go would.
+// refused names nats.go's refusal of msg for its size as the ErrTooLarge it is, as the client's
+// own check names a message past the max payload (MessageTooLargeError), and its refusal of a send
+// while it reconnects the connection as the ErrReconnecting it is (Reconnecting): a send can still
+// meet that refusal after its wait for the connection, when the connection drops again before the
+// send. It takes the message rather than a size so that no caller can measure it by another rule
+// than checkSend's (MessageBytes). A send meets the size refusal only when its own check let the
+// message through because the client's max payload was not the one of the server the message went
+// to: a reconnect to a server that takes less, in the moment before onReconnect reads it.
+// checkSubject has already refused every subject nats.go would.
 func (c *Client) refused(err error, msg *nats.Msg) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
 		return pastMaxPayload(int64(MessageBytes(msg)), c.Connection().MaxPayload())
@@ -150,24 +157,28 @@ func pastMaxPayload(size, maxPayload int64) error {
 	return &MessageTooLargeError{Size: size, MaxPayload: maxPayload}
 }
 
-// MessageTooLargeError is the ErrTooLarge of a message past the server's max payload, the one type
-// and wording every size refusal of this package takes, with the numbers the refusal was made on.
+// MessageTooLargeError is the ErrTooLarge of a message past the server's max payload, with the
+// numbers the refusal was made on: the type every refusal of this package for a message past the
+// max payload takes, in one of two wordings. A subject past what NATS takes is ErrTooLarge too, but
+// not this type (checkSubject), and neither is a key-value bucket's refusal (kv.go).
+//
+// Size is the bytes held against MaxPayload: the message's data and headers as nats.go counts them
+// (MessageBytes), or, for the refusal of a message stored with less room than its relay frame needs
+// (relayFrameTooLarge), that frame, the data and the relay's headers (RelayFrameHeaderBytes).
 // MaxPayload is the max payload the message was held to: the one the client last read for its own
-// checks, or the connection's own for nats.go's (refused). Size is the message's data and headers
-// as nats.go counts them (MessageBytes), and Frame is 0, for every refusal but one: the refusal of a
-// message stored with less room than its relay frame needs (relayFrameTooLarge), whose Size is the
-// message's data alone and whose Frame is that data and the relay's headers
-// (RelayFrameHeaderBytes). A caller that must name those numbers, as cmd/listener's relay does in
-// the notice of a frame it could not publish, reads them from the refusal rather than from the
-// client again, which a reconnect may have moved since.
+// checks, or the connection's own for nats.go's (refused). Data is the message's own bytes in
+// relayFrameTooLarge's refusal, whose wording names both, and 0 in every other. A caller that must
+// name those numbers, as cmd/listener's relay does in the notice of a frame it could not publish,
+// reads them from the refusal rather than from the client again, which a reconnect may have moved
+// since.
 type MessageTooLargeError struct {
-	Size, Frame, MaxPayload int64
+	Size, Data, MaxPayload int64
 }
 
 func (e *MessageTooLargeError) Error() string {
-	if e.Frame > 0 {
+	if e.Data > 0 {
 		return fmt.Sprintf("%s: a message of %d bytes, which reaches a session in a relay frame of %d bytes with the relay's headers, against the server's max payload of %d bytes",
-			ErrTooLarge, e.Size, e.Frame, e.MaxPayload)
+			ErrTooLarge, e.Data, e.Size, e.MaxPayload)
 	}
 	return fmt.Sprintf("%s: a message of %d bytes, its headers included, against the server's max payload of %d bytes", ErrTooLarge, e.Size, e.MaxPayload)
 }
