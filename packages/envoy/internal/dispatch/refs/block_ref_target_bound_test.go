@@ -21,6 +21,7 @@ import (
 // version write goes on: the block's node and its in_document tuple are written, the row keeps
 // its null node columns for the old `block_refs` arm, and no mention tuple is appended.
 func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	tx, err := database.Pool.Begin(ctx)

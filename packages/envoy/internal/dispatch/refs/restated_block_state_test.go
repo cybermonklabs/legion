@@ -100,6 +100,7 @@ const laterBlockState = graphstore.StateProposed
 // After each pass the row and the log of its state agree, the log holding one value for each
 // write that moved the state and none for a pass that kept it.
 func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
+	t.Parallel()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
 	document := newParentDocument(t, database, "KEEP", "kept-md")

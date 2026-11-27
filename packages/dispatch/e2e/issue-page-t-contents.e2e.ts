@@ -2,10 +2,13 @@
  *  serves, and count the tree reads each load and press sends the server */
 
 import type { Locator, Page } from "@playwright/test";
+import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
-import { getIssue } from "./api";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { createComment, createIssue, createIssueArtifact, createProject, getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
+import { PROJECT } from "./issue-layout-seed-support";
 import { contentsPane, gotoIssue, outlineControl, outlineSheet, phase } from "./issue-page";
 import { DESKTOP, nodeRows, PHONE } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
@@ -17,6 +20,7 @@ import {
   outlineAnswerOf,
   outlineReads,
   owedUnless,
+  seedEventsLanded,
   treeReadGate,
   treeReads,
 } from "./issue-page-t-tree";
@@ -26,8 +30,11 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
 /**
  * Row 8 of the rows that draw the new issue page from the tree read: the Contents pane stands
  * beside Conversation, each filter and Graph from 1024 px up, the Outline control opens its list
- * as a sheet below, and the three sentences are drawn once in each view (spec R13). The head of
- * `e2e/issue-page-t-rows.ts` says what the rows read and what their gates are.
+ * as a sheet below, and the three sentences are drawn once in each view (spec R13). Beside Graph
+ * the list reads Graph's read, so it holds the entries of the pages of that read the page has
+ * loaded, and grows as each next page loads (R13, R15): the second row reads that on an issue
+ * whose Graph read takes three pages. The head of `e2e/issue-page-t-rows.ts` says what the rows
+ * read and what their gates are.
  */
 
 /** The issue's three sentences, wherever a view draws them (`IssueThreeThings.tsx`). */
@@ -200,5 +207,185 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
         `at 390 px, Escape does not close the sheet in ${name}`
       ).toHaveCount(0);
     }
+  });
+});
+
+/** The posts alice writes on the issue whose Graph read takes three pages, in the order she
+ *  writes them: each is the whole of its words, which is the line its Contents entry draws. */
+const PAGED_POSTS = ["First post", "Second post", "Third post", "Fourth post"] as const;
+
+/** How many of the plan's tasks stand under each post, by the post's place in `PAGED_POSTS`. A
+ *  task is no entry, and Conversation's read names no `kind=plan_task`, so it holds none of them
+ *  (`planTasksOut`); Graph's read holds each under its post, after the post's own block and before
+ *  the next post, since the read walks a node, then its children, then its next sibling. */
+const TASKS_UNDER = [1, 2, 2, 0] as const;
+
+/** How many times each task's words write `& `. */
+const TASK_AMPERSANDS = 59_000;
+
+/** Which posts each page of Graph's read holds, by their place in `PAGED_POSTS`. A page ends at
+ *  2,000,000 bytes, after the last whole node of the walk that fits (spec R15, decision 443). A
+ *  task is a node of about 828 kB of the read's JSON and a post with its block about 1.2 kB, so a
+ *  page holds two tasks and the posts beside them and never three, for any task between 0.67 and
+ *  1 MB: the first page ends after the task under the second post, the second after the first
+ *  task under the third post. Measured at eec04dd1f4: pages of 1,657,673, 1,655,927 and 828,714
+ *  bytes. */
+const POSTS_BY_PAGE: readonly (readonly number[])[] = [[0, 1], [2], [3]];
+
+/** The words of each task: `&` again and again, which the read's JSON writes as `\u0026`, six
+ *  bytes, in the task's text and again in its display tree, so 118 kB of words are a node of
+ *  about 828 kB. Plain text, which cites nothing the page would name. */
+const TASK_WORDS = "& ".repeat(TASK_AMPERSANDS).trim();
+
+/** How many pages `graphPages` reads at most: far more than the seed's read takes, so a read
+ *  whose cursor never ends fails the row here. */
+const PAGES_READ_AT_MOST = 10;
+
+/** What `seedGraphPages` wrote. */
+interface GraphPagesSeed {
+  readonly key: string;
+  /** Each post's id, in the order of `PAGED_POSTS`. */
+  readonly posts: readonly string[];
+}
+
+/** An issue of four posts alice wrote, the reader's own threads and so the Contents list's
+ *  entries, written one after another, so each was made after the one before; then its plan, whose
+ *  tasks each name a post as their `parent` (`TASKS_UNDER`), which places them under it, and whose
+ *  bytes put the posts on three pages of Graph's read (`POSTS_BY_PAGE`). */
+async function seedGraphPages(): Promise<GraphPagesSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const { key } = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "An issue whose Graph read takes three pages",
+  });
+  const posts: string[] = [];
+  for (const words of PAGED_POSTS) posts.push((await createComment(key, { body: words })).id);
+  const tasks = TASKS_UNDER.flatMap((count, at) =>
+    Array.from({ length: count }, () => `dispatch://${key}/comment/${posts[at] ?? ""}`)
+  );
+  await createIssueArtifact(key, {
+    content: `${tasks
+      .map((parent, at) => `:::plan_task{#t${at + 1} parent="${parent}"}\n${TASK_WORDS}\n:::`)
+      .join("\n\n")}\n`,
+    name: "plan.md",
+  });
+  return { key, posts };
+}
+
+/** Every page of Graph's read of issue `key`, as the page receives it: the tree read with no view
+ *  and no kind, each next page by the cursor the page before it names, with the display trees
+ *  the page asks for (`Dispatch-Trees`), since a page ends at its bound of bytes and those trees
+ *  are half of them. Read through the signed-in page's own request context, and not through the
+ *  page, so it reads the same pages whatever the page reads. */
+async function graphPages(page: Page, key: string): Promise<IssueTreeRead[]> {
+  const path = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+  const pages: IssueTreeRead[] = [];
+  let cursor: string | undefined;
+  do {
+    const response = await page.request.get(path, {
+      headers: { "Dispatch-Trees": "1" },
+      ...(cursor === undefined ? {} : { params: { cursor } }),
+    });
+    if (!response.ok()) throw new Error(`GET ${path} answers ${response.status()}`);
+    const answer = (await response.json()) as IssueTreeRead;
+    pages.push(answer);
+    cursor = nextTreeCursor(answer);
+  } while (cursor !== undefined && pages.length < PAGES_READ_AT_MOST);
+  return pages;
+}
+
+/** The words of each of the seed's posts each of `pages` holds, page by page. */
+function postsByPage(pages: readonly IssueTreeRead[], seeded: GraphPagesSeed): string[][] {
+  return pages.map((one) => {
+    const ids = new Set((one.nodes ?? []).map((node) => node.id));
+    return PAGED_POSTS.filter((_, at) => ids.has(seeded.posts[at] ?? ""));
+  });
+}
+
+/** The line each entry of the Contents list in `scope` draws, in the list's order. */
+async function entryNames(scope: Locator): Promise<string[]> {
+  const lines = await drawnContentsEntries(scope).locator("[data-contents-line]").allTextContents();
+  return lines.map((line) => line.trim());
+}
+
+/** How long the list may take to draw what a load or a press brought: a page of Graph's read is
+ *  two million bytes, read, merged and drawn. */
+const PAGE_DRAWN_MS = 30_000;
+
+// c-contents-beside.
+// SLOW(>=2s): a plan of five tasks seeded and indexed, each a node of about 828 kB of Graph's read,
+// Graph loaded cold and each of its next two pages read with each read waited out, and
+// Conversation loaded cold.
+test("beside Graph the Contents list holds the entries of the pages Graph has loaded @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(ROW_MS);
+  await phase(browser, seedGraphPages, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    // The seed's posts as Graph's read holds them, page by page, read from the server and not
+    // from the page, once the block index has placed the plan's tasks: the bytes between the
+    // posts put them there, so a server that ends a page elsewhere fails here, before the page is
+    // read at all. Then the index's last events have landed, so none of them reads the tree again
+    // under the row.
+    const byPage = POSTS_BY_PAGE.map((posts) => posts.map((at) => PAGED_POSTS[at] ?? ""));
+    await expect
+      .poll(async () => postsByPage(await graphPages(page, seeded.key), seeded), {
+        message: "Graph's read holds the seed's posts on other pages than the seed's",
+        timeout: 60_000,
+      })
+      .toEqual(byPage);
+    await seedEventsLanded(page);
+
+    // At 1440 px the pane stands beside Graph, and its list holds the entries of the pages of
+    // Graph's read the page has loaded: the first on the load, then each next one the control
+    // after the outline's last row reads on a press (R15), and at the end every post.
+    const traffic = await openView(page, seeded.key, "graph");
+    await expect(contentsPane(page), "the Contents pane stands beside Graph").toHaveCount(1);
+    const next = page.locator("[data-issue-page] [data-tree-more] button");
+    const loaded: string[] = [];
+    for (const [at, posts] of byPage.entries()) {
+      if (at > 0) {
+        await expect(
+          next,
+          `with ${at} of Graph's ${byPage.length} pages loaded, no control reads the next`
+        ).toHaveCount(1);
+        await next.click();
+        await expectLoadSettled(traffic);
+      }
+      loaded.push(...posts);
+      await expect
+        .poll(() => entryNames(contentsPane(page)), {
+          message:
+            at === 0
+              ? "beside Graph with its first page loaded, the Contents list holds other entries than that page's posts, in their order"
+              : `beside Graph with ${at + 1} of its ${byPage.length} pages loaded, the Contents list holds other entries than those pages' posts, in their order`,
+          timeout: PAGE_DRAWN_MS,
+        })
+        .toEqual(loaded);
+    }
+    expect(loaded, "the pages of Graph's read hold other posts than every post").toEqual([
+      ...PAGED_POSTS,
+    ]);
+    await expect(
+      next,
+      "with every page of Graph's read loaded, a control reads one more"
+    ).toHaveCount(0);
+
+    // Beside Conversation the list reads Conversation's read, which holds no plan task and so
+    // every post on its one page.
+    const conversation = outlineAnswerOf(page, "conversation");
+    await openView(page, seeded.key, "conversation");
+    expect(
+      postsByPage([await heldAnswer(conversation, "Conversation's read")], seeded),
+      "Conversation's read holds other posts than every post"
+    ).toEqual([[...PAGED_POSTS]]);
+    await expect
+      .poll(() => entryNames(contentsPane(page)), {
+        message:
+          "beside Conversation, the Contents list holds other entries than Conversation's read's posts, in their order",
+        timeout: PAGE_DRAWN_MS,
+      })
+      .toEqual([...PAGED_POSTS]);
   });
 });

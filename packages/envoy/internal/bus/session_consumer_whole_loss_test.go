@@ -76,12 +76,9 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	waitForAckFloor(t, consumers, session, before+acked)
 	waitForAckPending(t, consumers, session, 0)
 
+	ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	testwait.Until(t, "the stream's owner and the session consumers to reconnect", func() (string, bool) {
-		ownerUp, consumersUp := owner.Connected(), consumers.client.Connected()
-		return fmt.Sprintf("owner connected %t, session consumers connected %t", ownerUp, consumersUp), ownerUp && consumersUp
-	})
+	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 	var state sessionStreamState
 	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)

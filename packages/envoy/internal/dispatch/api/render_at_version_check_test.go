@@ -188,10 +188,12 @@ func renderAtVersionNames(line, address string) bool {
 // writes. Of each it reads the version_renders row holding at and read_seq and a null
 // record_sha256, artifact_version_text_sha256 answering the sha256 of the version's stored
 // markdown, and docs.RenderVersion answering from the source tree with the stored bytes, byte for
-// byte. The census of the rendered versions reads no difference at any of the three and counts none
-// of them as deferred. Alice then approves the upload's version 1 through the approval route, and
-// the review's content_sha256 is the sha256 of its stored markdown. Each read reports its own
-// failure, and the test goes on to the next read.
+// byte, as the version route answers it too (GET /api/v1/artifacts/{id}/versions/1?download=true,
+// Dispatch-Render-Source tree), the tree artifact's as a document's (readsAsDocument). The census
+// of the rendered versions reads no difference at any of the three and counts none of them as
+// deferred. Alice then approves the upload's version 1 through the approval route, and the
+// review's content_sha256 is the sha256 of its stored markdown. Each read reports its own failure,
+// and the test goes on to the next read.
 func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -235,6 +237,11 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 			t.Errorf("artifact_version_text_sha256 answers %s for %s, want the stored markdown's %s", got, address, want)
 		}
 		requireRenderAtVersionFromTree(t, database, refKey, document.id, 1, stored)
+		downloaded := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+document.id+"/versions/1?download=true", nil, "alice")
+		if source := downloaded.Header().Get(renderSourceHeader); downloaded.Code != http.StatusOK || source != string(docs.RenderedFromTree) || downloaded.Body.String() != stored {
+			t.Errorf("the version route answers %s with %d from %q holding %d bytes, want 200 from %s holding its %d stored bytes: %.300s",
+				address, downloaded.Code, source, downloaded.Body.Len(), docs.RenderedFromTree, len(stored), downloaded.Body.String())
+		}
 		difference, deferred := renderAtVersionCounted(renders, printed, address)
 		if difference != "" {
 			t.Errorf("the census counts version 1 of %s as a difference: %s", refKey, difference)

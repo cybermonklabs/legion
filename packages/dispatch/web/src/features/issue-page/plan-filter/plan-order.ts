@@ -76,9 +76,11 @@ function documentOf(id: string): string {
  * curve once.
  *
  * A task of another issue (`TreeNode.issue`), which the Plan view of an issue above it draws, is
- * drawn by its block id alone, as every node of another issue is (`tree-read/tree-nodes.ts`'
- * `treeIdOfNode`), so a pointer of it names the task of that block id where the reference is of
- * the task's own issue, and nothing where it names another.
+ * drawn by the read's id, `<KEY>/<slug>#<block id>`, as every node of another issue is
+ * (`tree-read/tree-nodes.ts`' `treeIdOfNode`): two issues under one parent can each write a `t1`,
+ * and each is its own task. So a pointer of it names the task of that block id in the same
+ * document of the same issue, the task's id up to its `#` with the pointer's block id after it,
+ * where the reference is of the task's own issue, and nothing where it names another.
  */
 function neededIds(task: TreeNode): readonly string[] {
   return [
@@ -99,7 +101,10 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
   const block = route !== undefined && "block" in route ? route.block : undefined;
   if (block === undefined) return undefined;
   if (task.issue === undefined) return blockNodeId(documentOf(task.id), block.id);
-  return route !== undefined && "key" in route && route.key === task.issue ? block.id : undefined;
+  const at = task.id.indexOf("#");
+  return at !== -1 && route !== undefined && "key" in route && route.key === task.issue
+    ? `${task.id.slice(0, at + 1)}${block.id}`
+    : undefined;
 }
 
 /**
@@ -111,6 +116,8 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
  * none, since it keeps the address's node only where it is a task (`slots/view-plan.tsx`). A task
  * the filter drew under two statements is one task here, at its first place: a plan holds each
  * task once, and its second statement is its "Also under" chip, so the task is not drawn twice.
+ * A task is told from the rest by its id, which holds its issue for a task of another issue
+ * (`neededIds`), so the tasks two issues under this one write with one block id are two.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();

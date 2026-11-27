@@ -36,7 +36,7 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
-import { useDecisionsView, useTreeRead } from "./tree-read/tree-read";
+import { useDecisionsView, useReadOlderDecisionComments, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
@@ -107,6 +107,8 @@ export function IssuePropertiesRow({
     () => waitingOnReader(issue, viewer, isCoverageStatement, { answer }),
     [issue, viewer, isCoverageStatement, answer]
   );
+  // Read older comments after the first drawing, from the same answer the header counts.
+  useReadOlderDecisionComments(issue.key, answer, waiting.unread > 0, held !== undefined);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);

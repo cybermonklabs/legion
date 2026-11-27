@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 func TestIssueAskEventsExposeOpenedEventID(t *testing.T) {
@@ -164,24 +167,45 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 	// issue_room_blocks row names it: only the issue's spec, Verification document and plan join
 	// the issue's room. The deletes of those two tables below take nothing here; they stand for a
 	// document of the room, whose keys to artifacts carry no cascade either.
+	//
+	// The route refuses to remove a document that holds a version and an anchored ask
+	// (removeArtifact's artifactIsUntouched), so the rows go by hand, in one transaction that takes
+	// the locks removeArtifact takes, in its order, before its first delete: the issue's owner lock,
+	// then the document's room. The document's settlement, which the upload armed, takes that owner
+	// lock before it takes the document's revision fence (document_block_versions) and clears its
+	// doc_settlements_pending row, so it commits before these deletes or waits for them and finds
+	// the row gone. Without the lock the artifacts row's cascade deletes the pending row and then
+	// waits on the fence row the settlement holds, while the settlement waits on that pending row,
+	// and Postgres ends one of them with deadlock detected.
+	ctx := context.Background()
+	removal, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the removal of the anchor document: %v", err)
+	}
+	defer func() { _ = removal.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, removal, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock for the removal of the anchor document: %v", err)
+	}
+	if err := docs.LockDocumentRoom(ctx, removal, artifact.Artifact.ID); err != nil {
+		t.Fatalf("take the anchor document's room for its removal: %v", err)
+	}
 	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events", "document_rooms"} {
-		if _, err := database.Pool.Exec(
-			context.Background(),
-			"delete from "+table+" where artifact_id = $1",
-			artifact.Artifact.ID,
-		); err != nil {
+		if _, err := removal.Exec(ctx, "delete from "+table+" where artifact_id = $1", artifact.Artifact.ID); err != nil {
 			t.Fatalf("delete %s for anchor document: %v", table, err)
 		}
 	}
-	if _, err := database.Pool.Exec(context.Background(), `
+	if _, err := removal.Exec(ctx, `
 		delete from issue_room_blocks where document_id = $1
 	`, artifact.Artifact.ID); err != nil {
 		t.Fatalf("delete the room blocks of the anchor document: %v", err)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `
+	if _, err := removal.Exec(ctx, `
 		delete from artifacts where id = $1
 	`, artifact.Artifact.ID); err != nil {
 		t.Fatalf("delete anchor document: %v", err)
+	}
+	if err := removal.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal of the anchor document: %v", err)
 	}
 
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")

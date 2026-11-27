@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -147,8 +146,11 @@ func artifactMissing(err error) bool {
 // ones. An ask's block is in the spec where the spec's block index holds an ask block under its
 // block id (document_blocks, keyed as the ask is): a row that names the spec and a block it no
 // longer holds - one a reopen restored with no block to write, which a later settlement retracts -
-// is no question of it. An ask whose node holds a value that does not parse is left out and
-// logged, as decisionEntries leaves out its entry, and the read goes on (R4, scanOpenQuestions).
+// is no question of it. An ask a stored value of which does not decode - one its node holds, or
+// its row's author, options, anchor, answer, resolution or approval, or its newest reply's author
+// (docs.UndecodableAskError) - is left out and logged with its id, as decisionEntries leaves out
+// its entry, and the read goes on (R4, scanOpenQuestions); a failure of the query or of the scan, a
+// column pgx cannot scan among them, fails the read.
 //
 // That index cannot say so while the spec owes it - while the spec is among the documents the
 // coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
@@ -230,14 +232,16 @@ func (s *server) specOpenQuestions(
 }
 
 // scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
-// node holds it, in the order rows reads them. An ask of issue key whose node holds a value that
-// does not parse (asks.ErrNodeAnswerUnreadable) is left out and logged, and the scan goes on.
+// node holds it, in the order rows reads them. An ask of issue key a stored value of which does
+// not decode (scanAskRead's docs.UndecodableAskError) is left out and logged with its id, and the
+// scan goes on; any other failure of the scan, a column pgx cannot scan among them, fails it.
 func scanOpenQuestions(rows pgx.Rows, key string, questions *[]issueAskRow) error {
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
-		if errors.Is(err, asks.ErrNodeAnswerUnreadable) {
-			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
-				"issue", key, "err", err)
+		if errors.Is(err, docs.ErrUndecodableAsk) {
+			undecodable, _ := errors.AsType[*docs.UndecodableAskError](err)
+			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
+				"ask", undecodable.AskID, "issue", key, "err", err)
 			continue
 		}
 		if err != nil {
@@ -265,8 +269,8 @@ type keepDecisionInput struct {
 // 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
 // exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
 // block - one that is neither, a heading of a retired decisions document, or a decision marked
-// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route is the `person`
-// scope's (routeScopes): a Keep is a person's.
+// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route needs both the
+// `person` and the `approve` scope (its route file's OAuthScopes): a Keep is a person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

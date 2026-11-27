@@ -10,6 +10,11 @@ import { specBlockRef } from "./issue-layout-seed-text";
  * is the one above it. Every write goes through `e2e/api.ts`, as a person uploads a plan, and
  * each `needs` names its task in the same write that makes it, which the server reads from that
  * write's own blocks.
+ *
+ * Beside it, a second issue whose plan writes one task, `t1`, with two issues under it whose
+ * plans each write one task `t1` too, in words of its own: a block id is unique inside one
+ * document alone, and every plan names its tasks `t1`, `t2`, so the second issue's plan holds two
+ * tasks of the issues under it that share a block id (R19 (2)).
  */
 
 /** The project the seed makes. */
@@ -21,6 +26,10 @@ export const OWN_TASKS = { a: "ta", b: "tb", c: "tc" } as const;
 /** The block ids of the two tasks of the issue under it, in the order its plan writes them. */
 export const CHILD_TASKS = { first: "xa", second: "xb" } as const;
 
+/** The block id the second issue's plan and each of the two plans under it write its one task
+ *  with. */
+export const TWIN_TASK = "t1";
+
 /** The words of each task and statement, one sentence each and no longer than a chip draws
  *  whole (`node-row-chip.ts`' `CHIP_LIMIT`, 32 characters), so a chip naming one, a need's or a
  *  statement's, names it by the whole of its words. */
@@ -30,6 +39,9 @@ export const PLAN_SIZES_WORDS = {
   c: "Check the reader on the schema.",
   childFirst: "Build the child's store.",
   childSecond: "Fill the child's store.",
+  twinFirst: "Paint the first twin's room.",
+  twinSecond: "Paint the second twin's room.",
+  twinsOwn: "Hand the twins their rooms.",
   statements: [
     "A bar is as long as its size.",
     "A step says how long it takes.",
@@ -52,6 +64,9 @@ export interface PlanSizesSeed {
   readonly childPlanArtifactId: string;
   readonly key: string;
   readonly planArtifactId: string;
+  /** The second issue, whose plan holds the tasks of the two issues under it (`TWIN_TASK`), by
+   *  its key and theirs, in the order they were made. */
+  readonly twins: { readonly first: string; readonly key: string; readonly second: string };
 }
 
 /** One plan task block: its id, its attributes in the order the server's own tests write them,
@@ -106,10 +121,36 @@ export async function seedPlanSizes(): Promise<PlanSizesSeed> {
     ].join("\n"),
     name: "plan.md",
   });
+  const twins = await createIssue({
+    force: true,
+    project: SIZES_PROJECT,
+    title: "A plan over two twins",
+  });
+  await createIssueArtifact(twins.key, {
+    content: ["How the twins' rooms are handed.\n", planTask(TWIN_TASK, [], W.twinsOwn)].join("\n"),
+    name: "plan.md",
+  });
+  // Each issue under the second, made one after the other, with its own words for `TWIN_TASK`.
+  const twin = async (title: string, words: string): Promise<string> => {
+    const made = await createIssue({
+      force: true,
+      parent: twins.key,
+      project: SIZES_PROJECT,
+      title,
+    });
+    await createIssueArtifact(made.key, {
+      content: [`How ${title.toLowerCase()} is done.\n`, planTask(TWIN_TASK, [], words)].join("\n"),
+      name: "plan.md",
+    });
+    return made.key;
+  };
+  const firstTwin = await twin("The first twin", W.twinFirst);
+  const secondTwin = await twin("The second twin", W.twinSecond);
   return {
     child: child.key,
     childPlanArtifactId: childPlan.artifact.id,
     key: issue.key,
     planArtifactId: plan.artifact.id,
+    twins: { first: firstTwin, key: twins.key, second: secondTwin },
   };
 }

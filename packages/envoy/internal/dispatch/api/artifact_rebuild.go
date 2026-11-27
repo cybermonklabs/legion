@@ -15,7 +15,7 @@ type rebuildArtifactInput struct {
 }
 
 // rebuildArtifact discards only a history ygo cannot load and replaces it with one seed update
-// from the latest saved markdown, or supplied markdown. It needs the person scope (routeScopes)
+// from the latest saved markdown, or supplied markdown. It needs the person scope (its route's OAuthScopes)
 // because a rebuild intentionally deletes durable history, so only a credential acting as its
 // person may ask for one; a document that loads is refused unchanged. The rebuild,
 // the version supplied markdown writes, its artifact.version event and the move of the open

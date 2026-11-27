@@ -169,11 +169,10 @@ const REVIEWS_BY_QUERY_NODES_BUILT = false;
  *  an approval request that waits on the person, a stale approval and a decision to review. */
 const DASHBOARD_DRAWS_BUILT = false;
 
-// c-dashboard-reads, owed on Dashboard's part (`dashboardPartGate`), which brings Dashboard: a
+// c-dashboard-reads, owed on Dashboard's part and on T's R16 built on it (`dashboardPartGate`): a
 // load of the new page's Dashboard reads the three views once each and no results, coverage or
-// decisions read. Past the gate the row reads what the page reads without that part's marks -
-// the new page's own Dashboard reads - and fails on each clause that needs those marks until it
-// is built.
+// decisions read. Dashboard's part alone opens no gate: T builds R16 once its base holds that
+// part (decision 558, amended), and each clause above that needs that part's marks is built then.
 // SLOW(>=2s): the whole seeded issue, loaded, Dashboard pressed, and the page loaded again on
 // Dashboard's address with that load waited out.
 test("Dashboard reads the tree read views", async ({ browser }) => {

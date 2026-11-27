@@ -570,6 +570,92 @@ func TestTheTreeReadAnswersEachTypedBlockOnceWithItsDocument(t *testing.T) {
 	}
 }
 
+// The words TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead writes into the issue's own fragment,
+// each unique in the store, so a block is found by them (blockWithText).
+const (
+	ownTextRequirementWords = "The board answers each urgent ask within a minute."
+	ownTextProseWords       = "A paragraph of the issue's own fragment that no typed block holds."
+	ownTextCalloutWords     = "The callout's own words."
+	ownTextItemWords        = "The first item of the callout's list."
+)
+
+// TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead: alice writes into the issue's own fragment (the
+// tree artifact) a requirement, a paragraph P and a callout holding a paragraph and a list. The
+// store holds the requirement's paragraph as a node placed by the text under the requirement, and
+// the paragraph of the callout's first item two blocks or more below the callout. The read with no
+// view answers the requirement and the callout each as one node whose text holds its words, and no
+// other node holding them: a typed block's own text, the blocks its text holds at any depth, is no
+// node of the read, since the typed block's node holds it whole; P, which no typed block holds, is
+// a node. The dry run of the delete of the requirement counts 1, and of the callout 1. Once alice
+// places P under the requirement through PATCH, the read answers P under the requirement and still
+// no node of the requirement's own paragraph, and the dry run of the requirement counts 2.
+func TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "TOWN")
+	issue := createDigestIssue(t, handler, database, "TOWN", "A typed block's own text", ":::criterion{#k1}\nThe board answers each reader.\n:::\n", false)
+	key := issue.Key
+	tree := readDecisionDocument(t, database, key, issueTreeName)
+	succeeded(t, "alice writes a requirement, a paragraph and a callout into the issue's own fragment", editDocument(t, handler, tree.id, insertAtEnd(
+		":::requirement{#or1}\n"+ownTextRequirementWords+"\n:::\n\n"+ownTextProseWords+"\n\n"+
+			":::callout{#oc1 kind=\"note\" title=\"\"}\n"+ownTextCalloutWords+"\n\n- "+ownTextItemWords+"\n- The second item of the callout's list.\n:::\n")))
+	requirement, callout, prose := tree.address("or1"), tree.address("oc1"), blockWithText(t, database, ownTextProseWords)
+	own := blockWithText(t, database, ownTextRequirementWords)
+	if placed, _ := placementOf(t, database, refs.BlockNodeKind, own); placed.ToID != requirement || placementValue(t, database, own, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the requirement's paragraph %s stands under %s at the placement %q, want under %s by the text, so this case proves nothing",
+			own, placed.ToID, placementValue(t, database, own, refs.AttributePlacement), requirement)
+	}
+	if item := blockWithText(t, database, ownTextItemWords); placementValue(t, database, item, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the paragraph of the callout's first item %s is placed %q, want by the text, so this case proves nothing",
+			item, placementValue(t, database, item, refs.AttributePlacement))
+	} else if placed, _ := placementOf(t, database, refs.BlockNodeKind, item); placed.ToID == callout {
+		t.Fatalf("the paragraph of the callout's first item %s stands under the callout itself, want a list between them, so this case proves no depth", item)
+	}
+
+	// read is the read with no view, failing unless it answers each typed block as one node whose
+	// text holds its words, and no other node holding those words.
+	read := func(what string) treeAnswer {
+		t.Helper()
+		answer := treeRead(t, handler, key, "", "alice", false)
+		for address, words := range map[string][]string{requirement: {ownTextRequirementWords}, callout: {ownTextCalloutWords, ownTextItemWords}} {
+			if typed, _ := answer.node(t, refs.BlockNodeKind, address); !strings.Contains(typed.Text, words[0]) {
+				t.Errorf("%s: the tree read answers %s with the text %q, want its words %q", what, address, typed.Text, words[0])
+			}
+			for _, node := range answer.Nodes {
+				holds := slices.ContainsFunc(words, func(word string) bool { return strings.Contains(node.Text, word) })
+				if holds && (node.Kind != refs.BlockNodeKind || node.ID != address) {
+					t.Errorf("%s: the tree read answers %s:%s under %+v with the text %q, want no node of %s's own text but %s",
+						what, node.Kind, node.ID, node.Parent, node.Text, address, address)
+				}
+			}
+		}
+		return answer
+	}
+	alice := personCaller(t, handler, "alice")
+	count := func(what, address string) int {
+		t.Helper()
+		return deletedCount(t, "the dry run of "+what, deleteNodeAs(alice, key, address, true, -1, ""))
+	}
+
+	if node, _ := read("before the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID == requirement {
+		t.Errorf("the tree read answers P under %+v before its move, want it under the node its text places it under, not %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement, requirement); counted != 1 {
+		t.Errorf("the dry run of the requirement %s counts %d, want 1: the requirement, and not its own paragraph", requirement, counted)
+	}
+	if counted := count("the callout "+callout, callout); counted != 1 {
+		t.Errorf("the dry run of the callout %s counts %d, want 1: the callout, and none of the blocks its text holds", callout, counted)
+	}
+
+	_, tag := placementOf(t, database, refs.BlockNodeKind, prose)
+	succeeded(t, "alice places P under the requirement", patchNode(t, handler, key, prose, tag, map[string]any{"parent": requirement}, "alice"))
+	if node, _ := read("after the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID != requirement {
+		t.Errorf("the tree read answers P under %+v after its move, want it under the requirement %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement+" after the move", requirement); counted != 2 {
+		t.Errorf("the dry run of the requirement %s counts %d after the move, want 2: the requirement and P", requirement, counted)
+	}
+}
+
 // decisionByBlock is the decision of decisions whose block id is block.
 func decisionByBlock(t *testing.T, decisions []model.Decision, block string) model.Decision {
 	t.Helper()
@@ -588,8 +674,27 @@ func readIssueDecisionsWithTrees(t *testing.T, handler http.Handler, key string)
 	return decodeBody[issueDecisions](t, treesRequest(t, handler, "/api/v1/issues/"+key+"/decisions", true))
 }
 
+// asTheTreeReadAnswersIt is decision, the old `decisions` member's model.Decision for entry's node,
+// as the tree read answers that decision, with any view or none. The old member answers a
+// `decision` block whose decided_by names a person, which nobody kept, kind `person`
+// (compatDecision), for a page of the release before: that page reads the old member alone, and
+// lists a decision under "Your decisions" only by kind `person` or a Keep, so it would list such a
+// block, which waits for nobody's review, nowhere. That kind is the old member's alone. The tree
+// read answers the block kind `agent`, the node's shape, as the entry does, and says who decided
+// in the decided_by tuple it answers beside the node with the decider as context: this release's
+// page reads the person's decision from that tuple (decisionsFromTree in
+// web/src/api/decisions-tree.ts, then isPersonDecision and deciderOf), and no page of the release
+// before reads the tree read. Every other decision, and every other member, is the old member's.
+func asTheTreeReadAnswersIt(entry decisionEntry, decision model.Decision) model.Decision {
+	if entry.Node.Kind == refs.BlockNodeKind && entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindPerson && decision.Kept == nil {
+		decision.Kind = entry.Kind
+	}
+	return decision
+}
+
 // requireDecisionAsRead fails unless the tree read's decision node d1 answers every member of
-// model.Decision as the decisions read answers it for the same decision, byte for byte, and its
+// model.Decision as the decisions read answers it for the same decision, byte for byte, but for
+// the old member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and its
 // uncertainty and uncertainty_reason as that read's entry for it answers them.
 func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key, node string) model.Decision {
 	t.Helper()
@@ -599,30 +704,27 @@ func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key,
 		t.Fatalf("%s: the tree read's decision %s answers no decision members", what, node)
 	}
 	decisions := readIssueDecisionsWithTrees(t, handler, key)
-	want := decisionByBlock(t, decisions.Decisions, "d1")
+	entry := requireEntry(t, decisions.Entries, what+": the decision d1", refs.BlockNodeKind+":"+node)
+	want := asTheTreeReadAnswersIt(entry, decisionByBlock(t, decisions.Decisions, "d1"))
 	got, _ := json.Marshal(held.Decision.Decision)
 	expected, _ := json.Marshal(want)
 	if !bytes.Equal(got, expected) {
 		t.Errorf("%s: the tree read's decision answers\n%s\nwant the decisions read's\n%s", what, got, expected)
 	}
-	for _, entry := range decisions.Entries {
-		if entry.Node.Kind != refs.BlockNodeKind || entry.Node.ID != node {
-			continue
-		}
-		if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
-			t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
-				entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
-		}
+	if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+		t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
+			entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
 	}
 	return held.Decision.Decision
 }
 
 // TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes: on a converted issue, the
 // decision node answers every member of model.Decision equal to GET /api/v1/issues/{key}/decisions'
-// for the same decision; after the words of the requirement its shaped tuple names change, its
-// link answers changed_since_tie and not stale, and after the decision's own words change, stale,
-// each as the decisions read's does; and the read answers the decision's decided_by person as
-// context with the tuple.
+// for the same decision, its kind the entry's, the node's shape, where the old member answers
+// alice's own decision kind `person` for the release before (asTheTreeReadAnswersIt); after the
+// words of the requirement its shaped tuple names change, its link answers changed_since_tie and
+// not stale, and after the decision's own words change, stale, each as the decisions read's does;
+// and the read answers the decision's decided_by person as context with the tuple.
 func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1113,8 +1215,9 @@ func decisionsViewSpec(key string) string {
 // requireDecisionsViewAsRead fails unless view, ?view=decisions of an issue, answers every entry
 // of read, the decisions read of the same issue, as the query's, keyed as read keys it and member
 // by member: an ask by its ask id with its question, options, urgency and multiple; a decision and
-// an answered ask with every member of model.Decision the read's `decisions` answers for it, and
-// the block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
+// an answered ask with every member of model.Decision the read's `decisions` answers for it, but
+// for that member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and the
+// block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
 // the read lists under an entry, a decision's or an answered ask's, under that entry's node. It
 // answers each entry's node by the entry's key.
 func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read issueDecisions) map[string]model.IssueTreeNode {
@@ -1162,7 +1265,7 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 			t.Errorf("%s: ?view=decisions answers the entry %s with no decision, want the decisions read's %s", what, entryKey(entry), entryJSON(t, want))
 			continue
 		}
-		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, want); got != expected {
+		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, asTheTreeReadAnswersIt(entry, want)); got != expected {
 			t.Errorf("%s: ?view=decisions answers the entry %s with the decision\n%s\nwant the decisions read's\n%s", what, entryKey(entry), got, expected)
 		}
 		if entryJSON(t, node.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, node.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {

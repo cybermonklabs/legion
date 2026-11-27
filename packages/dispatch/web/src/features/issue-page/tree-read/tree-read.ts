@@ -100,6 +100,7 @@ export function resetViews(queryClient: QueryClient, key: string): () => void {
     const view = queryClient.getQueryCache().find({ exact: true, queryKey });
     if (view === undefined) continue;
     droppedWhileHeld.delete(view);
+    commentPagesOf.delete(view);
     treePagesOf.delete(view);
     void queryClient.resetQueries({ exact: true, queryKey });
   }
@@ -177,11 +178,12 @@ const outlineKey = (outline: Outline, key: string): QueryKey => {
   }
 };
 
-/** How far back the older comment pages the reader loaded into an outline read reach, by the
- *  read's query: the `comments_before` its answer held once the last of them was merged, or null
+/** How far back the older comment pages loaded into an outline or the decisions view reach,
+ *  by the read's query: the `comments_before` its answer held once the last of them was merged, or
  *  where no older comment remained. A read with no older page loaded has none. The mark is the
  *  query's, not its answer's: the cache keeps a copy of each answer it is given (TanStack's
  *  structural sharing), so a read made again finds it, and reads as far back again (`readTree`).
+ *  A new load clears the view's mark (`resetViews`).
  *  Held as plain objects, as `heldByWrites` is. */
 const commentPagesOf = new WeakMap<object, { readonly reached: string | null }>();
 
@@ -206,8 +208,8 @@ const treePagesOf = new WeakMap<
  * page that gave it was answered, and where the reader had loaded more than the first it reads the
  * next pages until it holds as many nodes of the walk as those pages held (`treePagesOf`), so no
  * row they had loaded leaves; it looks at that mark again after each page, so a page the reader's
- * press merged while this read was out is read too. An outline read then reads again the older
- * comment pages its answer had loaded (`withLoadedComments`). A page that names a cursor the read
+ *  press merged while this read was out is read too. An outline or decisions view read then reads
+ *  again the older comment pages it had loaded (`withLoadedComments`). A page that names a cursor
  * has asked for already fails the read with an error that names it (`nextCursorOf`): the server
  * named one page twice, so the pages past it are missing. A page that fails fails the read too. A
  * failure of the tree read with no answer held draws the outline's failed-read line and its
@@ -242,7 +244,7 @@ async function readTree(
   }
   if (held !== undefined) treePagesOf.set(held, { cursors: asked, pages: pages.length, walked });
   const merged = mergeTreePages(pages);
-  return query.view === undefined
+  return query.view === undefined || query.view === "decisions"
     ? withLoadedComments(key, query, merged, { client, queryKey, signal })
     : merged;
 }
@@ -272,14 +274,15 @@ function readName(key: string, query: TreeQuery): string {
 }
 
 /**
- * `answer`, an outline read's first pages read again, with each older comment page the reader had
- * loaded into its query (`commentPagesOf`) read again too (R6, R15): from the new answer's own
+ * `answer`, a read's first pages read again, with each older comment page already loaded into
+ * its query (`commentPagesOf`) read again too (R6, R15): from the new answer's own
  * `comments_before`, page by page, until it reaches as far back as those pages did, or, where they
  * held every older comment, until none remains. So a refetch after a write keeps every older
  * comment the reader had loaded. It looks at the mark again after each page, so a page the
  * reader's press merged while this read was out is read too. A position the walk has read already
  * fails the read, naming it, as a cursor named twice does. A query with no older page loaded
- * reads none: the page reads an older page only where the reader asked for one.
+ * reads none: the page reads an older page only where the reader asked for one, or, once the page
+ * has drawn, where a reader names what one may hold (`useReadOlderComments`).
  */
 async function withLoadedComments(
   key: string,
@@ -338,11 +341,11 @@ const droppedWhileHeld = new WeakSet<object>();
  *  write of its issue holds it (`heldByWrites`), since a read sent then reads a tree Dispatch may
  *  not have changed yet. A view a write's own callback dropped after a read of it, while another
  *  write holds it (`dropViews`, `droppedWhileHeld`), holds nothing either, but is a refresh, held
- *  as an answered one. A disabled query is no query of a refresh: the app's client refetches none
- *  (`api/query-client.ts`), the refresh scheduler only marks it stale (`api/query-refresh.ts`)
- *  and a new observer reads none of it, so nothing is sent while the write is out, and the
- *  subscription reads what was asked for once the last write settles. The reader's Retry is an
- *  observer's `refetch`, which TanStack sends whatever `enabled` says. */
+ *  as an answered one. A disabled query is no query of a refresh: the app's client refetches
+ *  none (`api/query-client.ts`), the refresh scheduler only marks it stale
+ *  (`api/query-refresh.ts`) and a new observer reads none of it, so nothing is sent while the
+ *  write is out, and the subscription reads what was asked for once the last write settles. The
+ *  reader's Retry is an observer's `refetch`, which TanStack sends whatever `enabled` says. */
 function mayReadNow(query: Pick<Query, "state">): boolean {
   if (!heldByWrites.has(query)) return true;
   return query.state.status === "pending" && !droppedWhileHeld.has(query);
@@ -587,10 +590,9 @@ export interface TreeRead {
  * nothing has sent - Conversation's on Spec below 1024 px until the Outline sheet opens - is not
  * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
  * The view read is this load's alone: while the last load of the issue has ended, what the cache
- * keeps of it is an earlier visit's, and no block is drawn from it (`loadEnded`).
+ * keeps of it is an earlier visit's, and no block is drawn from it (`useLoadView`).
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
-  const queryClient = useQueryClient();
   const { choice, read } = useOutlineRead(issue.key);
   const { filter } = choice;
   const {
@@ -603,8 +605,8 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     refetch,
   } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
-  const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
-  const viewHeld = filter !== undefined && !loadEnded(queryClient, issue.key);
+  const view = useLoadView(issue.key, filter ?? TREE_FILTERS[0]);
+  const viewHeld = filter !== undefined;
   const viewAnswer = viewHeld ? view.data : undefined;
   const blocks = useMemo(
     () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
@@ -712,23 +714,29 @@ function loadHoldOf(queryClient: QueryClient, key: string): LoadHold {
 
 /** Whether the last load of issue `key` has ended and none has reset its views since
  *  (`LoadHold.ended`): what each view's answer and refusal the cache keeps are an earlier visit's,
- *  which no reader takes - the page's tree (`useIssueTree.ts`), the role blocks a filter draws
- *  from (`useTreeRead`) and every reader of a view's own query beside it (`useLoadView`), the
- *  decisions view's readers among them (`useDecisionsView`) - from the next load's first render
- *  on, before its reset drops them (`ViewReadProvider`). */
+ *  which no reader takes - the page's tree (`useIssueTree.ts`) and every reader of a view's own
+ *  query (`useLoadView`), the role blocks a filter draws from (`useTreeRead`) and the decisions
+ *  view's readers (`useDecisionsView`) among them - from the next load's first render on, before
+ *  its reset drops them (`ViewReadProvider`). */
 export function loadEnded(queryClient: QueryClient, key: string): boolean {
   return loadHolds.get(queryClient)?.get(key)?.ended === true;
 }
 
 /** A view read of issue `key` as this load holds it (`useLoadView`), by its own query's state.
  *  Each member is read off the query's result when a reader reads it, so TanStack Query, which
- *  draws a reader again only as a member it read changes, tracks only what each reader reads. */
+ *  draws a reader again only as a member it read changes, tracks only what each reader reads.
+ *  A member reads its field before the load's rule, so a render while the last load of the issue
+ *  has ended tracks that field too: one that tracked none but `refetch` would not be drawn again
+ *  as the view's answer lands. */
 export interface LoadView {
   /** The view's answer: undefined while the last load of the issue has ended. */
   readonly data: TreeAnswer | undefined;
   /** How many times a read of the view failed (TanStack Query's `errorUpdateCount`): 0 while the
    *  last load of the issue has ended. */
   readonly errorUpdateCount: number;
+  /** Whether the view's last read failed (TanStack Query's `isError`): false while the last load
+   *  of the issue has ended. */
+  readonly isError: boolean;
   /** Whether a read of the view runs (TanStack Query's `isFetching`): false while the last load
    *  of the issue has ended. */
   readonly isFetching: boolean;
@@ -738,29 +746,38 @@ export interface LoadView {
 
 /**
  * `view`'s view read of issue `key` as this load holds it (`LoadView`), the one rule every reader
- * of a view's own query takes it by: the view's answer the page holds (`useViewAnswer`), and so
+ * of a view's own query takes it by: the view's answer the page holds (`useViewAnswer`), which
  * the decisions view's readers (`useDecisionsView`) and the control after a view's last row
- * (`useNextViewPage`), and the Spec view's column, which draws the Spec view read's failed line
- * (`spec-filter/SpecFilterBody.tsx`). While the last load of the issue has ended, what the cache
- * keeps of the view is an earlier visit's (`loadEnded`): its answer, its failures and a read of
- * it still out. So until the next load's reset drops the view (`ViewReadProvider`), on that
- * load's first render too, the view holds no answer, has failed no read and runs none. Each
- * member is a getter over the query's result, which TanStack Query tracks as it is read: a
- * reader of the answer alone is not drawn again as a read of the view starts and ends. The view
- * is watched and never sent: `ViewReadProvider` sends it.
+ * (`useNextViewPage`) take it through; the role blocks a filter draws from (`useTreeRead`); and
+ * the Spec view's column, which draws the Spec view read's failed line
+ * (`spec-filter/SpecFilterBody.tsx`). The page's tree reads every filter's view in one
+ * `useQueries` call and takes the same rule by `loadEnded` (`useIssueTree.ts`' `viewOf`), and
+ * `useBlocksRunning` reads whether its view's read runs with no such rule, on purpose. While the
+ * last load of the issue has ended, what the cache keeps of the view is an earlier visit's
+ * (`loadEnded`): its answer, its failures and a read of it still out. So until the next load's
+ * reset drops the view (`ViewReadProvider`), on that load's first render too, the view holds no
+ * answer, has failed no read and runs none. The view is watched and never sent:
+ * `ViewReadProvider` sends it.
  */
 export function useLoadView(key: string, view: TreeView): LoadView {
   const ended = loadEnded(useQueryClient(), key);
   const read = useQuery({ ...viewQuery(key, view), enabled: false });
   return {
     get data() {
-      return ended ? undefined : read.data;
+      const data = read.data;
+      return ended ? undefined : data;
     },
     get errorUpdateCount() {
-      return ended ? 0 : read.errorUpdateCount;
+      const count = read.errorUpdateCount;
+      return ended ? 0 : count;
+    },
+    get isError() {
+      const failed = read.isError;
+      return !ended && failed;
     },
     get isFetching() {
-      return !ended && read.isFetching;
+      const fetching = read.isFetching;
+      return !ended && fetching;
     },
     get refetch() {
       return read.refetch;
@@ -794,9 +811,9 @@ function useViewAnswer(key: string, view: TreeView): ViewAnswer {
 }
 
 /** The decisions view's answer the page holds for issue `key`, and how the view's own read
- *  stands (`useDecisionsView`). `errorUpdateCount`, `isFetching` and `refetch` are getters over
- *  that read (`LoadView`), read only where a reader reads them. */
-export interface DecisionsView {
+ *  stands (`useDecisionsView`). */
+export interface DecisionsView
+  extends Pick<LoadView, "errorUpdateCount" | "isFetching" | "refetch"> {
   /** The view's answer, read during this load of the issue: the one its query holds, and on the
    *  Decisions view, from a write's drop of the view (`dropViews`) until its next answer lands -
    *  while that read is out, and after it is refused - the answer the drop took. On every other
@@ -804,14 +821,6 @@ export interface DecisionsView {
    *  write reads again. Undefined before the view's first answer of the load, and while the last
    *  load of the issue has ended (`loadEnded`). */
   readonly answer: TreeAnswer | undefined;
-  /** How many times the view's own read failed (`LoadView.errorUpdateCount`): 0 while the last
-   *  load of the issue has ended. */
-  readonly errorUpdateCount: number;
-  /** Whether the view's own read runs (`LoadView.isFetching`): false while the last load of the
-   *  issue has ended. */
-  readonly isFetching: boolean;
-  /** Reads the view again, by its own query: what the Decisions view's Retry asks. */
-  readonly refetch: () => Promise<unknown>;
   /** Whether the view's own read stands refused (`standsFailed`): its query holds no answer, and
    *  a read of it failed since it last held one, during this load of the issue. So it is refused
    *  while `answer` is the one a write's drop took, and the Decisions view draws its failed
@@ -839,8 +848,7 @@ export interface DecisionsView {
  * which takes the view (`useViewAnswer`), so the control after a view's last row takes it too
  * and observes no view but its own. The answer and the refusal are read on every draw; how the
  * read runs, how many times it failed and its refetch only where a reader reads them, so a
- * reader of the answer is not drawn again as a read of the view starts and ends. The view is
- * watched and never sent: `ViewReadProvider` sends it.
+ * reader of the answer is not drawn again as a read of the view starts and ends.
  */
 export function useDecisionsView(key: string): DecisionsView {
   const { answer, read } = useViewAnswer(key, "decisions");
@@ -947,12 +955,13 @@ function writeKeepingStale(
 }
 
 /**
- * Reads the next older comment page of `outline`'s read of issue `key` (R15), one request with
- * `?comments_before=` the answer the cache holds names (`comments_before`), no view and no cursor,
- * beside the kinds Conversation's read names, and merges it into that answer in the cache, where
+ * Reads the next older comment page of `read` of issue `key` (R15), with the `comments_before`
+ * its cached answer names, beside that read's own `view` or `kind` and with no cursor.
+ * It merges the page into that answer in the cache, where
  * the read's order puts each node (`mergeCommentPage`). A press while that page is out joins it,
- * and one after it merged reads the next, so each page is read once whichever control asks for
- * it. Where the cache holds no answer, or one with no older comment, it reads nothing. A page that
+ * and one after it merged reads the next, so each page is read once whichever control or reader
+ * asks for it (`useReadOlderComments`). Where the cache holds no answer or no older comment it
+ * reads nothing. A page that
  * lands once the answer has moved on - a read made again from the first page, which reads again
  * each page the reader had loaded (`withLoadedComments`) - is not merged into it. The merge writes
  * the answer by `setQueryData`, which the tree's subscription takes as no write of the issue: it
@@ -963,23 +972,24 @@ function writeKeepingStale(
 export function readOlderComments(
   queryClient: QueryClient,
   key: string,
-  outline: Outline
+  read: CommentRead
 ): Promise<void> {
-  const { queryKey } = outlineQuery(key, outline);
+  const { query, queryKey } = pagedQuery(key, read, undefined);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const before = held === undefined ? undefined : olderCommentsBefore(held);
   if (before === undefined) return Promise.resolve();
   return joinedPage(commentPagesOut, queryClient, `${hashKey(queryKey)} ${before}`, () =>
-    api
-      .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
-      .then((older) => {
-        const now = queryClient.getQueryData<TreeAnswer>(queryKey);
-        const query = queryClient.getQueryCache().find({ exact: true, queryKey });
-        if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
-        const merged = mergeCommentPage(now, older);
-        commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
-        writeKeepingStale(queryClient, query, queryKey, merged);
-      })
+    api.getIssueTree(key, { ...query, comments_before: before }).then((older) => {
+      const now = queryClient.getQueryData<TreeAnswer>(queryKey);
+      const cached = queryClient.getQueryCache().find({ exact: true, queryKey });
+      if (now === undefined || cached === undefined || olderCommentsBefore(now) !== before) return;
+      const merged = mergeCommentPage(now, older);
+      if (olderCommentsBefore(merged) === before) {
+        throw new Error(`${readName(key, query)} named comment page "${before}" twice.`);
+      }
+      commentPagesOf.set(cached, { reached: olderCommentsBefore(merged) ?? null });
+      writeKeepingStale(queryClient, cached, queryKey, merged);
+    })
   );
 }
 
@@ -1038,10 +1048,10 @@ export function readNextTreePage(
   version?: number
 ): Promise<void> {
   const { query, queryKey } = pagedQuery(key, read, version);
-  const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
-  const held = cached?.state.data;
+  const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   if (held === undefined) {
     // The read out brings the answer whose next page the press asks for.
+    const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
     const out = cached?.state.fetchStatus === "fetching" ? cached.promise : undefined;
     if (out === undefined) return Promise.resolve();
     const again = () => readNextTreePage(queryClient, key, read, version);
@@ -1117,10 +1127,11 @@ function useNextPage(
   );
 }
 
-/** How the reading of a read's next pages for a node no page read yet holds stands
- *  (`useReadUntilHeld`). */
+/** How the reading of a read's next pages, or of its older comment pages, for what no page read
+ *  yet holds stands (`useReadUntilHeld`, `useReadOlderComments`). */
 export interface PagesReading {
-  /** Whether a next page is being read: out, or asked for as the reading's effect runs. */
+  /** Whether a page is being read: out, or asked for as the reading's effect runs, or, for the
+   *  older comment pages, waiting on the page's first drawing to be asked for. */
   readonly reading: boolean;
   /** Whether the page the reading last asked for was refused, while the read still names that
    *  page as its next: nothing past it is read until a read of it answers. */
@@ -1164,6 +1175,91 @@ export function useReadUntilHeld(
     readNextTreePage(queryClient, issue.key, read).catch(() => setRefusedAt(cursor));
   }, [cursor, issue.key, queryClient, read, reading]);
   return { reading, refused };
+}
+
+/**
+ * Reads the older comment pages of the outline read the page holds (R15), one at a time, while
+ * `wants` says its answer lacks what a reader names that an older page may hold (decision 563
+ * (4)): the comment an address names once the next pages are read to their end; or the node a
+ * `?node=` address names once neither Conversation's read nor Graph's holds it (`slots/body.tsx`).
+ * Each page merged draws the page again, and the caller says again whether it still wants one,
+ * so the reading ends with the page that brings what it named, or with the last one: the answer
+ * then names no `comments_before`. It asks for no page before the page has drawn the answer that
+ * names what it wants (`useDrawnWith`), so a load reads no older page (decision 538). Each page is
+ * the one the controls read (`readOlderComments`), so a press, another reader, or this one asking
+ * for a page that is out joins it. A page refused stops the reading at that page, and the hook
+ * answers it refused for as long as the answer names that page as its next, as
+ * `useReadUntilHeld` answers a refused cursor: the controls above the outline and at the foot of
+ * the Contents list read it again, and once it answers the reading goes on. Answers whether it is
+ * still reading, which the address's landing waits on as on the next pages.
+ */
+export function useReadOlderComments(
+  issue: IssueDetails,
+  wants: (answer: TreeAnswer) => boolean
+): PagesReading {
+  const {
+    choice: { outline },
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
+  return useReadCommentPages(issue.key, outline, answer, answer !== undefined && wants(answer));
+}
+
+type CommentRead = Outline | "decisions";
+
+/** Reads older pages for a possible Change (`changeUnread`) from the same read the caller
+ *  draws or counts: the decisions view if held, otherwise the current outline. */
+export function useReadOlderDecisionComments(
+  key: string,
+  answer: TreeAnswer | undefined,
+  wanted: boolean,
+  viewHeld: boolean
+): void {
+  const { outline } = useOutlineChoice();
+  useReadCommentPages(key, viewHeld ? "decisions" : outline, answer, wanted);
+}
+
+function useReadCommentPages(
+  key: string,
+  read: CommentRead | undefined,
+  answer: TreeAnswer | undefined,
+  wanted: boolean
+): PagesReading {
+  const queryClient = useQueryClient();
+  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
+  const position =
+    wanted && read !== undefined && before !== undefined ? `${key} ${read} ${before}` : undefined;
+  // The position whose page was refused, past which nothing is read.
+  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
+  const drawn = useDrawnWith(position !== undefined);
+  const refused = position !== undefined && position === refusedAt;
+  const reading = position !== undefined && !refused;
+  useEffect(() => {
+    if (!reading || !drawn || read === undefined) return;
+    // The dropped Decisions answer may still be drawn, but cannot start a page read.
+    const { queryKey } = pagedQuery(key, read, undefined);
+    if (queryClient.getQueryData(queryKey) !== answer) return;
+    readOlderComments(queryClient, key, read).catch(() => setRefusedAt(position));
+  }, [answer, drawn, key, position, queryClient, read, reading]);
+  return { reading, refused };
+}
+
+/** Whether the page has drawn a frame since a render in which `held` held: from the browser's
+ *  next animation frame after that render, once it is painted (the task that frame queues), for as
+ *  long as the component stays mounted. */
+function useDrawnWith(held: boolean): boolean {
+  const [drawn, setDrawn] = useState(false);
+  useEffect(() => {
+    if (!held || drawn) return;
+    let painted: number | undefined;
+    const frame = window.requestAnimationFrame(() => {
+      painted = window.setTimeout(() => setDrawn(true), 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(painted);
+    };
+  }, [drawn, held]);
+  return drawn;
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on
@@ -1340,9 +1436,7 @@ function watchTree(
     if ((action.type === "fetch" || action.type === "invalidate") && holding()) {
       owedReads.add(hash);
     }
-    // A view a write's own callback dropped while another write of the issue holds it, after a
-    // read of it, is owed the same way (`droppedWhileHeld`). The drop marks it before the reset,
-    // which TanStack tells of before it asks for the reads it reset, so none is sent.
+    // A write's drop marks the view before reset so no refresh is sent during another write.
     if (action.type === "setState" && droppedWhileHeld.has(query)) owedReads.add(hash);
     // A refused read is marked valid once the cache has told every listener of the refusal.
     if (action.type === "error") queueMicrotask(() => markValid(query));

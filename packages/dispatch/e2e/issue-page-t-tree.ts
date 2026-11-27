@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
 import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
@@ -601,14 +601,38 @@ export const coverageIndexEventGate: Gate = {
  *  (`PRESET_ORDER`) with that view (spec R12). */
 const DASHBOARD_VIEW = "dashboard";
 
-/** Dashboard's part first on this branch's base: the view row's one list holds its view. That
- *  part brings Dashboard, the ask body and the decision card, which the rows of the Dashboard's
- *  reads and of the outline's asks and decisions read (spec R16, R17). */
+/** Whether a file of the page, by its path under `packages/dispatch`, holds `pattern`. */
+function pageSourceHolds(path: string, pattern: RegExp): boolean {
+  const file = new URL(`../${path}`, import.meta.url);
+  return existsSync(file) && pattern.test(readFileSync(file, "utf8"));
+}
+
+/** Dashboard's own folder, whose files Dashboard's part brings (INFRA-5702). */
+const DASHBOARD_FOLDER = "web/src/features/dashboard";
+
+/** Dashboard's part on this branch's base, and part T's R16 and R17 built on it (decision 558,
+ *  amended): the view row's one list holds Dashboard's view, a file of Dashboard's folder reads
+ *  the tree read (R16: Dashboard reads the tree read's views), and the outline's row draws
+ *  Dashboard's part's ask body (R17). Dashboard's part alone opens no row of the Dashboard's
+ *  reads or of the outline's asks and decisions: those rows need T's R16 and R17, which T builds
+ *  once its base holds that part. */
 export const dashboardPartGate: Gate = {
-  met: (PRESET_ORDER as readonly string[]).includes(DASHBOARD_VIEW),
+  met:
+    (PRESET_ORDER as readonly string[]).includes(DASHBOARD_VIEW) &&
+    existsSync(new URL(`../${DASHBOARD_FOLDER}`, import.meta.url)) &&
+    readdirSync(new URL(`../${DASHBOARD_FOLDER}`, import.meta.url), { withFileTypes: true }).some(
+      (entry) =>
+        entry.isFile() &&
+        pageSourceHolds(
+          `${DASHBOARD_FOLDER}/${entry.name}`,
+          /from "\.\.\/issue-page\/tree-read\/tree-read"/
+        )
+    ) &&
+    pageSourceHolds("web/src/features/issue-page/NodeRow.tsx", /from "\.\.\/ask-body\/AskBody"/),
   owed:
     "owed until INFRA-5702, Dashboard's part with the ask body and the decision card, is on " +
-    `this branch's base: the view row's list holds no Dashboard here; ${OWED_BY}`,
+    "this branch's base and part T's R16 and R17 are built on it: Dashboard reads no tree read " +
+    `and the outline's row draws no ask body here; ${OWED_BY}`,
 };
 
 /** How many frames the page's writer looks for its line in after a Reply (`outline-writer.tsx`:

@@ -6808,7 +6808,7 @@ const RELOAD_AFTER_DROP_IN_ONE_WRITE: RuleWay = {
   },
 };
 
-/** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what a Settle,
+/** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what
  *  a Keep and a Change do - code that calls `dropViews` there, which
  *  no load does: invalidates the coverage, refreshes the tree and drops the views. TanStack runs
  *  the callback once the write store has landed the write, which so holds nothing by then: the
@@ -7870,9 +7870,7 @@ const READ_RULES: readonly ReadRule[] = [
   // A load after a write's own callback dropped the views, while a write of the issue is still
   // out, is a load too: the open view at once, and once more as the write settles.
   { read: "spec", state: "answered", observed: true, way: "reloadAfterDropDuringWrite", now: 2 },
-  // Within one write, whose callback drops the views once it landed and keeps running at the
-  // load: no write of the issue is out by then, so the drop reads the open view at once, and the
-  // load does again.
+  // One write whose callback is still running at the load: the drop and then the load read at once.
   { read: "spec", state: "answered", observed: true, way: "reloadAfterDropInOneWrite", now: 2 },
   // One event, read once, while a read of the messages is out that Dispatch then refuses.
   { read: "tree", state: "answered", observed: true, way: "eventWhileMessagesRefused600", now: 1 },

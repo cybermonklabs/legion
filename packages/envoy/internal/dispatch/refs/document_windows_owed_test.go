@@ -240,6 +240,7 @@ func (f owedDocumentFixture) describe(listed []string) string {
 // Every document whose windows do not stand for its blocks is listed, and every one whose
 // windows do stand is not.
 func TestDocumentsOwedWindowsListsTheDocumentsWhoseWindowsDoNotStand(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedDocumentFixture(t, documentWindowStates)
 	listed, err := DocumentsOwedWindows(context.Background(), fixture.database.Pool, "", 1000)
 	if err != nil {
@@ -260,6 +261,7 @@ func TestDocumentsOwedWindowsListsTheDocumentsWhoseWindowsDoNotStand(t *testing.
 // windows and that shape's semi-join drops it, which is the defect the marker read fixes, so
 // holding the two equal over it would hold the fix to the bug. The listing test writes it.
 func TestDocumentsOwedWindowsAnswersWhatTheShapeBeforeTheMarkerAnswered(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedDocumentFixture(t, documentWindowStatesTheShapeBeforeAnswers())
 	ctx := context.Background()
 	cursors := []string{""}
@@ -300,6 +302,7 @@ func TestDocumentsOwedWindowsAnswersWhatTheShapeBeforeTheMarkerAnswered(t *testi
 //	    after the version write, document bb64e60e-d8ba-48f5-90b4-24bbf955dd75 is owed
 //	    windows = false, want true
 func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "marked-md")
@@ -347,6 +350,7 @@ func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T
 // behaviour: the arm lists it, and the write of its windows - of which it has none - deletes
 // the windows left from the version that did hold blocks and clears the marker.
 func TestADocumentWhoseVersionHoldsNoBlockIsListedAndWindowed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx := windowFixture(t)
 	// Project documents rather than an issue's: an issue holds one primary document, and this
@@ -421,6 +425,7 @@ func requireDocumentOwedWindows(t *testing.T, tx pgx.Tx, artifactID string, owed
 
 // The documents owed their windows, held to the partial index on windows_owed_at.
 func TestDocumentsOwedWindowsReadsThePartialIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedDocumentFixture(t, documentWindowStates)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)

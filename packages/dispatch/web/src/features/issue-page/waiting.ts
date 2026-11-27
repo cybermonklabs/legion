@@ -2,6 +2,7 @@ import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, deletedPostIds, inReviewList, treeComments } from "./decision-review";
+import { changeUnread } from "./tree-drafts";
 import { nextTreeCursor } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -38,11 +39,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * decision restates that answer and is no decision at all (`restatesAnswer`), so the count is
  * the same without them. One the reader asked to change waits on its agent and is not counted,
  * by the outline's one rule (`decisionNodeChanges`): its Change is a comment the read the
- * decisions are counted from hangs under its node - the decisions view read, which carries each
- * comment on a node it holds, wherever the page holds it, and Conversation's read only until
- * then - so the count matches no quote, reads no block of a document and no comment list of its
- * own. A Change on a decision past the pages of Conversation's read held so far is so read with
- * its decision. A Change its author deleted asks nothing any more, as in the outline: the same
+ * decisions are counted from hangs under its node. The count matches no quote, reads no block
+ * of a document and no comment list of its own. A Change may be older than the comment page of
+ * either read; a marked decision (`changeUnread`) is not counted until the older pages resolve
+ * it. A Change on a decision past Conversation's pages can still be read with its decision.
+ * A Change its author deleted asks nothing any more, as in the outline: the same
  * answer's comment nodes carry their author's marks, which say which were (`treeComments`,
  * `deletedPostIds`).
  *
@@ -79,6 +80,9 @@ export interface WaitingOnReader {
    *  the decisions of the pages loaded and the header draws it with "+"; absent where it names
    *  none. */
   readonly more?: true;
+  /** Decisions that may have a Change on an older comment page. The header reads older pages
+   *  of the answer it counts while any remain marked (`useReadOlderDecisionComments`). */
+  readonly unread: number;
 }
 
 export function waitingOnReader(
@@ -116,13 +120,20 @@ export function waitingOnReader(
   // decisions are counted from alone, by the one rule every reader of a Change reads, and so is
   // which Changes their author deleted, which ask nothing any more, as in the outline.
   let reviewing = 0;
+  let unread = 0;
   if (viewer !== undefined && answer !== undefined) {
     const changes = decisionNodeChanges(answer, undefined, deletedPostIds(treeComments(answer)));
-    reviewing = [...decisionsOfAnswer(answer, issue.key).values()].filter(
-      (decision) =>
+    for (const decision of decisionsOfAnswer(answer, issue.key).values()) {
+      const changed = changes.has(decision.node.id);
+      const marked = changeUnread(decision, changed, answer);
+      if (marked) unread += 1;
+      if (
         decision.node.state !== "overtaken" &&
-        inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
-    ).length;
+        inReviewList(decision, isCoverageStatement, changed || marked)
+      ) {
+        reviewing += 1;
+      }
+    }
   }
   const more = viewer !== undefined && answer !== undefined && nextTreeCursor(answer) !== undefined;
   return {
@@ -131,6 +142,7 @@ export function waitingOnReader(
     decisions: reviewing,
     ...(more ? { more: true as const } : {}),
     total: asks + reviewing + approvals.length,
+    unread,
   };
 }
 

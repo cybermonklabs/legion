@@ -35,6 +35,7 @@ import {
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
+import { needsChip } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
@@ -920,7 +921,7 @@ test("another issue's block keeps the read's id where its document has this issu
   const reads = { issue: issueDetails() };
   const { drafts, root } = drawn(tree, reads);
 
-  expect(treeIdOf(tree, reads)("CORE-2/verification-md#c9")).toBe("c9");
+  expect(treeIdOf(tree, reads)("CORE-2/verification-md#c9")).toBe("CORE-2/verification-md#c9");
   expect([...drafts.entries()].map(([id, draft]) => [id, draft.readId])).toEqual([
     [blockNodeId("spec", "r1"), `${KEY}/spec#r1`],
     [blockNodeId("verification-md", "c1"), `${KEY}/verification-md#c1`],
@@ -2317,11 +2318,11 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
 // R19: on an issue with issues under it the Plan view's read answers each plan task of an issue
 // under it, as context marked with its issue, with its place in the order the read answers
 // (`plan.position`) and its size in whole minutes. Built from that answer, the tree drafts the
-// task by its block id alone, addressed in its own issue, with a chip for the task of its issue it
-// needs and no gap of its own; the Plan view takes it as a row in the order the read answers,
-// after the issue's own task, with its place, its size and its issue. The places leave room for
-// each issue's start, which the read places too. The outline's answer, which carries no `plan`,
-// drafts no task of another issue.
+// task by the read's id, which holds its issue, addressed in its own issue, with a chip for the
+// task of its issue it needs and no gap of its own; the Plan view takes it as a row in the order
+// the read answers, after the issue's own task, with its place, its size and its issue. The
+// places leave room for each issue's start, which the read places too. The outline's answer,
+// which carries no `plan`, drafts no task of another issue.
 test("a plan task's size and issue come from the plan view's answer", () => {
   const place = (position: number, size: string | null) => ({
     cycle: false,
@@ -2351,8 +2352,9 @@ test("a plan task's size and issue come from the plan view's answer", () => {
     { view: "plan" }
   );
   const { drafts, root } = drawn(plan);
+  const [x1, x2] = ["CORE-2/plan-md#x1", "CORE-2/plan-md#x2"];
   expect(
-    ["x1", "x2"].map((id) => {
+    [x1, x2].map((id) => {
       const draft = drafts.get(id);
       return [draft?.reference, draft?.chips.map((one) => one.ref), draft?.gaps];
     })
@@ -2363,12 +2365,77 @@ test("a plan task's size and issue come from the plan view's answer", () => {
   const view = presetView({ ...root, views: { plan, trees: { plan: root } } }, "plan", "");
   expect(view.root.children.map((row) => [row.id, row.position, row.size, row.issue])).toEqual([
     [blockNodeId("plan-md", "t1"), 1, 30, undefined],
-    ["x1", 3, 90, "CORE-2"],
-    ["x2", 4, 45, "CORE-2"],
+    [x1, 3, 90, "CORE-2"],
+    [x2, 4, 45, "CORE-2"],
   ]);
   const outline = answer([
     node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
     node("x1", "plan_task", "CORE-2", { document: { ...childPlan, position: 0 }, issue: "CORE-2" }),
   ]);
-  expect(drawn(outline).drafts.has("x1")).toBe(false);
+  expect([...drawn(outline).drafts.values()].map((draft) => draft.readId)).not.toContain(x1);
+});
+
+// R19 (2): a block id is unique inside one document alone, and every plan names its tasks `t1`,
+// `t2`, so two issues under this one can each write a `t1`. The Plan view's read answers both,
+// each marked with its issue, and the tree drafts each by the read's id, which holds its issue:
+// the Plan view draws two rows, each with its own issue's words, and the `t1` CORE-3's `t2` needs
+// is CORE-3's.
+test("two children's plan tasks of one block id are two rows, each with its own words", () => {
+  const place = (position: number) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position,
+    size: null,
+    skills: null,
+  });
+  const childTask = (issue: string, id: string, position: number, at: number) => {
+    const words = `Task ${id} of ${issue}.`;
+    return node(id, "plan_task", issue, {
+      document: { artifact_id: `artifact-${issue}-plan`, position, slug: "plan-md" },
+      issue,
+      plan: place(at),
+      role: "context",
+      text: words,
+      text_tree: reading(words),
+    });
+  };
+  const plan = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0, { plan: place(1), role: "query" }),
+      node("CORE-2", "issue", KEY, { role: "context", text: "The first child" }),
+      childTask("CORE-2", "t1", 0, 2),
+      node("CORE-3", "issue", KEY, { role: "context", text: "The second child" }),
+      childTask("CORE-3", "t1", 0, 3),
+      childTask("CORE-3", "t2", 1, 4),
+    ],
+    [tuple("needs", "CORE-3/plan-md#t2", "CORE-3/plan-md#t1")],
+    { view: "plan" }
+  );
+  const { root } = drawn(plan);
+  const rows = presetView({ ...root, views: { plan, trees: { plan: root } } }, "plan", "").root
+    .children;
+  expect(
+    rows.map((row) => [row.issue, nodeWords(row)]),
+    "each row's issue and its words"
+  ).toEqual([
+    [undefined, "Words of t1."],
+    ["CORE-2", "Task t1 of CORE-2."],
+    ["CORE-3", "Task t1 of CORE-3."],
+    ["CORE-3", "Task t2 of CORE-3."],
+  ]);
+  expect(
+    rows.map((row) => row.id),
+    "each row's id"
+  ).toEqual([
+    blockNodeId("plan-md", "t1"),
+    "CORE-2/plan-md#t1",
+    "CORE-3/plan-md#t1",
+    "CORE-3/plan-md#t2",
+  ]);
+  const needing = rows.at(-1);
+  expect(
+    needing === undefined ? [] : rows.flatMap((row) => (needsChip(needing, row) ? [row.id] : [])),
+    "the task CORE-3's t2 needs"
+  ).toEqual(["CORE-3/plan-md#t1"]);
 });

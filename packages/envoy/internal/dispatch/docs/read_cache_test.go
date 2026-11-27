@@ -569,6 +569,8 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 }
 
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
+	// Not parallel: it writes the package variable coldReadTimeout, 20 ms here, which bounds every
+	// cold read in the process.
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")
@@ -818,6 +820,7 @@ func (s *historyDecodeCountingStore) Load(ctx context.Context, room string) (per
 // whose row the stamp does not name, replaced by bytes no load decodes - so the read serves the
 // text and its answer still, and fails no room.
 func TestAnAgentsTextReadOfAColdDocumentReadsItsAsksOnTheCachedRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &historyDecodeCountingStore{VersionedStore: NewPgVersioned(database)}
 	artifactID := createDocument(t, database, "before")

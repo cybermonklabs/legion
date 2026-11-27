@@ -58,6 +58,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const (
@@ -162,7 +164,7 @@ func startCostArm(t *testing.T, name string, head bool, settings map[string]stri
 	t.Helper()
 	databaseURL := censusDatabase(t)
 	setCostDatabase(t, name, databaseURL, settings)
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	pool, err := testpool.NewPool(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
 	}

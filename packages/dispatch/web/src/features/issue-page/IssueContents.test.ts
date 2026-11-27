@@ -340,10 +340,10 @@ function drawMeasured(
     font: "",
     measureText: (text: string) => ({ width: text.length * CHARACTER }),
   })) as unknown as HTMLCanvasElement["getContext"]);
-  // On `Element.prototype`, which owns the method (`docs/testing.md`): a spy restored on
-  // `HTMLElement.prototype` leaves a copy there that hides a later file's spy on `Element`.
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
   const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+    this: Element
   ) {
     return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);
   });

@@ -28,8 +28,9 @@
 # recomputes the digest artifact_version_text_sha256 takes of the stored markdown (the sha256 of
 # its UTF-8 bytes) and compares it with artifact_reviews.content_sha256; one difference fails. It
 # reads the update trigger on that column, artifact_reviews_content_sha256_update, out of the
-# catalog. It reads the version whose markdown is null, the image's, and finds the renderer saying
-# it holds no bytes (Dispatch-Render-Source: none) rather than answering an empty document. Last it
+# catalog. It reads the version whose markdown is null, the image's, and finds it served as plain
+# file bytes (the image's own, as image/png) with no Dispatch-Render-Source header, rather than
+# rendered as an empty document (Verification v231). Last it
 # makes #author-only a block written author-only: the earlier release writes every block at the
 # visibility `project` and refuses a `visibility` attribute (seed-corpus.sh's head comment), so the
 # driver sets that block's graph_nodes row to visibility author in the store, its one write after
@@ -161,7 +162,9 @@ section=corpus
   corpus_shapes spec boundary-spec
 } >"$work/spec.md"
 corpus_issue "$section" "The versions written before the cutover" "$work/spec.md"
-readonly issue="$corpus_key" spec="$corpus_spec"
+# Not readonly: seed-corpus.sh's corpus_upload takes a local of that name.
+issue="$corpus_key"
+readonly spec="$corpus_spec"
 corpus_revise "$section" "$spec" spec 2
 corpus_revise "$section" "$spec" spec 3
 {
@@ -306,12 +309,15 @@ read -r null_id null_number <<<"$answer"
 [[ -n "$null_number" ]] || fail "$section" "the corpus holds a version whose markdown is null" "artifact_versions holds none"
 version_render_boundary_read "$work/jar" "/api/v1/artifacts/$null_id/versions/$null_number"
 tree_want 200 "$section" "read version $null_number of $null_id, which holds no markdown"
-[[ "$render_source" == none ]] ||
-  fail "$section" "the renderer says version $null_number of $null_id holds no bytes" \
-    "Dispatch-Render-Source reads '$render_source', want none; the answer is $(grep -i '^Content-Type:' "$work/headers" | tr -d '\r')"
+content_type="$(sed -nE 's/^[Cc]ontent-[Tt]ype: *([^;[:space:]]+).*$/\1/p' "$work/headers" | tail -n 1)"
+[[ -z "$render_source" && "$content_type" == image/png ]] ||
+  fail "$section" "version $null_number of $null_id is served as plain file bytes with no Dispatch-Render-Source header" \
+    "Dispatch-Render-Source reads '$render_source', want no header; Content-Type reads '$content_type', want image/png"
+printf '%s' "$corpus_png" | base64 -d | cmp -s - "$work/body" ||
+  fail "$section" "version $null_number of $null_id answers the image's own bytes" "it answers $(wc -c <"$work/body") bytes that are not the PNG uploaded"
 ! jq -e '.markdown == ""' "$work/body" >/dev/null 2>&1 ||
   fail "$section" "version $null_number of $null_id answers no empty document" "it answers an empty markdown: $(body)"
-pass "$section" "the renderer says version $null_number of $null_id ($image is the image) holds no bytes, and answers no empty document"
+pass "$section" "version $null_number of $null_id ($image is the image) is served as its own bytes, image/png, with no Dispatch-Render-Source header, and as no empty document"
 
 # --- hidden: a block written author-only, read by a reader it is hidden from ----------------------------
 
@@ -338,12 +344,22 @@ held="$answer"
 while read -r id number; do
   [[ -n "$number" ]] || continue
   version_render_boundary_stored "$id" "$number" "$work/stored"
-  # The block runs from its opening fence, which the stored markdown writes in its own attribute
-  # order, through its closing fence's line end; the blank line after it goes with it.
-  jq -R -s -j --arg open ':::callout{#author-only' \
-    '(index($open)) as $from | (.[$from:] | index("\n:::\n")) as $close
-     | .[:$from] + (.[$from + $close + 5:] | ltrimstr("\n"))' "$work/stored" >"$work/expected" ||
-    fail "$section" "cut the author-only block out of version $number of $id" "its stored markdown holds no such block"
+  # The block is its text as the version's record of block texts holds it (document_block_texts,
+  # the latest row at or before the version), which the renderer leaves out at its place in the
+  # stored bytes (docs' withoutHiddenBlocks); every other byte, the blank lines around it among
+  # them, stays as stored.
+  query "$section" "read the text version $number of $id records of #author-only" "
+    select coalesce((select encode(convert_to(t.text, 'UTF8'), 'base64') from document_block_texts t
+                     where t.artifact_id = '$id' and t.block_id = 'author-only' and t.version <= $number and t.text is not null
+                     order by t.version desc limit 1), '')"
+  base64 -d <<<"$answer" >"$work/hidden-block" ||
+    fail "$section" "read the text version $number of $id records of #author-only" "base64 could not decode it"
+  [[ -s "$work/hidden-block" ]] ||
+    fail "$section" "version $number of $id records the text of #author-only" "document_block_texts holds none at or before it"
+  jq -R -s -j --rawfile block "$work/hidden-block" \
+    '(index($block)) as $from | if $from == null then error("no such block") else .[:$from] + .[$from + ($block | length):] end' \
+    "$work/stored" >"$work/expected" ||
+    fail "$section" "cut the author-only block out of version $number of $id" "its stored markdown does not hold the text its record holds"
   version_render_boundary_read "$work/jar.$hidden_from" "/api/v1/artifacts/$id/versions/$number"
   tree_want 200 "$section" "render version $number of $id as $hidden_from"
   jq -j '.markdown' "$work/body" >"$work/rendered" || fail "$section" "render version $number of $id as $hidden_from" "no markdown: $(body)"

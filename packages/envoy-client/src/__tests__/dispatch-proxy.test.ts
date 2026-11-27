@@ -2389,6 +2389,7 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   recordResult: "result",
   dryRunResult: "result",
   retractResult: "result",
+  recordDeploy: "deploy",
   writeHandoff: "handoff-write",
   // The writes of the reasoning commands (reasoning.ts); `dispatch premortem-convert`'s dry run
   // sends the conversion's own request.

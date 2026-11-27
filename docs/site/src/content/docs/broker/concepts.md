@@ -461,21 +461,21 @@ machine's login can still be ended there, while a service's login is out of reac
 Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
 account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
 `503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
-not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or `504`, Dispatch's
-own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names
-`INTERNAL`, which is how Dispatch answers a read its database failed), only the person a grant
-names as its approver ends it through the broker as an approver, since a revoke only takes access
-away. Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
-whatever session holds the grant. A grant on a person's session can still be ended by that person,
-its operator, asking Dispatch nothing; a grant on a session that acts for no person (a service's
-pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) nobody but
-its named approver ends through the broker until Dispatch answers. What remains for a pod's grant
-meanwhile is cluster access: delete the pod. Its grants then end when its lease lapses unrenewed
-(`BROKER_LEASE_SECONDS`), except that a session that names a session id leaves them dormant, used
-by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS` passes, and a Legion
-claim's pod hands them to the claim's next live pod at once; so where something starts that
-session again (a Legion claim), stop that too. A grant also ends at its own expiry. Every revoke
-while Dispatch answers anything else the broker
+not answer at all (a timeout, a failed connection, a `408` or a `429` whatever its body names, a
+gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`,
+or a `500` that names no code or names `INTERNAL`, which is how Dispatch answers a read its database
+failed), only the person a grant names as its approver ends it through the broker as an approver,
+since a revoke only takes access away. Every revoke through a group or as anyone is then refused
+`503 MEMBER_KIND_UNCHECKABLE`, whatever session holds the grant. A grant on a person's session can
+still be ended by that person, its operator, asking Dispatch nothing; a grant on a session that acts
+for no person (a service's pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's
+own session) nobody but its named approver ends through the broker until Dispatch answers. What
+remains for a pod's grant meanwhile is cluster access: delete the pod. Its grants then end when its
+lease lapses unrenewed (`BROKER_LEASE_SECONDS`), except that a session that names a session id
+leaves them dormant, used by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS`
+passes, and a Legion claim's pod hands them to the claim's next live pod at once; so where something
+starts that session again (a Legion claim), stop that too. A grant also ends at its own expiry.
+Every revoke while Dispatch answers anything else the broker
 cannot read is refused `503 MEMBER_KIND_UNCHECKABLE` too: a refusal of the broker's own account, a
 kind this broker does not know, a `500` naming another code, another code of Dispatch's, a
 certificate that does not verify or a name that does not resolve. A revoke of a grant of one's own
@@ -1862,11 +1862,23 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the name's kind and
-profile decide each request (`packages/envoy/internal/cipher/proxy`). A host that no kind of the
-grant's names binds is tunnelled unread, to a public address alone. A bound host is read with a
-leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the request must
-name that same host in its TLS name and in its `Host` header; then the kind's hosts and headers,
-and the kind's and the profile's methods and paths, decide whether the swap happens. That
+profile decide each request (`packages/envoy/internal/cipher/proxy`). A command can hold
+placeholders of several grants of its session at once: one `agent-secrets` run nested in another,
+or a Legion role's GitHub grant beside a grant that a run inside the role asked for. Its password
+names one of them. A host is bound when a kind of any live grant of the password's enrollment
+binds it. A host no such kind binds is tunnelled unread, to a public address alone. A bound host
+is read with a leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the
+request must name that same host in its TLS name and in its `Host` header; then the kind's hosts
+and headers, and the kind's and the profile's methods and paths, decide whether the swap happens.
+A request is handled for one name of one grant: the password's own grant when the request carries
+one of its placeholders, and otherwise the first other live grant of the enrollment, in grant ID
+order, that binds the host and whose placeholder the request carries. A placeholder of another
+grant of the session is therefore swapped on the same connection. A `github-app` or
+`github-installations` name holds one placeholder for each account its App is installed on, and
+the proxy swaps the token of the account the request's path names when the grant holds it:
+`/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
+`/{owner}/{repo}` on `github.com`. GraphQL, search and `/user` get the token of the account whose
+placeholder the request carries. A decrypted
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
@@ -1894,6 +1906,34 @@ each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 
 digits after it, up to where another placeholder starts, or a kind's own `placeholder_prefix` and
 the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
 replaced by `[placeholder]`.
+
+A request that still carries a whole placeholder after the swap is refused `403`
+(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service. This includes a placeholder of
+an ended grant, another session, a second grant beside the one the request is handled for, or one
+outside the headers its kind names. The refusal line names the grant the placeholder was minted
+for in `placeholder_grant`, while the broker still holds the release's row or while a minted
+capability's grant lives.
+
+The scan reads the command-written headers, trailers, path and query. It leaves out only the
+placeholder the proxy replaced in a named header, substituting a space so text on either side is
+never joined; a second, ended or unknown placeholder in the same header is refused. On the AWS
+sign path, the three headers the signer writes (`Authorization`, `X-Amz-Date`,
+`X-Amz-Security-Token`) are left out because the signer wrote them; the query is scanned as the
+command wrote it, since the sign path does not rewrite it and presigned URLs are refused earlier.
+A whole placeholder is the default `agent-secrets-placeholder-` prefix, or a kind's
+`placeholder_prefix`, followed by 32 letters and digits; the default prefix also opens a minted
+capability's form (`agent-secrets-placeholder-`, a kind word, a hyphen, and 32 letters and
+digits). The default prefix has no left boundary. A kind prefix must start the text or have a
+character that is not an ASCII letter or digit before it, so `tml-` does not match inside
+`html-`.
+
+A trailer reaches the broker in time for this scan only where the broker has already read the body
+to its end: an AWS call it signs with the body's hash, and a `Limited` name's post it reads to find
+the channel. On every other request the body is streamed to the service, and the proxy copies the
+trailer map before any value has arrived in it. A placeholder in the body goes to the service as
+the command wrote it. The Azure token exchange instead decides its form and refuses `TOKEN_ASSERTION`
+unless the assertion is this grant's own placeholder. In each case a command gives away its own
+placeholder to a service its grant already lets it call.
 
 A path that holds a `.` or `..` segment is refused on every bound host (`path has a dot
 segment`), whatever the kind allows, because a reader that resolves such a path first — which is
@@ -2384,7 +2424,9 @@ answers this row to the accounts that read the grant log),
 `grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, under `withheld_on`, the session's
 other enrollments it wrote them on besides the grant's own, and, on each other grant of the
-session that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's
+session that revoke ended, the withheld secrets that grant held; and carrying
+`member_kind_unchecked: true` where the grant's named approver ended it while Dispatch did not
+answer whether they are a restricted member), `grant.withheld` (an operator's
 revoke of a grant already revoked, naming under `withheld` the secrets it withheld from the
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person

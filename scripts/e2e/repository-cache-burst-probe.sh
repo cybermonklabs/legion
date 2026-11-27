@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The probe of scripts/e2e/repository-cache-burst-job.sh, run inside the worker image by one
 # Kubernetes Job of three containers that share one volume at /scratch. It is verification check o2
-# of INFRA-5789: with the repository cache's bucket on, 20 `workspace-init fetch` runs at once leave
-# the cache's CPU below 0.2 CPU, each logging the bucket as its source; with it off, the same 20 read
-# /tar and drive the cache's CPU above 0.5 CPU. Cloud Storage is a double (package fakegcs of
+# of INFRA-5789: with the repository cache's bucket on, 20 `workspace-init provision` runs at once
+# leave the cache's CPU below 0.2 CPU, each logging the bucket as its source; with it off, the same
+# 20 read /tar and drive the cache's CPU above 0.5 CPU. Cloud Storage is a double (package fakegcs of
 # packages/daemon/internal/repocache, compiled in the Job from the tested checkout), because no
 # identity a Job may use can sign an address (iam.serviceAccounts.signBlob): what the burst proves
 # is the cache's CPU and every fetch's source, and a real bucket's signed addresses are the
@@ -17,8 +17,8 @@
 #             usage_usec, or v1 cpuacct.usage), found from /proc/self/cgroup and
 #             /proc/self/mountinfo, so the double's and the fetches' CPU is not in it. This
 #             container's request and limit are the production cache's default, 1 CPU and 4Gi.
-#   fetchers  runs the image's real `legion workspace-init fetch`, 20 at once, each on a feed of its
-#             own, released together by a file on the shared volume.
+#   fetchers  runs the image's real `legion workspace-init provision`, 20 at once, each on an issue
+#             root and a TMPDIR of its own, released together by a file on the shared volume.
 #
 # The sequence, all of it in the cache container's log, which the harness reads:
 #
@@ -37,15 +37,17 @@
 #      first upload of every pack and index to the double). The probe waits for /healthz ready and
 #      for GET /packs to answer 200 with a manifest that names every pack and index of the clone
 #      with its size (printed: the count, the bytes and the names, never an address), takes the
-#      counter, releases the 20 fetches, takes it every 10 seconds and when the last fetch exits,
+#      counter, releases the 20 provisions (each called a fetch below, as the fetchers container
+#      runs them), takes it every 10 seconds and when the last fetch exits,
 #      and stops the cache. --refresh is 24h, so no refresh or repack lands in a timed interval.
-#   5. The 20 feeds are deleted. The disabled arm starts the cache on the SAME clone root with
+#   5. The 20 roots are deleted. The disabled arm starts the cache on the SAME clone root with
 #      neither variable (its start-up fetch from GitHub is before the release) and does the same.
 #      Each arm prints the clone's refs count and pack sizes once.
 #   6. The verdict, one line, computed from the samples and the facts alone (compute_verdict):
 #      each interval's CPU is its counter's change over its wall seconds, the final partial
 #      interval included. PASS needs, in the enabled arm, 20 fetches that exit 0, each with
-#      `source=bucket`, the object lines of the manifest it was given (name, size, SHA-256), no
+#      `workspace-init: source=bucket`, its `workspace-init: bucket object=` lines those of the
+#      manifest it was given (name, size, SHA-256), no
 #      `source=/tar`, at least one sample whose /healthz read answered and no /tar stream in
 #      flight at any sample, and every interval below 0.2 CPU; and, in the disabled arm, 20
 #      fetches that exit 0, each with `source=/tar reason=/packs is not served`, /packs answering
@@ -103,7 +105,7 @@ sampler_idle_s=20
 sampler_idle_max=0.02         # CPU the measuring loop may cost (CPU-seconds a second), a tenth of enabled_ceiling
 clone_wait_s=7200             # the first clone of a large repository (workspace.CacheFetchTimeout)
 packs_wait_s=3600             # the first upload of every pack and index to the double
-arm_budget_s=5400             # one arm's 20 fetches
+arm_budget_s=5400             # one arm's 20 provisions (fill, jj steps and checkout)
 double_wait_s=900             # the double's build
 deadline_s=${BURST_DEADLINE:-21600}
 
@@ -838,17 +840,21 @@ role_double() {
 # --------------------------------------------------------------------------------------------
 # Role: fetchers.
 # --------------------------------------------------------------------------------------------
-fetch_worker() { # fetch_worker <arm> <n>: waits at the barrier, then one fetch on a feed of its own
+fetch_worker() { # fetch_worker <arm> <n>: waits at the barrier, then one provision on a root of its own
   local arm=$1 n=$2 start finish status
   local dir=$fetch_dir/$arm
+  mkdir -p "$dir/tmp-$n"
   while [ ! -e "$run/$arm/go" ]; do
     if [ -e "$run/abort" ] || [ -e "$run/finished" ]; then return 0; fi
     nap 0.02
   done
   start=${EPOCHREALTIME/./}
-  LEGION_PROVISION_TOKEN_FILE=$run/secrets/provision-token LEGION_REPOSITORY_CACHE_TOKEN_FILE=$run/secrets/cache-token \
-    LEGION_DEFAULT_BRANCH=$default_branch \
-    timeout -k 30 "$arm_budget_s" legion workspace-init fetch --repo "$repo" --feed "$dir/feed-$n" --cache-url "http://$cache_listen" \
+  # As the pod's one init container runs it: the provisioning token, the cache's address and token,
+  # and an in-memory TMPDIR of its own (here a directory of its own); its root is the issue volume.
+  TMPDIR=$dir/tmp-$n LEGION_PROVISION_TOKEN_FILE=$run/secrets/provision-token \
+    LEGION_REPOSITORY_CACHE_URL="http://$cache_listen" LEGION_REPOSITORY_CACHE_TOKEN_FILE=$run/secrets/cache-token \
+    timeout -k 30 "$arm_budget_s" legion workspace-init provision --issue "BURST-$n" --repo "$repo" \
+    --default-branch "$default_branch" --root "$dir/root-$n" --credential-helper '!legion git-credential' \
     > "$dir/fetch-$n.log" 2>&1 < /dev/null
   status=$?
   finish=${EPOCHREALTIME/./}
@@ -861,8 +867,8 @@ role_fetchers() {
   mkdir -p "$fetch_dir/home" "$fetch_dir/tmp"
   export HOME=$fetch_dir/home TMPDIR=$fetch_dir/tmp XDG_CONFIG_HOME=$fetch_dir/home/.config
   export GIT_AUTHOR_NAME='Cache Burst' GIT_COMMITTER_NAME='Cache Burst' GIT_AUTHOR_EMAIL=burst@example.invalid GIT_COMMITTER_EMAIL=burst@example.invalid
-  unset STORAGE_EMULATOR_HOST LEGION_REPOSITORY_CACHE_BUCKET GCE_METADATA_HOST
-  say "== fetchers: the image's legion $(legion version 2>&1 | head -n 1), $fetch_count fetches an arm"
+  unset STORAGE_EMULATOR_HOST LEGION_REPOSITORY_CACHE_BUCKET GCE_METADATA_HOST LEGION_REPOSITORY_CACHE_URL
+  say "== fetchers: the image's legion $(legion version 2>&1 | head -n 1), $fetch_count provisions an arm"
 
   # Attribution: a CPU loop here, for the conductor to read as another container's.
   if wait_file "$run/attrib/other-go" "$deadline_s"; then
@@ -912,6 +918,7 @@ stop_why=""
 finished=0
 facts=""
 pack_bytes=0
+tree_bytes=0
 arm_manifest_tsv=""
 packs_complete=0
 packs_status_disabled=""
@@ -1022,8 +1029,9 @@ read_streams() {
   streams_now=${BASH_REMATCH[1]}
 }
 
-# clone_record <arm>: the clone's refs and pack sizes, once per arm; sets default_branch and
-# pack_bytes.
+# clone_record <arm>: the clone's refs and pack sizes, once per arm; sets default_branch,
+# pack_bytes and tree_bytes, the bytes of the default branch's files, which each provision checks
+# out in its issue's workspace.
 clone_record() {
   local arm=$1 refs head f size total=0
   refs=$(/usr/bin/git --git-dir="$clone" for-each-ref --format='%(refname)' 2> /dev/null | wc -l)
@@ -1038,13 +1046,15 @@ clone_record() {
   done
   echo "CLONE $arm: packs and indexes $(group "$total") bytes"
   pack_bytes=$total
+  tree_bytes=$(/usr/bin/git --git-dir="$clone" ls-tree -r -l HEAD 2> /dev/null | awk '$4 ~ /^[0-9]+$/ { s += $4 } END { printf "%d", s }')
+  echo "CLONE $arm: the default branch's files $(group "${tree_bytes:-0}") bytes"
 }
 
-# collect_fetches <arm>: reads the 20 results and logs of an arm, prints one line for each, and sets
-# the f_* figures. Nothing derived from a log is printed unless the arm's logs pass leak_scan. For
-# the enabled arm the manifest's objects are in arm_manifest_tsv, which each fetch's object lines
-# must equal.
-re_summary='^workspace-init fetch: ([0-9,]+) bytes from the repository cache [^ ]+ (\(bucket\) )?in ([^,]+), its history verified in ([^;]+); ([0-9,]+) bytes from GitHub for the delta \(([0-9]+) refs?\)$'
+# collect_fetches <arm>: reads the 20 results and logs of an arm's provisions, prints one line for
+# each, and sets the f_* figures. Nothing derived from a log is printed unless the arm's logs pass
+# leak_scan. For the enabled arm the manifest's objects are in arm_manifest_tsv, which each
+# provision's object lines must equal.
+re_summary='^workspace-init: ([0-9,]+) bytes from the repository cache [^ ]+ (\(bucket\) )?in ([^,]+), its history verified in ([^;]+); ([0-9,]+) bytes from GitHub for the delta \(([0-9]+) refs?\)$'
 collect_fetches() {
   local arm=$1
   local dir=$fetch_dir/$arm n idx status s_us e_us log wall offset source reason objects summary got line via name size sha printable=1
@@ -1067,17 +1077,17 @@ collect_fetches() {
     offset=$(((s_us - release_us) / 1000))
     source=none reason="" objects=0 summary=""
     [ "$status" != 0 ] || f_ok=$((f_ok + 1))
-    if grep -qx 'workspace-init fetch: source=bucket' "$log"; then
+    if grep -qx 'workspace-init: source=bucket' "$log"; then
       source=bucket
       f_bucket=$((f_bucket + 1))
-    elif grep -q '^workspace-init fetch: source=/tar' "$log"; then
+    elif grep -q '^workspace-init: source=/tar' "$log"; then
       source=/tar
       f_tar=$((f_tar + 1))
-      reason=$(sed -n 's/^workspace-init fetch: source=\/tar reason=//p' "$log" | head -n 1)
+      reason=$(sed -n 's/^workspace-init: source=\/tar reason=//p' "$log" | head -n 1)
       if [ "$reason" = "/packs is not served" ] && [ "$status" = 0 ]; then f_unserved=$((f_unserved + 1)); fi
     fi
-    got=$(grep -E '^workspace-init fetch: bucket object=[^ ]+ size=[0-9]+ sha256=[0-9a-f]{64}$' "$log" |
-      sed -E 's/^workspace-init fetch: bucket object=([^ ]+) size=([0-9]+) sha256=([0-9a-f]{64})$/\1\t\2\t\3/' | sort)
+    got=$(grep -E '^workspace-init: bucket object=[^ ]+ size=[0-9]+ sha256=[0-9a-f]{64}$' "$log" |
+      sed -E 's/^workspace-init: bucket object=([^ ]+) size=([0-9]+) sha256=([0-9a-f]{64})$/\1\t\2\t\3/' | sort)
     objects=0
     [ -z "$got" ] || objects=$(wc -l <<< "$got")
     if [ "$arm" = enabled ] && [ "$source" = bucket ] && [ "$status" = 0 ] && [ -n "$got" ] && [ "$got" = "$(<"$arm_manifest_tsv")" ]; then
@@ -1087,7 +1097,7 @@ collect_fetches() {
       echo "FETCH $arm $n: exit=$status wall=${wall}s started=+${offset}ms after the release"
       continue
     fi
-    line=$(grep -E '^workspace-init fetch: [0-9,]+ bytes from the repository cache ' "$log" | head -n 1)
+    line=$(grep -E '^workspace-init: [0-9,]+ bytes from the repository cache ' "$log" | head -n 1)
     if [[ $line =~ $re_summary ]]; then
       via=/tar
       [ -z "${BASH_REMATCH[2]}" ] || via=bucket
@@ -1133,14 +1143,16 @@ run_arm() {
   fi
 
   if [ "$arm" = enabled ]; then
-    # Room for the double's copy and the 20 fresh feeds, read now that the clone's size is known.
+    # Room for the double's copy and the 20 fresh issue roots, read now that the clone's size is
+    # known: each root holds the clone's packs, jj's import of them (a quarter more, as a margin) and
+    # the workspace's checkout of the default branch's files (a tenth more, for the filesystem).
     avail=$(df -B1 --output=avail "$scratch" | tail -n 1 | tr -d ' ')
     double_bytes=$(du -sb "$double_dir/objects" 2> /dev/null | cut -f1)
-    need=$(awk -v p="$pack_bytes" -v d="${double_bytes:-0}" -v n="$fetch_count" 'BEGIN { c = p - d; if (c < 0) c = 0; printf "%d", p * n * 1.05 + c + 2147483648 }')
-    echo "ROOM: $(group "$avail") bytes available; $fetch_count feeds of $(group "$pack_bytes") bytes, the double's copy and a margin need $(group "$need")"
+    need=$(awk -v p="$pack_bytes" -v w="${tree_bytes:-0}" -v d="${double_bytes:-0}" -v n="$fetch_count" 'BEGIN { c = p - d; if (c < 0) c = 0; printf "%d", (p * 1.25 + w * 1.1) * n + c + 2147483648 }')
+    echo "ROOM: $(group "$avail") bytes available; $fetch_count issue roots of $(group "$pack_bytes") bytes of packs and $(group "${tree_bytes:-0}") bytes of files, the double's copy and a margin need $(group "$need")"
     if [ "$avail" -lt "$need" ]; then
       stop_cache
-      stop_run void "the volume cannot hold $fetch_count fresh feeds beside the clone and the double's copy"
+      stop_run void "the volume cannot hold $fetch_count fresh issue roots beside the clone and the double's copy"
       return 1
     fi
     say "waiting for GET /packs to answer 200 with a complete manifest (at most $packs_wait_s s)"
@@ -1520,8 +1532,8 @@ role_cache() {
   rc=$?
   if [ "$rc" -eq 0 ]; then
     record_arm_facts enabled
-    rm -rf "$fetch_dir"/enabled/feed-*
-    echo "the $fetch_count enabled feeds are deleted; $(df -B1 --output=avail "$scratch" | tail -n 1 | tr -d ' ') bytes are available"
+    rm -rf "$fetch_dir"/enabled/root-* "$fetch_dir"/enabled/tmp-*
+    echo "the $fetch_count enabled issue roots are deleted; $(df -B1 --output=avail "$scratch" | tail -n 1 | tr -d ' ') bytes are available"
   fi
   if [ "$rc" -eq 0 ] && [ -z "$stop_kind" ]; then
     run_arm disabled

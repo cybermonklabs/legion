@@ -75,7 +75,7 @@ import {
 import { presetView } from "../presets";
 import { publishedNames, publishedTree } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { drawStage } from "../slots/stage-fixtures";
+import { drawStage, watchDrawn } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -1604,11 +1604,6 @@ test("on a return to the issue on Spec, the column's first render draws no cell 
   );
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const cell = "[data-spec-cell][data-decision-id]";
-  /** Whether `nodes` holds a cell of the earlier visit's decision, or an element around one. */
-  const holdsCell = (nodes: NodeList): boolean =>
-    [...nodes].some(
-      (one) => one instanceof Element && (one.matches(cell) || one.querySelector(cell) !== null)
-    );
   try {
     const earlier = drawStage("", { client, issue, preset: "spec" });
     await waitFor(() =>
@@ -1622,14 +1617,12 @@ test("on a return to the issue on Spec, the column's first render draws no cell 
 
     // Every element the return's renders put on the page or took off it, its first render's
     // among them, which the load's reset redraws before `render` hands the page back.
-    const drawn = new MutationObserver(() => {});
-    drawn.observe(document.body, { childList: true, subtree: true });
+    const drewCell = watchDrawn(cell);
     const view = drawStage("", { client, issue, preset: "spec" });
-    const records = drawn.takeRecords();
-    drawn.disconnect();
+    const drawnOnReturn = drewCell();
     try {
       expect(
-        records.some((record) => holdsCell(record.addedNodes) || holdsCell(record.removedNodes)),
+        drawnOnReturn,
         "the column's first render on the return drew the earlier visit's decision"
       ).toBe(false);
       await act(() => Bun.sleep(20));
@@ -1672,11 +1665,6 @@ test("a return to an issue whose earlier Spec view read failed once draws no fai
   );
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const line = "[data-failed-read]";
-  /** Whether `nodes` holds a failed read's line, or an element around one. */
-  const holdsLine = (nodes: NodeList): boolean =>
-    [...nodes].some(
-      (one) => one instanceof Element && (one.matches(line) || one.querySelector(line) !== null)
-    );
   try {
     const earlier = drawStage("", { client, issue, preset: "spec" });
     await waitFor(() => alertSaying(earlier, STATE_LINES.statements_unreadable));
@@ -1689,14 +1677,12 @@ test("a return to an issue whose earlier Spec view read failed once draws no fai
 
     // Every element the return's renders put on the page or took off it, its first render's
     // among them, which the load's reset redraws before `render` hands the page back.
-    const drawn = new MutationObserver(() => {});
-    drawn.observe(document.body, { childList: true, subtree: true });
+    const drewLine = watchDrawn(line);
     const view = drawStage("", { client, issue, preset: "spec" });
-    const records = drawn.takeRecords();
-    drawn.disconnect();
+    const drawnOnReturn = drewLine();
     try {
       expect(
-        records.some((record) => holdsLine(record.addedNodes) || holdsLine(record.removedNodes)),
+        drawnOnReturn,
         "the column's first render on the return drew the earlier visit's failed line"
       ).toBe(false);
       await act(() => Bun.sleep(20));
@@ -2728,6 +2714,8 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
   const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
@@ -3380,9 +3368,12 @@ test("a press on a decision's cell or away from it changes what the body draws o
 // a key moves the focus to is scrolled down below the heads, by the rule's 8 px.
 test("a statement or a cell a key moves the focus to is scrolled down from under the column heads", async () => {
   const user = userEvent.setup();
+  // On Element, for the reason `layOut` gives; any other element keeps the empty box the DOM
+  // gives it.
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+    this: Element
   ) {
+    if (!(this instanceof HTMLElement)) return new DOMRect();
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     if (this.dataset.nodeId === "spec#b-r2") return new DOMRect(0, 27, 600, 48);
     if (this.parentElement?.hasAttribute("data-spec-cell") === true && this.tagName === "DIV") {
@@ -3435,9 +3426,12 @@ function layOutPage(
   scroll?: (delta: number) => void
 ) {
   const sizes = installResizeObserver();
+  // On Element, for the reason `layOut` gives; any other element keeps the empty box the DOM
+  // gives it.
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+    this: Element
   ) {
+    if (!(this instanceof HTMLElement)) return new DOMRect();
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
   });

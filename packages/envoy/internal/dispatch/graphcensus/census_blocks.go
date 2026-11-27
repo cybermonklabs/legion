@@ -283,11 +283,12 @@ const outsideArtifact = "outside:"
 
 // blockPlacedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
 // ask's node is written as the block of n's own document that holds that ask (askBlockID): the
-// ask's own block in the document its row names, and a copy's block, the one n stands in, in any
-// other document of its owner. A reading in an answered ask hangs on the ask's node, while its
-// row's parent_block_id keeps the id of the ask block holding it, which is that tuple's projection
-// (refs' planBlockParents), so both read as one link to that block. An ask no marked row names, or
-// whose row names no block, keeps its own address, which no row states.
+// ask's own block in the document its row names, and in any other document of its owner the block
+// n stands in where that block is a copy of the ask. A reading in an answered ask hangs on the
+// ask's node, while its row's parent_block_id keeps the id of the ask block holding it, which is
+// that tuple's projection (refs' planBlockParents), so both read as one link to that block. An ask
+// no marked row names, or whose row names no block, or a part_of to an ask the block n stands in
+// is no copy of, keeps the ask's own address, which no row states.
 //
 // Where n is an authored node - its placement value refs.PlacementAuthored - or a block a move of
 // the node route placed - its placement value refs.PlacementStored - a part_of whose far end is no
@@ -331,19 +332,20 @@ func storedRow(alias string) string {
 // ask of its issue (R2 of the issue-tree spec, refs.DecisionFacts): its node holds a current
 // from_ask to an ask whose marked row is one of the issue of artifact, the row's own artifacts row,
 // and the decision stands under that ask's node whatever its parent_block_id says, since that
-// column keeps the block its text stands in. The far end is read as blockPlacedLinks reads a
 // part_of to an ask's node (askBlockID), spelled out here over the row: where the ask's row names a
 // block and the document holding it (asks.block_id, asks.block_artifact_id) is the row's own
 // artifact, that block; where that document is another, the block the row's own parent_block_id
-// names, which askBlockID reads off the same row; and the ask's own address where the ask's row
-// names no block or the row's parent_block_id none. It is null for every other row, whose parent
-// its own columns state.
+// names, which askBlockID reads off the same row where that block is a copy of the ask, so a
+// decision whose parent copies no such ask reads as a difference; and the ask's own address where
+// the ask's row names no block or the row's parent_block_id none. It is null for every other row,
+// whose parent its own columns state.
 func settledAsk(alias, artifact string) string {
 	return `case when ` + alias + `.type = '` + refs.DecisionSupertag + `' then (
 		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' ||
 		                case when own.id is null then null
 		                     when own.ref_key = ` + artifact + `.ref_key then settled.block_id
-		                     else ` + alias + `.parent_block_id end,
+		                     when ` + parentCopiesAsk(artifact+`.ref_key || '#' || `+alias+`.parent_block_id`, alias+`.artifact_id`, `settled.node_address`) + `
+		                     then ` + alias + `.parent_block_id end,
 		                '` + graphstore.KindAsk + `:' || settled.node_address)
 		from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = `+alias+`.node_kind and t.from_id = `+alias+`.node_address and t.kind = '`+refs.TupleFromAsk+`'

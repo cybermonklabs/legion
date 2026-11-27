@@ -416,35 +416,6 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   edited_at: MOVED_BY_NO_WRITE,
 };
 
-/** The relations an issue states out of its own node that are edges of the reference graph,
- *  each named by the field an issue write names in `changed` when it moves one: its parent
- *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
- *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
- *  and its components (`affects`). `changesReferenceGraph` reads the same fields as
- *  `ISSUE_RELATION_FIELDS`, with the components and the title, so an edit to one list finds the
- *  other. */
-const ISSUE_EDGE_FIELDS: readonly string[] = [
-  "parent",
-  "needs",
-  "blocked_by",
-  "duplicate_of",
-  "filed_from",
-  "components",
-];
-
-/** The relations an issue states out of its own node: its edges of the reference graph
- *  (`ISSUE_EDGE_FIELDS`), and its priorities (`advances`), which are none. A tree read carries
- *  each one whose far end its answer holds as a tuple out of the issue's node. */
-const ISSUE_NODE_RELATIONS: readonly string[] = [...ISSUE_EDGE_FIELDS, "advances"];
-
-/** Every field an issue write names in `changed` that moves the issue's node in a tree read of
- *  another issue: a relation out of it (`ISSUE_NODE_RELATIONS`) or a member of it
- *  (`ISSUE_NODE_MOVERS`). */
-const ISSUE_NODE_FIELDS: ReadonlySet<string> = new Set([
-  ...ISSUE_NODE_RELATIONS,
-  ...Object.values(ISSUE_NODE_MOVERS).flat(),
-]);
-
 /**
  * What a node of an issue is, in a tree read of another issue, for which of the issue's events
  * can move it: the issue's own node; one of its documents, which an answer names only as the
@@ -580,14 +551,16 @@ const TREE_NODES_MOVED: Readonly<
   "ask.resolved": ON_ITS_TARGET,
   "block.invalid": ON_ITS_TARGET,
   "block.repaired": ON_ITS_TARGET,
-  // A claim, a release, a deploy, a pull request's attribution, a handoff and a subscription:
-  // no node carries one.
+  // A claim, a release, a deploy and its record, a pull request's attribution, a handoff, a
+  // subscription and the outbox's report of a copy no session took: no node carries one.
   "issue.claimed": [],
   "issue.released": [],
   "issue.deployed": [],
+  "deploy.recorded": [],
   "issue.pull_request_attribution_changed": [],
   "handoff.recorded": [],
   "subscription.removed": [],
+  "role.undelivered": [],
   // Events of no issue, which `ownerTargets` answers before it reaches any tree.
   "architecture.sync_failed": [],
   "architecture.synced": [],
@@ -1717,6 +1690,26 @@ const ISSUE_RELATION_FIELDS = [
   "filed_from",
 ] as const;
 
+/** The relations an issue states out of its own node that are edges of the reference graph,
+ *  each named by the field an issue write names in `changed` when it moves one: its parent
+ *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
+ *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
+ *  and its components (`affects`). */
+const ISSUE_EDGE_FIELDS: readonly string[] = [...ISSUE_RELATION_FIELDS, "components"];
+
+/** The relations an issue states out of its own node: its edges of the reference graph
+ *  (`ISSUE_EDGE_FIELDS`), and its priorities (`advances`), which are none. A tree read carries
+ *  each one whose far end its answer holds as a tuple out of the issue's node. */
+const ISSUE_NODE_RELATIONS: readonly string[] = [...ISSUE_EDGE_FIELDS, "advances"];
+
+/** Every field an issue write names in `changed` that moves the issue's node in a tree read of
+ *  another issue: a relation out of it (`ISSUE_NODE_RELATIONS`) or a member of it
+ *  (`ISSUE_NODE_MOVERS`). */
+const ISSUE_NODE_FIELDS: ReadonlySet<string> = new Set([
+  ...ISSUE_NODE_RELATIONS,
+  ...Object.values(ISSUE_NODE_MOVERS).flat(),
+]);
+
 /** The kinds of edge an issue states out of its own node: its parent, its waits under both the
  *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
  *  issue it repeats and the item it was filed out of. */
@@ -2045,6 +2038,16 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "subscription.remove_requested") {
     return [];
   }
+  // The outbox's report that an event's copy for a role reached no session. On a project itself
+  // it moves no read, since no page reads a project's own log; on a project document it takes the
+  // document's path below, and on an issue it is a line in the issue's log.
+  if (
+    event.type === "role.undelivered" &&
+    event.issue_key === null &&
+    (event.artifact_id === null || event.artifact_id === undefined)
+  ) {
+    return [];
+  }
   if (event.issue_key === null && isMessageEvent(event)) {
     const queryKey = agentConversationKey(payloadString(event, "target"));
     if (queryKey === undefined) {
@@ -2176,6 +2179,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
     return targets;
   }
+  if (event.type === "role.undelivered") {
+    // The outbox's report that an event's copy for a role reached no session: a line in the
+    // issue's log and nothing more.
+    return targets;
+  }
   if (event.type === "artifact.indexed") {
     // The block index caught up on documents of the issue that a write left owing it, each of
     // whose versions already sent its own `artifact.version`. What moves is what the server reads
@@ -2275,9 +2283,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
-  // A pull request that moves to another issue changes what this issue's results are compared
-  // with, and the event is on each of the two issues, so each refetches its own results read.
-  if (event.type === "issue.pull_request_attribution_changed") {
+  // Attribution changes arrive at both issues. Deploy events name each affected result owner.
+  // Each receiver refetches only its own verification results.
+  if (event.type === "issue.pull_request_attribution_changed" || event.type === "deploy.recorded") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }

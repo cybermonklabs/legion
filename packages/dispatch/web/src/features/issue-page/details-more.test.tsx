@@ -10,7 +10,6 @@ import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
-import type { EventPages } from "../../api/event-feed";
 import {
   issueAskThreadsQuery,
   issueCoverageQuery,

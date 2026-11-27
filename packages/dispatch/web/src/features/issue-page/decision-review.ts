@@ -244,15 +244,17 @@ export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"
  * words are its record (`decision-entries.ts`'s `entryTextSource`). Undefined for an entry that
  * names none and whose address names no block of the issue's documents: an ask, whose address
  * names the ask and no block (its words are the ask's own record), a block of a document the
- * issue read does not list yet, and an address of another issue.
+ * issue read does not list yet, and an address of another issue. Undefined too for an entry that
+ * names none while `issue` is undefined, where the caller's issue read has not answered.
  */
 export function decisionDocumentId(
-  issue: DecisionDocuments,
+  issue: DecisionDocuments | undefined,
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   const named = decision.document?.artifact_id;
   if (named !== undefined) return named;
   // The view named no document: read the one the decision's own address names.
+  if (issue === undefined) return undefined;
   const route = parseNodeReference(decision.ref);
   if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
   if (!("block" in route) || route.block === undefined) return undefined;

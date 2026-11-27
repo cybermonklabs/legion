@@ -1370,7 +1370,10 @@ func (c *issueConversion) moveAsks(ctx context.Context) error {
 // version holding no block, which states each block's node gone with its pointers, deletes its
 // rows and reconciles the document's own references to none (indexRenderedVersion), so no walk
 // reaches a block at both its old address and its node in the room. What each pass states is
-// caused with that document's version (finish).
+// caused with that document's version (finish). The pass is marked a retirement
+// (withRetiredBlockIndex), so it records no text of a block it deletes: that version holds the
+// block still, and a reference pinned to it reads the block's text there, while its text goes on
+// under the room's tree artifact (refs.VersionBlocks.Retires).
 //
 // The pass keeps that version's number, which the document's block index stands at, and is dated
 // at the conversion's own time (c.at), the time of its moved_to tuples and of the version it
@@ -1389,7 +1392,7 @@ func (c *issueConversion) retireDocuments(ctx context.Context) error {
 			continue
 		}
 		versions := refs.OneVersion(document.id, document.latest.number, c.at)
-		_, retired, err := c.s.indexRenderedVersion(ctx, c.tx, document.id, versions, nil, false, "", nil, &pmdoc.Node{Type: "doc"}, nil)
+		_, retired, err := c.s.indexRenderedVersion(withRetiredBlockIndex(ctx), c.tx, document.id, versions, nil, false, "", nil, &pmdoc.Node{Type: "doc"}, nil)
 		if err != nil {
 			return fmt.Errorf("retire the block index of %s: %w", document.slug, err)
 		}

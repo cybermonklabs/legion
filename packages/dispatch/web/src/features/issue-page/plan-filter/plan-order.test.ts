@@ -74,14 +74,14 @@ function placed(one: TreeNode, position: number): TreeNode {
 }
 
 /** A plan task of the issue `issue` under this one, by its block id, as this issue's Plan view
- *  draws it: by its block id alone (`tree-read/tree-nodes.ts`' `treeIdOfNode`), marked with its
- *  issue, each `needs` pointer addressed in that issue's own plan. */
+ *  draws it: by the read's id, which holds its issue (`tree-read/tree-nodes.ts`' `treeIdOfNode`),
+ *  marked with its issue, each `needs` pointer addressed in that issue's own plan. */
 function otherTask(issue: string, blockId: string, needs: readonly string[] = []): TreeNode {
   const address = (id: string) => `dispatch://${issue}/artifact/${PLAN}#b-${id}`;
   return {
     ...task(blockId),
     chips: needs.map((id) => ({ ...chip(address(id), id), label: BLOCK_ATTRIBUTE_LABELS.needs })),
-    id: blockId,
+    id: `${issue}/${PLAN}#${blockId}`,
     issue,
     reference: address(blockId),
   };
@@ -96,11 +96,11 @@ function drawn(entries: readonly PlanEntry[]): string[] {
   );
 }
 
-/** The block id a node of the plan is drawn by: the part of its id after `#b-`, and the whole id
- *  of a task of another issue, which its block id alone is. */
+/** The block id a node of the plan is drawn by: the part of its id after `#b-`, and for a task of
+ *  another issue, drawn by the read's id, the part after its `#`. */
 function blockOf(id: string): string {
   const at = id.lastIndexOf("#b-");
-  return at === -1 ? id : id.slice(at + 3);
+  return at === -1 ? id.slice(id.indexOf("#") + 1) : id.slice(at + 3);
 }
 
 /** Where each bar of the chart over `entries` starts, and -1 for a cycle's row. */
@@ -376,4 +376,28 @@ test("a parent's own tasks and its children's stand in the order the read answer
   expect(drawn(planOrder(parent))).toEqual(["b", "a", "c", "xb", "xa", "xc"]);
   // A task of another issue starts where the task of its own issue it needs ends.
   expect(starts(planOrder(parent))).toEqual([0, 0, 1, 0, 0, 1]);
+});
+
+// R19 (2): a block id is unique inside one document alone, and every plan names its tasks `t1`,
+// `t2`, so two issues under one parent can each write a `t1`. Each is drawn by the read's id,
+// which holds its issue, so the two stand as two steps, and the `t1` a task of CORE-3 needs is
+// CORE-3's own: its bar starts where CORE-3's `t1` ends, an hour and a half before CORE-2's does.
+test("two children's tasks of one block id are two steps, and a need names the task of its own issue", () => {
+  const second = placed(sized(otherTask("CORE-2", "t1"), 120), 1);
+  const third = placed(sized(otherTask("CORE-3", "t1"), 30), 3);
+  const needing = placed(sized(otherTask("CORE-3", "t2", ["t1"]), 15), 4);
+  const entries = planOrder([second, third, needing]);
+  expect(
+    entries.map((entry) => (entry.kind === "step" ? entry.task.id : "cycle")),
+    "the steps, each by its own id"
+  ).toEqual([`CORE-2/${PLAN}#t1`, `CORE-3/${PLAN}#t1`, `CORE-3/${PLAN}#t2`]);
+  expect(needsChip(needing, third)?.ref, "the need on CORE-3's t1").toBe(
+    `dispatch://CORE-3/artifact/${PLAN}#b-t1`
+  );
+  expect(needsChip(needing, second), "a need on CORE-2's t1").toBeUndefined();
+  const last = planChart(entries).rows.at(-1);
+  expect(
+    last?.kind === "bar" ? [last.start, last.needs.map((one) => one.id)] : undefined,
+    "where CORE-3's t2 starts, and what it needs"
+  ).toEqual([30, [`CORE-3/${PLAN}#t1`]]);
 });

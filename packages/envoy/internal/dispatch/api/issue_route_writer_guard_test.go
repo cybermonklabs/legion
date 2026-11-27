@@ -265,6 +265,8 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+	{"internal/dispatch/delivery/deliverytest/deliverytest.go", "the delivery test fixture: it seeds synthetic issues, with their statuses, into a test database for the tests that import it. It is no _test.go file only because Go cannot share test-only code across packages; no non-test file imports it and no request reaches it"},
+	{"internal/dispatch/legion/legiontest/legiontest.go", "the Legion test fixture: it seeds synthetic issues, with their statuses and parents, into a test database for the tests that import it. It is no _test.go file only because Go cannot share test-only code across packages; no non-test file imports it and no request reaches it"},
 }
 
 // statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that
@@ -495,6 +497,7 @@ func isLegionStatusGuard(statement ast.Stmt) bool {
 // it, so it makes no call for R26 to judge. A new writer belongs behind the guard: make it call
 // refuseIssueWritePlan before its first write, then name it here.
 func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -561,6 +564,7 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 // call of refuseIssueWritePlan from a mention of it, and a refuseIssueWritePlan that opens with
 // R26's guard from one that does not. It checks that only the named writers' paths are allowed.
 func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	parse := func(t *testing.T, declarations string) moduleSource {
 		t.Helper()
 		positions := token.NewFileSet()
@@ -648,6 +652,21 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 	} {
 		if _, allowed := statusLabelsOrParentWriter(path); allowed != want {
 			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t", path, allowed, want)
+		}
+	}
+	for _, check := range []struct {
+		path string
+		want bool
+	}{
+		{"internal/dispatch/delivery/deliverytest/deliverytest.go", true},
+		{"internal/dispatch/legion/legiontest/legiontest.go", true},
+		{"internal/dispatch/delivery/deliverytest/other.go", false},
+		{"internal/dispatch/legion/legiontest/other.go", false},
+		{"internal/dispatch/delivery/deliverytest/", false},
+		{"internal/dispatch/legion/legiontest/legiontest_test.go", false},
+	} {
+		if _, allowed := statusLabelsOrParentWriter(check.path); allowed != check.want {
+			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t: a fixture seeder is named by its exact file", check.path, allowed, check.want)
 		}
 	}
 }

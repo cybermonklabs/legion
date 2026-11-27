@@ -426,9 +426,12 @@ const NO_ASK_IDS: ReadonlyMap<string, string> = new Map();
  * `specSummary` - reads the tree by the ids it read before, a block by its id in its document
  * (`block_id`):
  *
- * - **A node of another issue** - the read marks it with that issue (`issue`) - is its block id,
- *   even where its `document` names a document: a child's documents carry its parent's slugs, so
- *   the outline's `<slug>#b-<block id>` would name a block of this issue.
+ * - **A node of another issue** - the read marks it with that issue (`issue`) - is the read's id,
+ *   which holds its issue, even where its `document` names a document: a block id is unique
+ *   inside one document alone, and every plan names its tasks `t1`, `t2`, so two issues under
+ *   this one can each hold a `t1`; and a child's documents carry its parent's slugs, so the
+ *   outline's `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task
+ *   one of them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
  * - **The issue itself** is its key, which is the outline's root.
  * - **A typed block of one of this issue's documents** is the outline's `blockNodeId` of the
  *   slug its `document` names and its block id.
@@ -442,8 +445,8 @@ export function treeIdOfNode(
   key: string,
   askIds: ReadonlyMap<string, string> = NO_ASK_IDS
 ): string {
+  if (isForeign(node, key)) return node.id;
   const blockId = blockIdOfNode(node);
-  if (isForeign(node, key)) return blockId;
   // The issue the read is of is the outline's root, the parent of every top-level node.
   if (node.supertag === "issue" && (node.id === key || node.parent === null)) return key;
   if (node.document !== undefined) return blockNodeId(node.document.slug, blockId);
@@ -704,7 +707,8 @@ function draftResult(
  * read hangs under it says it waits on its agent (`decisionNodeChanges`), and names who asked
  * for it: the first author of the newest Change (`changedBy`), whose name the row draws after
  * "Changed by". Where the read hangs no Change under it and the answer names an older comment
- * page that may hold one, its state says so (`markChangeUnread`).
+ * page that may hold one, its state says so (`markChangeUnread`) and it waits on no reader until
+ * that page is read.
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -761,12 +765,12 @@ function draftDecision(
   draft.replaced = decision.replaced === true;
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
   // A decision the read hangs no Change under may have one on a comment page not read yet.
-  markChangeUnread(draft, decision, answer);
+  markChangeUnread(draft, reviewed, changed, answer);
   draft.waiting =
     node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
-    inReviewList(decided, context.isCoverageStatement, changed);
+    inReviewList(decided, context.isCoverageStatement, changed || draft.changeUnread === true);
   return draft;
 }
 

@@ -16,6 +16,7 @@ import { inDocument } from "../slots/stage-fixtures";
 import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
+  resetViews,
   type TreeAnswer,
   useDecisionsView,
   viewKey,
@@ -184,8 +185,8 @@ const D = (block: string) => decisionNode(block).id;
 
 /** Two decisions that wait open with one paragraph, the reader's Change was asked on the second,
  *  and answers of the reader, of Bob and of one moment stand around them: the reads of the
- *  page's tree for the two cases below, with the Change's anchor quoting `quote`. */
-async function seamOf(quote: string) {
+ *  page's tree for the two cases below. */
+async function seamOf() {
   const tie = "2026-11-11T09:00:00Z";
   const opening = "The rail stays 56 px wide.";
   const reviewWords = `${opening}\n\nThe outline needs the room.`;
@@ -219,9 +220,8 @@ async function seamOf(quote: string) {
     decision("minor"),
   ];
   // The reader's Change on the second decision, made after both last changed, anchored on the
-  // spec with its anchor quoting `quote`. The decisions view and the tree read each hang it under
-  // the second decision, as the server's view carries each comment on the text of a node it
-  // returns.
+  // spec with an anchor quoting the paragraph both decisions open with. Both reads hang the
+  // Change under the second decision, which is all the seam reads to place it.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
@@ -229,7 +229,7 @@ async function seamOf(quote: string) {
       block_id: null,
       mark_id: "mark-asked",
       orphaned: false,
-      quote,
+      quote: opening,
       version: 1,
     },
     ask_id: null,
@@ -274,7 +274,7 @@ test("the seam gives the model's parts from today's reads and makes no request",
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
-    const { change, parts } = await seamOf("A phone draws it over the body.");
+    const { change, parts } = await seamOf();
     const ids = idsOf(parts);
     expect(ids.yours).toEqual([D("asked"), "a-late", "a-early", "a-tie-mine"]);
     expect(ids.others).toEqual(["a-bob", "a-tie-bob"]);
@@ -282,7 +282,8 @@ test("the seam gives the model's parts from today's reads and makes no request",
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);
     expect(ids.named).toEqual([]);
-    // The second decision carries the reader's Change, and the first carries none.
+    // The second decision carries the reader's Change, and the first, whose words hold the same
+    // quote, carries none.
     expect(parts.yours[0]).toMatchObject({
       change: { id: change.id },
       kind: "decision",
@@ -310,7 +311,7 @@ test("the seam gives the model's parts from today's reads and makes no request",
 // decision it was asked on, so no quote is matched, and the first decision, whose words hold the
 // same quote, carries none.
 test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
-  const { change, parts } = await seamOf("The rail stays 56 px wide.");
+  const { change, parts } = await seamOf();
   expect(idsOf(parts).yours[0]).toBe(D("asked"));
   expect(parts.yours[0]).toMatchObject({ change: { id: change.id }, kind: "decision" });
   expect(parts.review[0]).not.toHaveProperty("change");
@@ -432,12 +433,13 @@ test("answers older than the app's staleTime are not read again as the seam moun
   }
 });
 
-// Every reader of the decisions view takes it through `useDecisionsView`, whose read is tracked
-// only as far as each reader reads it (`useLoadView`'s getters): a reader of the answer alone -
-// the page's tree, the header's count, each Decisions row's Keep and Change - is drawn again only
-// as the answer or its refusal changes, not as a read of the view starts and ends. Here the view
-// is read again, and its read answers what the view held, which TanStack's structural sharing
-// keeps as the same answer.
+// Every reader of the decisions view takes it through `useDecisionsView`, and the control after
+// its last row (`useNextViewPage`) through `useViewAnswer`, as `useDecisionsView` does; the read
+// is tracked only as far as each reader reads it (`useLoadView`'s getters): a reader of the
+// answer alone - the page's tree, the header's count, each Decisions row's Keep and Change - is
+// drawn again only as the answer or its refusal changes, not as a read of the view starts and
+// ends. Here the view is read again, and its read answers what the view held, which TanStack's
+// structural sharing keeps as the same answer.
 test("a reader of the decisions view's answer draws once, and not again when the view is read again to the same answer", async () => {
   const held = treeAnswer([decision("d1")]);
   const read = spyOn(api, "getIssueTree").mockImplementation(async () =>
@@ -467,6 +469,38 @@ test("a reader of the decisions view's answer draws once, and not again when the
   } finally {
     read.mockRestore();
   }
+});
+
+// A reader of the decisions view first drawn while the issue's last load has ended, as the next
+// load's first render is, before its reset (`ViewReadProvider`): the view holds no answer then
+// (`useLoadView`), and the reader reads the view's state as the view's entries do
+// (`useDecisionsEntries`). Its read is tracked on that render all the same, so once the next
+// load's answer of the view lands the reader draws it, with nothing else drawing it again.
+test("a reader of the decisions view first drawn while the issue's last load has ended draws the view's answer once it lands", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  resetViews(client, KEY)();
+  let draws = 0;
+  const hook = renderHook(
+    () => {
+      draws += 1;
+      const { answer, errorUpdateCount, isFetching, refetch, refused } = useDecisionsView(KEY);
+      return { answer, errorUpdateCount, isFetching, refetch, refused };
+    },
+    { wrapper: decisionsAddress(client) }
+  );
+  expect(hook.result.current.answer, "the reader drew an answer while the load had ended").toBe(
+    undefined
+  );
+  resetViews(client, KEY);
+  const answer = treeAnswer([decision("d1")]);
+  await act(async () => {
+    client.setQueryData(viewKey(KEY, "decisions"), answer);
+  });
+  expect(hook.result.current.answer, "the reader drew no answer of the view once it landed").toBe(
+    answer
+  );
+  expect(draws, "the reader drew other than once more as the answer landed").toBe(2);
+  hook.unmount();
 });
 
 // A decisions view that holds no decision gives no decision and no error, and the view draws

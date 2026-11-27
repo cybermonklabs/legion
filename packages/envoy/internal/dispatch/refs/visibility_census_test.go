@@ -52,6 +52,7 @@ import (
 // person and an author-only one is not, a lens kind takes no author-only node, and the registry's
 // author flag is on for exactly those kinds.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if SeedStoreThroughItsWriters == nil {

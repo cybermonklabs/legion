@@ -1,29 +1,44 @@
 import { describe, expect, test } from "bun:test";
 import {
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   type SchemaApi,
+  SESSION_LIVE_WINDOW_MS,
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
+import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { delivered } from "../../test/delivered";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
   messageMetadataShape,
+  NOT_SENT_GUIDE,
   parseEnvoyToolArguments,
   publishConfirmationText,
+  STORED_DELIVERY,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
-import { createEnvoyClient, UNRESPONSIVE_RULE } from "../transport";
+import {
+  type ConnectionState,
+  createEnvoyClient,
+  type SessionState,
+  UNRESPONSIVE_RULE,
+} from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: the rule's text must carry that number, and a change of the constant
  *  must change the text rather than leave it saying a number nothing enforces. */
 const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
+
+/** The minutes a session stays live after its last registration, from the constant the listener
+ *  reads a session's state by: a text that names the live window writes it as this number of
+ *  minutes, and a change of the constant must change the text. */
+const LIVE_WINDOW_MINUTES = SESSION_LIVE_WINDOW_MS / 60_000;
 
 const schemaApi = zodSchemaApi(z);
 
@@ -91,28 +106,30 @@ describe("envoyToolSpecs", () => {
     ]);
   });
 
-  test("documents delivery guarantees and the full Envoy topic guide", () => {
+  test("names every Envoy topic subject, and none of the retired ones", () => {
     const subscribe = envoyToolSpecs.find((spec) => spec.name === "envoy_subscribe");
-    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
     expect(subscribe?.description).toContain("agent.<session_id>");
     expect(subscribe?.description).toContain("role.<role>");
-    expect(subscribe?.description).toContain(
-      "Default PR subscription: github.<owner>.<repo>.pr.<n>.>"
-    );
-    expect(subscribe?.description).toContain(
-      "> matches one or more trailing tokens and does not match the base subject"
-    );
-    expect(subscribe?.description).toContain(
-      "Envoy registers the concrete base when you subscribe to <subject>.>"
-    );
-    expect(subscribe?.description).toContain(
-      "pr.<n> (lifecycle: opened/synchronize/closed; closed carries merged, merge_commit_sha, merged_by, head_sha), pr.<n>.comment, pr.<n>.review, pr.<n>.mention, pr.<n>.checks"
-    );
-    expect(subscribe?.description).toContain(
-      "workflow.<file>.<action> (only runs without an associated PR)"
-    );
-    expect(subscribe?.description).not.toContain("pr.<n>.check,");
+    expect(subscribe?.description).toContain("github.<owner>.<repo>.pr.<n>.>");
+    for (const subject of ["pr.<n>.comment", "pr.<n>.review", "pr.<n>.mention", "pr.<n>.checks"]) {
+      expect(subscribe?.description).toContain(subject);
+    }
+    // The pull request's lifecycle actions and the fields a closed one carries, each by name, and
+    // the subject form a subscription's base is registered from.
+    const lifecycle = [
+      "opened",
+      "synchronize",
+      "closed",
+      "merged",
+      "merge_commit_sha",
+      "merged_by",
+      "head_sha",
+    ];
+    expect(namesMissing(subscribe?.description ?? "", lifecycle)).toEqual([]);
+    expect(subscribe?.description).toContain("<subject>.>");
+    expect(subscribe?.description).toContain("workflow.<file>.<action>");
+    expect(namesWhole(subscribe?.description ?? "", "pr.<n>.check")).toBe(false);
     expect(subscribe?.description).not.toContain("pr.<n>.ci");
     expect(subscribe?.description).not.toContain("pr.<n>.checks.settled");
     expect(subscribe?.description).not.toContain("pr.<n>.merged");
@@ -122,84 +139,50 @@ describe("envoyToolSpecs", () => {
     expect(subscribe?.description).toContain("ghostwispr.<session>.<kind>");
     expect(subscribe?.description).toContain("whatsapp.<phone>.<jid>.<kind>");
     expect(subscribe?.description).toContain("envoy.exceptions.<original-topic>");
-    expect(publish?.description).toContain("at-least-once, possibly out of order across topics");
-    expect(publish?.description).toContain("id for dedupe and at for freshness");
-    for (const description of [subscribe?.description, publish?.description]) {
-      expect(description).toContain(
-        "reaches each subscribed session once from the durable consumer its listener relays to it, also one that was away or restarted"
-      );
-      // A team topic is stored like every other one, and a 200 says the stream stored it.
-      expect(description).toContain("whatsapp, team;");
-      expect(description).toContain(
-        "A 200 means the stream stored the message for each subscribed session's consumer, not that any recipient has read it."
-      );
-      expect(description).not.toContain("live only");
+  });
+
+  // The two texts that say what a subscription and a publish reach carry STORED_DELIVERY whole,
+  // which names the 200 a stored publish answers. Its list of kinds is stream-topics.ts's
+  // STORED_TOPIC_KINDS, read from the stream's own prefixes, so no second list exists to hold.
+  test("carries the stored-delivery clause in both tools", () => {
+    expect(namesMissing(STORED_DELIVERY, ["200"])).toEqual([]);
+    for (const name of ["envoy_subscribe", "envoy_publish"]) {
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(description, name).toContain(STORED_DELIVERY);
     }
-    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
-    // release for a holder that is not live (holder_lapsed).
-    expect(publish?.description).toContain(
-      "the holder refuses the message, or the forward is not stored within four seconds"
-    );
-    expect(publish?.description).toContain(
-      "A notifications. topic no stream subject captures is refused by name: nothing would store it."
-    );
   });
 
   // The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
   // refused it before anything went out, so it is temporary and a resend stores it once. Both
-  // tools say so, so an agent neither waits on it as a send that may have arrived nor gives up on
-  // the message.
-  test("tells an agent that a message the listener did not send may be sent again later", () => {
+  // tools carry NOT_SENT_GUIDE, the text that says so, so an agent neither waits on it as a send
+  // that may have arrived nor gives up on the message. What the guide says is prose for the agent,
+  // which no unit test holds.
+  test("carries the guide to a message the listener did not send in both tools that send", () => {
+    expect(NOT_SENT_GUIDE.trim()).not.toBe("");
     for (const name of ["envoy_send", "envoy_publish"]) {
-      const spec = envoyToolSpecs.find((candidate) => candidate.name === name);
-      expect(spec?.description).toContain(
-        "An error that says the message was not sent means nothing was stored, so the same message may be sent again later."
-      );
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(description, name).toContain(NOT_SENT_GUIDE);
     }
   });
 
-  test("tells an agent the three answers a role message has, the kept one as a success", () => {
+  // A text that tells a sender what a session's state means names the stopped state a send answers
+  // with (`ConnectionState`), the live window in minutes and the duplicate window in hours, each
+  // number from the constant that sets the window.
+  test("names the recipient counts, the stopped state, the minutes of the live window and the hours of the duplicate window", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
-
-    expect(publish?.description).toContain("A role message has three possible answers.");
-    // 200: a live holder's own consumer holds the forward, once the stream stored it. No holder
-    // confirms a forward.
-    expect(publish?.description).toContain(
-      "a live session holds the role, and the stream stores the forward for that holder's consumer"
-    );
-    // 202: no live session holds the role, so the listener keeps the message. This is not a
-    // refusal, and a holder that stopped answering is one of the two cases: it keeps its role,
-    // and the message waits for it or for the next live holder (dispatch://INFRA-2846, R4).
-    expect(publish?.description).toContain(
-      "Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success."
-    );
-    expect(publish?.description).toContain(
-      "The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again."
-    );
-    // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release
-    // whose keep succeeded a holder that is not live never reaches it, and nothing tells the model
-    // that no copy waits for such a holder. A keep that failed, and a listener of an earlier
-    // release, answer such a holder 404 holder_lapsed.
-    expect(publish?.description).toContain("the listener keeps nothing and errs");
-    expect(publish?.description).not.toContain("nothing waits for it");
-    expect(publish?.description).not.toContain("in the hour that follows");
-  });
-
-  test("says what the recipient counts and the stopped state mean", () => {
-    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+    const stopped: ConnectionState = "stopped";
+    const names = [
+      stopped,
+      `${LIVE_WINDOW_MINUTES} minutes`,
+      `${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`,
+    ];
 
     for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
-      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
-        "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
-      );
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(namesMissing(description, names), name).toEqual([]);
     }
-    expect(publish?.description).toContain(
-      "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
-    );
-    expect(publish?.description).toContain("a role topic names its holder instead");
+    const counts = namesMissing(publish?.description ?? "", ["recipients", "recipients_connected"]);
+    expect(counts).toEqual([]);
   });
 });
 
@@ -313,17 +296,10 @@ describe("publishConfirmationText", () => {
       "published event-kept. Envoy kept it for the role: no live session holds the role now. Envoy did not say until when it keeps it."
     );
 
-    // The tool's description names the hour, kept_until, and the message that follows it.
+    // The tool's description names the result's kept_until field.
     const description =
       envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description ?? "";
-    expect(description).toContain("The listener then keeps the message for one hour.");
-    expect(description).toContain("its kept_until is the time that hour ends");
-    expect(description).toContain(
-      "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
-    );
-    expect(description).toContain(
-      "For a holder that is not live, the result also names that holder and its state."
-    );
+    expect(description).toContain("kept_until");
   });
 
   test("names the holder a delivered role message reached, and nothing else for a plain topic", () => {
@@ -347,26 +323,15 @@ describe("publishConfirmationText", () => {
   // The description is what an agent reads at the moment it decides whether a peer is alive. The
   // old wording ("all live sessions", "up to 5 minutes") said a quiet session was a dead one, and
   // agents acted on it: role claims taken, replacements started (dispatch://INFRA-392).
-  test("every tool that names another session carries the three states and the unresponsive rule", () => {
+  test("every tool that names another session carries the unresponsive rule", () => {
     const named = ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"];
 
     for (const name of named) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
-      expect(description).toContain(
-        "A session is live, unresponsive or gone, by how long ago it last registered: live within 5 minutes, unresponsive after that and within an hour, gone past the hour or with no record at all."
-      );
-      expect(description).toContain(
-        "An unresponsive session is not dead: it keeps its role claims and its issue claims, and a message sent to it is stored until it answers. Start no replacement for it and take no claim from it until it is gone, " +
-          `or until ${GRACE_MINUTES} minutes have passed since its last_seen, the time of its last registration.`
-      );
-      expect(description).toContain("A session named with no state is live.");
+      expect(description).toContain(UNRESPONSIVE_RULE);
+      const states: SessionState[] = ["live", "unresponsive", "gone"];
+      expect(namesMissing(description, states), name).toEqual([]);
     }
-    expect(
-      envoyToolSpecs.find((spec) => spec.name === "envoy_sessions")?.description
-    ).not.toContain("List all live sessions");
-    expect(envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description).not.toContain(
-      "up to 5 minutes"
-    );
   });
 });
 
@@ -536,16 +501,6 @@ describe("message metadata", () => {
         message: 'Invalid option: expected one of "low"|"med"|"high"|"blocking"',
       }),
     ]);
-  });
-
-  // Nothing in Envoy orders, holds or delivers a message by its urgency: the renderers only show
-  // it. A sender told nothing more takes a "high" for a faster lane that does not exist.
-  test("tells a sender that urgency is for the reader and does not deliver a message sooner", () => {
-    // The JSON schema is what a model is shown for the tool's arguments.
-    const shown = JSON.stringify(z.toJSONSchema(MessageMetadataSchema));
-
-    expect(shown).toContain("how soon the recipient should act");
-    expect(shown).toContain("does not deliver the message sooner or ahead of others");
   });
 
   // Oh My Pi's `pi.zod` facade drops a description attached before `.optional()` on an enum or

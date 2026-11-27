@@ -187,9 +187,9 @@ function repliesOutOfPlace(
   });
 }
 
-// c-ask-body, owed on Dashboard's part (`dashboardPartGate`), which brings the ask body and the
-// decision card. Past the gate the row reads what the page draws without that part's marks, in
-// Conversation and in Graph, and fails on each clause that needs those marks until it is built.
+// c-ask-body, owed on Dashboard's part, which brings the ask body and the decision card, and on
+// T's R17 built on it (`dashboardPartGate`). Dashboard's part alone opens no gate: T builds R17
+// once its base holds that part (decision 558, amended), with each clause above that needs it.
 // SLOW(>=2s): two seeded issues, each loaded in two outlines with each load waited out.
 test("the outline draws each ask with the ask body and each decision with the card", async ({
   browser,

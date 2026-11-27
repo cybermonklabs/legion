@@ -643,6 +643,20 @@ func (i ItemIndexing) blockNodeID(blockID string) string {
 	return string(i.kind) + "/" + i.itemID + "#" + blockID
 }
 
+// BlockText is the whole text of block blockID as the index leaves it, where Block gives the
+// excerpt its row stores: the text a reply's quote of that block is checked against. found is
+// false when the body holds no such block.
+func (i ItemIndexing) BlockText(blockID string) (text string, found bool) {
+	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
+		for _, row := range rows {
+			if row.id == blockID {
+				return row.text, true
+			}
+		}
+	}
+	return "", false
+}
+
 // SettlingForms is the index settling what the forms queues hold for the item (RefsFormsOwed,
 // RefsDecisionsFormsOwed) in the statement that records it indexed (queueRecordIndexed) and the
 // one after it, so the settle costs the write one statement beyond its own. A writer asks for it
@@ -769,6 +783,7 @@ func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
 		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
 	}
 	b.Queue(what, statement, args...)
+	// kept for one release: decisions-ref-repair
 	if i.settleForms {
 		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", i.kind, i.itemID),
 			settleDecisionsFormsStatement, string(i.kind), i.itemID)
