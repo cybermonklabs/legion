@@ -2570,10 +2570,11 @@ batch_scored_cell() {
 #
 # A pack holds the run's regular files and directories alone, a hard link as its file. It leaves
 # out every other entry (a symlink, a FIFO, a socket), and names them. It leaves out, by name, the
-# places the run's credentials are in: every directory named secrets (the daemon stand-in's boot
-# token, the owner's Envoy token and gh configuration), home/ (the label's HOME, copied), pane.env
-# and the launch's texts/launch-request.json and texts/launch-answer.json, which can carry the
-# batch's NATS URL with its credential. The scorer reads none of them.
+# places the run's credentials can be, without reading what is in them: every directory named
+# secrets (the daemon stand-in's boot token, the owner's Envoy token and gh configuration), every
+# directory named home (the label's HOME, copied, and the owner's state/home), pane.env and the
+# launch's texts/launch-request.json and texts/launch-answer.json, which can carry the batch's NATS
+# URL with its credential. The scorer reads none of them.
 
 # store_scored_run NAME stores the run NAME, when RT_STORE is set. A failed pack or put is noted and
 # stops neither the batch nor the run's count in this pod. After a failed pack or a failed put of
@@ -2585,10 +2586,10 @@ store_scored_run() {
   local hex left
   mkdir -p "$work/stored"
   rm -f -- "$pack" "$row" "$list"
-  (cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+  (cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
     -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
     -o \( -type d -o -type f \) -print0) >"$list"
-  left=$(cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+  left=$(cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
     -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
     -o ! -type d ! -type f -printf '%P\n' | LC_ALL=C sort)
   [ -z "$left" ] ||
@@ -2702,34 +2703,51 @@ cmd_restore_stored() {
 }
 
 # cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store, DIR/runs/<run>.tar.gz
-# and DIR/runs/<run>.row.json, and each LOG a log of the Job, in the order its pods ran. Their
-# `stored` and `got` lines name each object's sha256: a `stored` line sets it, and a later `got`
-# line of another sha256 is a fault, since the object then changed between the pods. A `got` line
-# of a name no LOG stores sets it, so with the last pod's log alone, a row and pack an earlier pod
-# stored and that changed together before the later pod's get read as stored. Each owner-walk run
-# whose row the download holds, or whose object a LOG names, is checked: its row must be in the
-# download, named in a LOG, and of that sha256; its pack must be in the download, of the sha256
-# its row names (and of a LOG's, when one names it), pass pack_problem, and hold the row's own
-# row.json. A run that passes is unpacked into DIR/checked, through a fresh directory. One that
-# fails gets a rig error row there, naming each fault, and its pack is not unpacked; with no
-# world.json, it is in no cell. Then a line for each run, and the cells (score.ts cells). The check
-# catches an object changed or mixed up after a pod stored it, not one an agent in the same pod
-# changed before the rig stored it.
+# and DIR/runs/<run>.row.json, and the LOGs every log of the Job, in the order its pods ran
+# (legion-remote-test.sh keeps every attempt's in <out>.attempts, in that order). Their `stored`
+# and `got` lines name each object's sha256. A `stored` line sets it, and these are faults:
+#   - a `got` line of another sha256 than the `stored` line before it: the object changed between
+#     the pods;
+#   - a `got` line of a name no LOG stores: no pod is known to have stored that object, so a run
+#     put into the store by anything but a pod, and every run of a pod whose LOG is not given, is
+#     refused, never counted;
+#   - a `stored` line, of another sha256, for an object of a run whose row a LOG stored before: a
+#     stored run is never run, or stored, again.
+# A pack stored twice before its run's row is no fault: a pod stopped between the two puts, and
+# the later pod ran and stored the run again. Each owner-walk run whose row the download holds, or
+# whose object a LOG names, is checked: its row must be in the download, stored by a LOG, and of
+# that sha256; its pack must be in the download, of the sha256 its row names (the row, checked
+# against the LOGs, vouches for it), pass pack_problem, and hold the row's own row.json. A run that passes is unpacked
+# into DIR/checked, through a fresh directory. One that fails gets a rig error row there, naming
+# each fault, and its pack is not unpacked; with no world.json, it is in no cell. Then a line for
+# each run, and the cells (score.ts cells). It exits 0 only when every run is as stored and no
+# file of the download was left out; any fault, or UNKNOWN, exits 1.
+#
+# What it cannot see: an object an agent in the same pod changed before the rig stored it; and a
+# run that only a LOG not given names, whose objects are gone from the store, since nothing else
+# names it. check-stored cannot know that a log is missing: give it every attempt's.
 cmd_check_stored() {
   [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
   local dir=$1 log line file name run object hex faults joined kind form family kase label rest want problem fresh
-  local -A logged=() named=()
+  local left=0 faulted=0 status
+  local -A logged=() named=() conflict=() rowstored=()
   shift
   faults=()
-  local -A conflict=()
   for log in "$@"; do
     [ -f "$log" ] || fail "the Job's log $log is not a file"
     while IFS= read -r line; do
       [[ $line =~ ^(stored|got)\ (runs/(owner-walk-[A-Za-z0-9_-]+)\.(tar\.gz|row\.json))\ sha256\ ([0-9a-f]{64})$ ]] || continue
-      object=${BASH_REMATCH[2]} hex=${BASH_REMATCH[5]}
-      named[${BASH_REMATCH[3]}]=1
-      if [ "${BASH_REMATCH[1]}" = stored ] || [ -z "${logged[$object]:-}" ]; then
+      object=${BASH_REMATCH[2]} run=${BASH_REMATCH[3]} hex=${BASH_REMATCH[5]}
+      named[$run]=1
+      if [ "${BASH_REMATCH[1]}" = stored ]; then
+        if [ -n "${rowstored[$run]:-}" ] && [ "$hex" != "${logged[$object]:-}" ]; then
+          conflict[$object]="$object was stored again after its run's row was stored: ${logged[$object]:+first with sha256 ${logged[$object]}, then }with sha256 $hex"
+          continue
+        fi
         logged[$object]=$hex
+        [ "${BASH_REMATCH[4]}" != row.json ] || rowstored[$run]=1
+      elif [ -z "${logged[$object]:-}" ]; then
+        conflict[$object]="$object was got with sha256 $hex, and no log given stores it: give every pod's log"
       elif [ "$hex" != "${logged[$object]}" ]; then
         conflict[$object]="$object was stored with sha256 ${logged[$object]} and later got with sha256 $hex"
       fi
@@ -2748,6 +2766,7 @@ cmd_check_stored() {
       named[${BASH_REMATCH[1]}]=1
     else
       printf 'UNKNOWN: %q in %s/runs is no run'"'"'s object: it is left out\n' "$name" "$dir"
+      left=$((left + 1))
     fi
   done
   if [ ${#named[@]} = 0 ]; then
@@ -2764,7 +2783,7 @@ cmd_check_stored() {
     elif [ -n "${conflict[$object]:-}" ]; then
       faults+=("${conflict[$object]}")
     elif [ -z "${logged[$object]:-}" ]; then
-      faults+=("$object has no stored or got line in the Job's logs")
+      faults+=("$object has no stored line in the Job's logs")
     else
       hex=$(sha256sum <"$file")
       hex=${hex%% *}
@@ -2785,8 +2804,6 @@ cmd_check_stored() {
       hex=$(sha256sum <"$file")
       hex=${hex%% *}
       [ -z "${conflict[$object]:-}" ] || faults+=("${conflict[$object]}")
-      [ -z "${logged[$object]:-}" ] || [ "$hex" = "${logged[$object]}" ] ||
-        faults+=("$object differs from the Job's log: logged ${logged[$object]}, downloaded $hex")
       [ -z "$want" ] || [ "$hex" = "$want" ] ||
         faults+=("$object is not the pack its row names: the row names $want, the download holds $hex")
     fi
@@ -2815,8 +2832,15 @@ cmd_check_stored() {
     jq -cn --arg run "$run" --arg label "$label" --arg case "$kase" --arg error "the store's objects of the run are at fault: $joined" \
       '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/checked/$run/row.json"
     printf 'checked %s: rig error: %s\n' "$run" "$joined"
+    faulted=$((faulted + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
   bun "$here/score.ts" cells "$dir/checked" owner-walk
+  status=$?
+  [ "$status" = 0 ] || return "$status"
+  if [ "$faulted" != 0 ] || [ "$left" != 0 ]; then
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, and $left files of the download were left out"
+    return 1
+  fi
 }
 
 # cmd_batch_scored SCENARIO COUNT LABEL... (the header): the batch's services, each label's texts
