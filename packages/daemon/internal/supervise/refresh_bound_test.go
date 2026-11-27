@@ -12,11 +12,13 @@ package supervise
 // that the negative control compiles and runs against main as well as against the change.
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // boundRig is a paced daemon of stale idle claims behind one RefreshGate, sharing one store,
@@ -34,6 +36,7 @@ type boundRig struct {
 	stops    *stopTransaction
 	pods     *PodStarts
 	machines []*Machine
+	spawned  int
 }
 
 // boundRigOptions configures optional Deps shared by every machine of a boundRig.
@@ -811,5 +814,1003 @@ func TestRefreshBoundARetryEntersThePacingAtItsTimer(t *testing.T) {
 		r.pause.set(0)
 		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
 		wantWaitingKind(t, u, WakePluginRefresh, "path 4 right after ResumePause")
+	})
+}
+
+// queueSpawns queues n fresh spawns on distinct tokens and issues (LEGION-9001..) so that a
+// subtest needing a fresh pacing queue more than once never collides with waveToken(0..n-1) or
+// with any stale claim's issue pod.
+func (r *boundRig) queueSpawns(n int) {
+	r.t.Helper()
+	for range n {
+		r.spawned++
+		issue := fmt.Sprintf("LEGION-%d", 9000+r.spawned)
+		token := claim.Token(fmt.Sprintf("bound-queue-%d", r.spawned))
+		c := wakeClaim(token, StateQueued)
+		c.Issue = issue
+		r.h.mustPostTo(r.h.machineFor(c), RequestSpawn{Claim: token})
+	}
+}
+
+// registerPeer registers peer on its current generation and the daemon's plugin contract, so its
+// issue-pod load settles after podLoadSettle.
+func (r *boundRig) registerPeer(peer *Machine) {
+	r.t.Helper()
+	peerToken := peer.View().Token
+	r.h.mustPostTo(peer, RequestRegister{
+		Claim:          peerToken,
+		Generation:     peer.View().Generation,
+		Session:        "ses_" + string(peerToken),
+		SessionFile:    "/state/sessions/" + string(peerToken) + ".jsonl",
+		CapabilityHash: []byte("capability"),
+		PluginContract: r.h.deps.PluginContract,
+	})
+}
+
+// wantEveryWaitingRefreshCredited checks that every machine whose published view shows a waiting
+// WakePluginRefresh wake holds a live credit in r.gate.out, failing with the claim, its credit
+// status and the bound.
+func (r *boundRig) wantEveryWaitingRefreshCredited(step string) {
+	r.t.Helper()
+	if ok, tok, why := r.everyWaitingRefreshHoldsACredit(); !ok {
+		r.t.Fatalf("%s: claim %s %s for its waiting plugin-refresh wake (%d credits out, bound %d)",
+			step, tok, why, r.creditsOut(), wakeRate)
+	}
+}
+
+// wantAllCreditsReturned checks that every credit of the gate is free, none remain in gate.out,
+// no stale machine holds a refreshCredit, and no creditTakenBackMessage was logged (so the
+// credit came back on its own rather than through the correction's backstop).
+func (r *boundRig) wantAllCreditsReturned(step string) {
+	r.t.Helper()
+	if got := freeCredits(r.gate); got != wakeRate {
+		r.t.Fatalf("%s: freeCredits(gate) = %d, want %d (bound %d)", step, got, wakeRate, wakeRate)
+	}
+	if got := r.creditsOut(); got != 0 {
+		r.t.Fatalf("%s: %d refresh credits remain out, want 0 (bound %d)", step, got, wakeRate)
+	}
+	for _, m := range r.machines {
+		m.mu.Lock()
+		credit := m.refreshCredit
+		m.mu.Unlock()
+		if credit != nil {
+			r.t.Fatalf("%s: claim %s still holds a non-nil refreshCredit, want nil", step, m.View().Token)
+		}
+	}
+	if got := len(r.h.records.of(creditTakenBackMessage)); got != 0 {
+		r.t.Fatalf("%s: %d creditTakenBackMessage records written, want 0", step, got)
+	}
+}
+
+// wantCreditHeld checks that m holds a non-nil m.refreshCredit that is still a key of r.gate.out,
+// that freeCredits(r.gate) == wakeRate-1 and r.creditsOut() == 1, and that no
+// creditTakenBackMessage was logged.
+func (r *boundRig) wantCreditHeld(m *Machine, step string) {
+	r.t.Helper()
+	if got := freeCredits(r.gate); got != wakeRate-1 {
+		r.t.Fatalf("%s: freeCredits(gate) = %d, want %d (bound %d)", step, got, wakeRate-1, wakeRate)
+	}
+	if got := r.creditsOut(); got != 1 {
+		r.t.Fatalf("%s: %d refresh credits are out, want 1 (bound %d)", step, got, wakeRate)
+	}
+	m.mu.Lock()
+	credit := m.refreshCredit
+	m.mu.Unlock()
+	if credit == nil {
+		r.t.Fatalf("%s: claim %s holds nil refreshCredit, want its held credit (bound %d)",
+			step, m.View().Token, wakeRate)
+	}
+	r.gate.mu.Lock()
+	_, out := r.gate.out[credit]
+	r.gate.mu.Unlock()
+	if !out {
+		r.t.Fatalf("%s: claim %s holds a refreshCredit no longer in gate.out (bound %d)",
+			step, m.View().Token, wakeRate)
+	}
+	if got := len(r.h.records.of(creditTakenBackMessage)); got != 0 {
+		r.t.Fatalf("%s: %d creditTakenBackMessage records written, want 0", step, got)
+	}
+}
+
+// pauseOnLaunchWriteStore wraps a *memStore and raises a project pause once right as token's
+// StateLaunching claim write lands, placing the pause between the wake gate and the try's own
+// pause check (pauseHeldTry). checkLaunchFail makes CheckLaunch fail with an unanswered-store
+// error on demand.
+type pauseOnLaunchWriteStore struct {
+	*memStore
+	token           claim.Token
+	pause           *pauseFlag
+	pauseID         int64
+	armed           bool
+	checkLaunchFail bool
+}
+
+func (s *pauseOnLaunchWriteStore) PutClaim(ctx context.Context, c Claim) error {
+	if err := s.memStore.PutClaim(ctx, c); err != nil {
+		return err
+	}
+	if s.armed && c.Token == s.token && c.State == StateLaunching {
+		s.armed = false
+		s.pause.set(s.pauseID)
+	}
+	return nil
+}
+
+func (s *pauseOnLaunchWriteStore) CheckLaunch(ctx context.Context, c Claim) error {
+	if s.checkLaunchFail {
+		return errBoom
+	}
+	return s.memStore.CheckLaunch(ctx, c)
+}
+
+// Every road by which a WakePluginRefresh wake enters the daemon's wake pacing (rows A1 to A14
+// of the R1 inventory) holds a live credit in the refresh gate while that wake waits. Each row
+// drives its exact road on one stale claim, verifies the setup at every step, and reads
+// everyWaitingRefreshHoldsACredit once the road's wake parks in the pacing.
+//
+// The negative control is main at 8868205a18f3: every row reaches its road's parked wake and
+// fails on the credit check because main returned the credit before the road parked the wake.
+func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
+	const queueDepth = 12
+
+	t.Run("A01_path_1_at_turn_of_lane_wake", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A01 initial park")
+		r.wantEveryWaitingRefreshCredited("road A1 after admission")
+		queueAhead(r.h, queueDepth)
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A01 path 1 failed write at turn")
+		r.wantEveryWaitingRefreshCredited("road A1 after retry armed")
+
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A01 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A1")
+	})
+
+	t.Run("A02_path_1_at_immediate_let_out", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		// Refill the pacer's token so StalePlugin is let out at once without parking first.
+		r.advance(wakeInterval + wakePart)
+		r.h.store.fail("PutClaim", errBoom)
+		c := r.gate.Admit()
+		if c == nil {
+			t.Fatal("setup: empty gate refused admission for A02")
+		}
+		if err := r.h.postTo(u, StalePlugin{Claim: u.View().Token, Trigger: "sweep", Credit: c}); err == nil {
+			t.Fatal("setup: immediate StalePlugin with failing PutClaim succeeded, want error")
+		}
+		r.h.store.fail("PutClaim", nil)
+		r.h.wantWakeLine(u.View().Token, "kind=plugin-refresh", "waited=false", "paced=true")
+		wantRetrySetup(t, u, "A02 failed write at immediate let-out")
+		r.wantEveryWaitingRefreshCredited("road A2 after retry armed")
+
+		queueAhead(r.h, queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A02 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A2")
+	})
+
+	t.Run("A03_path_2_at_turn_of_lane_wake", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A03 initial park")
+		r.wantEveryWaitingRefreshCredited("road A3 after admission")
+		queueAhead(r.h, queueDepth)
+
+		r.h.store.fail("HoldSessions", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("HoldSessions", nil)
+		wantRetrySetup(t, u, "A03 path 2 unanswered HoldSessions")
+		r.wantEveryWaitingRefreshCredited("road A3 after retry armed")
+
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A03 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A3")
+	})
+
+	t.Run("A04_path_3_at_turn_of_retrys_wake", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A04 initial park")
+		r.wantEveryWaitingRefreshCredited("road A4 after admission")
+
+		// Path 1 arms the opening retry so the claim becomes processless.
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A04 opening failed write")
+
+		// Park the opening retry's wake over the processless claim (credit is checked after
+		// A04's own refused turn parks the second retry, so main exercises runWake too).
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A04 opening retry parked over no process")
+		if loc := u.View().Locator; loc != nil {
+			t.Fatalf("setup: A04 opening retry parked over process %+v, want none", loc)
+		}
+
+		// At the opening retry wake's turn, CheckLaunch fails inside runWake, arming a second retry.
+		checkStore := &unansweredCheckLaunchStore{memStore: r.h.store, failing: true}
+		u.deps.Store = checkStore
+		r.advanceToTurn(u)
+		wantRetrySetup(t, u, "A04 refused CheckLaunch at turn of retry's wake")
+		r.h.wantStarts(u.View().Token, 0)
+
+		checkStore.failing = false
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A04 second retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A4")
+	})
+
+	t.Run("A05_path_3_at_retrys_own_lifecycle_check", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A05 initial park")
+		r.wantEveryWaitingRefreshCredited("road A5 after admission")
+		queueAhead(r.h, queueDepth)
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A05 opening failed write")
+
+		// At the first retry's timer, launchAfter's own CheckLaunch fails and arms a second retry.
+		checkStore := &unansweredCheckLaunchStore{memStore: r.h.store, failing: true}
+		u.deps.Store = checkStore
+		r.advance(testProbe)
+		wantRetrySetup(t, u, "A05 refused CheckLaunch at retry's launchAfter")
+		r.h.wantStarts(u.View().Token, 0)
+
+		checkStore.failing = false
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A05 second retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A5")
+	})
+
+	t.Run("A06_path_2_after_pod_start_gate_grant", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPods: true})
+		u := r.machines[0]
+		peer := r.addPodRole(u, claim.RoleArchitect)
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A06 initial park")
+		r.wantEveryWaitingRefreshCredited("road A6 after admission")
+		queueAhead(r.h, queueDepth)
+
+		peerToken := peer.View().Token
+		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
+		r.h.wantStarts(peerToken, 1)
+
+		r.advanceToTurn(u)
+		ws := readWake(u)
+		if !ws.held || !ws.parked {
+			t.Fatalf("setup: A06 wake = %+v, want a try parked at the pod start gate", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantEveryWaitingRefreshCredited("road A6 while parked at pod gate")
+
+		r.registerPeer(peer)
+		r.h.store.fail("HoldSessions", errBoom)
+		r.advance(podLoadSettle)
+		r.h.store.fail("HoldSessions", nil)
+		wantRetrySetup(t, u, "A06 path 2 after pod grant")
+
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A06 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A6")
+	})
+
+	t.Run("A07_path_3_after_pod_grant_meeting_pause", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPods: true, withPause: true})
+		u := r.machines[0]
+		peer := r.addPodRole(u, claim.RoleArchitect)
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A07 initial park")
+		r.wantEveryWaitingRefreshCredited("road A7 after admission")
+
+		peerToken := peer.View().Token
+		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
+		r.h.wantStarts(peerToken, 1)
+
+		r.advanceToTurn(u)
+		ws := readWake(u)
+		if !ws.held || !ws.parked {
+			t.Fatalf("setup: A07 wake = %+v, want a try parked at the pod start gate", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		// Register peer, open pause before the pod grant settles, and advance podLoadSettle so
+		// podStartDue hands the try to pauseGate (TimerPause armed at 0, not fired yet because
+		// Pods.post runs after Advance returns).
+		r.registerPeer(peer)
+		r.pause.set(7)
+		r.advance(podLoadSettle)
+		ws = readWake(u)
+		if !ws.held || ws.pause != 7 || ws.parked {
+			t.Fatalf("setup: A07 wake after pod grant in pause = %+v, want held by pauseGate for pause 7", ws)
+		}
+		if !timerArmed(u, TimerPause) {
+			t.Fatal("setup: A07 podStartDue did not arm TimerPause")
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		// Pause ends and ResumePause runs the paid let-out; CheckLaunch refuses it, arming retry.
+		r.pause.set(0)
+		checkStore := &unansweredCheckLaunchStore{memStore: r.h.store, failing: true}
+		u.deps.Store = checkStore
+		if err := r.h.postTo(u, ResumePause{Claim: u.View().Token, Pause: 7}); err == nil {
+			t.Fatal("setup: A07 ResumePause with failing CheckLaunch succeeded, want error")
+		}
+		wantRetrySetup(t, u, "A07 refused CheckLaunch at let-out after pod grant met pause")
+		r.h.wantStarts(u.View().Token, 0)
+
+		checkStore.failing = false
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A07 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A7")
+	})
+
+	t.Run("A08_path_3_after_pause_held_try", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		// Refill the pacer's token so StalePlugin passes the wake gate at once in a direct Handle
+		// call (leaving TimerPause armed at 0 unfired once pauseHeldTry hands the try to pauseGate).
+		r.advance(wakeInterval + wakePart)
+		hook := &pauseOnLaunchWriteStore{
+			memStore: r.h.store,
+			token:    u.View().Token,
+			pause:    r.pause,
+			pauseID:  7,
+			armed:    true,
+		}
+		u.deps.Store = hook
+
+		r.postAdmitted(u)
+		if hook.armed {
+			t.Fatal("setup: A08 PutClaim hook did not fire on u's StateLaunching write")
+		}
+		ws := readWake(u)
+		if !ws.held || ws.pause != 7 || ws.parked {
+			t.Fatalf("setup: A08 wake after pauseHeldTry = %+v, want held by pauseGate for pause 7", ws)
+		}
+		if !timerArmed(u, TimerPause) {
+			t.Fatal("setup: A08 pauseHeldTry did not arm TimerPause")
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		// End the pause and refuse the let-out's lifecycle recheck so path 3 arms a retry.
+		r.pause.set(0)
+		hook.checkLaunchFail = true
+		if err := r.h.postTo(u, ResumePause{Claim: u.View().Token, Pause: 7}); err == nil {
+			t.Fatal("setup: A08 ResumePause with failing CheckLaunch succeeded, want error")
+		}
+		wantRetrySetup(t, u, "A08 refused CheckLaunch after pauseHeldTry")
+		r.h.wantStarts(u.View().Token, 0)
+
+		hook.checkLaunchFail = false
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A08 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A8")
+	})
+
+	t.Run("A09_path_1_after_wake_now_pause_road", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		waiting := wantWaitingKind(t, u, WakePluginRefresh, "A09 initial park")
+		r.wantEveryWaitingRefreshCredited("road A9 after admission")
+
+		// Pause before u's turn and fail Suspend so that the immediate TimerPause fired at the
+		// same moment leaves the wake held in pauseGate until ResumePause runs it.
+		r.pause.set(7)
+		r.h.rt.FailSuspend(errBoom)
+		r.advance(waiting.At.Sub(r.h.clock.Now()))
+		r.h.rt.FailSuspend(nil)
+
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: A09 wake after wakeNow met pause = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+		if w := u.View().WakeWaiting; w != nil {
+			t.Fatalf("setup: A09 view shows %+v while held by pauseGate, want none", w)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		// End the pause, fail PutClaim, and let the paid wake out via ResumePause so path 1 arms a retry.
+		r.pause.set(0)
+		r.h.store.fail("PutClaim", errBoom)
+		if err := r.h.postTo(u, ResumePause{Claim: u.View().Token, Pause: 7}); err == nil {
+			t.Fatal("setup: A09 ResumePause with failing PutClaim succeeded, want error")
+		}
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A09 failed write at paid let-out after wakeNow pause road")
+
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A09 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A9")
+	})
+
+	t.Run("A10_path_4_resume_before_pause_stop", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		queueAhead(r.h, queueDepth)
+		r.pause.set(7)
+		r.postAdmitted(u)
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: A10 wake = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+		if !timerArmed(u, TimerPause) {
+			t.Fatal("setup: A10 pauseGate did not arm TimerPause")
+		}
+		r.wantEveryWaitingRefreshCredited("road A10 while held by pauseGate")
+
+		r.pause.set(0)
+		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
+		wantWaitingKind(t, u, WakePluginRefresh, "A10 ResumePause let wake into pacing")
+		r.wantEveryWaitingRefreshCredited("road A10")
+	})
+
+	t.Run("A11_path_4_after_failed_pause_stop", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		queueAhead(r.h, queueDepth)
+		r.pause.set(7)
+		r.postAdmitted(u)
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: A11 wake = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+
+		// Refuse Suspend at the immediate pauseStopDue so the wake stays held and TimerPause is
+		// armed again at testProbe.
+		r.h.rt.FailSuspend(errBoom)
+		r.advance(0)
+		ws = readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 || !timerArmed(u, TimerPause) {
+			t.Fatalf("setup: A11 after failed pause stop wake = %+v (TimerPause=%v), want held for pause 7 with TimerPause re-armed",
+				ws, timerArmed(u, TimerPause))
+		}
+		if u.View().State != StateIdle {
+			t.Fatalf("setup: A11 claim state = %s after failed pause stop, want %s", u.View().State, StateIdle)
+		}
+
+		// Pause ends and runtime accepts stops again; pauseStopDue finds no pause and lets the wake out.
+		r.h.rt.FailSuspend(nil)
+		r.pause.set(0)
+		r.advance(testProbe)
+		if lines := r.h.logs.lines("the pause the gate held this claim's launch for has ended; the launch goes to the wake pacing",
+			"claim="+string(u.View().Token)); len(lines) != 1 {
+			t.Fatalf("setup: A11 pauseStopDue let-out lines = %v, want 1", lines)
+		}
+		wantWaitingKind(t, u, WakePluginRefresh, "A11 pauseStopDue let wake into pacing")
+		r.wantEveryWaitingRefreshCredited("road A11")
+	})
+
+	t.Run("A12_path_4_after_repark_wake", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A12 initial park")
+		r.wantEveryWaitingRefreshCredited("road A12 after admission")
+
+		// Drive u into a processless path 1 retry so that when the retry fires while paused,
+		// pauseGate holds a WakePluginRefresh wake over a launching claim with Locator == nil
+		// (the condition dropWakeFor requires) and paid == false (so ResumePause joins pacing).
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A12 path 1 retry armed")
+
+		// Fire TimerRelaunch directly while paused so pauseGate arms TimerPause at 0 without the
+		// fake clock immediately firing TimerPause inside Advance.
+		u.mu.Lock()
+		relaunchSeq := u.timers[TimerRelaunch].seq
+		u.mu.Unlock()
+		r.pause.set(7)
+		r.h.mustPostTo(u, Timer{Claim: u.View().Token, Kind: TimerRelaunch, Generation: u.View().Generation, Seq: relaunchSeq})
+
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 || ws.parked {
+			t.Fatalf("setup: A12 wake after retry met pause = %+v, want WakePluginRefresh held by pauseGate for pause 7", ws)
+		}
+		if loc := u.View().Locator; loc != nil {
+			t.Fatalf("setup: A12 claim records process %+v, want none so dropWakeFor acts", loc)
+		}
+
+		// RequestForgetSession drops the processless held wake (dropWakeFor), is ignored on
+		// StateLaunching, and reparkWake puts the wake back in pauseGate.
+		const reparkLine = "supervise: the request launched nothing; the wake the pacing holds keeps its place"
+		if err := r.h.postTo(u, RequestForgetSession{Claim: u.View().Token, Session: u.View().Session, By: SuspendedByOperator}); err == nil {
+			t.Fatal("setup: A12 RequestForgetSession over StateLaunching succeeded, want refusal")
+		}
+		if got := len(r.h.records.of(reparkLine)); got != 1 {
+			t.Fatalf("setup: A12 reparkWake logged %d times, want 1", got)
+		}
+		ws = readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: A12 wake after reparkWake = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+
+		// End the pause, queue spawns so the let-out waits, and send ResumePause.
+		r.pause.set(0)
+		r.queueSpawns(queueDepth)
+		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
+		wantWaitingKind(t, u, WakePluginRefresh, "A12 let-out after reparkWake entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A12")
+	})
+
+	t.Run("A13_path_1_at_run_parked_launch_now", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A13 initial park")
+		r.wantEveryWaitingRefreshCredited("road A13 after admission")
+		queueAhead(r.h, queueDepth)
+
+		// An operator's delivery (empty ID) runs the parked refresh launch immediately via
+		// runParkedLaunchNow, and its StateLaunching write fails, arming path 1's retry.
+		r.h.store.fail("PutClaim", errBoom)
+		if err := r.h.postTo(u, RequestDeliver{Claim: u.View().Token, Task: "operator task"}); err == nil {
+			t.Fatal("setup: A13 operator RequestDeliver with failing PutClaim succeeded, want error")
+		}
+		r.h.store.fail("PutClaim", nil)
+		if lines := r.h.logs.lines("an operator's task reached a claim whose paced launch waits over the process it replaces",
+			"claim="+string(u.View().Token)); len(lines) != 1 {
+			t.Fatalf("setup: A13 runParkedLaunchNow lines = %v, want 1", lines)
+		}
+		wantRetrySetup(t, u, "A13 path 1 retry after runParkedLaunchNow")
+
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A13 retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A13")
+	})
+
+	t.Run("A14_path_3_at_run_dropped_launch_for_retry", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "A14 initial park")
+		r.wantEveryWaitingRefreshCredited("road A14 after admission")
+
+		// Arm path 1's retry and let it park a WakePluginRefresh wake over a processless claim.
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "A14 opening failed write")
+
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A14 opening retry parked over no process")
+		if loc := u.View().Locator; loc != nil {
+			t.Fatalf("setup: A14 opening retry parked over process %+v, want none", loc)
+		}
+
+		// An operator's retry drops the processless wake and runs it now (runDroppedLaunchForRetry
+		// -> runWake), where CheckLaunch fails and arms a second retry.
+		checkStore := &unansweredCheckLaunchStore{memStore: r.h.store, failing: true}
+		u.deps.Store = checkStore
+		if err := r.h.postTo(u, RequestAskedRetry{Claim: u.View().Token, By: SuspendedByOperator}); err == nil {
+			t.Fatal("setup: A14 operator RequestAskedRetry with failing CheckLaunch succeeded, want error")
+		}
+		const droppedRetryLine = "supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now"
+		if got := len(r.h.records.of(droppedRetryLine)); got != 1 {
+			t.Fatalf("setup: A14 runDroppedLaunchForRetry logged %d times, want 1", got)
+		}
+		wantRetrySetup(t, u, "A14 refused CheckLaunch at runDroppedLaunchForRetry")
+
+		checkStore.failing = false
+		r.queueSpawns(queueDepth)
+		r.advance(testProbe)
+		wantWaitingKind(t, u, WakePluginRefresh, "A14 second retry entered pacing")
+		r.wantEveryWaitingRefreshCredited("road A14")
+	})
+}
+
+// Every path that ends or drops an owed launch of the stale-plugin lane gives its held refresh
+// credit back at the end of that decision (rows G1 to G9), leaving freeCredits(gate) == wakeRate
+// and r.creditsOut() == 0 with zero creditTakenBackMessage records so no path leans on the
+// correction's backstop.
+//
+// This test passes at main as well as after the change; after the change it catches any leak
+// where a new hold is kept after its wait is dropped.
+func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
+	t.Run("G1_retry_starts_process", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "G1 initial park")
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "G1 path 1 retry armed")
+
+		r.advance(testProbe)
+		r.h.wantStarts(u.View().Token, 1)
+		if loc := u.View().Locator; loc == nil {
+			t.Fatal("setup: G1 retry did not record a started process")
+		}
+		if got := u.View().PluginRelaunchFor; got != refreshContract {
+			t.Fatalf("setup: G1 claim marked PluginRelaunchFor = %d, want %d", got, refreshContract)
+		}
+		r.wantAllCreditsReturned("G1 after retry started process")
+	})
+
+	t.Run("G2_retry_timer_meets_held_suspension", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "G2 initial park")
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "G2 path 1 retry armed")
+
+		// On a launching claim with no process and no waiting wake, RequestSuspend is held by
+		// holdSuspendUntilReady until TimerRelaunch fires and calls suspendedFor.
+		err := r.h.postTo(u, RequestSuspend{Claim: u.View().Token, Reason: "operator drain", By: SuspendedByOperator})
+		if !suspensionHeld(err) {
+			t.Fatalf("setup: G2 RequestSuspend while retry waits answered %v, want ErrSuspendHeld", err)
+		}
+		if u.View().State != StateLaunching || !timerArmed(u, TimerRelaunch) {
+			t.Fatalf("setup: G2 claim = %s (TimerRelaunch=%v), want StateLaunching with TimerRelaunch armed",
+				u.View().State, timerArmed(u, TimerRelaunch))
+		}
+
+		r.advance(testProbe)
+		if c := u.View().Claim; c.State != StateSuspended || c.SuspendedBy != SuspendedByOperator {
+			t.Fatalf("setup: G2 claim after TimerRelaunch = %s by %q, want %s by %q",
+				c.State, c.SuspendedBy, StateSuspended, SuspendedByOperator)
+		}
+		if timerArmed(u, TimerRelaunch) {
+			t.Fatal("setup: G2 TimerRelaunch is still armed after suspension")
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantAllCreditsReturned("G2 after retry timer met held suspension")
+	})
+
+	t.Run("G3_stop_clears_waiting_retry", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "G3 initial park")
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "G3 path 1 retry armed")
+
+		r.h.mustPostTo(u, RequestStop{Claim: u.View().Token, By: SuspendedByOperator})
+		if u.View().State != StateRetired {
+			t.Fatalf("setup: G3 claim state after RequestStop = %s, want %s", u.View().State, StateRetired)
+		}
+		if timerArmed(u, TimerRelaunch) {
+			t.Fatal("setup: G3 TimerRelaunch is still armed after RequestStop")
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantAllCreditsReturned("G3 after RequestStop cleared retry")
+	})
+
+	t.Run("G4_retry_lifecycle_check_cleanup_reserved", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "G4 initial park")
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "G4 path 1 retry armed")
+
+		u.deps.Store = &refusableCheckLaunchStore{memStore: r.h.store, refuse: true}
+		r.advance(testProbe)
+		if c := u.View().Claim; c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon {
+			t.Fatalf("setup: G4 claim after reserved cleanup = %s by %q, want %s by %q",
+				c.State, c.SuspendedBy, StateSuspended, SuspendedByDaemon)
+		}
+		if timerArmed(u, TimerRelaunch) {
+			t.Fatal("setup: G4 TimerRelaunch is still armed after suspension")
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantAllCreditsReturned("G4 after retry lifecycle check found cleanup reserved")
+	})
+
+	t.Run("G5_pause_stop_suspends_held_lane_wake", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		r.pause.set(7)
+		r.postAdmitted(u)
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: G5 wake = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+		if !timerArmed(u, TimerPause) {
+			t.Fatal("setup: G5 pauseGate did not arm TimerPause")
+		}
+
+		r.advance(0)
+		if c := u.View().Claim; c.State != StateSuspended || c.SuspendedBy != SuspendedByReleased {
+			t.Fatalf("setup: G5 claim after pauseStopDue = %s by %q, want %s by %q",
+				c.State, c.SuspendedBy, StateSuspended, SuspendedByReleased)
+		}
+		if ws := readWake(u); ws.held {
+			t.Fatalf("setup: G5 wake = %+v still held after pause stop, want none", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantAllCreditsReturned("G5 after pauseStopDue suspended held lane wake")
+	})
+
+	t.Run("G6_suspension_cuts_pod_parked_lane_try", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPods: true})
+		u := r.machines[0]
+		peer := r.addPodRole(u, claim.RoleArchitect)
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "G6 initial park")
+
+		peerToken := peer.View().Token
+		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
+		r.h.wantStarts(peerToken, 1)
+
+		r.advanceToTurn(u)
+		ws := readWake(u)
+		if !ws.held || !ws.parked {
+			t.Fatalf("setup: G6 wake = %+v, want try parked at pod start gate", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		r.h.mustPostTo(u, RequestSuspend{Claim: u.View().Token, Reason: "operator drain", By: SuspendedByOperator})
+		if c := u.View().Claim; c.State != StateSuspended || c.SuspendedBy != SuspendedByOperator {
+			t.Fatalf("setup: G6 claim after suspend = %s by %q, want %s by %q",
+				c.State, c.SuspendedBy, StateSuspended, SuspendedByOperator)
+		}
+		if ws := readWake(u); ws.held {
+			t.Fatalf("setup: G6 wake = %+v still held after suspend, want none", ws)
+		}
+		if got := len(r.h.records.of(podLaunchCutShortLine)); got != 1 {
+			t.Fatalf("setup: G6 podLaunchCutShortLine logged %d times, want 1 (endPodPark)", got)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+		r.wantAllCreditsReturned("G6 after suspension cut pod-parked lane try")
+	})
+
+	t.Run("G7_session_store_or_pod_round_retry_is_launch_kind", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			err   error
+			retry time.Duration
+		}{
+			{"ErrSessionStore", runtime.ErrSessionStore, sessionStoreRetry},
+			{"ErrAwaitingPodRound", runtime.ErrAwaitingPodRound, podRoundRetry},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				r := newBoundRig(t, 1, boundRigOptions{})
+				u := r.machines[0]
+
+				r.postAdmitted(u)
+				wantWaitingKind(t, u, WakePluginRefresh, "G7 "+tc.name+" initial park")
+
+				r.h.rt.OnResume = func(context.Context) error {
+					return fmt.Errorf("resume %s: %w", u.View().Token, tc.err)
+				}
+				r.advanceToTurn(u)
+				r.h.rt.OnResume = nil
+
+				wantRetrySetup(t, u, "G7 "+tc.name+" retry armed")
+				// The credit must already be back at the end of this decision while TimerRelaunch waits.
+				r.wantAllCreditsReturned("G7 " + tc.name + " while launch-kind retry waits")
+
+				// Confirm the retry parks under WakeLaunch rather than WakePluginRefresh.
+				r.advance(tc.retry - time.Second)
+				r.queueSpawns(4)
+				r.advance(time.Second)
+				wantWaitingKind(t, u, WakeLaunch, "G7 "+tc.name+" retry waits under WakeLaunch")
+				r.wantAllCreditsReturned("G7 " + tc.name + " after launch-kind retry parked")
+			})
+		}
+	})
+
+	t.Run("G8_launch_fails_for_good", func(t *testing.T) {
+		t.Run("prompt_refused", func(t *testing.T) {
+			r := newBoundRig(t, 1, boundRigOptions{})
+			u := r.machines[0]
+
+			r.postAdmitted(u)
+			wantWaitingKind(t, u, WakePluginRefresh, "G8 prompt_refused initial park")
+
+			r.h.rt.OnResume = func(context.Context) error {
+				return fmt.Errorf("resume %s: %w", u.View().Token,
+					&runtime.PromptTooLarge{Role: u.View().Role, Bytes: 1_100_000, Frame: 1_100_400})
+			}
+			r.advanceToTurn(u)
+			r.h.rt.OnResume = nil
+
+			if u.View().State != StateFailed {
+				t.Fatalf("setup: G8 prompt_refused state = %s, want %s", u.View().State, StateFailed)
+			}
+			if timerArmed(u, TimerRelaunch) || readWake(u).held {
+				t.Fatal("setup: G8 prompt_refused still holds a retry or wake")
+			}
+			r.wantAllCreditsReturned("G8 prompt_refused")
+		})
+
+		t.Run("budget_spent", func(t *testing.T) {
+			r := newBoundRig(t, 1, boundRigOptions{})
+			u := r.machines[0]
+
+			r.postAdmitted(u)
+			wantWaitingKind(t, u, WakePluginRefresh, "G8 budget_spent initial park")
+
+			r.h.rt.OnResume = func(context.Context) error { return errBoom }
+			r.advanceToTurn(u)
+			r.h.rt.OnResume = nil
+
+			if u.View().State != StateFailed {
+				t.Fatalf("setup: G8 budget_spent state = %s, want %s", u.View().State, StateFailed)
+			}
+			if timerArmed(u, TimerRelaunch) || readWake(u).held {
+				t.Fatal("setup: G8 budget_spent still holds a retry or wake")
+			}
+			r.wantAllCreditsReturned("G8 budget_spent")
+		})
+	})
+
+	t.Run("G9_pause_held_try_let_out_starts_process", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		r.advance(wakeInterval + wakePart)
+		hook := &pauseOnLaunchWriteStore{
+			memStore: r.h.store,
+			token:    u.View().Token,
+			pause:    r.pause,
+			pauseID:  7,
+			armed:    true,
+		}
+		u.deps.Store = hook
+
+		r.postAdmitted(u)
+		if hook.armed {
+			t.Fatal("setup: G9 PutClaim hook did not fire on u's StateLaunching write")
+		}
+		ws := readWake(u)
+		if !ws.held || ws.pause != 7 || ws.parked {
+			t.Fatalf("setup: G9 wake after pauseHeldTry = %+v, want held by pauseGate for pause 7", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		r.pause.set(0)
+		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
+		r.h.wantStarts(u.View().Token, 1)
+		if loc := u.View().Locator; loc == nil {
+			t.Fatal("setup: G9 let-out did not record a started process")
+		}
+		if lines := r.h.logs.lines("the fact this claim's plugin refresh was raised for is gone"); len(lines) != 0 {
+			t.Fatalf("G9 refreshOverturned fired on held lane try: logged %v, want none", lines)
+		}
+		r.wantAllCreditsReturned("G9 after pauseHeldTry let-out started process")
+	})
+}
+
+// Two gate corrections (gate.Correct(0), twice) made while an admitted stale-plugin launch waits
+// outside the wake pacing — on TimerRelaunch, held by the pause's gate, or parked at its issue
+// pod's start gate — keep that claim's credit out and write no creditTakenBackMessage. Once the
+// wait ends, the credit returns on its own with zero creditTakenBackMessage records.
+//
+// The negative control is main at 8868205a18f3: main already gave the credit back when the launch
+// left the pacing, so freeCredits(gate) reads wakeRate (8) instead of wakeRate-1 (7).
+func TestRefreshBoundACorrectionKeepsTheCreditOfALaunchThatWaitsOutsideThePacing(t *testing.T) {
+	checkTwoCorrections := func(t *testing.T, r *boundRig, u *Machine, wait string) {
+		t.Helper()
+		if w := u.View().WakeWaiting; w != nil {
+			t.Fatalf("setup (%s): view shows waiting wake %+v, want none while waiting outside the pacing", wait, w)
+		}
+		for i := 1; i <= 2; i++ {
+			r.gate.Correct(0)
+			r.wantCreditHeld(u, fmt.Sprintf("%s after correction %d", wait, i))
+		}
+	}
+
+	t.Run("retry_on_timer_relaunch", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{})
+		u := r.machines[0]
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "retry_on_timer_relaunch initial park")
+
+		r.h.store.fail("PutClaim", errBoom)
+		r.advanceToTurn(u)
+		r.h.store.fail("PutClaim", nil)
+		wantRetrySetup(t, u, "retry_on_timer_relaunch")
+
+		checkTwoCorrections(t, r, u, "retry_on_timer_relaunch")
+
+		// End the wait: retry runs and starts the process.
+		r.advance(testProbe)
+		r.h.wantStarts(u.View().Token, 1)
+		r.wantAllCreditsReturned("retry_on_timer_relaunch after retry started process")
+	})
+
+	t.Run("wake_held_by_pause_gate", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
+		u := r.machines[0]
+
+		r.pause.set(7)
+		r.postAdmitted(u)
+		ws := readWake(u)
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
+			t.Fatalf("setup: wake_held_by_pause_gate wake = %+v, want WakePluginRefresh held for pause 7", ws)
+		}
+
+		checkTwoCorrections(t, r, u, "wake_held_by_pause_gate")
+
+		// End the wait: pause ends, ResumePause lets the wake into pacing, and its turn starts the process.
+		r.pause.set(0)
+		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
+		wantWaitingKind(t, u, WakePluginRefresh, "wake_held_by_pause_gate after ResumePause")
+		r.advanceToTurn(u)
+		r.h.wantStarts(u.View().Token, 1)
+		r.wantAllCreditsReturned("wake_held_by_pause_gate after let-out started process")
+	})
+
+	t.Run("try_parked_at_pod_start_gate", func(t *testing.T) {
+		r := newBoundRig(t, 1, boundRigOptions{withPods: true})
+		u := r.machines[0]
+		peer := r.addPodRole(u, claim.RoleArchitect)
+
+		r.postAdmitted(u)
+		wantWaitingKind(t, u, WakePluginRefresh, "try_parked_at_pod_start_gate initial park")
+
+		peerToken := peer.View().Token
+		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
+		r.h.wantStarts(peerToken, 1)
+
+		r.advanceToTurn(u)
+		ws := readWake(u)
+		if !ws.held || !ws.parked {
+			t.Fatalf("setup: try_parked_at_pod_start_gate wake = %+v, want try parked at pod start gate", ws)
+		}
+		r.h.wantStarts(u.View().Token, 0)
+
+		checkTwoCorrections(t, r, u, "try_parked_at_pod_start_gate")
+
+		// End the wait: peer's load settles and the pod gate grants u's start.
+		r.registerPeer(peer)
+		r.advance(podLoadSettle)
+		r.h.wantStarts(u.View().Token, 1)
+		r.wantAllCreditsReturned("try_parked_at_pod_start_gate after pod grant started process")
 	})
 }
