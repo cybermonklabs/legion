@@ -29,6 +29,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -255,6 +256,7 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:290); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
 		gac          = "gac@example.iam.gserviceaccount.com"
@@ -304,10 +306,11 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 
 // TestGCPSecretNoSourceListsEverySource: with no source present - no gcloud on PATH, no
 // credentials file, no variable, and nothing answering at the metadata server's address - the
-// command stops within 2 s, before any Secret Manager call, with one refusal that names each of
-// the six sources (the third by both its variables, the well-known file by the setting that
-// names its directory, never its path).
+// command stops at once, waiting on nothing (requireOnTime), before any Secret Manager call, with
+// one refusal that names each of the six sources (the third by both its variables, the well-known
+// file by the setting that names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:317); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
@@ -316,11 +319,12 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	// as a metadata server (testport.Refused).
 	t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	meter := startStallMeter(t)
 	started := time.Now()
 	_, stderr, code := runSecret("show", "SCRATCH_TEST")
-	took := time.Since(started)
-	if code != 1 || took > 2*time.Second {
-		t.Fatalf("exit %d after %s, stderr %q; want 1 within 2s", code, took, stderr)
+	requireOnTime(t, meter, "the command with no source present", started, 0)
+	if code != 1 {
+		t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 	}
 	for _, source := range []string{
 		"CLOUDSDK_AUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
@@ -344,6 +348,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:363); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	for _, row := range []struct {
 		name     string
 		use      func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager)
@@ -506,24 +511,27 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // a token with no answer to the email read signs in, naming the machine's identity generically; a
 // server that answers neither, and an answer that is not Google's, are no metadata server, so the
 // command lists every source; a Google server that answers the token read with an error is
-// present and broken, so that error stops the command.
+// present and broken, so that error stops the command. Each row is timed against the wait the
+// metadata client's own deadlines allow it (waits), less the time this process was held up
+// (requireOnTime).
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:542); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, row := range []struct {
 		name         string
 		token, email metadataAnswer
 		code         int
-		within       time.Duration
+		waits        time.Duration
 		says         []string
 		saysNot      string
 		onlyCall     string
 	}{
-		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, 5 * time.Second,
+		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, googleidentity.ProbeTimeout,
 			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret"},
-		{"answers neither", answerHeld, answerHeld, 1, 15 * time.Second,
+		{"answers neither", answerHeld, answerHeld, 1, 10 * time.Second,
 			[]string{"found no Google credential", "the metadata server: no metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1, 5 * time.Second,
+		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1, 0,
 			[]string{"found no Google credential", "not a Google metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1, 5 * time.Second,
+		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1, 0,
 			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -534,11 +542,12 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
 			startPartialMetadataServer(t, row.token, row.email)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			meter := startStallMeter(t)
 			started := time.Now()
 			_, stderr, code := runSecret("show", "SCRATCH_TEST")
-			took := time.Since(started)
-			if code != row.code || took > row.within {
-				t.Fatalf("exit %d after %s, stderr %q; want %d within %s", code, took, stderr, row.code, row.within)
+			took := requireOnTime(t, meter, "the command against this metadata server", started, row.waits)
+			if code != row.code {
+				t.Fatalf("exit %d after %s, stderr %q; want %d", code, took, stderr, row.code)
 			}
 			for _, said := range row.says {
 				if !strings.Contains(stderr, said) {

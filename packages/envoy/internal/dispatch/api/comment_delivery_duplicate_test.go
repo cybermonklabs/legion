@@ -28,6 +28,7 @@ import (
 // recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
 // same-key tries).
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	t.Parallel()
 	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
@@ -130,6 +131,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // own test rather than a line in the one above. The lookup's window runs on the server's clock,
 // which the test moves to the window's end once the stand-in holds the lookup.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
+	t.Parallel()
 	held := make(chan struct{})
 	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

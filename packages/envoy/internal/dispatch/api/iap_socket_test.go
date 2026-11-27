@@ -116,6 +116,7 @@ func (k iapSocketKeys) pastExpiry(t *testing.T, header http.Header) time.Time {
 // assertion expires. The sockets' read deadlines run on a fake no one moves (liveSocketClock), so
 // no pong the runner holds back ends a socket.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	judged := clocktest.New(time.Now())
 	iap := newIAPSocketKeys(t, database, judged)
@@ -209,6 +210,7 @@ var iapChanges = []iapChange{
 // before the heartbeats' to the first heartbeat, which meets both. No wall clock decides whether
 // the upgrade came in time or when the assertion expired.
 func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -318,13 +320,14 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // The document socket's heartbeat re-checks the assertion its upgrade carried too, and once that
 // assertion expires the socket closes with the document socket's own reopen code, 4412, on which
 // the provider reconnects and the reconnect is admitted again on a fresh assertion; never the
-// silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
+// silent drop that ends a socket whose person no longer resolves. The control, a nine-minute
 // assertion, keeps its socket open and answering its editor. The heartbeats are on the server's
 // clock, a fake the row moves, and the assertion's expiry on a fake of the IAP verifier's own,
 // which the row moves a second past the short assertion's exp and skew (pastExpiry) before the
 // heartbeat that re-checks it, as in
 // TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
@@ -342,8 +345,8 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	// Both sockets, the short and the control, arm the first heartbeat before the clock moves to it.
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat, 2)
 	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
-	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
-		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d, on which the provider reconnects",
+	if code := short.connection().CloseFrame(); code != contracts.DocumentAdmissionRevokedCloseCode {
+		t.Fatalf("the document socket whose upgrade's assertion expired ended with close frame %d (0 for none), want a close frame of %d, on which the provider reconnects",
 			code, contracts.DocumentAdmissionRevokedCloseCode)
 	}
 	// Three more heartbeats, each a check of the control that returned with it still resolving
@@ -360,11 +363,15 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 
 // The document socket's side of the same rule: an expired assertion that IAP's keys no longer
 // verify, or whose person is no longer admitted, ends the socket as any refusal does, with no close
-// frame (1006), never the 4412 on which the provider reconnects as after a rotation. The row moves
-// the verifier's fake a second past the assertion's exp and skew (pastExpiry), with the world
-// changed, before it moves the heartbeats' fake to the first heartbeat, as
+// frame, never the 4412 on which the provider reconnects as after a rotation.
+// Both end of stream and reset can drop a socket without a frame.
+// The test reads the frame the peer received (CloseFrame), not gorilla's status for the drop.
+//
+// The test moves the verifier's fake a second past the assertion's exp and skew (pastExpiry).
+// It changes what the verifier accepts before it moves the heartbeat clock, as
 // TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong does.
 func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			const heartbeat = time.Second
@@ -381,9 +388,16 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 			awaitArmedAt(t, fake, "the document socket's first heartbeat", first)
 			fake.Set(first)
 			testwait.Receive(t, fmt.Sprintf("the document socket whose upgrade's assertion expired, %s, to close", change.name), peer.connection().Ended)
-			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
-				t.Fatalf("the document socket whose upgrade's assertion expired, %s, closed with %d, want %d: it is refused, not rotated",
-					change.name, code, gws.CloseAbnormalClosure)
+			connection := peer.connection()
+			dropped, err := connection.DroppedWithoutCloseFrame()
+			if code := connection.CloseFrame(); code != 0 {
+				t.Fatalf("the document socket whose upgrade's assertion expired, %s, closed with a close frame of %d (its last read: %v), want none: it is refused, not rotated",
+					change.name, code, err)
+			}
+			// Do not count a parser error or a timed-out read as the server dropping the socket.
+			if !dropped {
+				t.Fatalf("the document socket whose upgrade's assertion expired, %s, did not end in a transport disconnect: last read: %v",
+					change.name, err)
 			}
 		})
 	}
@@ -392,6 +406,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
 // under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation.
 func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error

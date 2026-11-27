@@ -72,6 +72,7 @@ func createSuggestionProject(t *testing.T, handler http.Handler, key string) {
 // whose title and body restate an open issue returns that issue among the three suggestions,
 // with its status and a link.
 func TestCreateIssueSuggestsSimilarOpenIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "SUGG")
 
@@ -130,6 +131,7 @@ func TestCreateIssueSuggestsSimilarOpenIssue(t *testing.T) {
 // contriving a genuinely slow query. That context is the caller's, not the check's allowance, so
 // the check says the request ended first rather than that the search ran out of time.
 func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
+	t.Parallel()
 	_, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 
@@ -173,6 +175,7 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 // ask, so this case fails on the bound and not on an empty corpus. The filing's answer then names
 // the ask nowhere. A change that offers it again fails here, and that is what this case is for.
 func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "NOOFFER")
 	const question = "Should the billing service public API use REST or GraphQL?"
@@ -279,8 +282,8 @@ func suggestionsBehindLock(
 	callDeps := deps
 	callDeps.Store = callStore
 	clock := clocktest.New(lockedCheckStart)
+	callDeps.Clock = clock
 	srv := directServer(callDeps)
-	srv.clock = clock
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
@@ -320,6 +323,7 @@ func suggestionsBehindLock(
 // own items), so with `asks` locked the keyword stage waits behind the lock, and the allowance,
 // not the lock's hold time, ends it and reports the check not made for time (sjawhar/legion#2158).
 func TestRelatedCheckRespectsDeadlineUnderLock(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DEADLINE")
 	issue := createSuggestionIssue(t, handler, map[string]any{
@@ -340,6 +344,7 @@ func TestRelatedCheckRespectsDeadlineUnderLock(t *testing.T) {
 // `issues` first under the allowance, so with `issues` locked the allowance ends the lookup while
 // it waits and reports the check not made for time.
 func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "LOCKEDPROJ")
 	issue := createSuggestionIssue(t, handler, map[string]any{
@@ -355,8 +360,8 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 
 // spentRelatedAllowance is the allowance a case gives the related-item check when its outcome is
 // that no check was made: one already spent, which relatedBounds ends before it returns
-// (boundedByClock), so the check reads nothing on any machine. A positive allowance, however
-// small, arms a timer instead, which races
+// (WithTimeoutCause, on either clock), so the check reads nothing on any machine. A positive
+// allowance, however small, arms a timer instead, which races
 // the check's first read on a machine whose clock moves in coarse steps, and whichever won would be
 // the machine's choice.
 const spentRelatedAllowance = -time.Nanosecond
@@ -368,6 +373,7 @@ const spentRelatedAllowance = -time.Nanosecond
 // failing and differ only in the allowance the check runs under (server.relatedAllowance), so
 // each case's outcome is its own choice rather than its machine's speed.
 func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
+	t.Parallel()
 	// fileAsk seeds the corpus — an ask with an answer on the same question, plus a separate
 	// target issue — and files the ask on the target through the real route with the
 	// write-advice query failing. Each call builds its own handler, and so its own database
@@ -483,6 +489,7 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 // register had been given a suggestionTimeout of its own, and that drift is what the field makes
 // possible (INFRA-56).
 func TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound(t *testing.T) {
+	t.Parallel()
 	if got := register(http.NewServeMux(), t.Context(), Deps{}).relatedAllowance(); got != 5*time.Second {
 		t.Fatalf("the server a deployment runs allows %s for its related-item check, want 5s as the route descriptions promise", got)
 	}
@@ -512,6 +519,7 @@ func relatedIndex(related []testSuggestionItem, issueKey string) int {
 // already closed as a duplicate shares the new issue's exact title, so keyword search ranks it
 // above the open issue it was closed into. The open issue is the one to act on, so it comes first.
 func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "SURV")
 	survivor := createSuggestionIssue(t, handler, map[string]any{
@@ -543,6 +551,7 @@ func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
 // the own issue and its spec too; only the other may be listed. The term statistics are refreshed
 // once both issues exist, as the periodic refresh would have.
 func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "OWN")
 	own := createSuggestionIssue(t, handler, map[string]any{
@@ -576,6 +585,7 @@ func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
 // TestCreateAskOnProjectDocumentSuggests: an ask on an unlinked project document gets suggestions
 // too, searched within that document's project.
 func TestCreateAskOnProjectDocumentSuggests(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "PDOC")
 	match := createSuggestionIssue(t, handler, map[string]any{
@@ -659,6 +669,7 @@ func readSuggestionOutcome(t *testing.T, srv *server, sourceIssueKey, suggestedI
 // duplicate of it": a comment on the source issue citing the suggested issue creates a
 // reference-graph edge, which the sweep reads as acted_on.
 func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT1")
@@ -690,6 +701,7 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 // TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly covers "update the existing
 // issue instead of filing another" done without citing the new issue back.
 func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT2")
@@ -721,6 +733,7 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 // TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTarget covers an
 // agent that saw the suggestion and kept working on what it filed instead.
 func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTarget(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT3")
@@ -752,6 +765,7 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 // TestSuggestionOutcomeSweepLeavesSuggestionIgnoredWithNoFurtherActivity is the default: nothing
 // refuses the write and nothing is counted until some signal arrives.
 func TestSuggestionOutcomeSweepLeavesSuggestionIgnoredWithNoFurtherActivity(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT4")

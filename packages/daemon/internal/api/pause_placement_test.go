@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -76,11 +77,15 @@ type pausePlacedCaller struct {
 }
 
 // pausePlacedCallers are the three callers every case asks as. The first two state no contract
-// and are placed by their pod alone; the third is in no pod and is placed by its header.
-var pausePlacedCallers = []pausePlacedCaller{
-	{name: "a pod whose plugin is the contract before pauseContract", remote: statePodAddr + ":41000"},
-	{name: "a pod whose plugin is at pauseContract", remote: pauseAtPodAddr + ":41000", served: true},
-	{name: "a caller in no pod stating this daemon's contract", remote: "192.0.2.1:41000", stated: DaemonAPIVersion, served: true},
+// and are placed by their pod alone; the third is in no pod and is placed by its header. They are
+// made when a test asks, since this daemon's contract is the registry's, which no package-level
+// initializer reads (contracts.go's registerEntry).
+func pausePlacedCallers() []pausePlacedCaller {
+	return []pausePlacedCaller{
+		{name: "a pod whose plugin is the contract before pauseContract", remote: statePodAddr + ":41000"},
+		{name: "a pod whose plugin is at pauseContract", remote: pauseAtPodAddr + ":41000", served: true},
+		{name: "a caller in no pod stating this daemon's contract", remote: "192.0.2.1:41000", stated: DaemonAPIVersion(), served: true},
+	}
 }
 
 // askedAs is a POST of body, as its JSON, to target on handler, asked from caller's address and
@@ -126,12 +131,12 @@ func TestTheReleaseRecordsPlaceACallerThatStatesNoContractByItsPod(t *testing.T)
 
 	// A wake the pause held pairs with no release and names the pause (RecordPodWakeTx).
 	var resumeID int64
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var (
 			taken bool
 			err   error
 		)
-		resumeID, taken, err = store.RecordPodWakeTx(h.ctx, tx, store.PodResume{
+		resumeID, taken, err = store.RecordPodWakeTx(ctx, tx, store.PodResume{
 			Project: testProject, Issue: "LEGION-209", Role: "tester", Kind: "delivery",
 			At: pauseStartsAt.Add(10 * time.Minute), Pause: began.ID,
 		})
@@ -155,7 +160,7 @@ func TestTheReleaseRecordsPlaceACallerThatStatesNoContractByItsPod(t *testing.T)
 		t.Fatalf("the store's records hold no resume %d of pause %d; this test proves nothing: %+v", resumeID, began.ID, records.Resumes)
 	}
 
-	for _, caller := range pausePlacedCallers {
+	for _, caller := range pausePlacedCallers() {
 		t.Run(caller.name, func(t *testing.T) {
 			recorder := askedAs(t, h.handler, caller, releaseRecordsRoute, readRecords(token, registered.Secret, since.Format(time.RFC3339)))
 			if recorder.Code != http.StatusOK {
@@ -201,7 +206,7 @@ func TestAPauseUnavailableRefusalPlacesACallerThatStatesNoContractByItsPod(t *te
 	h.placePodCallers()
 	grant := h.controllerSession()
 
-	for _, caller := range pausePlacedCallers {
+	for _, caller := range pausePlacedCallers() {
 		t.Run(caller.name, func(t *testing.T) {
 			recorder := askedAs(t, h.handler, caller, controllerPauseRoute, ProjectPauseRequest{GrantID: grant, Reason: "a provider outage"})
 			body := pauseRefusalServed(t, recorder, controllerPauseRoute, pause.CodeUnavailable)
@@ -236,7 +241,7 @@ func TestAProjectPausedRefusalPlacesACallerThatStatesNoContractByItsPod(t *testi
 	h.ready(implementer, "ses_implementer", 1)
 	began := beganPause(t, h.pauseOK(operatorPauseRoute, OperatorPauseRequest{Reason: "a provider outage"}, bearer))
 
-	for _, caller := range pausePlacedCallers {
+	for _, caller := range pausePlacedCallers() {
 		t.Run(caller.name, func(t *testing.T) {
 			const compactRoute = "/legion/v1/claims/compact"
 			recorder := askedAs(t, h.handler, caller, compactRoute,

@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+    `dispatch login --device` now polls 5 s further apart after each poll the broker did not
+    answer, or answered 408, 429 or 5xx, from then on, as RFC 8628 has a client poll less often
+    after a connection timeout, and waits out the `Retry-After` of a 408, 429 or 5xx, in seconds or
+    as a date, before the next poll where it asks longer than the interval, though never past the
+    code's lifetime. A code that lapses after such polls says the broker was unreachable or busy
+    for the last ones, and how many. Before, the poll asked again at the same interval, ignored
+    `Retry-After`, and said only that the code expired. It now waits the broker's whole interval
+    where the broker names more than a minute, as RFC 8628 has a client wait at least that long,
+    though never past the code's lifetime; before, it polled at least once a minute. A broker's
+    code that lapses no later than its first poll, the broker's interval on, or had already
+    lapsed, is refused before the code is printed, naming the broker's interval and its codes'
+    lifetime, or the hour where that ends the code first, and what must change at the broker,
+    rather than printed, waited out and said to have expired before the person approved it. The
+    code's end is now kept on the monotonic clock: a step of the system clock no longer ends the
+    wait for the approval early, or keeps it going past the code.
+time: 2026-11-23T11:54:23Z
+custom:
+    Issue: pr5212

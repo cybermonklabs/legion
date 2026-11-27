@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,10 +25,12 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The approval page's two cookies (internal/cipher/approval): the session a sign-in makes, and
@@ -120,9 +123,9 @@ func (f approvalFixture) start(t *testing.T, databaseURL, publicURL string, env 
 	return startBroker(t, brokerOptions{Binary: f.binary, Env: append(f.baseEnv(databaseURL, publicURL), env...)})
 }
 
-// pods is a ciphertest.Pods on base, the one way every broker here is asked for a secret.
-func (f approvalFixture) pods(t *testing.T, base string) ciphertest.Pods {
-	return ciphertest.Pods{T: t, Base: base, Token: ciphertest.IssuerTokens(t, f.issuer, f.podKey, approvalPodAudience)}
+// pods is a podclient.Pods on base, the one way every broker here is asked for a secret.
+func (f approvalFixture) pods(t *testing.T, base string) podclient.Pods {
+	return podclient.Pods{T: t, Base: base, Token: podclient.IssuerTokens(t, f.issuer, f.podKey, approvalPodAudience)}
 }
 
 // dispatchToken is Dispatch's server's own projected ServiceAccount token, as it calls the broker.
@@ -134,7 +137,7 @@ func (f approvalFixture) dispatchToken(t *testing.T) string {
 
 // requirePending fails pods' test unless request id, which pod p made, is still pending on its
 // record.
-func requirePending(pods ciphertest.Pods, p ciphertest.Pod, id, after string) {
+func requirePending(pods podclient.Pods, p podclient.Pod, id, after string) {
 	pods.T.Helper()
 	if reply := pods.State(p, id); reply.State != "pending" || reply.GrantID != nil {
 		pods.T.Fatalf("after %s the request is %+v, want still pending with no grant", after, reply)
@@ -268,8 +271,8 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		t.Fatalf("the broker's boot log does not say sign-in is on:\n%s", broker.Boot)
 	}
 
-	var launch ciphertest.Launcher
-	var podA, podB ciphertest.Pod
+	var launch podclient.Launcher
+	var podA, podB podclient.Pod
 	var requestA, requestB, recordA, recordB string
 	newBrowser := func(t *testing.T) *ciphertest.Browser {
 		return ciphertest.NewBrowser(t, base, http.DefaultTransport, f.issuer)
@@ -527,8 +530,15 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 			t.Fatalf("ada's page for %s on the short-session broker offers no decision", recordB)
 		}
 		old := &http.Cookie{Name: sessionCookieName, Value: b.Cookie(t, sessionCookieName)}
-		// The one fixed wait: past the session's two-second absolute expiry.
-		time.Sleep(3 * time.Second)
+		// The session's two-second absolute expiry is this broker's own setting, in a process of
+		// its own, so what the row waits for is the first read that shows the session gone — a
+		// GET answered with the sign-in redirect — rather than a span of its own. Each read is a
+		// page the address's bucket pays for, so it is asked every tenth of a second.
+		expired := newBrowser(t)
+		testwait.UntilPolling(t, 100*time.Millisecond, "the short-session broker's session to pass its expiry", func() (string, bool) {
+			res := expired.Get(t, "/approve/"+recordB, old)
+			return fmt.Sprintf("%d to %q", res.Status, res.Header.Get("Location")), res.Status == http.StatusFound
+		})
 		replay := newBrowser(t)
 		res := replay.Post(t, "/approve", ciphertest.Decision(form, "approve"), map[string]string{"Origin": base}, old)
 		if res.Status != http.StatusOK || !strings.Contains(ciphertest.PageText(t, res.Body), "Not signed in") ||
@@ -630,7 +640,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 
 		for _, process := range []*brokerProcess{first, second} {
 			process.Terminate(t)
-			if err := process.AwaitExit(t, stopTimeout); err != nil {
+			if err := process.AwaitExit(t); err != nil {
 				t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 			}
 		}

@@ -25,6 +25,7 @@ import (
 // it ended, for the 10 s after its end. Each read's time is the time its access-log line records,
 // and a read of another route is not timed. No time the machine takes decides any of it.
 func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	start := time.Date(2026, time.November, 22, 12, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
 	_, database, deps := newTestServer(t, testServerOptions{clock: fake})

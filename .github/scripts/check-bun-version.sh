@@ -52,7 +52,7 @@
 #      `FROM` on `ghcr.io/cybermonklabs/legion/ci` — the package every image a CI job fetches is copied
 #      into, named by digest — whose digest no row of `.github/ci-images.yaml` holds, or whose row
 #      copies another Bun release, an `ARG BUN_VERSION` default that disagrees with the pin, or
-#      a Dockerfile `RUN` (backslash continuations joined) that installs Bun,
+#      a `RUN` of a Dockerfile (backslash continuations joined) that installs Bun,
 #  11. a tool-manager manifest (any mise file, `.tool-versions`) naming bun.
 #
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot

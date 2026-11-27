@@ -46,6 +46,7 @@ func approveVersion(t *testing.T, handler http.Handler, artifactID, login string
 // the row's - and his answer to it predates his approval, so nothing is carried. The row-true
 // control, which approves the version settlement wrote from the row, carries.
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		attribute string
 		shown     any
@@ -121,6 +122,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 // nobody decided, so the block is not as he approved it, and his answer to it predates his
 // approval: nothing is carried.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
+	t.Parallel()
 	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved under other wording", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})

@@ -150,7 +150,7 @@ func TestAStoredJSONValueIsRedactedLeafByLeaf(t *testing.T) {
 	)
 	_, grantID := grantOf(t, m, enr, key, "migrate the schema", "AWS_PAIR", "DB_LOGIN")
 	command := []string{"psql", "postgresql://app:" + password + "@db/app", "AWS_SECRET_ACCESS_KEY=" + secretKey}
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: command}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: command}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	want := []string{"psql", "postgresql://app:[redacted]@db/app", "AWS_SECRET_ACCESS_KEY=[redacted]"}

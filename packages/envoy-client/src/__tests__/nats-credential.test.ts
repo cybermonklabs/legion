@@ -13,13 +13,14 @@
 // nats-credential-keeper.test.ts's; how long its trades wait, and `renew` and
 // `followNatsCredential`'s deadlines, are nats-credential-deadlines.test.ts's.
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -46,6 +47,10 @@ import {
   TRADE_DEADLINE_MS,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { podEnvironment, stubBroker, tempDir } = natsBrokerStandIns("nats-credential");
 
@@ -74,15 +79,17 @@ function verifiedProof(sig: string): {
 
 /** The credential `envoySettings` resolves for `env` and an envoy.json holding `file` (none
  *  when undefined), or the reason inbound messages are off. */
-function resolved(
+async function resolved(
   env: EnvoyEnvironment,
   file?: unknown
-): NatsCredential | { readonly off: string } {
+): Promise<NatsCredential | { readonly off: string }> {
   const config = path.join(tempDir(), "envoy.json");
   if (file !== undefined) writeFileSync(config, JSON.stringify(file));
-  const settings = envoySettings(env, readEnvoyConfig(config, env, { cwd: tempDir() }), {
-    session: "ses_a",
-  });
+  const settings = await envoySettings(
+    env,
+    await readEnvoyConfig(config, env, { cwd: tempDir() }),
+    { session: "ses_a" }
+  );
   if (!settings.enabled) throw new Error(`Envoy is off: ${settings.error ?? settings.notice}`);
   if ("off" in settings.inbound) return settings.inbound;
   if (!("natsCredential" in settings.inbound)) throw new Error("inbound is the relay socket");
@@ -90,40 +97,43 @@ function resolved(
 }
 
 describe("which credential a session connects to NATS with", () => {
-  test("a broker route, no seed and no NATS_AUTH resolves to none", () => {
+  test("a broker route, no seed and no NATS_AUTH resolves to none", async () => {
     // The machine's broker route says nothing about the hub: dev-stack.sh without --callout, for
     // one, exports a broker route beside a hub that runs no auth service, where a broker token on
     // the CONNECT would lose the session its inbound messages.
-    expect(resolved(podEnvironment("http://broker.test"))).toEqual({ kind: "none" });
-    expect(resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "" })).toEqual({
+    expect(await resolved(podEnvironment("http://broker.test"))).toEqual({ kind: "none" });
+    expect(await resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "" })).toEqual({
       kind: "none",
     });
   });
 
-  test("a seed and no NATS_AUTH resolves to the seed, as it does today", () => {
-    expect(resolved({ ...podEnvironment("http://broker.test"), NATS_NKEY_SEED: "SUSEED" })).toEqual(
-      { kind: "seed", seed: { value: "SUSEED", source: "NATS_NKEY_SEED" } }
-    );
+  test("a seed and no NATS_AUTH resolves to the seed, as it does today", async () => {
+    expect(
+      await resolved({ ...podEnvironment("http://broker.test"), NATS_NKEY_SEED: "SUSEED" })
+    ).toEqual({ kind: "seed", seed: { value: "SUSEED", source: "NATS_NKEY_SEED" } });
   });
 
-  test("NATS_AUTH=broker with a broker route resolves to the session's broker token", () => {
-    const credential = resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" });
+  test("NATS_AUTH=broker with a broker route resolves to the session's broker token", async () => {
+    const credential = await resolved({
+      ...podEnvironment("http://broker.test"),
+      NATS_AUTH: "broker",
+    });
     expect("kind" in credential && credential.kind).toBe("broker");
   });
 
-  test("envoy.natsAuth broker resolves to it too, and NATS_AUTH overrides it", () => {
+  test("envoy.natsAuth broker resolves to it too, and NATS_AUTH overrides it", async () => {
     const env = podEnvironment("http://broker.test");
     const file = { envoy: { natsUrls: ["nats://nats.internal.example:4222"], natsAuth: "broker" } };
-    const fromFile = resolved(env, file);
+    const fromFile = await resolved(env, file);
     expect("kind" in fromFile && fromFile.kind).toBe("broker");
-    expect(resolved({ ...env, NATS_AUTH: "none" }, file)).toEqual({ kind: "none" });
+    expect(await resolved({ ...env, NATS_AUTH: "none" }, file)).toEqual({ kind: "none" });
   });
 
-  test("a hub with no auth service is refused naming the setting that chose the broker token", () => {
+  test("a hub with no auth service is refused naming the setting that chose the broker token", async () => {
     // The remedy is the one that undoes the choice: unsetting NATS_AUTH does nothing for a
     // session whose envoy.json chose the broker token.
     const env = podEnvironment("http://broker.test");
-    const fromFile = resolved(env, {
+    const fromFile = await resolved(env, {
       envoy: { natsUrls: ["nats://nats.internal.example:4222"], natsAuth: "broker" },
     });
     if (!("kind" in fromFile) || fromFile.kind !== "broker")
@@ -131,7 +141,7 @@ describe("which credential a session connects to NATS with", () => {
     expect(() => fromFile.broker.authenticator(undefined)).toThrow(
       /^envoy\.natsAuth in \/\S+\/envoy\.json is broker, but the NATS server sent no nonce to sign: it runs no auth service, so take natsAuth out of that file for this hub$/
     );
-    const fromVariable = resolved({ ...env, NATS_AUTH: "broker" });
+    const fromVariable = await resolved({ ...env, NATS_AUTH: "broker" });
     if (!("kind" in fromVariable) || fromVariable.kind !== "broker")
       throw new Error("no broker credential");
     expect(() => fromVariable.broker.authenticator(undefined)).toThrow(
@@ -139,31 +149,31 @@ describe("which credential a session connects to NATS with", () => {
     );
   });
 
-  test("envoy.natsAuth broker goes only to the servers written beside it", () => {
+  test("envoy.natsAuth broker goes only to the servers written beside it", async () => {
     // As a file's seed does: a session's token and the proof it signs would otherwise go to any
     // server ENVOY_NATS_URL names, which could relay that proof to the hub it was meant for.
     const env = podEnvironment("http://broker.test");
     for (const natsUrls of [["nats://nats.elsewhere.example:4222"], undefined]) {
-      const fromFile = resolved(env, { envoy: { natsUrls, natsAuth: "broker" } });
+      const fromFile = await resolved(env, { envoy: { natsUrls, natsAuth: "broker" } });
       expect("off" in fromFile && fromFile.off).toMatch(
         /^ENVOY_NATS_URL names other servers than \/\S+\/envoy\.json's envoy\.natsUrls; set NATS_AUTH=broker for them$/
       );
     }
     // The variable is the environment's own choice, for whatever servers it names.
-    const fromVariable = resolved(
+    const fromVariable = await resolved(
       { ...env, NATS_AUTH: "broker" },
       { envoy: { natsUrls: ["nats://nats.elsewhere.example:4222"] } }
     );
     expect("kind" in fromVariable && fromVariable.kind).toBe("broker");
   });
 
-  test("NATS_AUTH=none resolves to none", () => {
-    expect(resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "none" })).toEqual({
+  test("NATS_AUTH=none resolves to none", async () => {
+    expect(await resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "none" })).toEqual({
       kind: "none",
     });
   });
 
-  test("NATS_AUTH=broker with a key dir and no machine identity resolves inbound off", () => {
+  test("NATS_AUTH=broker with a key dir and no machine identity resolves inbound off", async () => {
     // Every enrolled Legion pod's environment before it is given an identity to trade: a key
     // directory, a broker, and nothing this client can prove.
     const env: EnvoyEnvironment = {
@@ -173,34 +183,34 @@ describe("which credential a session connects to NATS with", () => {
       AGENT_SECRETS_KEY_DIR: tempDir(),
       NATS_AUTH: "broker",
     };
-    expect(resolved(env)).toEqual({
+    expect(await resolved(env)).toEqual({
       off: "NATS_AUTH is broker, but AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine proves",
     });
   });
 
-  test("NATS_AUTH=broker with no broker resolves inbound off naming the gap", () => {
+  test("NATS_AUTH=broker with no broker resolves inbound off naming the gap", async () => {
     const env = {
       ...podEnvironment("http://broker.test"),
       AGENT_SECRETS_URL: "",
       NATS_AUTH: "broker",
     };
-    expect(resolved(env)).toEqual({
+    expect(await resolved(env)).toEqual({
       off: "NATS_AUTH is broker, but AGENT_SECRETS_URL names no secrets broker to trade it at",
     });
   });
 
-  test("NATS_AUTH=broker beside a seed resolves inbound off naming both", () => {
+  test("NATS_AUTH=broker beside a seed resolves inbound off naming both", async () => {
     const env = {
       ...podEnvironment("http://broker.test"),
       NATS_AUTH: "broker",
       NATS_NKEY_SEED: "SUSEED",
     };
-    expect(resolved(env)).toEqual({
+    expect(await resolved(env)).toEqual({
       off: "NATS_AUTH is broker, and NATS_NKEY_SEED names an nkey seed: set one of the two",
     });
   });
 
-  test("NATS_AUTH=none beside a seed resolves to the seed", () => {
+  test("NATS_AUTH=none beside a seed resolves to the seed", async () => {
     // A seed is the credential wherever one is set (the plan's table); only `broker` beside it
     // names two credentials at once.
     const env = {
@@ -208,40 +218,44 @@ describe("which credential a session connects to NATS with", () => {
       NATS_AUTH: "none",
       NATS_NKEY_SEED: "SUSEED",
     };
-    expect(resolved(env)).toEqual({
+    expect(await resolved(env)).toEqual({
       kind: "seed",
       seed: { value: "SUSEED", source: "NATS_NKEY_SEED" },
     });
   });
 
-  test("another value resolves inbound off naming the setting and its two values, not the value", () => {
+  test("another value resolves inbound off naming the setting and its two values, not the value", async () => {
     // A value is never echoed: a seed or token pasted into the wrong setting is a credential.
     const env = podEnvironment("http://broker.test");
-    expect(resolved({ ...env, NATS_AUTH: "SUAPASTEDSEED" })).toEqual({
+    expect(await resolved({ ...env, NATS_AUTH: "SUAPASTEDSEED" })).toEqual({
       off: "NATS_AUTH is neither broker nor none",
     });
-    const fromFile = resolved(env, { envoy: { natsAuth: "Broker" } });
+    const fromFile = await resolved(env, { envoy: { natsAuth: "Broker" } });
     expect("off" in fromFile && fromFile.off).toMatch(
       /^envoy\.natsAuth in \/\S+\/envoy\.json is neither broker nor none$/
     );
   });
 
-  test("a caller that opens no NATS connection resolves no credential", () => {
+  test("a caller that opens no NATS connection resolves no credential", async () => {
     const env = { ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" };
-    const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-    const settings = envoySettings(env, config, { nats: false });
+    const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+      cwd: tempDir(),
+    });
+    const settings = await envoySettings(env, config, { nats: false });
     expect(settings.enabled && settings.inbound).toEqual({
       off: "this session opens no NATS connection",
     });
   });
 
-  test("NATS_AUTH=broker for a caller that names no session resolves inbound off naming it", () => {
+  test("NATS_AUTH=broker for a caller that names no session resolves inbound off naming it", async () => {
     // A trade under no session is answered the machine's token, under AGENT_SECRETS_SESSION, or
     // the signed-in person's: neither is the session the connection delivers to (the review of
     // 2fa6fbf7cf, h4).
     const env = { ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" };
-    const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-    const settings = envoySettings(env, config, {});
+    const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+      cwd: tempDir(),
+    });
+    const settings = await envoySettings(env, config, {});
     // The reason is typed too (`noSessionNamed`), for a caller with a remedy of its own
     // (`operatorNatsSeed`), which branches on it rather than on the text. Every other reason
     // stays untyped: the rows above hold each one with `toEqual({ off })`.
@@ -275,8 +289,11 @@ describe("the broker token's authenticator", () => {
     const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
     // Before the token is in hand it presents nothing, and never throws: nats.js closes a
     // connection for good when its authenticator throws.
+    // The trade starts here: an authenticator with no token in hand asks for one.
+    const asked = Date.now();
     expect(credential.authenticator("nonce-0")).toBeUndefined();
     await credential.ready();
+    const answered = Date.now();
     const auth = credential.authenticator("nonce-1") as { auth_token: string; sig: string };
     expect(Object.keys(auth).sort()).toEqual(["auth_token", "sig"]);
     const [minted] = broker.state.minted;
@@ -302,9 +319,13 @@ describe("the broker token's authenticator", () => {
         "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
       );
     }
-    // When the token in hand lapses: the answer's expires_in, read when it arrived.
-    const lapses = credential.expiresAt().getTime();
-    expect(Math.abs(lapses - (minted?.expiresAt ?? 0))).toBeLessThan(2_000);
+    // When the token in hand lapses: the answer's expires_in, read when it arrived. The broker
+    // mints it after the row asked, and the token client reads the answer after that and before
+    // `ready` returns, so the expiry it holds is the broker's, later by at most the time the row
+    // measured around the trade, however long the machine held either side.
+    const late = credential.expiresAt().getTime() - (minted?.expiresAt ?? 0);
+    expect(late).toBeGreaterThanOrEqual(0);
+    expect(late).toBeLessThanOrEqual(answered - asked);
   });
 });
 

@@ -37,6 +37,7 @@ func startOfPeriodAfterNext(interval time.Duration) time.Time {
 // inside a period already served makes no statement of its own. The periods the passes served are
 // read off those records, the lease's own, rather than off the test's clock around the passes.
 func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	recorders := make([]*storetest.StatementRecorder, 0, 2)

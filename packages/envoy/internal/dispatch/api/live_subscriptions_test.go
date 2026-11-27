@@ -134,6 +134,7 @@ func hubSubs(hub *deliveryHub) int {
 }
 
 func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -182,6 +183,7 @@ func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
 }
 
 func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
 	// The page reads nothing until the writer is let go, so it answers no ping until then: a
@@ -250,6 +252,7 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 // select picks among ready cases at random, so a writer that trusts its earlier look writes the
 // event first in about half of the rounds and passes all of them one time in 2^rounds.
 func TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames(t *testing.T) {
+	t.Parallel()
 	const rounds = 40
 	events := newFakeLiveKind(1, 0)
 	rig := newLiveSocketRig(t, testServerOptions{
@@ -359,6 +362,7 @@ func (writer *idleWriterHold) waitHeld(t *testing.T) {
 func (writer *idleWriterHold) release() { writer.resume <- struct{}{} }
 
 func TestAResumeOfTheWrongShapeIsAnInvalidFrame(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	agent := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{
@@ -407,6 +411,7 @@ func TestAResumeOfTheWrongShapeIsAnInvalidFrame(t *testing.T) {
 }
 
 func TestASubscriptionKnowsWhichScopesItsCallerHolds(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
 	for name, test := range map[string]struct {
@@ -428,6 +433,7 @@ func TestASubscriptionKnowsWhichScopesItsCallerHolds(t *testing.T) {
 // queue rather than dropping frames or closing the socket; once the page reads again it is sent
 // every frame, in order.
 func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	const frames = 400
 	events := newFakeLiveKind(frames, 512)
 	// The page answers no ping while it reads nothing: a heartbeat past the run keeps the pong
@@ -463,6 +469,7 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 }
 
 func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
+	t.Parallel()
 	t.Run("the page unsubscribes", func(t *testing.T) {
 		events := newFakeLiveKind(-1, 512)
 		held := &heldWrites{}
@@ -560,6 +567,7 @@ func (s *contextBoundSubscription) stop() { <-s.done }
 // subscriptions run on before the socket waits for them, so a subscription that ends on that
 // context alone ends, and the socket's handler returns.
 func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
+	t.Parallel()
 	for name, end := range map[string]func(t *testing.T, rig *liveSocketRig, client *socketClient){
 		"the page closes it": func(t *testing.T, _ *liveSocketRig, client *socketClient) {
 			closing := gws.FormatCloseMessage(gws.CloseGoingAway, "")

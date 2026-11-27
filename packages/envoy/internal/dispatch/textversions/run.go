@@ -76,6 +76,11 @@ type Config struct {
 	// duty.HoldReleasedChannel): a standby tries for the hold on it, as well as every
 	// standbyRetry. Nil leaves the retry alone.
 	Released <-chan struct{}
+	// retry, when set, stands in for the standby's ticker of standbyRetry: each value it receives
+	// is one more try for the hold. A test of this package sets it, so the standby retries when the
+	// test says and the test's verdict waits on no ticker; nil, as every serving process leaves it,
+	// is the ticker.
+	retry <-chan time.Time
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
 }
@@ -176,11 +181,16 @@ func (r *runner) run(ctx context.Context) {
 }
 
 // standBy tries for the hold until it takes it, and answers it, or until ctx ends, and answers
-// nil: at once, then each time cfg.Released is signalled and every retry. It says it stands by
-// once, at the first refusal.
+// nil: at once, then each time cfg.Released is signalled and every retry (a ticker of
+// standbyRetry, or cfg.retry where a test sets it). It says it stands by once, at the first
+// refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
-	retry := time.NewTicker(standbyRetry)
-	defer retry.Stop()
+	retry := r.cfg.retry
+	if retry == nil {
+		ticker := time.NewTicker(standbyRetry)
+		defer ticker.Stop()
+		retry = ticker.C
+	}
 	said := false
 	for {
 		hold, err := r.tryHold(ctx)
@@ -199,7 +209,7 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 		case <-ctx.Done():
 			return nil
 		case <-r.cfg.Released:
-		case <-retry.C:
+		case <-retry:
 		}
 	}
 }

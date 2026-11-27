@@ -19,6 +19,8 @@ import (
 // timeout, and the start goes on, every token left in its row for the next boot and the counts
 // logged without a token.
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
+	// to a wall-clock bound load could break (the 5 s bound on the retirement).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	pool.DelayRevocation(time.Minute)
@@ -67,6 +69,7 @@ func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 // The boot's retirement against a sign-in pool that cannot be discovered fails every token
 // without a revocation sent, leaves each in its row for the next boot, and the start goes on.
 func TestRetirePlainRefreshTokensAgainstAnUndiscoveredPoolKeepsEveryToken(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	pool.FailDiscovery(http.StatusServiceUnavailable)
@@ -102,6 +105,7 @@ func TestRetirePlainRefreshTokensAgainstAnUndiscoveredPoolKeepsEveryToken(t *tes
 // a page route (/auth/whoami) and by the API (/api/v1/whoami), never 401 or 500; once the issuer
 // answers, the same cookie is served 200 by both after one refresh.
 func TestASignInIssuerOutageAnswersThePageAndTheAPI503AndKeepsTheCookie(t *testing.T) {
+	t.Parallel()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL(), "DISPATCH_SIGNIN_GROUP": "dispatch-members"})
 	people := peopleStore(t)

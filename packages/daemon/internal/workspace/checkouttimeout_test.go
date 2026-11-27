@@ -54,12 +54,13 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 // writes the issue's whole working copy, is given CheckoutTimeout, and a command carrying no
 // bound of its own — `jj workspace update-stale`, which only a workspace that already exists runs,
 // among them — the runner's slow-command budget. The shared clone's size-following steps share one
-// CloneTimeout and are TestTheSharedClonesCloneIsBoundedByCloneTimeout's, so this case passes
-// over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
+// CloneTimeout (TestProvisionClonesThroughTemporarySiblingWithCredentialReset on the tmux runtime,
+// TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds in an issue pod), so this case
+// passes over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
 // together, so both paths through Provision are covered.
 func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 	run := newLocalRunner(t)
-	req := feedRequest(t, run, provisionRequest(t))
+	req := provisionRequest(t)
 	checkouts, stale := 0, 0
 	for _, round := range []string{"a fresh workspace", "a workspace that already exists"} {
 		before := len(run.Calls())
@@ -67,9 +68,8 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 			t.Fatalf("provision %s: %v", round, err)
 		}
 		for _, call := range run.Calls()[before:] {
-			// The shared clone's own size-following steps carry what remains of CloneTimeout, and
-			// are TestTheSharedClonesCloneIsBoundedByCloneTimeout's: they are recognised here the
-			// way that case recognises them, and left to it.
+			// The shared clone's own size-following steps carry what remains of CloneTimeout: they
+			// are recognised here by isSharedCloneStep, and left to the tests named above.
 			if isSharedCloneStep(call.Argv) {
 				continue
 			}

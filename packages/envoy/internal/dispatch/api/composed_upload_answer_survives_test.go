@@ -44,6 +44,7 @@ const answerSurvivesComposedOpener = `:::ask{urgency="med" multiple="false"}`
 // the block of the document it was answered on; no second row opens, and no second item appears
 // in her Inbox.
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *testing.T) {
+	t.Parallel()
 	fixture := seedAnswerSurvives(t)
 	before := fixture.answered
 
@@ -92,6 +93,7 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *
 // the settlement's own retraction, naming the version it left in, and it leaves the person's
 // Inbox.
 func TestAnUploadThatDropsAnAskBlockStillRetractsItsAsk(t *testing.T) {
+	t.Parallel()
 	fixture := seedAnswerSurvives(t)
 
 	fixture.upload(t, composedBody(t, withoutAskBlock(t, fixture.answered.text, "rollout")))

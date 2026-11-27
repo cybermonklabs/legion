@@ -27,6 +27,7 @@ import (
 // correction goes on. Both must succeed, and the document must carry the corrected title and the
 // comment.
 func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
+	t.Parallel()
 	held := newHeldStatement(t, "update artifacts set name")
 	fixture := newItemRowFixture(t, testServerOptions{tracer: held}, "Project document title", "A spec.\n")
 	const quote = "The outbox ships first."

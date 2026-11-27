@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -261,6 +262,7 @@ func embedWindowsAs(t *testing.T, database *store.Store, embedder *fakeEmbedder,
 // deterministic cosine match, since keyword search (websearch_to_tsquery) cannot match a query
 // term absent from the corpus at all.
 func TestSearchFindsAMeaningOnlyMatch(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -270,12 +272,9 @@ func TestSearchFindsAMeaningOnlyMatch(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	// Sanity: keyword search for this query matches nothing at all (the term appears nowhere),
-	// so any hit below can only have come from the meaning leg.
-	keywordOnly := searchResponse(t, newTestHandler(t), "q=wibbleflorp")
-	if len(keywordOnly.Results) != 0 {
-		t.Fatalf("keyword-only baseline found %d results for a term absent from the corpus, want 0", len(keywordOnly.Results))
-	}
+	// Sanity: the keyword leg alone finds nothing for this query in this test's own corpus, so
+	// any hit below can only have come from the meaning leg.
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
@@ -296,6 +295,7 @@ func TestSearchFindsAMeaningOnlyMatch(t *testing.T) {
 // and the answer - cosine-matches it, and no part of it shares a term with the query, so the
 // block the hit names is the first the window covers, the question.
 func TestSearchAskStateRidesAMeaningMatch(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "MEAN", "Bearing upkeep", "Routine upkeep notes.")
@@ -334,13 +334,13 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority over
+// background work: cmd/dispatch paces every call embedqueue makes (embedqueue.Deps.Paced keeps an
+// embed.RateLimitedEmbedder as the queue's pace) and never wraps the client api.Deps holds, so a
+// live search request's own query embedding is never paced or blocked by that limiter, however
+// deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
+// whose errFor discriminates by InputType, matching how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
@@ -351,6 +351,7 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // slot. A search that waited behind that work would not answer until the drain was let go, which
 // happens only once every search has answered.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -375,9 +376,8 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
-	floor := backgroundEmbedder.Interval()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
+	floor := backgroundDeps.PaceIntervalForTest()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -398,7 +398,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			t.Fatal("the background drain stopped before any call of it was throttled")
 		default:
 		}
-		interval := backgroundEmbedder.Interval()
+		interval := backgroundDeps.PaceIntervalForTest()
 		return interval, interval > floor
 	})
 
@@ -442,6 +442,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 // same thing as a relevant result. Below searchMeaningFloor the content never reaches legs at
 // all; at or above it, it does.
 func TestSearchMeaningFloorExcludesWeakMatches(t *testing.T) {
+	t.Parallel()
 	const belowFloor = 0.1 // < searchMeaningFloor (0.25)
 	const atFloor = 0.25
 	const weakTitle, lineTitle, spec = "Unrelated quarterly budget notes", "Right at the line", "Body text."
@@ -474,6 +475,7 @@ func TestSearchMeaningFloorExcludesWeakMatches(t *testing.T) {
 // related-item check tries the embedder too, so only calls made after it answered are the
 // search's.
 func TestSearchAnswersKeywordOnlyWhenTheEmbedderFails(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{err: errors.New("bedrock: simulated outage")}
 	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "DEGR", "Astrolabe calibration guide", "Keyword body text.")
@@ -500,6 +502,7 @@ func TestSearchAnswersKeywordOnlyWhenTheEmbedderFails(t *testing.T) {
 // when the default Bedrock client's AWS config load fails (cmd/dispatch's newEmbedder), and
 // search still answers, keyword-only, saying so.
 func TestSearchAnswersKeywordOnlyWithNoEmbedderConfigured(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "NOEM", "Astrolabe calibration guide", "Keyword body text.")
 
@@ -518,6 +521,7 @@ func TestSearchAnswersKeywordOnlyWithNoEmbedderConfigured(t *testing.T) {
 // embedder and all. The issue create's related-item check embeds its own text, so only calls
 // made after it answered are the search's.
 func TestSearchSkipsTheEmbedderForAStopWordOnlyQuery(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	createInteractionIssue(t, handler, "SKIP", "Astrolabe calibration guide", "Keyword body text.")
@@ -549,6 +553,7 @@ func TestSearchSkipsTheEmbedderForAStopWordOnlyQuery(t *testing.T) {
 // alone. Summing the legs, rather than taking the better one, is what puts an item both legs
 // found above the same item one leg found - asserted here against each of its own two terms.
 func TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning(t *testing.T) {
+	t.Parallel()
 	const bothTitle, bothSpec = "Harbor lantern inspection report", "Body text one."
 	const meaningOnlyTitle, meaningOnlySpec = "Unrelated maintenance budget request", "Body text two."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -618,6 +623,7 @@ func issueKeywordRank(t *testing.T, database *store.Store, query, key string) fl
 // meaning hit, while the right-identity issue does. Recording the same vector under the query
 // embedder's identity then ranks it first, so its absence was the identity alone.
 func TestSearchNeverRanksAVectorOfAnotherIdentity(t *testing.T) {
+	t.Parallel()
 	const rightTitle, foreignTitle, spec = "Celestial navigation device maintenance", "Sextant mirror alignment checklist", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(rightTitle, spec):   angledVector(0.5, 2),
@@ -660,6 +666,7 @@ func TestSearchNeverRanksAVectorOfAnotherIdentity(t *testing.T) {
 // with no error and not degraded, as a deployment that changed its embedder does until it has
 // embedded again. A meaning-only match by another identity's vector, however close, is not a hit.
 func TestSearchOnAProcessWhoseEmbedderIsNotActiveAnswersItsTextMatches(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		"Astrolabe calibration guide": angledVector(0.3, 2),
 		"Celestial instrument upkeep": angledVector(0.95, 3),
@@ -712,6 +719,7 @@ func maxBlock(word string) string {
 // which held because the block bound and the embedder's input bound (embed.MaxInputRunes)
 // agree; a block past either bound had no vector for its tail at all, which is what windows fix.
 func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) {
+	t.Parallel()
 	embedder := &recordingEmbedder{fakeEmbedder: &fakeEmbedder{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "LONG", "Longest bodies", "Body text.")
@@ -778,6 +786,7 @@ func requireEveryStretchEmbedded(t *testing.T, owner, body string, embedded []st
 // Once the endpoint answers 200 and the queue runs again, the comment is embedded under the
 // Azure identity, the coverage report says so, and search ranks it by meaning, not degraded.
 func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
+	t.Parallel()
 	const commentBody = "Recalibrate the theodolite before the survey."
 	var healthy atomic.Bool
 	azure := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -895,12 +904,14 @@ func searchHit(t *testing.T, response model.SearchResponse, kind, id string) mod
 	return model.SearchResult{}
 }
 
-// requireNoKeywordHit fails unless a Dispatch with no embedder finds nothing for the query, so
-// a hit the test then asserts can only have come from the meaning leg.
-func requireNoKeywordHit(t *testing.T, query string) {
+// requireNoKeywordHit fails unless the keyword leg alone (?keywords_only=true) finds nothing for
+// the query in the corpus handler serves, so a hit the test then asserts on that same handler can
+// only have come from the meaning leg.
+func requireNoKeywordHit(t *testing.T, handler http.Handler, query string) {
 	t.Helper()
-	if keywordOnly := searchResponse(t, newTestHandler(t), query); len(keywordOnly.Results) != 0 {
-		t.Fatalf("keyword-only baseline found %d results for %s, want none", len(keywordOnly.Results), query)
+	if keywordOnly := searchResponse(t, handler, query+"&keywords_only=true"); len(keywordOnly.Results) != 0 {
+		t.Fatalf("the keyword leg alone found %d results for %s, want none: %+v",
+			len(keywordOnly.Results), query, keywordOnly.Results)
 	}
 }
 
@@ -908,6 +919,7 @@ func requireNoKeywordHit(t *testing.T, query string) {
 // window over all three, and a hit on that window names the block whose own text ranks highest
 // for the query, not the comment's first block.
 func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
+	t.Parallel()
 	const query = "theodolite recalibration"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -940,6 +952,7 @@ func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
 // document, so no keyword leg can find it, and the hit names the long block and opens the
 // document at it.
 func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
+	t.Parallel()
 	const tail = "Vernier scales are read against the limb."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -977,7 +990,7 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	block := strings.Split(piece, "/p")[0]
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -996,6 +1009,7 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 // option finds the ask through that window and names the option's own part - not the question,
 // which the window is named for and whose text is its context.
 func TestAnOptionIsTheHitThroughTheWindowHoldingItsQuestion(t *testing.T) {
+	t.Parallel()
 	const query = "graphite powder"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -1039,6 +1053,7 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // then yields that one document, and every other document the query matches by meaning is
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "CROWD", "Crowded windows", "Body text.")
@@ -1061,13 +1076,21 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 		t.Fatalf("the long document holds %d windows, want more than the %d items an arm keeps", len(windows), contracts.SearchKindDepth)
 	}
 	// The long document's windows are the nearest rows of the document arm, so at a candidate
-	// depth of SearchKindDepth they are all of it.
-	embedWindowsAs(t, database, embedder, "document_block", long.ID, angledVector(0.9, 2))
+	// depth of SearchKindDepth they are all of it. Each window has a vector of its own, a hair
+	// apart from the next and every one nearer the query than the short document's: the arm's
+	// index walk (HNSW) does not promise its LIMIT among many identical vectors, so one vector for
+	// every window could leave the short document unreached for a reason of the index rather than
+	// of the arm's candidate depth, as it did among the package's parallel tests in envoy-go-race-api
+	// job 137391716843 (INFRA-1588's architect's reading of that run).
+	// The lowest of them, 0.9 - 0.0001 x the window count, stays far above the short document's 0.5.
+	for index, id := range slices.Sorted(maps.Keys(windows)) {
+		embedder.vectors[windows[id]] = angledVector(0.9-float64(index)*0.0001, 10+index)
+	}
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1086,6 +1109,7 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 // which is what the arm's ten-times-deeper candidate set buys - at a candidate depth of
 // SearchKindDepth they would be the whole arm and the project's own comment would be lost.
 func TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments(t *testing.T) {
+	t.Parallel()
 	nearer := contracts.SearchKindDepth + 1
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -1105,7 +1129,7 @@ func TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments(t *te
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+own.ID, angledVector(0.5, 2))
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1162,6 +1186,7 @@ func crowdCommentWindows(t *testing.T, database *store.Store, embedder embed.Emb
 // this arm is the one measured above - which is what
 // TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling stands on.
 func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
@@ -1178,7 +1203,7 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 	processAllPending(t, database, embedder)
 	recordEmbeddingProjectKeyFill(t, database, true)
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1220,6 +1245,7 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 // sibling records the fill done, which is what keeps that test green and is the honest state for
 // what that test measures; this is the half of the pair nothing covered.
 func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
@@ -1239,7 +1265,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 		t.Fatal("the progress row reads done, so this fixture is not the fill window it is written for")
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1251,7 +1277,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 
 // TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep is the defect at the other boundary:
 // not the project's, but q's own three filters (searchRowFilters). The route says ?status=,
-// ?author= and ?updated_since= narrow every leg of the search (routes_table.go, GET
+// ?author= and ?updated_since= narrow every leg of the search (the route files of GET
 // /api/v1/search), and main applies all three inside the comment arm's ordered, limited
 // candidate select. The arm this change buys takes the nearest searchWindowCandidates comment
 // windows first and applies them above that limit, so one crowd of windows the filter would
@@ -1283,6 +1309,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 // not done the scoped search already takes the joined statement, and the scoped case here would
 // prove nothing about the filters.
 func TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep(t *testing.T) {
+	t.Parallel()
 	const project = "FLTR"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -1314,7 +1341,7 @@ func TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep(t *testing.T) {
 
 	// One baseline for the three queries: the word is in no row of the corpus, so every hit
 	// below came from the meaning leg, and each filter only narrows that further.
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	// Each case's name is the parameter's own name, which is what the query binds it under.
 	for _, filter := range []struct{ name, value string }{
 		{"author", "alice"},
@@ -1427,6 +1454,7 @@ func searchResultKeys(results []model.SearchResult) []string {
 // neither page: nothing maps its text, so it embeds at cosine 0 and stands below
 // searchMeaningFloor, which is why five rather than six is the whole answer.
 func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
+	t.Parallel()
 	const project, title, spec = "UNFL", "An unlabelled subject", "Body text."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		"wibbleflorp":                   queryVector(),
@@ -1458,7 +1486,7 @@ func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
 		t.Fatal("the fill's row reads done, so this test stands after the pass rather than during it")
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	scoped := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	if scoped.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", scoped.Degraded)
@@ -1529,13 +1557,14 @@ func unlabelledFillWindow(t *testing.T, project string) (http.Handler, *store.St
 // long as that lasted, where the release before it answered from the owner each arm joins
 // (INFRA-988).
 func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testing.T) {
+	t.Parallel()
 	const project = "NOTB"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	if _, err := database.Pool.Exec(context.Background(), "drop table embeddings_project_key_backfill"); err != nil {
 		t.Fatalf("drop the fill's progress table: %v", err)
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
@@ -1552,8 +1581,9 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testin
 // So the search this test drives is the first one on a connection that holds such a plan, which
 // is the one that failed.
 func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *testing.T) {
+	t.Parallel()
 	const project = "BADV"
-	_, database, deps, issueKey, commentID := unlabelledFillWindow(t, project)
+	handler, database, deps, issueKey, commentID := unlabelledFillWindow(t, project)
 	// The search runs on a store of one connection, so the connection that holds the cached
 	// plan is the connection it searches on (storetest.SingleConnection, as the issue read's
 	// own prepared-statement test uses it). Preparing the read on every connection of the
@@ -1571,7 +1601,9 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 		}
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	// The keyword check goes through the fixture's handler, whose store is the shared pool and
+	// not the one connection above, so the search below is still the first on that connection.
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	response, err := served.runSearch(context.Background(),
 		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit})
 	if err != nil {
@@ -1598,6 +1630,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
 // waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	ctx := context.Background()
@@ -1613,7 +1646,7 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 		t.Fatalf("lock the fill's progress row: %v", err)
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)

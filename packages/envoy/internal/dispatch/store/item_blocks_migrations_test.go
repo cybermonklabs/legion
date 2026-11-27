@@ -67,11 +67,9 @@ func assertItemOwed(t *testing.T, store *Store, what, kind, id string) itemBlock
 // block-aware build's own index, in the write's transaction, leaves the item indexed, and the
 // reconciliation's owed reads are served by their partial indexes.
 func TestAnOlderBuildsWriteLeavesTheItemOwed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	seedBlockIndexIssue(t, store)
 
@@ -165,9 +163,9 @@ func TestAnOlderBuildsWriteLeavesTheItemOwed(t *testing.T) {
 // comment or message written before 0142, and one written after 0142 and before the trigger that
 // owes its kind (an older build's write during the migrations), each gets an owed state row.
 func TestTheItemBlockMigrationsOweEveryStoredItem(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeItemBlocks)
+	store := openMigratedTestStore(t, beforeItemBlocks)
 	seedBlockIndexIssue(t, store)
 	insertComment := func(body string) string {
 		return insertReturningID(t, store, `
@@ -185,7 +183,7 @@ func TestTheItemBlockMigrationsOweEveryStoredItem(t *testing.T) {
 		insert into messages (author, body, target) values ('{"kind":"user","id":"alice"}', 'Older', 'session:s1')
 		returning id::text`)
 
-	migrateThrough(t, store, itemBlockTables)
+	migrateAbove(t, store, beforeItemBlocks, itemBlockTables)
 	racedComment := insertComment("Raced")
 	racedMessage := insertMessage("Raced")
 

@@ -44,8 +44,10 @@
 //
 // # Deadline contexts
 //
-// WithTimeout and WithDeadline give a context that ends once the fake reaches its deadline, with
-// context.DeadlineExceeded as its error and its cause, as a context derived from it does too. Its
+// WithTimeout, WithTimeoutCause and WithDeadline give a context that ends once the fake reaches its
+// deadline with context.DeadlineExceeded as its error, and as its cause or the one WithTimeoutCause
+// names, as a context derived from it does too; a cancel that runs first ends it with
+// context.Canceled as its error and cause, as the context package's own do. Its
 // Deadline reports the parent's and never the fake's own: a fake deadline that reached pgx, nats.go
 // or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
 // never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
@@ -73,9 +75,6 @@ type Fake struct {
 	wall  func() time.Time
 	now   time.Time
 	added time.Duration
-	// stepped is every step StepWall has made, which Now reads on top of the fake's moment and the
-	// timers do not.
-	stepped time.Duration
 	// arms counts every arm, so the timers due together fire in the order they were armed.
 	arms    uint64
 	pending []*timer
@@ -89,32 +88,11 @@ func New(start time.Time) *Fake { return &Fake{now: start} }
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
 func Held() *Fake { return &Fake{held: true, wall: time.Now} }
 
-// Now is the fake's moment plus every step StepWall has made.
+// Now is the fake's moment.
 func (c *Fake) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.nowLocked().Add(c.stepped)
-}
-
-// StepWall steps the wall clock that Now reads by d, forward or back, as an operator or NTP steps
-// a machine's clock, and fires no timer. The timers, Armed, Advance, Set and SetWhen
-// stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the wall clock
-// does. What a channel timer sends carries the steps, as what Go's sends does: Go sends the moment
-// a timer fell due read on the wall clock as it sends (time.sendTime, Now less the lateness), so a
-// channel timer here sends its deadline plus every step made; one armed for a moment the fake has
-// already reached sends the moment it was armed plus every step. A fake that never steps is a fake
-// whose Now is its moment, and whose channel timers send their deadlines, or their arm moments.
-//
-// What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
-// beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
-// that compares or subtracts its own readings of the clock never sees a step of the wall. A time
-// from the fake has one reading, so after a step such code sees it. A loop whose grid compares its
-// own readings of Now (clock.Ticker) shifts that grid by a step on the fake, where production's
-// grid does not move.
-func (c *Fake) StepWall(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.stepped += d
+	return c.nowLocked()
 }
 
 func (c *Fake) nowLocked() time.Time {
@@ -191,7 +169,7 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			// Under the lock, so a Stop or Reset that returned before it never leaves this value
 			// behind for a later receive.
 			select {
-			case next.c <- next.at.Add(c.stepped):
+			case next.c <- next.at:
 			default:
 			}
 			c.mu.Unlock()
@@ -281,11 +259,17 @@ func (c *Fake) Sleep(ctx context.Context, d time.Duration) error {
 }
 
 func (c *Fake) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) })
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, context.DeadlineExceeded)
+}
+
+// WithTimeoutCause is WithTimeout whose end at its deadline carries cause, or
+// context.DeadlineExceeded when cause is nil, as context.WithTimeoutCause's does.
+func (c *Fake) WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, cmp.Or(cause, context.DeadlineExceeded))
 }
 
 func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(time.Time) time.Time { return at })
+	return c.withDeadline(ctx, func(time.Time) time.Time { return at }, context.DeadlineExceeded)
 }
 
 // arm places t at the deadline due gives for the fake's present, read under the same hold of the
@@ -298,8 +282,8 @@ func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 }
 
 // placeLocked arms t for at, or, when the fake has already reached at, fires it at once as the real
-// clock fires a wait of zero or less: a channel timer's send, of the fake's present plus the steps,
-// the moment it was armed, is made here, under the lock, and the function it answers, which the
+// clock fires a wait of zero or less: a channel timer's send, of the fake's present, the moment it
+// was armed, is made here, under the lock, and the function it answers, which the
 // caller runs once it has let the lock go, starts an AfterFunc's function on a goroutine of its
 // own, not waited for, or ends a deadline context.
 func (c *Fake) placeLocked(t *timer, at time.Time) func() {
@@ -314,7 +298,7 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	switch {
 	case t.c != nil:
 		select {
-		case t.c <- c.nowLocked().Add(c.stepped):
+		case t.c <- c.nowLocked():
 		default:
 		}
 		return func() {}
@@ -385,10 +369,12 @@ func (t *timer) drainLocked() {
 	}
 }
 
-func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time) (context.Context, context.CancelFunc) {
+// withDeadline is a deadline context on the fake at the moment due names, which ends there with
+// context.DeadlineExceeded as its error and cause as its cause.
+func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time, cause error) (context.Context, context.CancelFunc) {
 	inner, cancelInner := context.WithCancelCause(parent)
 	ctx := &deadlineContext{Context: inner, cancelInner: cancelInner, done: make(chan struct{})}
-	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, context.DeadlineExceeded) }}
+	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, cause) }}
 	cancel := func() { ctx.end(context.Canceled, context.Canceled) }
 	// A parent already ended ends the context with its own error, before a deadline already
 	// reached could, as context.WithDeadline orders the two.

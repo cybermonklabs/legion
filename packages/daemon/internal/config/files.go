@@ -7,11 +7,19 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/sjawhar/envoy/fileerr"
 )
 
 // DeploymentInstructionsFile is the copy of the operator's instructions every pane's prompt reads,
 // under the state directory.
 const DeploymentInstructionsFile = "deployment-instructions.md"
+
+// DeploymentInstructionsCopy is the copy of the operator's instructions under stateDir: the one
+// path WriteDeploymentInstructions writes and every launch's prompt reads.
+func DeploymentInstructionsCopy(stateDir string) string {
+	return filepath.Join(stateDir, DeploymentInstructionsFile)
+}
 
 // ExperimentsDir is the directory under the state directory holding the copies of every declared
 // variant's instructions, a directory per experiment: a launch's prompt reads the copy of each
@@ -39,18 +47,29 @@ func VariantInstructionsFile(stateDir, experiment string, variant Variant) strin
 // ReadSecretPointer is the trimmed contents of the file a pointer key names — `variable` is the
 // key as the operator wrote it (`envoy_token_file`, `operator_token_file`), so the refusal reads
 // in their words. A set pointer is authoritative: a missing, unreadable, or blank file is a
-// refusal naming the key and the path, never a fallback to another source. The contents never
+// refusal naming the key, never a fallback to another source. A file that could not be read is
+// named by the key and why alone (unreadable), and a blank one by its path too. The contents never
 // appear in an error.
 func ReadSecretPointer(variable, file string) (string, error) {
 	contents, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", unreadable(variable, err)
 	}
 	secret := strings.TrimSpace(string(contents))
 	if secret == "" {
 		return "", fmt.Errorf("%s names %s, which is empty", variable, file)
 	}
 	return secret, nil
+}
+
+// unreadable is a secret's file that could not be read, refused naming variable, the key or
+// variable that names it, and why in fileerr's words (`it does not exist`), never the path or err's
+// own text, which repeats it: a pointer is where a person who pasted the secret itself puts it, an
+// nkey seed or a token, and such a refusal printed it whole, twice. It unwraps to err, so
+// errors.Is(err, fs.ErrNotExist) still holds. fileerr is the daemon's one reading of such an
+// error.
+func unreadable(variable string, err error) error {
+	return fmt.Errorf("%s names a file that could not be read: %w", variable, fileerr.Err(err))
 }
 
 // ReadPrivateSecretPointer is ReadSecretPointer for a secret a group- or other-readable copy of
@@ -102,16 +121,17 @@ var (
 )
 
 // readSecretFile is ReadPrivateSecretPointer's open, check, and read, refusing the bits of the mode
-// modeFor answers for the open file.
+// modeFor answers for the open file. A file that could not be opened, examined or read is named by
+// variable and why alone (unreadable); one that was opened is named by its path too.
 func readSecretFile(variable, file string, modeFor func(os.FileInfo) secretMode) (string, error) {
 	f, err := os.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", unreadable(variable, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", unreadable(variable, err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s names %s, which is not a regular file", variable, file)
@@ -121,7 +141,7 @@ func readSecretFile(variable, file string, modeFor func(os.FileInfo) secretMode)
 	}
 	contents, err := io.ReadAll(f)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", unreadable(variable, err)
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" {
@@ -148,9 +168,8 @@ func ReadDeploymentInstructions(instructionsPath string) ([]byte, error) {
 // MaterializeDeploymentInstructions reads the operator's instructions file and writes
 // `# Deployment instructions (<legionID>)`, a blank line, and its contents verbatim to
 // `<stateDir>/deployment-instructions.md`, returning that path — the file every launch's composed
-// system prompt ends with (runtime.ComposePrompt), so a role gets exactly what boot read and never
-// the operator's own path, which may change underneath a running daemon. legionID is `project` as
-// the operator wrote it.
+// system prompt ends with (runtime.ComposePrompt), so a role is never handed the operator's own
+// path, which a pod cannot read. legionID is `project` as the operator wrote it.
 //
 // A file ReadDeploymentInstructions refuses writes nothing.
 func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID string) (string, error) {
@@ -158,22 +177,28 @@ func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID stri
 	if err != nil {
 		return "", err
 	}
-	return WriteDeploymentInstructions(contents, stateDir, legionID)
+	if err := WriteDeploymentInstructions(contents, stateDir, legionID); err != nil {
+		return "", err
+	}
+	return DeploymentInstructionsCopy(stateDir), nil
 }
 
 // WriteDeploymentInstructions is MaterializeDeploymentInstructions' write, of contents
-// ReadDeploymentInstructions answered: boot reads the file with every other refusal before it
-// writes anything, and writes this copy once, before the first pane opens.
-func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (string, error) {
+// ReadDeploymentInstructions answered, to DeploymentInstructionsCopy: boot reads the file with
+// every other refusal before it writes anything, and writes this copy before the first pane
+// opens; the daemon writes it again whenever a launch reads an edited file. The copy is replaced
+// whole, so a launch composing its prompt while it is written reads the old copy or the new one,
+// never half of one.
+func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
+		return fmt.Errorf("create state directory %s: %w", stateDir, err)
 	}
-	target := filepath.Join(stateDir, DeploymentInstructionsFile)
+	target := DeploymentInstructionsCopy(stateDir)
 	body := fmt.Sprintf("# Deployment instructions (%s)\n\n%s", legionID, contents)
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", target, err)
+	if err := writeAtomically(target, body); err != nil {
+		return fmt.Errorf("write %s: %w", target, err)
 	}
-	return target, nil
+	return nil
 }
 
 // ReadMemoryInstructions is the project's memory instructions file
@@ -233,10 +258,12 @@ func ReadHookPrompt(hook, promptPath string) (string, error) {
 // WriteVariantInstructions writes the copy of contents ReadVariantInstructions answered (or, for
 // the `memory` block's arm, ReadMemoryInstructions), one per variant that names a file, at
 // VariantInstructionsFile: boot reads every such file with every other refusal before it writes
-// anything, and writes these copies once, before the first pane opens. The reads and the write
-// are separate, where the deployment's own has a Materialize pair as well, because only boot
-// writes a variant's copy and boot refuses before it writes. The path is no answer of its own: a
-// reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
+// anything, and writes these copies before the first pane opens; the daemon writes one again
+// whenever a launch reads an edited file. Each copy is replaced whole, so a launch composing its
+// prompt while it is written reads the old copy or the new one, never half of one. The reads and
+// the write are separate, where the deployment's own has a Materialize pair as well, because only
+// the daemon writes a variant's copy and boot refuses before it writes. The path is no answer of
+// its own: a reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
 // (experiment.Launch). The copy is headed `# Memory instructions (<legionID>)` for the block's
 // arm, as the block's copy was before any experiment was declared, and
 // `# <experiment>/<variant> instructions (<legionID>)` for an arm of the `experiments` key.
@@ -249,8 +276,7 @@ func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment st
 	if variant.MemoryBlock {
 		header = fmt.Sprintf("# Memory instructions (%s)", legionID)
 	}
-	body := header + "\n\n" + string(contents)
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+	if err := writeAtomically(target, header+"\n\n"+string(contents)); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}
 	return nil

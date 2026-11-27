@@ -1,0 +1,16 @@
+# go-hostless-entry: Validate accepts a kind that names no host, so a file whose kind binds its
+# credential nowhere starts the broker. Caught by the comparison fuzz test: the model's
+# validate still answers false for such a file (theorem T4). Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -184,7 +184,8 @@
+ 		case !kindNameOK(k.Name):
+ 			return fmt.Errorf("%s: the name is not one lowercase word", at)
+ 		}
+-		if err := hostsOK(at, k.Hosts); err != nil {
++		// MUTANT: a kind that names no host is accepted.
++		if err := hostsOK(at, k.Hosts); err != nil && len(k.Hosts) > 0 {
+ 			return err
+ 		}
+ 		kinds[k.Name] = true

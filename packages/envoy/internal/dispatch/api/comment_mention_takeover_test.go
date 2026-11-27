@@ -26,6 +26,7 @@ import (
 // mention that only resolves on the post-commit take-over retry steers s1 a comment the route
 // fan-out also delivers, under a different key the listener cannot recognise as a repeat.
 func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Routed take-over", "before")
@@ -94,6 +95,7 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 // lookups made: from the first registry read to the last one before the comment answered, so
 // neither the test's start of the request nor its wait for the answer counts.
 func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t *testing.T) {
+	t.Parallel()
 	// reads is when the listener took each registry read: the mentions' tries.
 	var mu sync.Mutex
 	var reads []time.Time
@@ -171,6 +173,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 // answers by then, and a mention resolved afresh steers s1 the comment under the mention's own
 // key, beside the route's frame the listener cannot recognise it as a repeat of.
 func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -320,6 +323,7 @@ func receivedDuringTakeOver(
 // comment.created payload, so the claimant route cannot leave s1's copy to it: the comment must
 // resolve its mentions through the take-over before it commits, as a routed issue's comment does.
 func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Claimed take-over", "before")
@@ -344,6 +348,7 @@ func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
 // an agent even with no route, no reply_to, no anchor and no document: it must resolve its mentions
 // through the take-over before it commits too.
 func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Ask thread take-over", "before")
@@ -371,6 +376,7 @@ func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
 // comment on the issue's conversation is on no document itself, so it must resolve its mentions
 // through the take-over before it commits once the issue's primary document credits a session.
 func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Spec author take-over", "before")
@@ -398,6 +404,7 @@ func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *t
 // mention-failed-follower) waits that long for the row, and the outbox publishes the session's
 // own copy once it is failed.
 func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow(t *testing.T) {
+	t.Parallel()
 	const window = 2 * time.Second
 	var mu sync.Mutex
 	var sends []string
@@ -471,6 +478,7 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 // started the first's window when its send parked and the second's when its comment was written,
 // so both rows past the window settle that attempt failed.
 func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.T) {
+	t.Parallel()
 	const window = 2 * time.Second
 	for _, row := range []struct {
 		name string

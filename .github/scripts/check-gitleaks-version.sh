@@ -5,7 +5,7 @@
 # binary reaches: a pod's pre-push hook, `legion gh`, `legion leak-check` and the daemon itself.
 # .github/scripts/release-push.sh names the same version in the release-asset URL it fetches
 # (leak_engine_url), because the release lane may run no built binary of this repository and so
-# has to fetch a gitleaks of its own to read the same rule file with.
+# has to fetch a gitleaks of its own to read its rule file, .github/private-names.toml, with.
 #
 # If one moves and the other does not, the release lane scans with one engine and every other
 # write of this repository with another, and a line one version refuses and the other passes is

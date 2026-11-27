@@ -61,6 +61,7 @@ func pooledDocumentHandlerWith(
 }
 
 func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
+	t.Parallel()
 	handler, _ := pooledDocumentHandler(t, 2, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Conditional flood", "alpha")
 	for round := range 40 {
@@ -92,6 +93,7 @@ func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
 }
 
 func TestConcurrentConditionalAndUnconditionalEditsDoNotWedge(t *testing.T) {
+	t.Parallel()
 	// Unconditional edits hold a transaction connection before warm-up and wedge
 	// at pool_max_conns≈3 even on c34767d4; the follow-up fix owns that baseline.
 	handler, _ := pooledDocumentHandler(t, 8, time.Hour)

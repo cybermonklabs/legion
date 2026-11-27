@@ -73,10 +73,10 @@ func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.R
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
-	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
+	mux.HandleFunc(http.MethodPost+" "+pattern, routeContext(served.keyedWrites(
 		http.MethodPost, pattern,
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
+		keyedRoute{},
 	)))
 	rig.handler = mux
 	return rig
@@ -163,6 +163,7 @@ func releaseHeld(t testing.TB) {
 // first request's stored status and body, marked replayed, and the handler runs once. A key sent
 // as a structured-field string is the same key as its bare form.
 func TestARepeatUnderAKeyReplaysTheFirstAnswerAndRunsOnce(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	first := rig.send(t, "a", map[string]any{"n": 1}, "alice", "press-1")
 	if first.Code != http.StatusCreated || replayed(first) {
@@ -184,6 +185,7 @@ func TestARepeatUnderAKeyReplaysTheFirstAnswerAndRunsOnce(t *testing.T) {
 // A key names one request. Reused for another body, path value or query, it is refused 422,
 // naming the request that used it, and nothing runs or is written.
 func TestAKeyReusedForAnotherRequestIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	if first := rig.send(t, "a", map[string]any{"n": 1}, "alice", "reused"); first.Code != http.StatusCreated {
 		t.Fatalf("first: status=%d body=%s", first.Code, first.Body.String())
@@ -215,6 +217,7 @@ func TestAKeyReusedForAnotherRequestIsRefused(t *testing.T) {
 // A repeat while the first request still runs is 409 KEY_IN_FLIGHT with Retry-After: 1, which a
 // client asks again after; once the first has answered, the repeat is that answer.
 func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -248,6 +251,7 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 // Many attempts under one key at once: one runs, and every other is told it is in flight or, once
 // the one has answered, given its answer.
 func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
 		answerRun(run, w, r)
@@ -283,6 +287,7 @@ func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
 // attempt was not heard - a 401, 408 or 429 - is not stored: the next attempt runs again, and the
 // key is free. Any other 4xx is the request's verdict and is replayed.
 func TestOnlyAVerdictIsStored(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{
 		http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusUnauthorized,
 		http.StatusRequestTimeout, http.StatusTooManyRequests,
@@ -330,6 +335,7 @@ func TestOnlyAVerdictIsStored(t *testing.T) {
 // A handler that panics answers nothing worth keeping: its key is released, and the next attempt
 // runs the request again.
 func TestAPanickingHandlerReleasesItsKey(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 		if run == 1 {
 			panic("the handler's own failure")
@@ -356,6 +362,7 @@ func TestAPanickingHandlerReleasesItsKey(t *testing.T) {
 // is another request; the same person under another casing of the identity header is the same
 // person; the shared agent token's keys are its own.
 func TestAKeyBelongsToItsLogin(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	alices := rig.send(t, "a", nil, "alice", "shared")
 	if bobs := rig.send(t, "a", nil, "bob", "shared"); bobs.Code != http.StatusCreated || replayed(bobs) {
@@ -396,6 +403,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 // A key is kept IdempotencyKeyTTL. The sweep deletes an older one, and a repeat that finds one the
 // sweep has not reached yet treats the key as unused: the request runs again.
 func TestAKeyPastItsWindowIsUnusedAgain(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	rig.send(t, "a", nil, "alice", "old")
 	rig.send(t, "a", nil, "alice", "new")
@@ -436,6 +444,7 @@ func TestAKeyPastItsWindowIsUnusedAgain(t *testing.T) {
 
 // A write without a key runs as it always did, every time, and leaves no key behind.
 func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	for range 2 {
 		response := rig.send(t, "a", map[string]any{"n": 1}, "alice", "")
@@ -452,6 +461,7 @@ func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
 // a 5xx the key does not keep - so a client can tell a Dispatch that judged the key from one that
 // ignored the header, and retries a 5xx under its key only against the first.
 func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
+	t.Parallel()
 	running := make(chan struct{})
 	var slowRuns atomic.Int32
 	release, releaseOnce := heldUntilReleased(t)
@@ -490,6 +500,7 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 // A header that is not a key is refused before anything runs; a key of every allowed class, of
 // the longest length, bare or quoted, is taken.
 func TestAMalformedKeyIsRefusedBeforeAnythingRuns(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	for name, values := range map[string][]string{
 		"a space":              {"press 1"},
@@ -528,6 +539,7 @@ func TestAMalformedKeyIsRefusedBeforeAnythingRuns(t *testing.T) {
 // the lease, which runs the request. The old holder, only slow, still answers its own client, but
 // writes nothing to the key: the repeat's answer is the one replayed.
 func TestALapsedHolderIsTakenOver(t *testing.T) {
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -635,6 +647,7 @@ func committedAt(t *testing.T, database *store.Store, key string) bool {
 // own transaction, and the repeat is answered 409 KEY_COMMITTED, naming the key, with no
 // Retry-After, since asking again changes nothing.
 func TestACommittedWriteWhoseAnswerWasLostIsNeverRunAgain(t *testing.T) {
+	t.Parallel()
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 		if err := write(r.Context(), nil); err != nil {
 			t.Errorf("write: %v", err)
@@ -665,6 +678,7 @@ func TestACommittedWriteWhoseAnswerWasLostIsNeverRunAgain(t *testing.T) {
 // A transaction that only read wrote nothing, so it marks nothing: a request whose process died
 // after it is run again by the repeat past the lease.
 func TestAReadOnlyTransactionMarksNothing(t *testing.T) {
+	t.Parallel()
 	var database *store.Store
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 		tx, err := database.Pool.Begin(r.Context())
@@ -695,6 +709,7 @@ func TestAReadOnlyTransactionMarksNothing(t *testing.T) {
 // A handler that committed its write and then failed - a 5xx - releases its key with the mark kept,
 // so the next attempt is answered KEY_COMMITTED at once rather than making the write twice.
 func TestAFailureAfterACommittedWriteIsAnsweredCommitted(t *testing.T) {
+	t.Parallel()
 	rig := newWritingRig(t, func(_ int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 		if err := write(r.Context(), nil); err != nil {
 			t.Errorf("write: %v", err)
@@ -717,6 +732,7 @@ func TestAFailureAfterACommittedWriteIsAnsweredCommitted(t *testing.T) {
 // the repeat past the lease, which runs the request and commits its write. The slow holder's commit
 // is then refused and its write rolls back, so the request is written once.
 func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
+	t.Parallel()
 	holding := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	slow := make(chan error, 1)
@@ -765,6 +781,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 // recipients' deliveries - that commits after the answer is not the request's, and commits as it
 // would with no key.
 func TestAWriteDetachedPastTheAnswerCommits(t *testing.T) {
+	t.Parallel()
 	answeredSignal := make(chan struct{})
 	detached := make(chan error, 1)
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
@@ -791,6 +808,7 @@ func TestAWriteDetachedPastTheAnswerCommits(t *testing.T) {
 // after their write committed - the repeat is KEY_COMMITTED - and a document edit, whose write goes
 // through the document service, is marked committed in its own transaction the same way.
 func TestRealWritesAreMarkedCommittedAndNeverRunTwice(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "KEYS", "Keyed writes")
 	count := func(query string, args ...any) int {
@@ -846,6 +864,7 @@ func TestRealWritesAreMarkedCommittedAndNeverRunTwice(t *testing.T) {
 // An answer past what a key keeps is answered in full the first time, and replayed as its status
 // with a body saying it was not kept.
 func TestAnAnswerPastTheKeptSizeReplaysItsStatusAlone(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("x", keyedAnswerKept+10)
 	rig := newKeyedRig(t, func(_ int32, w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -873,6 +892,7 @@ func TestAnAnswerPastTheKeptSizeReplaysItsStatusAlone(t *testing.T) {
 // is the largest the layer reads past a JSON body's megabyte (routeBody; a handoff write reads
 // handoffRequestLimit).
 func TestAMultipartRetryUnderANewBoundaryIsARepeat(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRigAt(t, "/api/v1/issues/{key}/artifacts", func(run int32, w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -927,6 +947,7 @@ func TestAMultipartRetryUnderANewBoundaryIsARepeat(t *testing.T) {
 
 // boundaryMask replaces every boundary however the body is cut into writes.
 func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
+	t.Parallel()
 	body := "--BOUNDARY\r\nfield\r\n--BOUNDARY--\r\n"
 	want := strings.ReplaceAll(body, "BOUNDARY", string(maskedBoundary))
 	for size := 1; size <= len(body); size++ {
@@ -946,6 +967,7 @@ func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
 // each of them before its handler runs, and ignored by a PUT and a DELETE, which are idempotent
 // already. A GET writes nothing and is never wrapped.
 func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	for _, route := range (&server{}).routes() {
 		if route.Method == http.MethodGet {
@@ -973,6 +995,7 @@ func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
 // The browser case on a real route: a comment posted again under its key, its first answer lost,
 // lands once, and the repeat is answered the comment the first made.
 func TestACommentPostedAgainUnderItsKeyLandsOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "KEYS", "Keyed comments")
 	post := func() *httptest.ResponseRecorder {

@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr5214
+body: |-
+  `renderInbound` no longer throws on a payload the card's TOON encoder cannot lay out, such as a
+  JSON value nested 9,999 levels deep. The card shows the payload as the text its sender sent, and
+  `payloadShownAsText` on the result holds what the encoder threw. Before, the throw came back in
+  every host on every delivery, and the frame was never shown.

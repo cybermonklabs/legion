@@ -5,6 +5,7 @@ import {
   type EnvoyClient,
   expandSubscriptionTopics,
   type Interest,
+  isBusUnanswered,
   newClientInstanceID,
   roleHeldBy,
   type SubscribeInput,
@@ -13,54 +14,35 @@ import {
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
 import { createHandBackLedger } from "./hand-back-ledger";
 import type { SessionInbound } from "./session-inbound";
+import { createQueue, type RunningTask, refuseStep, type TaskQueue } from "./task-queue";
 
 /**
- * The registration and role state the Envoy extension's two serial queues write, the queues
- * themselves, each task's deadline, and this extension instance's client instance id.
+ * The registration and role state of the Envoy extension, this extension instance's client
+ * instance id, the two serial queues that write the state (`passes` and `roleMoves`), and the
+ * handle each queued task acts through. This module builds the two queues from the generic
+ * serial queue of `./task-queue`, and gives that queue the handle builder (`createHandle`). The
+ * queue holds each task's order and deadline timer, and knows nothing of this state.
  *
  * A queued task never re-checks a fence before a step, and keeps {@link TaskHandle.check} for the
  * two things that are not steps: a catch-all that would otherwise swallow the refusal, and an
  * action outside the handle that a refused task must not take. `run` hands it a
  * {@link TaskHandle}, and every state write, listener request, subscribe and inbound
  * connection it makes after a wait is a method of that handle. The handle refuses the step once
- * the task's deadline has fired, and, for a task bound to a session (`actFor`), once that
- * session stopped being the open session. The first refusal latches: a session that closes and
- * opens again does not revive a task a step already refused, so a task that caught the refusal
- * cannot go on writing. A refused step writes nothing and ends the task: past the deadline the
- * caller's promise has already rejected with the deadline rejection ({@link taskWasAbandoned})
- * and the late settlement is swallowed; after the session moved `run` resolves `undefined`, so a
+ * the task's deadline has fired, for a task bound to a session (`actFor`) once that session
+ * stopped being the open session, and for a role move once the session's stop has begun
+ * (`stopping`). The first refusal latches: a session that closes and opens again does not revive
+ * a task a step already refused, so a task that caught the refusal cannot go on writing. A
+ * refused step writes nothing and ends the task: past the deadline the caller's promise has
+ * already rejected with the deadline rejection (`taskWasAbandoned`) and the late settlement is
+ * swallowed; after the session moved, or once the stop began, `run` resolves `undefined`, so a
  * pass the host left mid-pass decides nothing and the user sees no new warning.
  *
  * The state is private to this module: callers read it through the accessors below and write it
- * only through a named operation, so there is no shared variable a later edit can write
- * unguarded. The holds this process gave up and still owes the listener are a module of their
- * own, {@link createHandBackLedger}, which this one holds and nothing else reaches.
+ * only through a named operation or a queued task's handle, so there is no shared variable a
+ * later edit can write unguarded. The holds this process gave up and still owes the listener are
+ * a module of their own, {@link createHandBackLedger}, which this one holds and nothing else
+ * reaches.
  */
-
-/** A queued task abandoned at its deadline: the queue has moved on, and the task's own
- *  continuation writes nothing when its await finally resolves. Module-private, so
- *  {@link taskWasAbandoned} is the one way to ask: the extension reads the rejection without
- *  naming the class. */
-class AbandonedTaskError extends Error {}
-
-/** Whether `error` is a queued task's deadline rejection, which a caller reads as a stall rather
- *  than as a failure of the work the task was doing. */
-export function taskWasAbandoned(error: unknown): boolean {
-  return error instanceof AbandonedTaskError;
-}
-
-/**
- * A step the task's handle refused. Module-private: it never leaves `run`, which turns it into the
- * task's outcome — swallowed on an abandoned task's late settlement, `undefined` once the task's
- * session moved.
- */
-class StepRefused extends Error {}
-
-/** Whether `error` is a step the task's handle refused (a task abandoned at its deadline, or one
- *  whose session moved): no failure of the work, so no reason a notice may name. */
-export function stepWasRefused(error: unknown): boolean {
-  return error instanceof StepRefused;
-}
 
 /** Whether a topic served the session's role, and how many roles had ended, at one moment. */
 export interface RoleSnapshot {
@@ -71,24 +53,34 @@ export interface RoleSnapshot {
 /** What a registration carries, less the client instance id this module mints and sends itself. */
 export type RegistrationInput = Omit<SubscribeInput, "clientInstanceID">;
 
-/** The role this process gave up locally while the listener may still name it. */
-export interface RoleEnded {
-  readonly role: string;
-  /** Whether a plugin held notice subjects for it, which the role's end closed. */
-  readonly pluginHeld: boolean;
-}
-
-/** What a heartbeat's re-assertion of a held role decided. */
-export interface RoleReassertion {
-  /** False when the hold moved off this role while the listener was read or claimed. */
-  readonly decided: boolean;
-  /** Set when the Legion regain hook owes a run for this role. */
-  readonly regain?: RoleRegainReason;
-}
+/**
+ * What a claim of {@link TaskHandle.claimRole} decided. A claim that landed carries the listener's
+ * warnings about it (`SetRoleResult.warnings`), each already logged, for a caller that answers an
+ * agent to repeat; a claim the listener refused carries none.
+ */
+export type RoleClaimOutcome =
+  | { readonly claimed: true; readonly warnings: readonly string[] }
+  | { readonly claimed: false };
 
 /** The warnings this module writes; `logger` from the host satisfies it. */
 export interface RegistrationStateLog {
   readonly warn: (message: string, context?: Record<string, unknown>) => void;
+}
+
+/**
+ * Logs each warning the listener answered a granted claim of `role` for `sessionID` with
+ * (`SetRoleResult.warnings`): what it says about the claim, such as a handover of the replaced
+ * session it did not make, is true of the claim whatever the task that made it does next.
+ */
+function logClaimWarnings(
+  log: RegistrationStateLog,
+  role: string,
+  sessionID: string,
+  warnings: readonly string[]
+): void {
+  for (const warning of warnings) {
+    log.warn("envoy: the listener warned about a role claim", { role, sessionID, warning });
+  }
 }
 
 /** What a queued task's NATS dial may spend: the task's deadline, as a `performance.now()`
@@ -111,6 +103,12 @@ export interface RegistrationStateDeps {
   readonly client: () => EnvoyClient;
   /** Whether `id` is the session open here, for this instance and the host alike. */
   readonly sessionOpen: (id: string) => boolean;
+  /**
+   * Whether this session's stop has begun, read at each step of a role move. The stop hands back
+   * every role this process holds and deletes the session's record next, so from then on a role
+   * move claims nothing, transfers nothing and tells nothing (R24 of dispatch://INFRA-3589).
+   */
+  readonly stopping: () => boolean;
   /** The deadline each queued task gets, read afresh when that task starts. */
   readonly deadlineMs: () => number;
   /** Tells the pane what a state write decided. */
@@ -159,10 +157,26 @@ export interface RegistrationStateDeps {
   readonly closeSubjects: (sessionID: string, subjects: readonly string[]) => void;
 }
 
+/** The role this process gave up locally while the listener may still name it. */
+interface RoleEnded {
+  readonly role: string;
+  /** Whether a plugin held notice subjects for it, which the role's end closed. */
+  readonly pluginHeld: boolean;
+}
+
+/** What a heartbeat's re-assertion of a held role decided. */
+interface RoleReassertion {
+  /** False when the hold moved off this role while the listener was read or claimed. */
+  readonly decided: boolean;
+  /** Set when the Legion regain hook owes a run for this role. */
+  readonly regain?: RoleRegainReason;
+}
+
 /**
  * The steps a queued task may take. Each refuses before it acts, so no call site re-checks a
  * fence before a step. Refusal throws, which ends the task, and latches: once a step refused, so
- * does every step after it, whatever the session does next.
+ * does every step after it, whatever the session does next. A role move's steps refuse once the
+ * session's stop has begun as well (`RegistrationStateDeps.stopping`).
  */
 export interface TaskHandle {
   /**
@@ -215,7 +229,11 @@ export interface TaskHandle {
    * live registry entry, when its live entry carries this client instance's own instance id, or
    * when either side carries no instance id. A predecessor still live under another client
    * instance keeps the role. A soft claim is also granted when the role is unheld, and when its
-   * holder is no longer live. Answers whether the claim landed.
+   * holder is no longer live. On a hard claim as on a soft one, `previousSessionID` goes to the
+   * listener and names the session this claim replaces, whose unread direct and role messages a
+   * listener that supports it hands to this session once the claim lands and that session is not
+   * live. Answers whether the claim landed, and the listener's warnings about a claim that did,
+   * each of which is logged here with the role and the session.
    *
    * A claim the listener granted after this task's deadline fired is left as a pending hand-back,
    * and one granted after the session moved is adopted under the id the listener names.
@@ -223,7 +241,7 @@ export interface TaskHandle {
   readonly claimRole: (
     role: string,
     options?: { readonly soft?: boolean; readonly previousSessionID?: string }
-  ) => Promise<boolean>;
+  ) => Promise<RoleClaimOutcome>;
   /**
    * Makes sure the listener still resolves this session as `role`'s holder: reads first, and a
    * soft claim goes out only when it does not. The lookup confirms the role only when it names
@@ -245,13 +263,15 @@ export interface TaskHandle {
   readonly readRoleHolder: (role: string) => Promise<string | undefined>;
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
-  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned under
-   *  `warning`, the caller's own sentence for it, and swallowed, as a recovery's own unregister
-   *  was: the next pass reads the registry afresh. */
+  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
+   *  caller's own words and swallowed: the next pass reads
+   *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
+   *  answer (`isBusUnanswered`), since the listener can have written the record before that, and
+   *  `failed` for any other failure. */
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
-    warning: string
+    warnings: { readonly failed: string; readonly busUnanswered: string }
   ) => Promise<void>;
 
   // — the inbound connection —
@@ -266,31 +286,13 @@ export interface TaskHandle {
 }
 
 /** What a task that decided nothing left behind, for the caller that has to say so. */
-export interface TaskRefusal {
+interface TaskRefusal {
   /**
    * Whether the listener granted this task's claim after its session had moved, so the role is
    * held here under the session the task acted for. The caller tells the model which of the two
    * happened: a claim that never landed, or one the next pass carries or hands back.
    */
   readonly claimAdopted: boolean;
-}
-
-/** One of the module's serial queues. */
-export interface TaskQueue {
-  /**
-   * Runs tasks one at a time, in the order they were queued; a task that fails does not stop the
-   * ones after it. Each task gets `deadlineMs()` milliseconds, read when that task starts, after
-   * which the caller's promise rejects with the deadline rejection ({@link taskWasAbandoned}),
-   * the queue starts the next task at once, and the abandoned task's own settlement is swallowed.
-   * A task a refused step ended because its session moved resolves `undefined`, and `onRefused`
-   * is handed what that task left behind.
-   */
-  readonly run: <T>(
-    task: (handle: TaskHandle) => Promise<T>,
-    onRefused?: (refusal: TaskRefusal) => void
-  ) => Promise<T | undefined>;
-  /** Resolves once every task queued so far has finished. */
-  readonly settled: () => Promise<unknown>;
 }
 
 /** The module's surface: the two queues, the named operations, and the readers of its state. */
@@ -302,9 +304,13 @@ export interface RegistrationState {
    */
   readonly clientInstanceID: string;
   /** Reconcile passes: one at a time, each converging this process to the host's session. */
-  readonly passes: TaskQueue;
-  /** Role moves: the model's `envoy_role_set`, a plugin's claim, and each pass's own settle. */
-  readonly roleMoves: TaskQueue;
+  readonly passes: TaskQueue<TaskHandle, TaskRefusal>;
+  /**
+   * Role moves: the model's `envoy_role_set`, a plugin's claim, and each pass's own settle. Each
+   * step of one refuses once the session's stop has begun (`RegistrationStateDeps.stopping`); a
+   * pass reads the stop itself.
+   */
+  readonly roleMoves: TaskQueue<TaskHandle, TaskRefusal>;
 
   // — named operations, made on purpose without a live task —
   /**
@@ -321,6 +327,18 @@ export interface RegistrationState {
    *  successor instance's registration under the same id is left alone; within `timeoutMs`,
    *  where the caller has only that long (a shutdown's budget). */
   readonly deregister: (sessionID: string, timeoutMs?: number) => Promise<void>;
+  /**
+   * Hands back at the listener every role hold this process still has there, for a session that
+   * is stopping: the role it holds, under the session id the listener names for it, and each hold
+   * it gave up and has not handed back yet (`HandBackLedger.handBackAll`). Each release carries
+   * this instance's client instance id, so the listener frees only the claims this process made.
+   * A release that fails is warned about on `log`, the stop's own writer, and not on the module's
+   * `RegistrationStateDeps.log`, which the host's tell gate holds once the stop has begun. It
+   * runs outside the queues and changes no state: nothing runs after a stop. A role move still
+   * running refuses its next step (`RegistrationStateDeps.stopping`), so this does not wait for
+   * one.
+   */
+  readonly handBackAllHolds: (log: RegistrationStateLog) => Promise<void>;
   /** Forgets the role the listener refused to this session, so a pass may claim it again. */
   readonly clearRefusal: (sessionID: string) => void;
   /**
@@ -490,18 +508,21 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     }
   };
 
-  /** A task's handle and what the task left behind, which the queue reads when a step refused it.
+  /**
+   * The handle builder of both queues: one task's handle, and what the task left behind, which the
+   * queue hands `onRefused` when a step refused the task. `live` and `deadlineAt` come from the
+   * queue. `stopped`: whether the task refuses its steps once the session's stop began.
    */
-  interface RunningTask {
-    readonly handle: TaskHandle;
-    readonly refusal: TaskRefusal;
-  }
-
-  const createHandle = (live: () => boolean, deadlineAt: number): RunningTask => {
+  const createHandle = (
+    live: () => boolean,
+    deadlineAt: number,
+    stopped: () => boolean
+  ): RunningTask<TaskHandle, TaskRefusal> => {
     let bound: string | undefined;
     // Whether this task may still write: no step of it has been refused yet, its deadline has not
-    // fired and, once bound, its session is still the open one. The one question every step below
-    // asks, asked here alone.
+    // fired, the session's stop has not begun where the task is a role move (`stopped`) and, once
+    // bound, its session is still the open one. The one question every step below asks, asked
+    // here alone.
     //
     // The first refusal latches. A session can close and open again — a switch away and back —
     // while a task waits on I/O, and a task that caught its refusal would otherwise pass the next
@@ -510,21 +531,29 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const refusal = { claimAdopted: false };
     const acting = (): boolean => {
       if (refused) return false;
-      if (live() && (bound === undefined || deps.sessionOpen(bound))) return true;
+      if (!stopped() && live() && (bound === undefined || deps.sessionOpen(bound))) return true;
       refused = true;
       return false;
     };
     const refuse = (message: string): never => {
       refused = true;
-      throw new StepRefused(message);
+      return refuseStep(message);
     };
     const guard = (): void => {
       if (acting()) return;
       refuse(
-        live()
-          ? `the task acting for session ${bound} refused a step: that session is no longer the open one`
-          : "the task refused a step: it was abandoned at its deadline"
+        stopped()
+          ? "the role move refused a step: this session's stop has begun"
+          : live()
+            ? `the task acting for session ${bound} refused a step: that session is no longer the open one`
+            : "the task refused a step: it was abandoned at its deadline"
       );
+    };
+    // The stop read after a wait whose outcome a role move acts on whatever else became of it: a
+    // hand-back that landed, a claim the listener answered. Once the session's stop has begun,
+    // the move ends here, and nothing it would do next is done.
+    const refuseOnceStopping = (message: string): void => {
+      if (stopped()) refuse(message);
     };
     const actingFor = (): string => {
       if (bound === undefined) {
@@ -544,7 +573,9 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       if (holdID !== undefined && holdID !== "") {
         await holds.handBackOrAbandon(topic, holdID, { role, sessionID: holdID });
       }
-      // The end has landed, so the pane hears about it whatever became of this task.
+      // The end has landed, so the pane hears about it whatever became of this task, unless the
+      // session's stop began meanwhile: a stopping session is told nothing.
+      refuseOnceStopping(`the role move ended role ${role} as the session's stop began`);
       if (tellUser) {
         const host = bound ?? "";
         deps.log.warn("envoy: role ended after a move with no session event", {
@@ -588,7 +619,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const claimRole = async (
       role: string,
       options: { readonly soft?: boolean; readonly previousSessionID?: string } = {}
-    ): Promise<boolean> => {
+    ): Promise<RoleClaimOutcome> => {
       const id = actingFor();
       guard();
       const topic = ROLE_TOPIC_PREFIX + role;
@@ -604,6 +635,14 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // names this same process, refused where another process still renews it.
         clientInstanceID,
       });
+      // The session's stop began while the claim was in flight. The stop has handed back what
+      // this process held and deletes the session's record next, so nothing of the claim is kept:
+      // no hold, no transcript record, no word. A claim the listener granted all the same waits
+      // out the live window, as one the stop's release did not reach does.
+      refuseOnceStopping(
+        `the role move that claimed ${role} for session ${id} ended: the session's stop began while the claim was in flight`
+      );
+      if (result.claimed) logClaimWarnings(deps.log, role, id, result.warnings);
       if (!live()) {
         // The listener may have granted the claim while this task was abandoned. Nothing of it goes
         // in the transcript — the task that replaced this one owns the role from here — but the
@@ -640,10 +679,14 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // `desiredRole` want no role until a session event landed, and the line would be written
         // out again on every heartbeat for as long as that other process lived; the next pass
         // claims again instead.
-        if (result.holder === id) return false;
+        if (result.holder === id) return { claimed: false };
         // Only a soft claim is refused. A holder that is this process's own abandoned hold is
         // waited out, since the listener reaps it; any other is the newer holder.
         const waitingOnReap = await holds.observeAbandonedHold(topic, role, result.holder, live);
+        // Read across a wait too: once the session's stop has begun, nothing is recorded or said.
+        refuseOnceStopping(
+          `the role move that claimed ${role} for session ${id} ended: the session's stop began before the refusal was recorded`
+        );
         // The hold was read across a wait: this task may have been refused since, and the claim
         // that replaced it may already have cleared the refusal this one is about to record.
         // Nothing is written then, and the line says so.
@@ -661,7 +704,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
               : "envoy: role held by another live session; not reclaimed",
           { role, sessionID: id, holder: result.holder }
         );
-        return false;
+        return { claimed: false };
       }
       // The transcript is the one thing `omp --resume` guarantees, so it is the durable record of
       // the claim: the listener releases a role claim one session TTL after heartbeats stop, and
@@ -670,7 +713,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       await moveHold(topic, id, previousTopic, previousHoldID, () =>
         deps.appendRoleClaimEntry({ role, sessionID: id, clientInstanceID })
       );
-      return true;
+      // The stop began while the role this claim moved off was handed back. The stop handed back
+      // the new hold with every other, so the move reports no role the session no longer holds.
+      refuseOnceStopping(
+        `the role move that claimed ${role} for session ${id} ended: the session's stop began as the claim landed`
+      );
+      return { claimed: true, warnings: result.warnings };
     };
 
     const reassertRole = async (role: string, afterOutage: boolean): Promise<RoleReassertion> => {
@@ -727,6 +775,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         );
         return { decided: true };
       }
+      logClaimWarnings(deps.log, role, id, result.warnings);
       deps.log.warn("envoy: role re-asserted after the listener lost the claim", {
         role,
         sessionID: id,
@@ -843,13 +892,17 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           .getInterest(sessionID)
           .catch(() => undefined);
       },
-      unregisterTopics: async (sessionID, topics, warning) => {
+      unregisterTopics: async (sessionID, topics, warnings) => {
         guard();
         await deps
           .client()
           .unsubscribe({ sessionID, topics: [...topics] })
           .catch((error: unknown) =>
-            deps.log.warn(warning, { sessionID, topics, error: messageFor(error) })
+            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
+              sessionID,
+              topics,
+              error: messageFor(error),
+            })
           );
       },
       connect,
@@ -866,65 +919,16 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     return { handle, refusal };
   };
 
-  const createQueue = (): TaskQueue => {
-    let tail: Promise<unknown> = Promise.resolve();
-    return {
-      run<T>(
-        task: (handle: TaskHandle) => Promise<T>,
-        onRefused?: (refusal: TaskRefusal) => void
-      ): Promise<T | undefined> {
-        // `tail` never rejects (it is always `next.catch(…)`), so a failed task never stops the
-        // next.
-        const next = tail.then(
-          () =>
-            new Promise<T | undefined>((resolve, reject) => {
-              let abandoned = false;
-              const taskDeadlineMs = deps.deadlineMs();
-              const deadlineAt = performance.now() + taskDeadlineMs;
-              const timer = setTimeout(() => {
-                abandoned = true;
-                reject(
-                  new AbandonedTaskError(
-                    `a queued task did not settle within ${taskDeadlineMs}ms and was abandoned; the queue moved on`
-                  )
-                );
-              }, taskDeadlineMs);
-              const running = createHandle(() => !abandoned, deadlineAt);
-              // The task runs inside this promise so a synchronous throw is its rejection too.
-              void (async () => task(running.handle))().then(
-                (value) => {
-                  // Clear first: a healthy task must not leave a pending timer holding the process
-                  // open for a whole deadline.
-                  clearTimeout(timer);
-                  if (!abandoned) resolve(value);
-                },
-                (error: unknown) => {
-                  clearTimeout(timer);
-                  // An abandoned task's settlement is swallowed: the caller's promise rejected at
-                  // the deadline, and an unhandled rejection is fatal to the host.
-                  if (abandoned) return;
-                  // The task's session moved: it decided nothing, and the pass or move the move
-                  // queued decides. That is not a failure to report, but the caller is told what
-                  // the task left behind, which is not the same as nothing in every case.
-                  if (error instanceof StepRefused) {
-                    onRefused?.(running.refusal);
-                    resolve(undefined);
-                  } else reject(error);
-                }
-              );
-            })
-        );
-        tail = next.catch(() => undefined);
-        return next;
-      },
-      settled: (): Promise<unknown> => tail,
-    };
-  };
-
   return {
     clientInstanceID,
-    passes: createQueue(),
-    roleMoves: createQueue(),
+    // A pass reads the stop itself, once its registration settled (the extension's
+    // `reconcileNow`); a role move refuses each step once the stop began.
+    passes: createQueue(deps.deadlineMs, (live, deadlineAt) =>
+      createHandle(live, deadlineAt, () => false)
+    ),
+    roleMoves: createQueue(deps.deadlineMs, (live, deadlineAt) =>
+      createHandle(live, deadlineAt, deps.stopping)
+    ),
 
     refreshRegistration,
     registrationFresherThan: (sessionID, ms) =>
@@ -936,6 +940,13 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
       });
     },
+    handBackAllHolds: (log) =>
+      holds.handBackAll(
+        claimedRoleTopic === undefined || !claimedRoleSessionID
+          ? undefined
+          : { topic: claimedRoleTopic, id: claimedRoleSessionID },
+        (message, context) => log.warn(message, context)
+      ),
     clearRefusal: (sessionID) => {
       refusedRoles.delete(sessionID);
     },

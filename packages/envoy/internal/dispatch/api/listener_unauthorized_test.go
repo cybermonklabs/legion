@@ -17,6 +17,7 @@ import (
 // (envoy.Client.do): one try, two requests. The take-over wait asks the registry again, so the two
 // requests are the whole of what the send did, and no clock is read.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.server.URL)
 

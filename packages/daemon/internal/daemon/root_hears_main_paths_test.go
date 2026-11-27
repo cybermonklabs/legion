@@ -129,6 +129,10 @@ func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
 		// (workflowRuntime.rootHears), over this rig's pool and store, exactly as daemon.go wires it.
 		sup.deps.RootHears = asked.wrap((&workflowRuntime{pool: pool, records: records}).rootHears)
 	}
+	// The daemon's own writing of a root architect's task at its send (workflowRuntime.rootTask),
+	// wired either way, as daemon.go wires it beside every workflow: an answered root's resume is
+	// queued with no text and written there (supervise.Delivery.Resume).
+	sup.deps.RootTask = (&workflowRuntime{pool: pool, records: records, gatedSteps: config.DesignGateRootIssues.Steps()}).rootTask
 	conn := fake.NewConn()
 	token := mustClaimToken(t, mainPathRoot, claim.RoleArchitect)
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
@@ -264,7 +268,7 @@ func (r *mainPathRig) runStarts() {
 		case err != nil:
 			r.t.Fatalf("run the architect start row %d: %v", row.ID, err)
 		}
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 		}); err != nil {
 			r.t.Fatalf("finish the architect start row %d: %v", row.ID, err)
@@ -520,6 +524,7 @@ func toldInPlacePath(r *mainPathRig) string {
 // held task's place: the held task is retired unsent, and the decision it named is told by the
 // catch-up that start writes.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
+	t.Parallel()
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {
 			sent := map[bool]int{}

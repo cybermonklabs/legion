@@ -235,7 +235,6 @@ spec:
   priorityClassName: $bridge_priority_class}
   automountServiceAccountToken: false
   securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
-  tolerations: [{key: legion.dev/pool, operator: Equal, value: legion, effect: NoSchedule}]
   containers:
     - name: chisel
       image: $bridge_chisel_image

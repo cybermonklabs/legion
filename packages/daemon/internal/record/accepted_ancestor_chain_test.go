@@ -29,7 +29,7 @@ func chainIssue(key, tree, parent string, stands phase.Phase, status string) Iss
 // project's live records, which leave out an issue already done, so without the records above
 // the pass (LineFacts.Parents) the walk stopped at the done parent, jumped to the root — which
 // is at admitted and has accepted nothing — and offered the held issue a first-phase slot. The
-// architect is told that issue waits until the merging ancestor closes, and OpenBeneath leaves
+// architect is told nothing starts that issue while the ancestor is merging, and OpenBeneath leaves
 // it out of that ancestor's own wait, so starting it would merge a head without its work.
 //
 // The whole path is read here, from the records as the store holds them, because the defect was
@@ -79,7 +79,7 @@ func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T
 		heldLine, _ := Waiting(issues, nil, facts)
 		for _, entry := range heldLine {
 			if entry.Issue.Key == heldAtAdmit {
-				t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
+				t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it while that ancestor is merging", heldAtAdmit, merging)
 			}
 		}
 		members, err := records.TreeIssues(ctx, tx, root)

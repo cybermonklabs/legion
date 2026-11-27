@@ -3,11 +3,13 @@ package clocktest_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -405,46 +407,73 @@ func TestStopAndReset(t *testing.T) {
 	}
 }
 
-// StepWall moves what Now reads, forward and back, and fires no timer: the timers stay on the
-// fake's own moment, as Go's run on the monotonic clock whatever the wall clock does, and fire
-// when a move of that moment reaches them. What a channel timer sends carries the steps, as Go's
-// sends the moment it fell due read on the wall clock as it sends (time.sendTime): both the timer
-// a move fires and one armed for a moment the fake has already reached, which fires as it is armed.
-func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
-	c := clocktest.New(epoch)
-	channel := c.NewTimer(time.Minute)
-	ran := false
-	c.AfterFunc(time.Minute, func() { ran = true })
-	pending := []time.Time{epoch.Add(time.Minute), epoch.Add(time.Minute)}
+// contextEnding is how a context ended: its Err and its Cause, printed by name.
+type contextEnding struct{ err, cause error }
 
-	for _, step := range []struct {
-		by   time.Duration
-		want time.Time
-	}{{time.Hour, epoch.Add(time.Hour)}, {-2 * time.Hour, epoch.Add(-time.Hour)}} {
-		c.StepWall(step.by)
-		if now := c.Now(); !now.Equal(step.want) {
-			t.Errorf("after a step of %v the fake reads %s, want %s", step.by, now, step.want)
-		}
-		if armed := c.Armed(); !slices.Equal(armed, pending) {
-			t.Errorf("after a step of %v armed: %v, want the timers where they were, %v", step.by, armed, pending)
-		}
-		if got := len(channel.C()); got != 0 || ran {
-			t.Errorf("a step of %v fired a timer: the channel holds %d values, the AfterFunc ran %t", step.by, got, ran)
-		}
+func (e contextEnding) String() string { return fmt.Sprintf("Err %v, Cause %v", e.err, e.cause) }
+
+// WithTimeoutCause ends as context.WithTimeoutCause does, on the fake as on the real clock: at its
+// deadline with context.DeadlineExceeded as its error and the cause it was given, or
+// context.DeadlineExceeded as its cause too when that cause is nil; with context.Canceled as both
+// once its cancel runs first; and before it is returned when its wait is zero or less. The real
+// clock's deadlines here are a millisecond, each waited for on its own Done.
+func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
+	cause := errors.New("the allowance ended")
+	type ending = contextEnding
+	ended := func(ctx context.Context) ending { return ending{ctx.Err(), context.Cause(ctx)} }
+	fake := clocktest.New(epoch)
+
+	realAtDeadline, cancel := clock.Real().WithTimeoutCause(context.Background(), time.Millisecond, cause)
+	defer cancel()
+	testwait.Receive(t, "the real clock's context at its deadline", realAtDeadline.Done())
+	fakeAtDeadline, cancel := fake.WithTimeoutCause(context.Background(), time.Minute, cause)
+	defer cancel()
+	fake.Advance(time.Minute)
+	testwait.Receive(t, "the fake's context at its deadline", fakeAtDeadline.Done())
+	want := ending{context.DeadlineExceeded, cause}
+	if got := ended(realAtDeadline); got != want {
+		t.Errorf("the real clock's context at its deadline ended %+v, want %+v", got, want)
+	}
+	if got := ended(fakeAtDeadline); got != want {
+		t.Errorf("the fake's context at its deadline ended %+v, want %+v, as the real clock's does", got, want)
 	}
 
-	c.Advance(time.Minute)
-	stepped := epoch.Add(-time.Hour + time.Minute)
-	if got := testwait.Receive(t, "the channel timer's send once the fake's own moment reached it", channel.C()); !got.Equal(stepped) {
-		t.Errorf("the channel timer sent %s, want its deadline plus the steps, %s", got, stepped)
+	realCancelled, cancelReal := clock.Real().WithTimeoutCause(context.Background(), time.Hour, cause)
+	fakeCancelled, cancelFake := fake.WithTimeoutCause(context.Background(), time.Hour, cause)
+	cancelReal()
+	cancelFake()
+	want = ending{context.Canceled, context.Canceled}
+	if got := ended(realCancelled); got != want {
+		t.Errorf("the real clock's context cancelled first ended %+v, want %+v", got, want)
 	}
-	if got := testwait.Receive(t, "the send of a channel timer armed for the moment the fake has reached", c.NewTimer(0).C()); !got.Equal(stepped) {
-		t.Errorf("a channel timer armed for the fake's present sent %s, want that moment plus the steps, %s", got, stepped)
+	if got := ended(fakeCancelled); got != want {
+		t.Errorf("the fake's context cancelled first ended %+v, want %+v, as the real clock's does", got, want)
 	}
-	if !ran {
-		t.Error("the AfterFunc did not run once the fake's own moment reached it")
+
+	realSpent, cancel := clock.Real().WithTimeoutCause(context.Background(), 0, cause)
+	defer cancel()
+	fakeSpent, cancel := fake.WithTimeoutCause(context.Background(), 0, cause)
+	defer cancel()
+	want = ending{context.DeadlineExceeded, cause}
+	if got := ended(realSpent); got != want {
+		t.Errorf("the real clock's context of no wait read %+v as it was returned, want %+v", got, want)
 	}
-	if now := c.Now(); !now.Equal(stepped) {
-		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, stepped)
+	if got := ended(fakeSpent); got != want {
+		t.Errorf("the fake's context of no wait read %+v as it was returned, want %+v, as the real clock's does", got, want)
+	}
+
+	realNoCause, cancel := clock.Real().WithTimeoutCause(context.Background(), time.Millisecond, nil)
+	defer cancel()
+	testwait.Receive(t, "the real clock's context of no cause at its deadline", realNoCause.Done())
+	fakeNoCause, cancel := fake.WithTimeoutCause(context.Background(), time.Minute, nil)
+	defer cancel()
+	fake.Advance(time.Minute)
+	testwait.Receive(t, "the fake's context of no cause at its deadline", fakeNoCause.Done())
+	want = ending{context.DeadlineExceeded, context.DeadlineExceeded}
+	if got := ended(realNoCause); got != want {
+		t.Errorf("the real clock's context of no cause at its deadline ended %+v, want %+v", got, want)
+	}
+	if got := ended(fakeNoCause); got != want {
+		t.Errorf("the fake's context of no cause at its deadline ended %+v, want %+v, as the real clock's does", got, want)
 	}
 }

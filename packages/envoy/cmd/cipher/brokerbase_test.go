@@ -16,6 +16,7 @@ import "testing"
 // caller built, so a path the broker's own mux then cleans no longer matches the proof, and the
 // call is refused naming the credential rather than the URL an operator could fix.
 func TestBrokerBaseURLDropsEverySlashItEndsIn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at brokerbase_test.go:27).
 	const want = "https://secrets.internal.example"
 	for _, given := range []string{
 		want,

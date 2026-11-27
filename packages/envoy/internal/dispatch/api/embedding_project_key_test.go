@@ -35,6 +35,7 @@ var embeddingProjectKinds = []string{"comment_block", "document_block", "message
 // key would be as invisible to the project that owns it as a null one, and no count of nulls
 // would say so.
 func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	const project = "LABL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -106,6 +107,7 @@ func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
 // one progress row and writes nothing. A pass that stopped at its first batch, or one whose
 // cursor did not move, fails on the rows it left null.
 func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
+	t.Parallel()
 	const project = "FILL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -186,6 +188,7 @@ func fillRetryEvery(t *testing.T, every time.Duration) {
 // lease at its next try, labels every row and returns for good: a fill nothing has to boot to
 // finish.
 func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies(t *testing.T) {
+	// Not parallel: it writes the package variable embeddingProjectKeyFillRetry (fillRetryEvery).
 	const project = "LEAS"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -226,7 +229,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -304,6 +307,8 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 // intervals it writes one error line and no more. A loop that still tried would write one per
 // interval and never return.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "delete from embeddings_project_key_backfill")
 }
 
@@ -313,6 +318,8 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
 // wants the same thing of both: nothing it can do brings either back. Until this was matched,
 // the loop stopped on the row and tried the table every interval for the life of the process.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressTableIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "drop table embeddings_project_key_backfill")
 }
 

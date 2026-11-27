@@ -458,21 +458,22 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 // so its heartbeat re-checks that cookie and nothing the request carries beside it
 // (signInStillResolves). A token sent beside the cookie admitted nothing, and the broker holding
 // it live must not keep the socket open once the cookie's session has ended: not a read-only
-// token, which the read list lets read no document at all, and not a token that writes, which is
-// its session's credential and still not what opened this socket. The socket stays open while
-// the cookie resolves, with the token beside it, and closes at the first heartbeat after the
-// session's end, while the broker still holds the token live and has not once been asked about
-// it. The heartbeats are on the server's clock, a fake the row moves one heartbeat at a time, and
-// the close is awaited with the clock standing at the heartbeat after the sign-out. The
-// heartbeat's lookups of the cookie are counted too (countedLogins, heartbeatCalls): every
-// heartbeat the row moves through looks the cookie up, so a heartbeat that asks every second tick
-// or keeps an answer it stored fails, and no lookup that started once the session had ended may
-// find it still resolving, as one served from a cache of the session's state would. The server
-// ends the socket within a heartbeat of the lookup that refused returning, by the server's own
-// record of its close, allowing the longest stall between them for the one goroutine wake there,
-// the socket's on the heartbeat's cancel (requireClosedAfterRefusal, one hop), so a product that
-// waits before it closes a refused socket fails too.
+// token, which may read a document through the API's reads and never through this socket, and
+// not a token that writes, which is its session's credential and still not what opened this
+// socket. The socket stays open while the cookie resolves, with the token beside it, and closes
+// at the first heartbeat after the session's end, while the broker still holds the token live and
+// has not once been asked about it. The heartbeats are on the server's clock, a fake the row moves
+// one heartbeat at a time, and the close is awaited with the clock standing at the heartbeat after
+// the sign-out. The heartbeat's lookups of the cookie are counted too (countedLogins,
+// heartbeatCalls): every heartbeat the row moves through looks the cookie up, so a heartbeat that
+// asks every second tick or keeps an answer it stored fails, and no lookup that started once the
+// session had ended may find it still resolving, as one served from a cache of the session's
+// state would. The server ends the socket within a heartbeat of the lookup that refused returning,
+// by the server's own record of its close, allowing the longest stall between them for the one
+// goroutine wake there, the socket's on the heartbeat's cancel (requireClosedAfterRefusal, one
+// hop), so a product that waits before it closes a refused socket fails too.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 2 * time.Second
 	for _, beside := range []struct {
 		name   string
@@ -520,9 +521,17 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 			}
 			rig.requireClosedAfterRefusal(t, meter, "the document socket", heartbeat, 1)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
-			// the socket without a close frame.
-			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
-				t.Fatalf("the document socket closed with %d, want %d: the server dropping it", code, gws.CloseAbnormalClosure)
+			// the socket without a close frame. The peer can read that drop as the end of the
+			// stream or as a reset, so the test reads the frame the peer received (CloseFrame),
+			// not gorilla's status for the drop.
+			connection := peer.connection()
+			dropped, err := connection.DroppedWithoutCloseFrame()
+			if code := connection.CloseFrame(); code != 0 {
+				t.Fatalf("the document socket closed with a close frame of %d (its last read: %v), want none: the server dropping it", code, err)
+			}
+			// Do not count a parser error or a timed-out read as the server dropping the socket.
+			if !dropped {
+				t.Fatalf("the document socket did not end in a transport disconnect: last read: %v", err)
 			}
 			// The close is the cookie's: nothing asked the broker about the token, and the
 			// broker holds it live still.
@@ -541,6 +550,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -591,6 +601,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // tick is told apart from a late tick. The socket's read deadline runs on a fake no one moves
 // (newDocumentSocketTokenRig), so no pong the runner holds back ends the socket first.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	t.Parallel()
 	meter := startStallMeter(t)
 	const heartbeat = 2 * time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat, nil)

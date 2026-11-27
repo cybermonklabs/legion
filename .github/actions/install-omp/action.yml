@@ -1,23 +1,65 @@
 name: Install the pinned Oh My Pi
 description: >-
-  Installs the Oh My Pi build .omp-pin pins (the repository's one copy of the pin, a mise tool
-  spec on one line) through mise, and exports its path as LEGION_TEST_OMP for the
-  tests that run it; they refuse on GitHub Actions without one. Needs the repository checked out
-  and mise at ~/.local/bin/mise.
+  Installs the Oh My Pi build .omp-pin pins (the repository's one copy of the pin,
+  `github:<owner>/<repo>@<version>` on one line), and exports its path as LEGION_TEST_OMP for the
+  tests that run it; they refuse on GitHub Actions without one. Needs the repository checked out.
+
+  It fetches the linux-x64 archive of that release from the address GitHub serves a release asset
+  at, which is no GitHub API call, and holds it to `packages/daemon/docker/worker.Dockerfile#ARG OMP_SHA256`, the digest the worker image's tools stage checks the
+  same archive against, before it unpacks anything. The action reads no token. Until 2026-11-21 it
+  ran `mise install <pin>`, whose github backend reads the release through the API with the run's
+  GITHUB_TOKEN; that token's hourly budget is shared by every job of this repository's CI, and
+  when it ran out (`github rate limit: 0/15000 (core)`, before 17:24:15Z that day) the install
+  failed in daemon-go, plugin-pack, pi-envoy and pi-legion alike.
+
+  A refusal names its cause and installs nothing: a pin of another shape, a Dockerfile with no
+  digest, a fetch that fails, or an archive whose sha256 is not the pinned one. There is no other
+  source. curl tries a failed transfer three more times before the step refuses it, and whatever
+  it wrote is held to the digest after that, so a retry can never admit other bytes.
 runs:
   using: composite
   steps:
     - name: Install the pinned Oh My Pi
       shell: bash
-      env:
-        MISE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        dockerfile=packages/daemon/docker/worker.Dockerfile
         pin=$(<.omp-pin)
-        test -n "$pin"
+        # Each part of the pin — owner, repository, version — is one or more of [A-Za-z0-9._-] and
+        # holds no `..`, so no part can be a path of its own or climb out of the one it stands in.
+        part='[A-Za-z0-9._-]+'
+        if ! [[ $pin =~ ^github:($part)/($part)@($part)$ ]] || [[ $pin == *..* ]]; then
+          echo "::error file=.omp-pin::install-omp: .omp-pin holds '$pin', which is no github:<owner>/<repo>@<version> pin of [A-Za-z0-9._-] parts without '..', so no release archive can be named" >&2
+          exit 1
+        fi
+        owner=${BASH_REMATCH[1]}
+        repo=${BASH_REMATCH[2]}
+        tag=v${BASH_REMATCH[3]}
+        digest=$(sed -n 's/^ARG OMP_SHA256=//p' "$dockerfile")
+        if ! [[ $digest =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error file=$dockerfile::install-omp: $dockerfile holds no ARG OMP_SHA256=<64 hex>, the sha256 of the archive $pin names (it read '$digest')" >&2
+          exit 1
+        fi
+        dir="$RUNNER_TEMP/omp"
+        archive="$RUNNER_TEMP/omp.tar.gz"
+        rm -rf "$dir" "$archive"
+        mkdir -p "$dir"
         started=$(date +%s)
-        "$HOME/.local/bin/mise" install "$pin"
-        omp="$("$HOME/.local/bin/mise" where "$pin")/bin/omp"
+        if ! curl -fsSL --retry 3 --retry-all-errors --max-time 300 -o "$archive" "https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz"; then
+          echo "::error::install-omp: the release archive of $pin did not download, so nothing is installed" >&2
+          rm -f "$archive"
+          exit 1
+        fi
+        got=$(sha256sum "$archive")
+        got=${got%% *}
+        if [ "$got" != "$digest" ]; then
+          echo "::error file=$dockerfile::install-omp: the archive of $pin has sha256 $got, and ARG OMP_SHA256 of $dockerfile pins $digest, so it is refused and nothing is installed" >&2
+          rm -f "$archive"
+          exit 1
+        fi
+        tar -xzf "$archive" -C "$dir" --strip-components=1 --no-same-owner
+        rm -f "$archive"
+        omp="$dir/bin/omp"
         "$omp" --version
-        echo "installed $pin in $(( $(date +%s) - started ))s"
+        echo "installed $pin (sha256 $got) in $(( $(date +%s) - started ))s"
         echo "LEGION_TEST_OMP=$omp" >> "$GITHUB_ENV"

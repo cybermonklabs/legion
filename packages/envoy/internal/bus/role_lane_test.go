@@ -3,19 +3,20 @@ package bus_test
 import (
 	"os"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const roleLaneMachine = "example machine"
 
 // requireRoleMessage publishes a role message as another connection of the same user and requires
-// the lane's handler to receive it within 5 s.
+// the lane's handler to receive it, waiting for it bounded only by the test binary's deadline
+// (testwait.Receive).
 func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	t.Helper()
 	publisher, err := bus.Dial("role-publisher", []string{uri}, os.LookupEnv)
@@ -30,13 +31,8 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	select {
-	case got := <-received:
-		if got != topic {
-			t.Fatalf("the role lane received %s, want %s", got, topic)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role lane received nothing")
+	if got := testwait.Receive(t, "the role lane to receive the role message", received); got != topic {
+		t.Fatalf("the role lane received %s, want %s", got, topic)
 	}
 }
 
@@ -97,6 +93,7 @@ func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
 // A client counts each slow consumer its connection reports: a core subscription narrowed to one
 // pending message, its handler held, falls behind at the third message.
 func TestClientCountsSlowConsumers(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -126,5 +123,5 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
+	waitFor(t, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
 }

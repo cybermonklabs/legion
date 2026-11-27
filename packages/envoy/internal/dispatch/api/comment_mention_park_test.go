@@ -233,6 +233,8 @@ func shortWaits(tries []time.Time) (waits []time.Duration, short []string) {
 // The lane is read after each park, once every goroutine of the bubble is blocked (awaitPark),
 // which is when a goroutine that slept a park's wait out on the lane would still be on it.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
+	// Not parallel: serveStacks reads every goroutine of the process (runtime.Stack, all), so a
+	// lane loop of another test's sender counts as this lane's (envoy-go-race-api job 137408608768).
 	synctest.Test(t, func(t *testing.T) {
 		rig := newParkRig(t, 2)
 		first := rig.enqueue("parked-first", "session:parked")
@@ -367,6 +369,7 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 // awaitPark answering, so a lane that is never tried, or stops being tried, would otherwise hold
 // the row until go test's alarm.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const lanes = 200
 		rig := newParkRig(t, maxQueuedMentionSends)

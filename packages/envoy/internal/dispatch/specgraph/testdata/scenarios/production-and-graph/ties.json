@@ -1,0 +1,14 @@
+{
+  "c1": {
+    "a-production-restart-loses-no-message": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  },
+  "m2": {
+    "a-production-restart-loses-no-message": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  }
+}

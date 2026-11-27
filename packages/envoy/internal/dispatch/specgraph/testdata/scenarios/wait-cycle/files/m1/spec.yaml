@@ -1,0 +1,68 @@
+---
+type: requirement
+id: envoy-delivers-messages
+kind: behavior
+text:
+  - Envoy delivers each message that a sender writes.
+---
+type: check
+id: a-sent-message-reaches-a-listener
+serves: envoy-delivers-messages
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestASentMessageReachesAListener
+  job: go-checks
+claim: A message that a sender writes reaches a listener that is connected.
+procedure_text:
+  - The program connects one listener and writes one message.
+  - It must find the message at the listener.
+failing_example:
+  - A sender that drops each message.
+---
+type: requirement
+id: a-message-reaches-a-late-session
+kind: behavior
+parent: envoy-delivers-messages
+text:
+  - A session that connects after a message was written gets that message.
+---
+type: check
+id: a-late-session-gets-the-message
+serves: a-message-reaches-a-late-session
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestALateSessionGetsTheMessage
+  job: go-checks
+claim: A session that connects after a write gets the message of that write.
+procedure_text:
+  - The program writes one message and then connects one session.
+  - It must find the message in the session.
+failing_example:
+  - A listener that delivers only the messages that arrive after a session connects.
+---
+type: requirement
+id: a-message-survives-a-restart
+kind: behavior
+parent: envoy-delivers-messages
+text:
+  - A message that Envoy stored before a restart reaches its session after the restart.
+---
+type: check
+id: a-restart-keeps-the-message
+serves: a-message-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestARestartKeepsTheMessage
+  job: go-checks
+claim: A stored message reaches its session after the listener starts again.
+procedure_text:
+  - The program stores one message, starts the listener again and reads the session.
+  - It must find the message one time.
+failing_example:
+  - A listener that deletes its stored messages when it starts.

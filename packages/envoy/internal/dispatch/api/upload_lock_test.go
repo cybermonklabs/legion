@@ -25,6 +25,7 @@ import (
 // load. Holding the owner lock here must therefore stop the upload before the room lock, leaving
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
+	t.Parallel()
 	ctx := uploadLockContext(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -77,6 +78,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 // commit (Ledger.Commit's recordLatestEditSource), after its event, would wait for the answer and
 // then finish; what fails this test is a lock the two come to share in opposite orders.
 func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTheirEvents(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	ctx := uploadLockContext(t)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -267,6 +269,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // doc_updates' foreign key: while the owner lock was a `for update` row lock that key share
 // conflicted and the two deadlocked. The owner's advisory lock takes no row lock at all.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
+	t.Parallel()
 	ctx := uploadLockContext(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

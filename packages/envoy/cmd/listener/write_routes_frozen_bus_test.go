@@ -79,13 +79,21 @@ func (rig *writeRouteRig) serve(method, path, body string) (*httptest.ResponseRe
 	return recorder, time.Since(started)
 }
 
-// wantWriteBusUnanswered asserts the named 503 with Retry-After: 1, inside writeRoutesWithin.
-func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.ResponseRecorder, elapsed time.Duration) {
+// wantWriteBusUnansweredWithin asserts the named 503 with Retry-After: 1 (wantWriteBusUnanswered),
+// answered inside writeRoutesWithin.
+func wantWriteBusUnansweredWithin(t *testing.T, route string, recorder *httptest.ResponseRecorder, elapsed time.Duration) {
 	t.Helper()
 	if elapsed >= writeRoutesWithin {
 		t.Fatalf("%s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
 			route, elapsed, recorder.Code, recorder.Body.String(), writeRoutesWithin)
 	}
+	wantWriteBusUnanswered(t, route, recorder)
+	t.Logf("%s with the bus silent: answered in %s", route, elapsed)
+}
+
+// wantWriteBusUnanswered asserts the named 503 with Retry-After: 1.
+func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.ResponseRecorder) {
+	t.Helper()
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route, recorder.Code, recorder.Body.String())
 	}
@@ -99,9 +107,12 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
 	}
-	t.Logf("%s with the bus silent: 503 in %s: %s", route, elapsed, refusal.Error)
+	t.Logf("%s with the bus silent: 503 once its budget was spent: %s", route, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
+//
 // Every /v1 route that writes - subscribe, unsubscribe, DELETE /v1/interests/<session_id>, POST
 // /v1/roles/set and DELETE /v1/sessions/<session_id> - does its store work within
 // sendRequestBudget of the request's own context. nats.go's KV reads and writes take no context
@@ -119,6 +130,8 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 // read-then-delete. The negative control is each route asked before the freeze, on the same rig,
 // for a session of its own: each is served.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
+	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
 	const (
 		topic         = "notifications.team.write-routes"
 		otherTopic    = "notifications.team.write-routes-other"
@@ -200,12 +213,15 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 			t.Run(request.name, func(t *testing.T) {
 				t.Parallel()
 				recorder, elapsed := rig.serve(request.method, request.path, request.body)
-				wantWriteBusUnanswered(t, request.method+" "+request.path, recorder, elapsed)
+				wantWriteBusUnansweredWithin(t, request.method+" "+request.path, recorder, elapsed)
 			})
 		}
 	})
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
+//
 // POST /v1/roles/set's claim (store.Registry.SetRoleWithPrevious) and a soft claim's read of the
 // role's holder are role-bucket calls the claimant's registration write does not reach, so each
 // is frozen on its own here: the relay passes everything up to the first protocol line naming the
@@ -217,6 +233,8 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 // past its budget either. The negative control is a hard claim of another role
 // (role-store-control) by the same claimant on the same rig before the freeze: it is served.
 func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
+	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
 	const claimant = "ses_role_store_claimant"
 	for _, freeze := range []struct {
 		name, trigger, body string
@@ -234,7 +252,7 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 			}
 			rig.relay.arm(freeze.trigger, 1)
 			recorder, elapsed := rig.serve(http.MethodPost, "/v1/roles/set", freeze.body)
-			wantWriteBusUnanswered(t, "POST /v1/roles/set", recorder, elapsed)
+			wantWriteBusUnansweredWithin(t, "POST /v1/roles/set", recorder, elapsed)
 		})
 	}
 }
@@ -247,6 +265,7 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 // of store answers, a store answer wrapped alone, and a store answer wrapped with its detail by one
 // fmt.Errorf (an unreadable record and its decode error) are each still the store's answer.
 func TestAJoinedStoreErrorIsTheStoresAnswerOnlyWhenEveryPartIs(t *testing.T) {
+	t.Parallel()
 	dropped := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
 	for _, c := range []struct {
 		name     string

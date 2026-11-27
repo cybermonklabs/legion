@@ -108,16 +108,19 @@ func TestLoadLeavesAllowedHostsEmptyWhenUnset(t *testing.T) {
 	}
 }
 
+// An entry that is no host is refused by its position in the list, never its text: a made-up
+// credential in a URL's userinfo, pasted there, is the last row.
 func TestLoadRefusesAllowedHostsWithAPortSchemeOrPath(t *testing.T) {
-	for _, entry := range []string{"hub.internal.example:9020", "http://hub.internal.example", "hub.internal.example/v1", "[2001:db8::1]:9020", ".", "hub.internal.example]", "::1]", "-hub.internal.example", "hub_name", "*", "192.0.2.10:9020", "192.0.2.10:", "cafe:80", "dead.beef:443", "1:2", "[192.0.2.10]", "[cafe]", "[abc.def]", "cafe:9020", "a:b"} {
+	const credential = "madeUpHostsUser0123:madeUpHostsPassword0123"
+	for _, entry := range []string{"hub.internal.example:9020", "http://hub.internal.example", "hub.internal.example/v1", "[2001:db8::1]:9020", ".", "hub.internal.example]", "::1]", "-hub.internal.example", "hub_name", "*", "192.0.2.10:9020", "192.0.2.10:", "cafe:80", "dead.beef:443", "1:2", "[192.0.2.10]", "[cafe]", "[abc.def]", "cafe:9020", "a:b", "https://" + credential + "@hub.internal.example"} {
 		t.Run(entry, func(t *testing.T) {
 			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
 			t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
-			t.Setenv("ENVOY_ALLOWED_HOSTS", "ok.internal.example,"+entry)
+			t.Setenv("ENVOY_ALLOWED_HOSTS", "ok.internal.example, ,"+entry)
 
 			_, err := Load(9020)
-			if err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOWED_HOSTS") || !strings.Contains(err.Error(), entry) {
-				t.Fatalf("Load error = %v, want a refusal naming ENVOY_ALLOWED_HOSTS and %q", err, entry)
+			if want := "invalid ENVOY_ALLOWED_HOSTS entry 3: want a host name or address with no port, scheme or path"; err == nil || err.Error() != want {
+				t.Fatalf("Load error = %v, want %q", err, want)
 			}
 		})
 	}
@@ -192,7 +195,7 @@ func TestLoadRefusesASettingItsParserRefuses(t *testing.T) {
 }
 
 // ENVOY_EDGE_PROJECTS is the projects an edge listener serves, read as a broker token's own list
-// is: commas or white space between project keys, sorted, each once; unset or blank is every
+// is: commas or white space between project keys, sorted, each once; unset or empty is every
 // other listener, which serves none. A list a token could never carry is refused naming the
 // variable, so a misspelt edge stays down rather than serving a project it was not meant to.
 func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
@@ -207,7 +210,6 @@ func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
 		want  []string
 	}{
 		{"", nil},
-		{"  ", nil},
 		{"PRIV", []string{"PRIV"}},
 		{"PRIV, INFRA", []string{"INFRA", "PRIV"}},
 		{"OEDGE PRIV", []string{"OEDGE", "PRIV"}},
@@ -225,6 +227,25 @@ func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
 	fixtureenv.Unset(t, "ENVOY_EDGE_PROJECTS")
 	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
 		t.Errorf("ENVOY_EDGE_PROJECTS unset: EdgeProjects %q, error %v; want none", service.EdgeProjects, err)
+	}
+}
+
+// ENVOY_EDGE_PROJECTS set to anything but the empty string that names no project - a lone comma,
+// commas and white space, white space alone - is a misspelt edge setting, and it refuses the start
+// naming the variable rather than starting a listener with no edge rules. The empty string stays a
+// listener that is no edge.
+func TestAnEdgeProjectsValueNamingNoProjectIsRefused(t *testing.T) {
+	t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+	for _, value := range []string{",", " , ", ",,", "  "} {
+		t.Setenv("ENVOY_EDGE_PROJECTS", value)
+		if service, err := Load(9020); err == nil || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: EdgeProjects %q, error %v; want a refusal naming ENVOY_EDGE_PROJECTS", value, service.EdgeProjects, err)
+		}
+	}
+	t.Setenv("ENVOY_EDGE_PROJECTS", "")
+	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
+		t.Errorf("ENVOY_EDGE_PROJECTS empty: EdgeProjects %q, error %v; want none and no error", service.EdgeProjects, err)
 	}
 }
 

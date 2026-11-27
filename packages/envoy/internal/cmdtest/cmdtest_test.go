@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -26,13 +28,76 @@ const (
 	// waitForOutputChildEnv makes TestWaitForOutputFailsAtItsCallersLineWhenTheProcessExitsFirst
 	// run as its own child: the run whose failure it reads.
 	waitForOutputChildEnv = "CMDTEST_WAIT_FOR_OUTPUT_CHILD"
+	// buildChildEnv makes this test binary's TestMain run its tests under Main ("main") or without
+	// it ("plain"): the processes the build rows (build_test.go) start, whose TestBuildChild builds
+	// hello.
+	buildChildEnv = "CMDTEST_BUILD_CHILD"
 )
 
+// TestMain runs this binary as the held-port child where heldPortChildEnv is set, and runs the
+// tests otherwise. Only TestMain makes that child of a copy a test starts: in a build of these
+// tests without it, such a copy runs the tests, each of which starts copies that run them again.
+// heldPortChildCopy refuses to start a copy in such a process (heldPortChildCopyRefusal), and
+// TestACopyStartedAsTheHeldPortChildRunsAsTheChild fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(heldPortChildEnv) == "1" {
 		os.Exit(heldPortChild())
 	}
+	if os.Getenv(buildChildEnv) == "main" {
+		os.Exit(Main(m))
+	}
 	os.Exit(m.Run())
+}
+
+// heldPortChildCopy is the path of this test binary, which a test runs as the held-port child with
+// heldPortChildEnv=1 in the copy's environment. It fails t where heldPortChildCopyRefusal refuses.
+func heldPortChildCopy(t *testing.T) string {
+	t.Helper()
+	if err := heldPortChildCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// heldPortChildCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has heldPortChildEnv=1 was started as the held-port child, and TestMain runs
+// such a process as the child, so one that runs the tests runs in a build without TestMain, and a
+// copy started there would run the tests again.
+func heldPortChildCopyRefusal() error {
+	if os.Getenv(heldPortChildEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the held-port child, but it runs the tests: this build of the tests has no TestMain that runs the child, and a copy started here would run the tests again", heldPortChildEnv)
+	}
+	return nil
+}
+
+// heldPortChildCopyRefusal, which heldPortChildCopy asks before any copy starts, refuses a process
+// that has heldPortChildEnv=1 and no other. While TestMain is in the build no copy reaches it, so
+// this test is what holds the refusal.
+func TestAProcessStartedAsTheHeldPortChildStartsNoCopy(t *testing.T) {
+	// Not parallel: it unsets heldPortChildEnv (fixtureenv.Unset, through t.Setenv).
+	fixtureenv.Unset(t, heldPortChildEnv)
+	if err := heldPortChildCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", heldPortChildEnv, err)
+	}
+	t.Setenv(heldPortChildEnv, "1")
+	if err := heldPortChildCopyRefusal(); err == nil || !strings.Contains(err.Error(), heldPortChildEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", heldPortChildEnv, err)
+	}
+}
+
+// A copy started with heldPortChildEnv=1 runs as the held-port child: it waits for a line on its
+// standard input, and given none says so and exits 1. The child does not read -h. In a build
+// without TestMain, the testing package reads -h before any test runs, prints its own flag usage
+// and exits 0, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsTheHeldPortChildRunsAsTheChild(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(heldPortChildCopy(t), "-h")
+	cmd.Env = append(os.Environ(), heldPortChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := "held-port child: wait for the line to serve: EOF\n"; !errors.As(err, &exit) || exit.ExitCode() != 1 || string(out) != want {
+		t.Fatalf("a copy started as the held-port child with -h and no input: %v, printed %q, want exit 1 and %q", err, out, want)
+	}
 }
 
 // heldPortChild is the process TestHeldPortStaysHeldUntilItsProcessServes starts. It waits for a
@@ -73,6 +138,7 @@ func heldPortChild() int {
 // that process holding it once Start returns: another program's bind in the meantime is refused,
 // the process serves on the socket, and nothing holds the socket once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
+	t.Parallel()
 	held := HoldPort(t)
 	// The socket's inode names it whoever holds a descriptor of it, which a port does not: once the
 	// socket is closed, another program may bind the port and listen there.
@@ -81,7 +147,7 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 		t.Fatalf("read the held socket's inode: %v", err)
 	}
 	inode := strconv.FormatUint(stat.Ino, 10)
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(heldPortChildCopy(t))
 	cmd.Env = append(os.Environ(), heldPortChildEnv+"=1")
 	held.Pass(cmd, heldPortFD)
 	serve, err := cmd.StdinPipe()
@@ -112,8 +178,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
@@ -141,6 +209,8 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 // that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
 // an Exited closed before afterExit returned would show here as nothing recorded.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	// Not parallel: the order it proves rests on a 200 ms sleep in the callback, which load could
+	// outlast and pass the test without the order.
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int
@@ -166,6 +236,7 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 // whose failure it reads: there, with waitForOutputChildEnv set, it waits for a line a process that
 // exits at once never logs.
 func TestWaitForOutputFailsAtItsCallersLineWhenTheProcessExitsFirst(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(waitForOutputChildEnv) == "1" {
 		// -test.run=^$ makes this test binary run no test and exit 0; the variable is cleared for
 		// it, so it does not run this child again.

@@ -1,14 +1,19 @@
 package daemon
 
 import (
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // A child's architect's first start that reaches the outbox while its tree does not run waits for
@@ -24,6 +29,7 @@ import (
 // re-admitted root waits in the line for a slot, since its tree is opened only by the promotion
 // that gives it one.
 func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a reopen inside the linger", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
@@ -111,6 +117,70 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 		}
 		wantTheWaitingStartToAct(rig, token, called)
 	})
+}
+
+// A start queued for news alone (record.SuperviseRequest.News) of a child's own architect has the
+// shape of that architect's first start: the architect's role on a child, with no phase and no
+// task. It is no first start (childArchitectFirstStart). It carries news to a claim that already
+// holds its role, and one that reaches no claim finishes, since the start that creates or revives
+// the claim carries the news. So while the child's tree does not run it never waits on its backoff
+// as the first start does (startRoot). Under a lingering tree it finishes as every start of a
+// member of that tree does. Under a re-admitted root waiting in the line for its tree to be opened,
+// it finishes as a news-only start that reaches no claim (newsOnlyRefusal). Neither creates the
+// child's architect claim. Read as a first start, each returns the wait instead.
+func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotRun(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		root func(*record.Issue)
+		// readmitted clears the root's design gate, as a re-admission clears it with the rest of
+		// the generation (admit's readmit), so the root's record says its tree has not run.
+		readmitted bool
+		says       string
+	}{
+		{"a lingering tree", func(root *record.Issue) {
+			until := time.Now().Add(time.Hour)
+			root.Phase, root.Status, root.LingerUntil = phase.Done, "backlog", &until
+		}, false, "outbox start of a member of a lingering tree; finished without acting"},
+		{"a re-admitted root waiting in the line", func(root *record.Issue) {
+			root.Phase, root.Status = phase.Admitted, "todo"
+		}, true, "outbox news-only start reaches no claim; finished without acting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newChildArchitectRig(t)
+			var logged testlog.Buffer
+			// The outbox reads the line under the design-gate steps the daemon gates, as the daemon
+			// wires it (startRoot).
+			rig.runner.log, rig.runner.gatedSteps = slog.New(slog.NewTextHandler(&logged, nil)), config.DesignGateRootIssues.Steps()
+			root := readIssue(t, rig.pool, doorRoot)
+			tc.root(root)
+			rig.put(*root, rig.member(doorChild, doorRoot, phase.Accepting, "needs_review", "V"))
+			if tc.readmitted {
+				if _, err := rig.pool.Exec(rig.ctx, `delete from design_gates where issue = $1`, doorRoot); err != nil {
+					t.Fatalf("clear the design gate of the re-admitted %s: %v", doorRoot, err)
+				}
+				// A setup guard: the case is the root waiting in the line, or it tests nothing.
+				if !record.QueuedRoot(*root, treelifecycle.Lifecycle{}, record.TreeGate{Steps: rig.runner.gatedSteps}) {
+					t.Fatalf("the re-admitted root %+v with no gate does not wait in the line, want it waiting (record.QueuedRoot)", root)
+				}
+			}
+			row, err := record.NewOutboxRow(doorChild, record.SuperviseRequest{Op: "start", Tree: doorRoot, Role: claim.RoleArchitect,
+				Generation: 1, News: true}, time.Now())
+			if err != nil {
+				t.Fatalf("build the news-only start of %s's architect: %v", doorChild, err)
+			}
+
+			if err := rig.runner.execute(rig.ctx, row); err != nil {
+				t.Fatalf("the news-only start of %s's architect, with no claim, under %s = %v, want it finished without acting", doorChild, tc.name, err)
+			}
+			if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
+				t.Fatalf("the news-only start of %s's architect created its claim, want none created", doorChild)
+			}
+			if !strings.Contains(logged.String(), tc.says) {
+				t.Fatalf("the outbox logged %q, want %q", logged.String(), tc.says)
+			}
+		})
+	}
 }
 
 // parkTheRootBeforeTheChildsRowsRun is the child released, then its root moved out of the workflow

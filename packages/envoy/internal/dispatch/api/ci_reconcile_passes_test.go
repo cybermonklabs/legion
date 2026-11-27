@@ -101,6 +101,7 @@ type ciPassView struct {
 // The route answers the passes of the last 24 hours, newest first, with every count the pass's
 // one log line carries, and leaves out the passes older than that however long they are kept.
 func TestCIReconcilePassesAnswersTheLastDayNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	instance := seedServerProcess(t, database, 0)
 	older := endedCIPass(t, database, instance, 6*time.Hour, "complete")
@@ -166,7 +167,7 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), leases, cireconcile.Lease, time.Time{}, 0, func(context.Context) {
+		duty.Exclusive(t.Context(), nil, leases, cireconcile.Lease, time.Time{}, 0, func(context.Context) {
 			close(held)
 			<-let
 		})
@@ -182,6 +183,7 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 // start still counts as live when the route reads it however long the steps between take; the
 // production fifteen seconds would read a slow run's process as gone.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = pastTheRun
@@ -211,6 +213,7 @@ func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 // without completing. Only the heartbeat can decide this one, and the route decides nothing of
 // its own -- this is the cireconcile rule reaching a caller through HTTP.
 func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T) {
+	// Not parallel: it writes the package variable processes.LiveWindow.
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = time.Second
@@ -236,6 +239,7 @@ func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T)
 // The route is a read any signed-in person or agent token may make, as the other reads of its
 // kind are, and nobody else: it refuses an anonymous caller and answers a bearer.
 func TestCIReconcilePassesIsReadableBySignedInCallersAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	instance := seedServerProcess(t, database, 0)
 	endedCIPass(t, database, instance, time.Minute, "complete")
@@ -259,6 +263,7 @@ func TestCIReconcilePassesIsReadableBySignedInCallersAlone(t *testing.T) {
 // A deployment that has run no pass answers an empty list rather than null, so a client that
 // draws the rows need not tell the two apart.
 func TestCIReconcilePassesAnswersAnEmptyListWhenNoPassHasRun(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/ci-reconcile/passes", nil, "alice")

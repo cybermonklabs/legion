@@ -13,9 +13,10 @@ import (
 // registers each role's session for its pod at the broker's POST /v1/oauth/exchange/pod-sessions
 // under the daemon's own ServiceAccount token, bound to the thumbprint of the role's own key, and
 // writes it again, with the same thumbprint, every cipher.RegistrationRenewal while the
-// role's process lives. Only a pod that carries an exchange identity trades a token that the
-// registration gates, so with exchange_audience unset it is nil, and the daemon makes no
-// registration call at all (R9).
+// role's process lives; and which releases at POST /v1/oauth/exchange/pod-sessions/release the
+// session names an operator's release frees, before it frees them. Only a pod that carries an
+// exchange identity trades a token that the registration gates, so with exchange_audience unset it
+// is nil, and the daemon makes no registration or release call at all (R9).
 func newRegistrar(a config.AgentSecretsConfig, client *cipher.Client) supervise.Registrar {
 	if a.ExchangeAudience == "" {
 		return nil
@@ -25,7 +26,9 @@ func newRegistrar(a config.AgentSecretsConfig, client *cipher.Client) supervise.
 
 // brokerRegistrar is cipher.Client as supervise.Registrar: each field of the machine's
 // registration, its thumbprint included, is the renewal's, and the renewal's stop is the
-// machine's.
+// machine's. A release's error is the client's own: an *cipher.APIError is a
+// supervise.PermanentError and a supervise.RouteUnservedError, which is how the machine tells a
+// refusal from a broker that did not answer.
 type brokerRegistrar struct{ client *cipher.Client }
 
 func (b brokerRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
@@ -37,4 +40,8 @@ func (b brokerRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSess
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Latest: latest,
 		Token: s.Token, After: s.After, Bound: s.Bound,
 	})
+}
+
+func (b brokerRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return b.client.ReleasePodSessions(ctx, names)
 }

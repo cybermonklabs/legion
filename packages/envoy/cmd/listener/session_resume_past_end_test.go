@@ -100,6 +100,7 @@ func (rig *sessionConsumerRig) requireOneLogLine(t *testing.T, level, message, s
 // answered at the sequence after that point and writes no such line, so the line is the clamp's
 // alone.
 func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequenceAndLogged(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID, inside = "ses_resume_past_end", "ses_resume_inside_the_stream"
 	// Another session's messages, so the stream's last sequence is past its first and a resume
@@ -157,6 +158,7 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequ
 // registration asked for, the record's floor and the stream's identity, and the second create,
 // which the record kept inside the stream, adds no clamp line to the first's.
 func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_clamped_once"
 	agent := contracts.LegacyAgentSubject(sessionID)

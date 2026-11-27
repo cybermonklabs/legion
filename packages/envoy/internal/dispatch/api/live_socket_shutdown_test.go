@@ -33,6 +33,7 @@ import (
 // collected, and the cleanup returns once every page has, so a test that fails while a page waits
 // leaves none behind.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 
 	const pages = 16

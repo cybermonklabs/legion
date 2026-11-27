@@ -12,6 +12,8 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import charterFrame from "./askgate-system.md" with { type: "text" };
+import ruleFrame from "./rule-check-system.md" with { type: "text" };
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -32,12 +34,19 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
+/** The opening line of a frame file, as a provider request's JSON body writes it. The two checks'
+ *  frames differ in it, and it is read from the file, so a reworded frame still matches. */
+function openingInJson(frame: string): string {
+  const opening = frame.trimStart().split("\n")[0] ?? "";
+  if (opening === "") throw new Error("a frame file opens with no line");
+  return JSON.stringify(opening).slice(1, -1);
+}
 /** The system prompt of a request the charter check sends: its own frame heads it. */
 const isGateRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate.");
+  JSON.stringify(request.body.system ?? "").includes(openingInJson(charterFrame));
 /** The rules check's own frame, which a `dispatch ask` brings beside the charter call. */
 const isRuleRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate's rule check.");
+  JSON.stringify(request.body.system ?? "").includes(openingInJson(ruleFrame));
 
 /** The scripted bash call: a `dispatch ask` by the stand-in's literal path, which the gate reads. */
 const ask = (dispatch: string) =>
@@ -351,15 +360,13 @@ test.skipIf(omp === undefined && !onActions)(
       port: 0,
       async fetch(request) {
         const route = new URL(request.url).pathname;
-        // The upload reads two things before it posts: the issue's own documents, so it can refuse
-        // a name the issue already carries, and the store's round trip of the markdown, so it can
-        // refuse text the store would change. An empty list and the text as given let it through.
+        // The upload of a Markdown --path file first asks the file round trip about its bytes
+        // (POST /api/v1/markdown/file-round-trip), which this fake answers 503 below, so the
+        // check goes unchecked and the upload goes on. It then reads the issue's own documents
+        // before it posts, so it can refuse a name the issue already carries, and an empty list
+        // lets it through.
         if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
           return Response.json([]);
-        }
-        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
-          const sent = (await request.json()) as { markdown?: string };
-          return Response.json({ markdown: sent.markdown });
         }
         if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
           const file = (await request.formData()).get("file");

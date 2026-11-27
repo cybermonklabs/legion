@@ -20,8 +20,7 @@
 #            every --patch-path passed through. Without such a tag the release
 #            line has not started, which is an error, unless --first-npm names
 #            the npm package whose published version (0.0.0 when npm has none)
-#            stands in for the tag, over the whole history. release-bump.sh's
-#            `empty` (no commit in the paths) and `none` (no version-bumping
+#            stands in for the tag, over the whole history. `.github/scripts/release-bump.sh#empty` (no commit in the paths) and `none` (no version-bumping
 #            commit: a ::notice and a job-summary line) both give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
@@ -268,9 +267,10 @@
 #            fix merges. The fragments and their refusals are fold-notes', and
 #            each <package-dir> is one of fold-orphans'. changie is what
 #            renders them, so the command looks for it before anything else
-#            and refuses naming it where it is not on PATH. ci.yaml's test job
-#            runs it over .github/changelog-packages, beside the changie its
-#            release-push.test.sh cases need.
+#            and refuses naming it where it is not on PATH. ci.yaml's
+#            tooling-checks job runs it over .github/changelog-packages, with
+#            the changie it installs as the test job does for the
+#            release-push.test.sh cases that need it.
 # leak guard: every write this script makes to a public GitHub repository
 #            passes this repository's own private-name rules before it is made,
 #            and is refused when they match: `release`'s create, its upload to
@@ -347,7 +347,7 @@ leak_engine=''
 # leak_guard <write> [<asset>...] -- <text>...: refuse <write>, and with it the
 # command, unless every <text> and every <asset> passes this repository's own
 # private-name rules, the rule file
-# packages/daemon/internal/leakguard/private-names.toml as this checkout holds
+# .github/private-names.toml as this checkout holds
 # it. That rule file alone is run, and no shared check: this job holds no
 # credential for the private repository that publishes the shared one and needs
 # none, since every refusal of the measured window was of this repository's own
@@ -384,9 +384,9 @@ leak_guard() {
     esac
   done
   if [ -z "$leak_engine" ]; then
-    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../../packages/daemon/internal/leakguard/private-names.toml"
+    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../private-names.toml"
     [ -f "$leak_rules" ] ||
-      fail_error "$setup the rule file packages/daemon/internal/leakguard/private-names.toml is not in this checkout"
+      fail_error "$setup the rule file .github/private-names.toml is not in this checkout"
     if [ -n "${RELEASE_PUSH_LEAK_ENGINE:-}" ]; then
       leak_engine=$RELEASE_PUSH_LEAK_ENGINE
     else
@@ -410,7 +410,7 @@ leak_guard() {
         --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
       status=$?
     [ "$status" = 0 ] ||
-      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
+      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file .github/private-names.toml does not parse, or this gitleaks refused it"
   fi
   for asset in "${texts[@]}"; do material+=$asset$'\n'; done
   for asset in "${assets[@]}"; do
@@ -911,7 +911,7 @@ case "$command" in
         prev_version=$(npm view "$first_npm" version 2>/dev/null || echo 0.0.0)
         range=HEAD
       else
-        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2
+        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the first release's parent commit)" >&2
         exit 1
       fi
       # release-bump.sh refuses a previous version that is not X.Y.Z (the
@@ -1047,12 +1047,26 @@ case "$command" in
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
     # shellcheck source=.github/scripts/gh-read.sh
     source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
-    is_draft=$(gh_wait_reset --stderr /dev/null gh release view "$tag" --repo "$repo" \
-      --json isDraft -q .isDraft) && viewed=0 || viewed=$?
+    # The release, in one request gh-read.sh can read at a time. GitHub's REST route for a tag
+    # answers a published release alone (docs.github.com, REST API, "Get a release by tag name"),
+    # on the core budget, so a re-run of a published release needs no graphql budget. Where it
+    # answers anything else (a 404 for a draft or for no release, or a refusal), the GraphQL
+    # lookup gh release view makes for a draft tells a draft from no release, both answered with
+    # HTTP 200. gh release view itself sends both requests at once, so gh-read.sh could read
+    # neither answer.
+    is_draft=$(gh_wait_reset --stderr /dev/null gh api "repos/$repo/releases/tags/$tag" --jq .draft) &&
+      viewed=0 || viewed=$?
     # A spent budget the view could not wait for says nothing of the release, and the create
     # would meet the same budget: gh-read.sh has named it, and nothing is written.
     [ "$viewed" -ne 75 ] || exit 1
     if [ "$viewed" -ne 0 ]; then
+      is_draft=$(gh_wait_reset --stderr /dev/null gh api graphql \
+        -f query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }' \
+        -f owner="${repo%%/*}" -f name="${repo#*/}" -f tag="$tag" \
+        --jq '.data.repository.release | if . == null then "none" else .isDraft end') && viewed=0 || viewed=$?
+      [ "$viewed" -ne 75 ] || exit 1
+    fi
+    if [ "$viewed" -ne 0 ] || [ "$is_draft" = none ]; then
       # What the create publishes: the tag, the assets, the title, and the notes
       # where this lane wrote them itself. Where it passes --generate-notes,
       # GitHub composes that body server-side from the merged pull requests'
@@ -1098,7 +1112,7 @@ case "$command" in
         ;;
       *)
         printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::GitHub's release lookup for $tag answered $shown for isDraft, not true or false"
         exit 1
         ;;
     esac

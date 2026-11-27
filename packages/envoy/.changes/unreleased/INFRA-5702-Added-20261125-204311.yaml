@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Each row of `GET /api/v1/me/replies` of kind `ask`, `comment` or `message` carries
+  `root_author`, the actor who wrote the thread's root in the shape of the reply's `author`: the
+  ask's asker, the root comment's author or the root message's author, as it is stored, so a root
+  the Legion daemon wrote reads as its session, `legion-daemon:<PROJECT>`. An `agent` row carries
+  none. Each check of `GET /api/v1/issues/{key}/results` carries `serves`, the references its
+  block's `serves` attribute names, each as the block writes it and in the block's order, and none
+  where the block names none. Both members are optional, so a client of an earlier build reads the
+  answers as before.
+time: 2026-11-25T20:43:11Z
+custom:
+    Issue: INFRA-5702

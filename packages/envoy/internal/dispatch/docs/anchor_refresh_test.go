@@ -254,6 +254,7 @@ func versionAnchorRefreshTrips(t *testing.T, changed int) int {
 // are written, cost what twenty do. And what the version leaves - the rows, the events, their
 // order among the issue's events - is what it was.
 func TestAVersionWritesChangedAnchorsInRoundTripsThatDoNotGrowWithTheirCount(t *testing.T) {
+	t.Parallel()
 	two := versionAnchorRefreshTrips(t, 2)
 	all := versionAnchorRefreshTrips(t, anchorRefreshMarks)
 	t.Logf("a version holding its owner's row lock: %d round trips with 2 changed anchors, %d with %d", two, all, anchorRefreshMarks)

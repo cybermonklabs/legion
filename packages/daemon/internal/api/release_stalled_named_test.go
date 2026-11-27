@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -45,7 +46,7 @@ func TestAStalledReleaseNamesOnlyAnArchitectItTold(t *testing.T) {
 		Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 	h.recordIssue(record.Issue{Key: own, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: new(root), Project: testProject,
 		Title: own, Phase: phase.Planning, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -62,7 +63,7 @@ func TestAStalledReleaseNamesOnlyAnArchitectItTold(t *testing.T) {
 	notified := regexp.MustCompile(`the architect of (\S+) was notified`)
 	stalledOn := func(issue string) int {
 		var count int
-		if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return tx.QueryRow(context.Background(), `select count(*) from outbox
 				where issue = $1 and kind = 'notice' and payload->>'kind' = 'child-release-stalled'`, issue).Scan(&count)
 		}); err != nil {

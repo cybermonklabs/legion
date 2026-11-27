@@ -52,6 +52,7 @@ func hubSessionTitles(t *testing.T, body json.RawMessage) map[string]string {
 // session that never stamped a title is held by its bare id throughout, which is the limit chosen
 // for INFRA-1368: nothing backfills a name for it.
 func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)

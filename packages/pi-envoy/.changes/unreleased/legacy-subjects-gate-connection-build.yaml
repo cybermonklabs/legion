@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The session's NATS connection names its build after its name, `omp-<session> legion@<commit>`
+  for a worker image's plugin (its `dist/build-commit` stamp) or `omp-<session>
+  @sjawhar/pi-envoy@<version>` for a released one, so the hub's census of connections shows which
+  build each session runs. A plugin run from its source names none.
+time: 2026-11-22T02:59:25Z
+custom:
+    Issue: legacy-subjects-gate

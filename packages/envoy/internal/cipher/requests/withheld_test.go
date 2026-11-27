@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"slices"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -112,7 +114,7 @@ func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
 			ctx := context.Background()
 			other, otherKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 
-			auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", c.name), "", nil)
+			auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", c.name), "")
 			if err != nil || auto.State != "granted" || auto.GrantID == nil || auto.RecordID != nil {
 				t.Fatalf("Create = %+v, %v; want an automatic grant", auto, err)
 			}
@@ -130,7 +132,7 @@ func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
 				t.Fatalf("grant.revoked audit = %s withheld %v; want human:%s withheld [%s]", actor, withheld, operator, c.name)
 			}
 
-			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", c.name), "", nil)
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", c.name), "")
 			if err != nil || again.State != "pending" || again.GrantID != nil {
 				t.Fatalf("Create after the revoke = %+v, %v; want an approval request", again, err)
 			}
@@ -141,10 +143,10 @@ func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
 				t.Fatalf("decisions = %+v, want %s decided approval", again.Secrets, c.name)
 			}
 
-			if rest, err := m.Create(ctx, enr, signRequest(t, m, key, "something else", c.other), "", nil); err != nil || rest.State != "granted" || rest.GrantID == nil {
+			if rest, err := m.Create(ctx, enr, signRequest(t, m, key, "something else", c.other), ""); err != nil || rest.State != "granted" || rest.GrantID == nil {
 				t.Fatalf("Create(%s) on the same session = %+v, %v; want an automatic grant: only %s is withheld", c.other, rest, err, c.name)
 			}
-			elsewhere, err := m.Create(ctx, other, signRequest(t, m, otherKey, "need it", c.name), "", nil)
+			elsewhere, err := m.Create(ctx, other, signRequest(t, m, otherKey, "need it", c.name), "")
 			if err != nil || elsewhere.State != "granted" || elsewhere.GrantID == nil {
 				t.Fatalf("Create on another of the person's sessions = %+v, %v; want an automatic grant", elsewhere, err)
 			}
@@ -153,10 +155,10 @@ func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
 			if err != nil || dec.GrantID == "" {
 				t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", c.decidedBy, dec, err)
 			}
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values[c.name] == "" {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values[c.name] == "" {
 				t.Fatalf("Values of the approved grant = %v, %v", release.Values, err)
 			}
-			reused, err := m.Create(ctx, enr, signRequest(t, m, key, "and again", c.name), "", nil)
+			reused, err := m.Create(ctx, enr, signRequest(t, m, key, "and again", c.name), "")
 			if err != nil || reused.ID != again.ID {
 				t.Fatalf("Create once approved = %+v, %v; want the approved grant reused", reused, err)
 			}
@@ -174,25 +176,25 @@ func TestAWithheldNameIsNotReleasedThroughAnotherLiveGrant(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "", nil)
+	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "")
 	if err != nil || pair.GrantID == nil {
 		t.Fatalf("Create(pair) = %+v, %v; want granted", pair, err)
 	}
-	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || single.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", single, err)
 	}
-	shared, err := m.Create(ctx, enr, signRequest(t, m, key, "shared", sharedToken), "", nil)
+	shared, err := m.Create(ctx, enr, signRequest(t, m, key, "shared", sharedToken), "")
 	if err != nil || shared.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want granted", sharedToken, shared, err)
 	}
 	if err := m.RevokeByApprover(ctx, *single.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	if again, err := m.Create(ctx, enr, signRequest(t, m, key, "one again", "AUTO_TOKEN"), "", nil); err != nil || again.State != "pending" {
+	if again, err := m.Create(ctx, enr, signRequest(t, m, key, "one again", "AUTO_TOKEN"), ""); err != nil || again.State != "pending" {
 		t.Fatalf("control: Create(AUTO_TOKEN) after the withhold = %+v, %v; want pending", again, err)
 	}
-	release, err := m.Values(ctx, *pair.GrantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(ctx, *pair.GrantID, enr, ReleaseCall{})
 	if !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values(pair grant) after AUTO_TOKEN was withheld = %v, %v; want ErrGrantNotLive", release.Values, err)
 	}
@@ -203,7 +205,7 @@ func TestAWithheldNameIsNotReleasedThroughAnotherLiveGrant(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].GrantID != *shared.GrantID {
 		t.Fatalf("GrantsForApprover(%s) = %+v, %v; want the %s grant alone", operator, listed, err, sharedToken)
 	}
-	if release, err := m.Values(ctx, *shared.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values[sharedToken] == "" {
+	if release, err := m.Values(ctx, *shared.GrantID, enr, ReleaseCall{}); err != nil || release.Values[sharedToken] == "" {
 		t.Fatalf("Values(%s grant) = %v, %v; want it released: nothing it holds is withheld", sharedToken, release.Values, err)
 	}
 }
@@ -217,11 +219,11 @@ func TestAWithheldNameIsNotReleasedThroughAnotherLiveGrant(t *testing.T) {
 func TestRevokingAGrantOfAnAlreadyWithheldNameSucceeds(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil || mixed.State != "pending" {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) = %+v, %v; want pending", mixed, err)
 	}
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", auto, err)
 	}
@@ -252,14 +254,14 @@ func TestAnAnyoneApprovalOfAWithheldSecretStopsOnceTheSecretIsTheOperators(t *te
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want granted", auto, err)
 	}
 	if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "")
 	if err != nil || again.State != "pending" {
 		t.Fatalf("Create after the withhold = %+v, %v; want pending", again, err)
 	}
@@ -268,10 +270,10 @@ func TestAnAnyoneApprovalOfAWithheldSecretStopsOnceTheSecretIsTheOperators(t *te
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", carol, dec, err)
 	}
 	retag(t, m, policytest.Secret(sharedToken, operator, policy.TierAgent, "shared-token-v1"))
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values(%s's grant) once %s is %s's = %v, %v; want ErrGrantNotLive", carol, sharedToken, operator, release.Values, err)
 	}
-	next, err := m.Create(ctx, enr, signRequest(t, m, key, "once more", sharedToken), "", nil)
+	next, err := m.Create(ctx, enr, signRequest(t, m, key, "once more", sharedToken), "")
 	if err != nil || next.State != "pending" || recordApprover(t, m, next) != operator {
 		t.Fatalf("Create once %s is %s's = %+v, %v; want a new request waiting on %s", sharedToken, operator, next, err, operator)
 	}
@@ -284,11 +286,11 @@ func TestAnAnyoneApprovalOfAWithheldSecretStopsOnceTheSecretIsTheOperators(t *te
 func TestAnAnyoneApprovalAfterTheWithholdDoesNotReleaseAPersonsWithheldSecret(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || single.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", single, err)
 	}
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "")
 	if err != nil || mixed.State != "pending" || mixed.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, SHARED_KEY) = %+v, %v; want pending", mixed, err)
 	}
@@ -299,14 +301,14 @@ func TestAnAnyoneApprovalAfterTheWithholdDoesNotReleaseAPersonsWithheldSecret(t 
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
 	if dec, err := m.ApplyDecision(ctx, *mixed.RecordID, true, carol); !errors.Is(err, record.ErrNotApprover) {
-		release, verr := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{})
+		release, verr := m.Values(ctx, dec.GrantID, enr, ReleaseCall{})
 		t.Fatalf("ApplyDecision(%s) after %s withheld AUTO_TOKEN = %+v, %v (Values %v, %v); want NOT_APPROVER", carol, operator, dec, err, release.Values, verr)
 	}
 	dec, err := m.ApplyDecision(ctx, *mixed.RecordID, true, operator)
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", operator, dec, err)
 	}
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
 		t.Fatalf("Values of the owner's approval = %v, %v; want AUTO_TOKEN released", release.Values, err)
 	}
 }
@@ -319,11 +321,11 @@ func TestAnAnyoneApprovalAfterTheWithholdDoesNotReleaseAPersonsWithheldSecret(t 
 func TestTheOwnersApprovalOfAWithheldSecretOutlivesAnUnrelatedTagChange(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil || mixed.State != "pending" {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) = %+v, %v; want pending", mixed, err)
 	}
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", auto, err)
 	}
@@ -335,10 +337,10 @@ func TestTheOwnersApprovalOfAWithheldSecretOutlivesAnUnrelatedTagChange(t *testi
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", operator, dec, err)
 	}
 	retagUnrelated(t, m)
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
 		t.Fatalf("Values of the owner's approval once another secret's tags changed = %v, %v; want AUTO_TOKEN released", release.Values, err)
 	}
-	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy again", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy again", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil || reused.ID != mixed.ID {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) again = %+v, %v; want the owner's approval reused", reused, err)
 	}
@@ -353,11 +355,11 @@ func TestAnAnyoneApprovalOfAWithheldSharedSecretOutlivesAnUnrelatedTagChange(t *
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", sharedToken, "SHARED_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", sharedToken, "SHARED_KEY"), "")
 	if err != nil || mixed.State != "pending" {
 		t.Fatalf("Create(%s, SHARED_KEY) = %+v, %v; want pending", sharedToken, mixed, err)
 	}
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", sharedToken), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", sharedToken), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want granted", sharedToken, auto, err)
 	}
@@ -369,11 +371,11 @@ func TestAnAnyoneApprovalOfAWithheldSharedSecretOutlivesAnUnrelatedTagChange(t *
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", carol, dec, err)
 	}
 	retagUnrelated(t, m)
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values[sharedToken] == "" {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values[sharedToken] == "" {
 		t.Fatalf("Values of %s's approval once another secret's tags changed = %v, %v; want %s released", carol, release.Values, err, sharedToken)
 	}
 	retag(t, m, policytest.Secret(sharedToken, operator, policy.TierAgent, "shared-token-v1"))
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of %s's approval once %s is %s's = %v, %v; want ErrGrantNotLive", carol, sharedToken, operator, release.Values, err)
 	}
 }
@@ -386,7 +388,7 @@ func TestAnAnyoneApprovalOfAWithheldSharedSecretOutlivesAnUnrelatedTagChange(t *
 func TestTheOperatorsRevokeOfAGrantThatAlreadyEndedStillWithholds(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", auto, err)
 	}
@@ -411,7 +413,7 @@ func TestTheOperatorsRevokeOfAGrantThatAlreadyEndedStillWithholds(t *testing.T) 
 	if actor, withheld := grantAudit(t, m, "grant.withheld", *auto.GrantID); actor != record.HumanActor(operator) || !slices.Equal(withheld, []string{"AUTO_TOKEN"}) {
 		t.Fatalf("grant.withheld audit = %s withheld %v; want human:%s withheld [AUTO_TOKEN]", actor, withheld, operator)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "")
 	if err != nil || again.State != "pending" || recordApprover(t, m, again) != operator {
 		t.Fatalf("Create(AUTO_TOKEN) after the operator's revoke = %+v, %v; want a request waiting on %s", again, err, operator)
 	}
@@ -426,7 +428,7 @@ func TestTheOperatorsRevokeOfAGrantThatAlreadyEndedStillWithholds(t *testing.T) 
 func TestTheWithholdLeavesTheSessionsApprovedGrantOfTheSecretLive(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	asked, err := m.Create(ctx, enr, signRequest(t, m, key, "deel", "DEEL_API_KEY"), "", nil)
+	asked, err := m.Create(ctx, enr, signRequest(t, m, key, "deel", "DEEL_API_KEY"), "")
 	if err != nil || asked.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", asked, err)
 	}
@@ -435,7 +437,7 @@ func TestTheWithholdLeavesTheSessionsApprovedGrantOfTheSecretLive(t *testing.T) 
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", operator, approved, err)
 	}
 	retag(t, m, policytest.Secret("DEEL_API_KEY", operator, policy.TierAgent, "deel-v1"))
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "DEEL_API_KEY", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "DEEL_API_KEY", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil || auto.RecordID != nil {
 		t.Fatalf("Create(DEEL_API_KEY, AUTO_TOKEN) once DEEL_API_KEY is agent tier = %+v, %v; want an automatic grant", auto, err)
 	}
@@ -445,7 +447,7 @@ func TestTheWithholdLeavesTheSessionsApprovedGrantOfTheSecretLive(t *testing.T) 
 	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"AUTO_TOKEN", "DEEL_API_KEY"}) {
 		t.Fatalf("withheld = %v, want [AUTO_TOKEN DEEL_API_KEY]", got)
 	}
-	if release, err := m.Values(ctx, approved.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] == "" {
+	if release, err := m.Values(ctx, approved.GrantID, enr, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] == "" {
 		t.Fatalf("Values of the grant %s approved = %v, %v; want DEEL_API_KEY released: the withhold ends only grants that got it without asking", operator, release.Values, err)
 	}
 }
@@ -463,15 +465,15 @@ func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	waiting, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	waiting, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil || waiting.State != "pending" || waiting.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) = %+v, %v; want pending", waiting, err)
 	}
-	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 	if err != nil || single.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", single, err)
 	}
-	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "", nil)
+	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "")
 	if err != nil || pair.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, %s) = %+v, %v; want granted", sharedToken, pair, err)
 	}
@@ -481,7 +483,7 @@ func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T
 	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"AUTO_TOKEN"}) {
 		t.Fatalf("withheld after the AUTO_TOKEN revoke = %v, want [AUTO_TOKEN]", got)
 	}
-	if _, err := m.Values(ctx, *pair.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, *pair.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of the automatic pair after the withhold = %v, want ErrGrantNotLive", err)
 	}
 	dec, err := m.ApplyDecision(ctx, *waiting.RecordID, true, operator)
@@ -490,7 +492,7 @@ func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T
 	}
 	releases := func(step string) {
 		t.Helper()
-		if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
+		if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] == "" {
 			t.Fatalf("after %s, Values of the operator's approval %s = %v, %v; want AUTO_TOKEN released", step, dec.GrantID, release.Values, err)
 		}
 	}
@@ -515,7 +517,7 @@ func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T
 func TestAnotherPersonsRevokeDoesNotWithholdTheOperatorsOwnSecret(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "")
 	if err != nil || mixed.State != "pending" || mixed.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, SHARED_KEY) = %+v, %v; want pending", mixed, err)
 	}
@@ -526,14 +528,14 @@ func TestAnotherPersonsRevokeDoesNotWithholdTheOperatorsOwnSecret(t *testing.T) 
 	if err := m.RevokeByApprover(ctx, dec.GrantID, carol, record.HumanActor(carol)); err != nil {
 		t.Fatalf("RevokeByApprover(%s) = %v", carol, err)
 	}
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values after %s revoked her approval = %v, %v; want ErrGrantNotLive", carol, release.Values, err)
 	}
 	if actor, withheld := revokedAudit(t, m, dec.GrantID); actor != record.HumanActor(carol) || withheld != nil {
 		t.Fatalf("grant.revoked audit = %s withheld %v; want human:%s withholding nothing", actor, withheld, carol)
 	}
 	withheld := withheldFrom(t, m, enr)
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "mine", "AUTO_TOKEN"), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "mine", "AUTO_TOKEN"), "")
 	if err != nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %v", err)
 	}
@@ -550,7 +552,7 @@ func TestAnotherPersonsRevokeDoesNotWithholdTheOperatorsOwnSecret(t *testing.T) 
 func TestTheOperatorWhoApprovedAGrantWithholdsWhenRevokingIt(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil || mixed.State != "pending" || mixed.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) = %+v, %v; want pending", mixed, err)
 	}
@@ -564,7 +566,7 @@ func TestTheOperatorWhoApprovedAGrantWithholdsWhenRevokingIt(t *testing.T) {
 	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"AUTO_TOKEN"}) {
 		t.Fatalf("withheld after the operator, who also approved the grant, revoked it = %v; want [AUTO_TOKEN]", got)
 	}
-	next, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "", nil)
+	next, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "")
 	if err != nil || next.State != "pending" || recordApprover(t, m, next) != operator {
 		t.Fatalf("Create(AUTO_TOKEN) after the revoke = %+v, %v; want a request waiting on %s", next, err, operator)
 	}
@@ -601,11 +603,11 @@ func TestAnApprovalOfAWithheldSecretTheBrokerDoesNotServeIsRefused(t *testing.T)
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, operator := newFixture(t)
 			ctx := context.Background()
-			mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "", nil)
+			mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "")
 			if err != nil || mixed.State != "pending" || mixed.RecordID == nil {
 				t.Fatalf("Create(AUTO_TOKEN, SHARED_KEY) = %+v, %v; want pending", mixed, err)
 			}
-			single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+			single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 			if err != nil || single.GrantID == nil {
 				t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", single, err)
 			}
@@ -634,7 +636,7 @@ func TestAnApprovalOfAWithheldSecretTheBrokerDoesNotServeIsRefused(t *testing.T)
 			if err != nil || dec.GrantID == "" {
 				t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", operator, dec, err)
 			}
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
 				t.Fatalf("Values of the owner's approval = %v, %v; want AUTO_TOKEN released", release.Values, err)
 			}
 		})
@@ -652,14 +654,14 @@ func TestAnUnservedNameTheSessionDoesNotWithholdIsLeftToTheRecordsApprover(t *te
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, operator := newFixture(t)
 			ctx := context.Background()
-			auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "", nil)
+			auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
 			if err != nil || auto.GrantID == nil {
 				t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", auto, err)
 			}
 			if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 				t.Fatalf("RevokeByApprover: %v", err)
 			}
-			deel, err := m.Create(ctx, enr, signRequest(t, m, key, "deel", "DEEL_API_KEY"), "", nil)
+			deel, err := m.Create(ctx, enr, signRequest(t, m, key, "deel", "DEEL_API_KEY"), "")
 			if err != nil || deel.State != "pending" || deel.RecordID == nil || recordApprover(t, m, deel) != operator {
 				t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a request waiting on %s", deel, err, operator)
 			}
@@ -669,7 +671,7 @@ func TestAnUnservedNameTheSessionDoesNotWithholdIsLeftToTheRecordsApprover(t *te
 			if err != nil || dec.GrantID == "" {
 				t.Fatalf("ApplyDecision(%s) while DEEL_API_KEY is %s and AUTO_TOKEN is withheld = %+v, %v; want granted: only AUTO_TOKEN is withheld", operator, c.name, dec, err)
 			}
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values of the approval while DEEL_API_KEY is %s = %v, %v; want ErrGrantNotLive", c.name, release.Values, err)
 			}
 		})
@@ -684,14 +686,14 @@ func TestRetagToOwnersAgentTierLeavesAWithheldRequestToItsOwner(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", auto, err)
 	}
 	if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatal(err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "")
 	if err != nil || again.State != "pending" || recordApprover(t, m, again) != record.AnyoneApprover {
 		t.Fatalf("Create after withhold = %+v, %v; want pending on anyone", again, err)
 	}
@@ -701,7 +703,7 @@ func TestRetagToOwnersAgentTierLeavesAWithheldRequestToItsOwner(t *testing.T) {
 		t.Fatalf("Evaluate(%s) for the session after retag = %+v, %v; want approval by %s", sharedToken, d, err, operator)
 	}
 	if dec, err := m.ApplyDecision(ctx, *again.RecordID, true, carol); !errors.Is(err, record.ErrNotApprover) {
-		release, verr := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{})
+		release, verr := m.Values(ctx, dec.GrantID, enr, ReleaseCall{})
 		t.Fatalf("ApplyDecision(%s) after %s became %s's = %+v, %v (Values %v, %v); want NOT_APPROVER", carol, sharedToken, operator, dec, err, release.Values, verr)
 	}
 }
@@ -715,7 +717,7 @@ func TestARequestRacingAWithholdingAsksForApproval(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "", nil)
+	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", sharedToken), "")
 	if err != nil || pair.GrantID == nil {
 		t.Fatalf("Create(pair) = %+v, %v; want granted", pair, err)
 	}
@@ -742,7 +744,7 @@ func TestARequestRacingAWithholdingAsksForApproval(t *testing.T) {
 	done := make(chan result, 1)
 	racing := signRequest(t, m, key, "racing the revoke", "AUTO_TOKEN")
 	go func() {
-		req, err := m.Create(ctx, enr, racing, "", nil)
+		req, err := m.Create(ctx, enr, racing, "")
 		done <- result{req, err}
 	}()
 	storetest.AwaitLockWaiters(t, m.Store.Pool, tx, 1)
@@ -765,7 +767,7 @@ func TestARequestRacingAWithholdingAsksForApproval(t *testing.T) {
 func TestRevokeByApproverWaitsForARequestDecidingOnItsSession(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want granted", auto, err)
 	}
@@ -785,5 +787,149 @@ func TestRevokeByApproverWaitsForARequestDecidingOnItsSession(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("RevokeByApprover = %v", err)
+	}
+}
+
+// sourceProfiles is a profiles file of two profiles of the github-app source APP_KEY: APP_KEY,
+// which holds the source's own name, and APP_KEY_ADA, a profile of another name. Withholding
+// APP_KEY, which revoking an automatic grant of that profile does, withholds the source.
+var sourceProfiles = policytest.ProfilesFile(
+	policytest.AppProfile("APP_KEY"),
+	`{"name": "APP_KEY_ADA", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}}`,
+)
+
+// sourceFixture is targetFixture serving sourceProfiles over an agent-tier APP_KEY, whose every
+// release mints "minted-token".
+func sourceFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
+	t.Helper()
+	m, enr, key := targetFixture(t, policy.TierAgent, sourceProfiles)
+	m.Minters = map[string]Minter{policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		return secrets.Minted{Value: "minted-token"}, nil
+	}}
+	return m, enr, key
+}
+
+// TestWithholdingASourceWithholdsEachProfileOfIt pins R2's rule that a session's operator who
+// withholds a source withholds each profile of it, on every path that reads what is withheld: the
+// session got grants of APP_KEY and APP_KEY_ADA without asking, and its operator revokes the
+// APP_KEY grant, which withholds the source's own name. The APP_KEY_ADA grant ends with it, with a
+// grant.revoked row by the operator naming APP_KEY_ADA, and releases nothing; the same request
+// again is not handed that grant back but asks the owner; and the judge reads APP_KEY_ADA as
+// withheld. A request that got APP_KEY_ADA without asking while it waited on the operator for
+// DEEL_API_KEY, and that the operator approves after the withhold, is an approval like any other:
+// it outlives an unrelated tag change.
+func TestWithholdingASourceWithholdsEachProfileOfIt(t *testing.T) {
+	m, enr, key := sourceFixture(t)
+	ctx := t.Context()
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "APP_KEY_ADA", "DEEL_API_KEY"), "")
+	if err != nil || mixed.State != "pending" {
+		t.Fatalf("Create(APP_KEY_ADA, DEEL_API_KEY) = %+v, %v; want pending on the operator", mixed, err)
+	}
+	source, err := m.Create(ctx, enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")
+	if err != nil || source.State != "granted" || source.GrantID == nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want an automatic grant", source, err)
+	}
+	ada, err := m.Create(ctx, enr, signRequest(t, m, key, "another profile of it", "APP_KEY_ADA"), "")
+	if err != nil || ada.State != "granted" || ada.GrantID == nil {
+		t.Fatalf("Create(APP_KEY_ADA) = %+v, %v; want an automatic grant", ada, err)
+	}
+
+	if err := m.RevokeByApprover(ctx, *source.GrantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"APP_KEY"}) {
+		t.Fatalf("withheld = %v; want [APP_KEY], the source's own name", got)
+	}
+	if release, err := m.Values(ctx, *ada.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values(APP_KEY_ADA's grant) once its source is withheld = %v, %v; want ErrGrantNotLive", release.Values, err)
+	}
+	if actor, withheld := revokedAudit(t, m, *ada.GrantID); actor != record.HumanActor(fixtureOperator) || !slices.Equal(withheld, []string{"APP_KEY_ADA"}) {
+		t.Fatalf("APP_KEY_ADA's grant.revoked audit = %s withheld %v; want human:%s withheld [APP_KEY_ADA]", actor, withheld, fixtureOperator)
+	}
+	// The request that waited on the operator is decided first, since a second request naming
+	// APP_KEY_ADA while it waits is refused as overlapping it (lockPendingNames).
+	dec, err := m.ApplyDecision(ctx, *mixed.RecordID, true, fixtureOperator)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", fixtureOperator, dec, err)
+	}
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "another profile of it, again", "APP_KEY_ADA"), "")
+	if err != nil || again.State != "pending" || again.GrantID != nil {
+		t.Fatalf("Create(APP_KEY_ADA) once its source is withheld = %+v, %v; want an approval request, not the old grant", again, err)
+	}
+	if decision, withheld, _, err := m.JudgePolicy(ctx, enr, "APP_KEY_ADA"); err != nil || !withheld || decision.Outcome != policy.Approval {
+		t.Fatalf("JudgePolicy(APP_KEY_ADA) once its source is withheld = %+v, withheld %v, %v; want withheld, and an approval", decision, withheld, err)
+	}
+
+	retagUnrelated(t, m)
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["APP_KEY_ADA"] == "" {
+		t.Fatalf("Values of the owner's approval once another secret's tags changed = %v, %v; want APP_KEY_ADA released", release.Values, err)
+	}
+}
+
+// TestWithholdingAProfileWithholdsEachNameOfItsSource pins the other direction of the same rule:
+// a withhold decides by source (policy.Set.Withholds), so an operator who revokes a grant of one
+// profile withholds every name served from that profile's source, the source's own name among
+// them. The session got AUTO_TOKEN_PROXY, a profile of AUTO_TOKEN, and AUTO_TOKEN, the profile
+// that holds the source's own name, without asking, and its operator revokes the AUTO_TOKEN_PROXY
+// grant. The AUTO_TOKEN grant ends with it: it releases nothing, the proxy refuses the connection
+// its placeholder opened, and a grant.revoked row by the operator names AUTO_TOKEN. The session's
+// next request for AUTO_TOKEN asks the owner rather than getting it without asking, and the judge
+// reads AUTO_TOKEN as withheld.
+func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
+	m, enr, key := proxiedProfileFixture(t)
+	ctx := t.Context()
+	_, narrow := grantOf(t, m, enr, key, "a profile of the source", "AUTO_TOKEN_PROXY")
+	_, wide := grantOf(t, m, enr, key, "the source's own name", "AUTO_TOKEN")
+	release, err := m.Values(ctx, wide, enr, ReleaseCall{})
+	if err != nil || release.Airlock == nil {
+		t.Fatalf("Values(AUTO_TOKEN's grant) = %+v, %v; want a release behind the airlock", release, err)
+	}
+
+	if err := m.RevokeByApprover(ctx, narrow, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"AUTO_TOKEN_PROXY"}) {
+		t.Fatalf("withheld = %v; want [AUTO_TOKEN_PROXY], the revoked grant's name", got)
+	}
+	if again, err := m.Values(ctx, wide, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || again.Values != nil {
+		t.Errorf("Values(AUTO_TOKEN's grant) once a profile of its source is withheld = %v, %v; want ErrGrantNotLive", again.Values, err)
+	}
+	if conn, err := m.AirlockConnection(ctx, release.Airlock.ProxyPassword); !errors.Is(err, ErrGrantNotLive) {
+		t.Errorf("AirlockConnection of AUTO_TOKEN's grant once a profile of its source is withheld = %+v, %v; want ErrGrantNotLive", conn, err)
+	}
+	asked, err := m.Create(ctx, enr, signRequest(t, m, key, "the source's own name, again", "AUTO_TOKEN"), "")
+	if err != nil || asked.State != "pending" || asked.GrantID != nil {
+		t.Errorf("Create(AUTO_TOKEN) once a profile of its source is withheld = %+v, %v; want an approval request, not a grant", asked, err)
+	}
+	if decision, withheld, _, err := m.JudgePolicy(ctx, enr, "AUTO_TOKEN"); err != nil || !withheld || decision.Outcome != policy.Approval {
+		t.Errorf("JudgePolicy(AUTO_TOKEN) once a profile of its source is withheld = %+v, withheld %v, %v; want withheld, and an approval", decision, withheld, err)
+	}
+	if actor, withheld := revokedAudit(t, m, wide); actor != record.HumanActor(fixtureOperator) || !slices.Equal(withheld, []string{"AUTO_TOKEN"}) {
+		t.Errorf("AUTO_TOKEN's grant.revoked audit = %s withheld %v; want human:%s withheld [AUTO_TOKEN]", actor, withheld, fixtureOperator)
+	}
+}
+
+// TestTheJudgeSettlesNoProfileOfAWithheldSource pins the judge's own guard on the same rule: the
+// decision transaction refuses the judge's approval of a profile whose source the session's
+// operator withheld, as it refuses a name withheld directly (TestTheJudgeSettlesNoWithheldName).
+// The judge tag is the source's, which its profile APP_KEY_ADA is decided by.
+func TestTheJudgeSettlesNoProfileOfAWithheldSource(t *testing.T) {
+	m, enr, key := sourceFixture(t)
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "APP_KEY", 900, "")
+	m.Judge = func(PendingRequest) {}
+	source, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")
+	if err != nil || source.GrantID == nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want an automatic grant", source, err)
+	}
+	if err := m.RevokeByApprover(t.Context(), *source.GrantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants it", 600, "APP_KEY_ADA")
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a profile of a withheld source = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	if got := readDecided(t, m, *req.RecordID); got.events != 0 || got.state != "pending" {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
 	}
 }

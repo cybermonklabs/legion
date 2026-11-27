@@ -10,6 +10,7 @@ import (
 // pass it takes is that count: the completion key the handoff route builds from the pass means
 // what the same issue's key meant before the deploy.
 func TestAPhaseRecordedBefore20261029120000TakesItsRoundsAsItsPass(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 67)

@@ -29,6 +29,7 @@ import (
 // send instead would give its claim up to the delivery sweep, a lease later, and let the second
 // go first.
 func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
+	t.Parallel()
 	failer := &ruleReadFailer{}
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
@@ -120,6 +121,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 // WARN of each is logged as it goes. Parking the failed first read as a wait behind an event (in
 // serve, park's waited without `&& !again.unread`) makes the second row fail on the gauges.
 func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const warning = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 	for _, row := range []struct {
 		name string

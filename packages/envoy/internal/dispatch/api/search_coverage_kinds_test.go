@@ -71,6 +71,7 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 // them over that same wait, each measured from its own row's write on the database's clock
 // (within).
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 
 	corpus := seedSearchCorpus(t, handler)
@@ -112,6 +113,7 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 // leave every indexed kind complete: the route reports each with every item current, nothing
 // lacking, nothing failed and no oldest age, and the total the same.
 func TestTheBackfillLeavesEveryIndexedKindComplete(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
@@ -256,6 +258,7 @@ func seedNotIndexedKinds(t *testing.T, database *store.Store, corpus searchCorpu
 // they move when those tables do, and they are in no total: the covered kinds' numbers are
 // exactly what they were.
 func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
@@ -308,6 +311,7 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 // Every kind the report names is named once, whether it is covered or not: no kind is in both
 // halves, which would let one reader count it and another not.
 func TestSearchCoverageNamesNoKindTwice(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	report := searchCoverageResponse(t, handler)

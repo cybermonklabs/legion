@@ -191,6 +191,7 @@ func spannedServer(t *testing.T, handler http.Handler) (*httptest.Server, *serve
 // they no longer resolve, read off the lookups themselves (heartbeatLookups). The heartbeat is
 // lookupHeartbeat, so the socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	m := startStallMeter(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -201,7 +202,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: lookups, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: lookupHeartbeat,
-		// The subscribe below waits on the event feed (eventFeedFrame).
+		// Its horizon warns as every test server's does (newRegisteredTestServer).
 		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
 	})
 	if err != nil {
@@ -230,6 +231,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // agent view resolves its person on each heartbeat and closes with 1008 on the first of those
 // lookups after their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	m := startStallMeter(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -273,6 +275,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 // receives the document's edits nor sends its own. Each case ends the session the way it ends in
 // production: the hourly membership check finding the person out of the group, and a sign-out.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = lookupHeartbeat
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
 		"the sign-in pool drops them from the group": func(t *testing.T, rig *documentSocketRig) {
@@ -371,9 +374,9 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	t.Helper()
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
-	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
-	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	const redirect = "https://dispatch.example/auth/callback"
+	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", redirect)
+	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	rig.pool.SignInAs(map[string]any{
 		"sub":              "person-subject",
 		"cognito:username": "ExampleIdP_" + rig.email,
@@ -455,6 +458,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
+	t.Parallel()
 	rig := newDocumentSocketRig(t, time.Hour)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
@@ -38,13 +41,43 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// apiTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Most tests of the package call t.Parallel; those that change or measure something
+// the whole process shares (the default logger, the environment, a package variable, heap
+// statistics, the xid rig's GOMAXPROCS and collector) or hold a wall-clock bound stay serial and
+// run before the rest. Alone, a database-backed test spends most of its time waiting on Postgres,
+// not on a core, so go test's default of GOMAXPROCS (four on CI's arm runner) leaves the runner
+// idle, and on a dev box with hundreds of cores it would open more connections than the test
+// server allows: each test has a database and pools of its own (storetest.Open), and
+// testlimits.ServerConnections sizes the server for a few at once.
+//
+// Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
+// test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a
+// meaning search's candidates), with no data race and the service at 159 of its 483 connections
+// (envoy-go-race-api jobs 137359069610, 137391716843 and 137399725401). The cores, not the
+// connections, were what ran out.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const apiTestParallelism = 8
+
+// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
+// databases and their templates, inside the broker harness's Run, which then drops the database
+// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
+// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
+// harness's may have reached that bound, still waits testdb's floor for its own drop.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+}
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -56,9 +89,37 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 	return tokens
 }
 
+// withDocumentService is input with a document service of the test's own, for a test that needs
+// none of its own making: one over the input's store, event broker, identity and server URL,
+// shut down once the test ends, after every cleanup registered later (a server's wait among
+// them). An input with no broker gets one, which the API and the service then share.
+func withDocumentService(t testing.TB, input DepsInput) DepsInput {
+	t.Helper()
+	if input.Events == nil {
+		input.Events = events.NewBroker()
+	}
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	input.Docs = documents
+	return input
+}
+
+// NewDeps builds no document service of its own: a service it built would have no holder to shut
+// it down, and its compaction worker would outlive every server it served. An input with none is
+// refused, naming the field.
+func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	t.Parallel()
+	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
+		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
+	}
+}
+
 // testServerOptions configure the server an API test drives.
 type testServerOptions struct {
-	defaultProject string
 	// newIssueLabel and newIssueSession are the two settings the dashboard's search bar reads
 	// before it files a person's typed words as an issue (GET /api/v1/settings/new-issue); both
 	// empty is the deployment that configured neither.
@@ -68,6 +129,10 @@ type testServerOptions struct {
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
+	// renames is the rename pairs the server is given, as a boot gives its own (Deps.Renames).
+	// A test that seeds a pair by SQL reads them from its store after the seed (readRenames) and
+	// passes that store too. The zero value holds no pairs.
+	renames refs.Renames
 	// app and githubAPIBase wire the GitHub App access-check client at a fake
 	// GitHub; both nil/empty leaves the client in its "no app credentials"
 	// state (every check answers ErrNoAppKey).
@@ -174,6 +239,19 @@ type testServerOptions struct {
 	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
 	// holds a dismissal behind a lock of its own passes pastTheRun (seedHeldInboxRead).
 	inboxStatementBound time.Duration
+	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
+	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
+	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
+	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
+	// answer into an unanswered lookup.
+	mentionLookupBound func(target string) time.Duration
+	// relatedBound is the related-item check's meaning allowance and its wait for the
+	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
+	// zero keeps production's. A case whose verdict is what the check's meaning stage found
+	// passes meaningVerdictBound, so whether the machine met production's three seconds is not
+	// what it measures. The bound counts from each check's start, the seed writes' checks among
+	// them.
+	relatedBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -181,6 +259,18 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// legionStatusScope is Deps.LegionStatusScope (DISPATCH_LEGION_STATUS_SCOPE): R26's refusal
+	// of a write that sets a Legion issue's status, takes the legion label off an issue, or moves
+	// a Legion issue out from under every labelled issue, from a credential that holds neither
+	// the person scope nor the legion-status scope. False is the deployment that has not turned
+	// it on, which every test but legion_status_scope_test.go's runs as.
+	legionStatusScope bool
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
+	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
+	// list asks the listener and stores no copy, as the browser suite's server runs
+	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
+	listenerRosterUncached bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -228,12 +318,6 @@ func newTestHandlerWithStore(t *testing.T) (http.Handler, *store.Store) {
 func newTestHandlerWithTestHooks(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true})
-	return handler, database
-}
-
-func newTestHandlerWithDefaultProject(t *testing.T) (http.Handler, *store.Store) {
-	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{defaultProject: "DEFAULT"})
 	return handler, database
 }
 
@@ -315,12 +399,12 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Store:            database,
 		Identity:         people,
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
-		DefaultProject:   options.defaultProject,
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
 		ServerURL:        testServerURL,
 		Docs:             documentService,
 		Events:           broker,
+		Renames:          options.renames,
 		App:              options.app,
 		GitHubAPIBase:    options.githubAPIBase,
 		TestHooksEnabled: options.testHooks,
@@ -333,25 +417,29 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
-		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
-		// warning must arrive inside that wait's patience rather than at the production five and
-		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
-		Clock:                 options.clock,
+		// The horizon warns of a stall at horizontest.StallWarning rather than at the production
+		// five and thirty seconds, as a cmd/dispatch test process's does, so a row's output names
+		// whoever holds the horizon while it waits; the wait itself reads no warning
+		// (horizontest.WaitInProcess).
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   options.oidc,
+		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
+		AgentStream:            options.agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               options.embedder,
+		Answerer:               options.answerer,
+		Files:                  options.files,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
+		LegionStatusScope:      options.legionStatusScope,
+		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
+		ListenerRosterUncached: options.listenerRosterUncached,
+		Clock:                  options.clock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -366,6 +454,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	served.duplicateBound = options.duplicateBound
 	served.inboxStatementBound = options.inboxStatementBound
+	served.mentionLookupBound = options.mentionLookupBound
+	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -401,7 +491,7 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // lifetime is context.Background(): a related-item check it runs starts a statistics refresh and
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
-	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
+	return &server{deps: deps, lifetime: context.Background()}
 }
 
 // awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
@@ -688,6 +778,7 @@ func assertRefusalMessage(t *testing.T, request string, response *httptest.Respo
 }
 
 func TestCreateProjectIssueAndReadPrimaryDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -731,6 +822,7 @@ func TestCreateProjectIssueAndReadPrimaryDocument(t *testing.T) {
 }
 
 func TestCreateIssueWithMissingOrBlankSpecGetsAnEmptyPrimaryDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -778,6 +870,7 @@ func TestCreateIssueWithMissingOrBlankSpecGetsAnEmptyPrimaryDocument(t *testing.
 }
 
 func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -798,6 +891,7 @@ func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
 // stored as reads back as written and the create is refused, naming the line as written
 // (pmdoc's htmlFlowRefusal).
 func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -825,6 +919,7 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 }
 
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
@@ -890,6 +985,7 @@ func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocume
 }
 
 func TestDocumentEditRejectsInvalidOperationField(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -915,6 +1011,7 @@ func TestDocumentEditRejectsInvalidOperationField(t *testing.T) {
 }
 
 func TestEventNotifyRules(t *testing.T) {
+	t.Parallel()
 	broker := events.NewBroker()
 	user := model.Actor{Kind: "user", ID: "alice"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -954,16 +1051,12 @@ func TestEventNotifyRules(t *testing.T) {
 }
 
 func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
 	}
 	for number := 1; number <= 2; number++ {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -978,7 +1071,7 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 		t.Fatalf("resolve unlinked external issue: status=%d body=%s", unlinked.Code, unlinked.Body.String())
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#7",
+		"external": "owner/repo#7", "project": "TEST",
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("auto-create external issue: status=%d body=%s", created.Code, created.Body.String())
@@ -998,6 +1091,7 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 }
 
 func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1065,16 +1159,12 @@ func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
 }
 
 func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map repository: status=%d body=%s", response.Code, response.Body.String())
 	}
 	existing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Linked pull request",
@@ -1092,7 +1182,7 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 	}
 
 	reused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#42",
+		"external": "owner/repo#42", "project": "TEST",
 	}, "alice")
 	if reused.Code != http.StatusOK {
 		t.Fatalf("reuse pull-request link: status=%d body=%s", reused.Code, reused.Body.String())
@@ -1109,85 +1199,117 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 	}
 }
 
-func TestExternalIssueRejectsUnmappedProject(t *testing.T) {
-	handler := newTestHandler(t)
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "unmapped/repository#1",
-	}, "alice")
-	body := response.Body.String()
-	if response.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"PROJECT_UNMAPPED"`) ||
-		!strings.Contains(body, "repository settings") || !strings.Contains(body, "DISPATCH_DEFAULT_PROJECT") {
-		t.Fatalf("create unmapped external issue: status=%d body=%s", response.Code, body)
-	}
-}
-
-func TestExternalIssueUsesDefaultProjectForUnmappedRepository(t *testing.T) {
-	handler, _ := newTestHandlerWithDefaultProject(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "DEFAULT", "name": "Default project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create default project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "another/repo#5",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create default-project external issue: status=%d body=%s", created.Code, created.Body.String())
-	}
-	issue := decodeBody[struct {
-		Key           string   `json:"key"`
-		Labels        []string `json:"labels"`
-		ExternalLinks []struct {
-			URL string `json:"url"`
-		} `json:"external_links"`
-	}](t, created)
-	if issue.Key != "DEFAULT-1" {
-		t.Fatalf("default-project issue key: got %q, want DEFAULT-1", issue.Key)
-	}
-	if len(issue.Labels) != 1 || issue.Labels[0] != repoLabelPrefix+"another/repo" {
-		t.Fatalf("default-project issue labels: got %#v, want [%sanother/repo]", issue.Labels, repoLabelPrefix)
-	}
-	if len(issue.ExternalLinks) != 1 || issue.ExternalLinks[0].URL != "https://github.com/another/repo/issues/5" {
-		t.Fatalf("default-project issue external links: got %#v", issue.ExternalLinks)
-	}
-}
-
-func TestExternalIssueExplicitMappingTakesPrecedenceOverDefaultProject(t *testing.T) {
-	handler, _ := newTestHandlerWithDefaultProject(t)
+// An import names its project: a create that names external and no project, or an empty one,
+// is refused naming project, and stores no issue and no link.
+func TestExternalIssueRejectsAMissingProject(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create mapped project: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "DEFAULT", "name": "Default project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create default project: status=%d body=%s", response.Code, response.Body.String())
+	for _, body := range []map[string]string{
+		{"external": "owner/repo#1"},
+		{"external": "owner/repo#1", "project": ""},
+		{"external": "owner/repo#1", "project": "  "},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
+		if response.Code != http.StatusBadRequest || responseCode(t, response) != "INVALID_ISSUE" ||
+			!strings.Contains(response.Body.String(), "project is required when external is set") {
+			t.Errorf("create %v: status=%d body=%s, want 400 INVALID_ISSUE naming project", body, response.Code, response.Body.String())
+		}
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
+	var issues, links int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from issues), (select count(*) from issue_external_links)
+	`).Scan(&issues, &links); err != nil {
+		t.Fatalf("count issues and links: %v", err)
+	}
+	if issues != 0 || links != 0 {
+		t.Fatalf("after the refusals: %d issues and %d links, want none", issues, links)
+	}
+}
+
+// An external ref already linked to an issue of one project is not imported into another: the
+// refusal names both projects and no repository setting.
+func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project["key"], response.Code, response.Body.String())
+		}
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#9",
+		"external": "owner/repo#1", "project": "CORE",
 	}, "alice")
 	if created.Code != http.StatusCreated {
-		t.Fatalf("create mapped external issue: status=%d body=%s", created.Code, created.Body.String())
+		t.Fatalf("import owner/repo#1 into CORE: status=%d body=%s", created.Code, created.Body.String())
 	}
-	issue := decodeBody[struct {
-		Key    string   `json:"key"`
-		Labels []string `json:"labels"`
-	}](t, created)
-	if issue.Key != "TEST-1" {
-		t.Fatalf("explicit-mapping issue key: got %q, want TEST-1", issue.Key)
+	key := decodeBody[model.Issue](t, created).Key
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"external": "owner/repo#1", "project": "OTHER",
+	}, "alice")
+	body := refused.Body.String()
+	if refused.Code != http.StatusBadRequest || responseCode(t, refused) != "EXTERNAL_PROJECT_MISMATCH" ||
+		!strings.Contains(body, key) || !strings.Contains(body, "project CORE") || !strings.Contains(body, "project OTHER") ||
+		strings.Contains(body, "setting") {
+		t.Fatalf("import owner/repo#1 into OTHER: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH naming %s, CORE and OTHER", refused.Code, body, key)
 	}
-	if len(issue.Labels) != 0 {
-		t.Fatalf("explicit-mapping issue labels: got %#v, want none", issue.Labels)
+	var issues int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from issues`).Scan(&issues); err != nil {
+		t.Fatalf("count issues: %v", err)
+	}
+	if issues != 1 {
+		t.Fatalf("issue count = %d, want 1", issues)
+	}
+}
+
+// dispatch_issue's external names the code POST /api/v1/issues refuses an import with when the
+// reference is already imported into another project, 400 EXTERNAL_PROJECT_MISMATCH, and the
+// route answers that code; a reference already imported into the call's project answers its
+// issue. The description is the tool's generated copy (contracts.DispatchTools), the text the
+// catalogue serves, so a change of the code in either the description or the route fails here.
+func TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers(t *testing.T) {
+	t.Parallel()
+	var description string
+	for _, tool := range contracts.DispatchTools {
+		for _, argument := range tool.Arguments {
+			if tool.Name == "dispatch_issue" && argument.Name == "external" {
+				description = argument.Description
+			}
+		}
+	}
+	if !strings.Contains(description, "400 EXTERNAL_PROJECT_MISMATCH") {
+		t.Fatalf("dispatch_issue's external reads %q, want it to name 400 EXTERNAL_PROJECT_MISMATCH", description)
+	}
+	handler := newTestHandler(t)
+	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project["key"], response.Code, response.Body.String())
+		}
+	}
+	importInto := func(project string) *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+			"external": "owner/repo#7", "project": project,
+		}, "alice")
+	}
+	created := importInto("CORE")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("import owner/repo#7 into CORE: status=%d body=%s", created.Code, created.Body.String())
+	}
+	key := decodeBody[model.Issue](t, created).Key
+	if again := importInto("CORE"); again.Code != http.StatusOK || decodeBody[model.Issue](t, again).Key != key {
+		t.Fatalf("import owner/repo#7 into CORE again: status=%d body=%s, want 200 answering %s", again.Code, again.Body.String(), key)
+	}
+	if refused := importInto("OTHER"); refused.Code != http.StatusBadRequest || responseCode(t, refused) != "EXTERNAL_PROJECT_MISMATCH" {
+		t.Fatalf("import owner/repo#7 into OTHER: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH", refused.Code, refused.Body.String())
 	}
 }
 
 func TestArtifactVersions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1268,6 +1390,7 @@ func agentRequest(t *testing.T, handler http.Handler, method, target string, bod
 }
 
 func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1364,6 +1487,7 @@ func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
 }
 
 func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1469,6 +1593,7 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 }
 
 func TestActorAuthenticationRules(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	unauthenticated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1497,6 +1622,7 @@ func TestActorAuthenticationRules(t *testing.T) {
 }
 
 func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1567,6 +1693,7 @@ func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
 }
 
 func TestPerUserIssueStateIsIsolated(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1603,6 +1730,7 @@ func TestPerUserIssueStateIsIsolated(t *testing.T) {
 }
 
 func TestUserIssueStateSequenceRejectsStaleWrites(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1652,6 +1780,7 @@ func TestUserIssueStateSequenceRejectsStaleWrites(t *testing.T) {
 }
 
 func TestMessageMutationAppendsAndPublishesEvent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1680,6 +1809,7 @@ func TestMessageMutationAppendsAndPublishesEvent(t *testing.T) {
 }
 
 func TestResolveIssueRejectsMalformedNativeKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=TEST-not-a-number", nil, "alice")
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_ISSUE_REF"`) {
@@ -1688,6 +1818,7 @@ func TestResolveIssueRejectsMalformedNativeKey(t *testing.T) {
 }
 
 func TestArtifactUploadRecognizesParameterizedMarkdown(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1720,6 +1851,7 @@ func TestArtifactUploadRecognizesParameterizedMarkdown(t *testing.T) {
 }
 
 func TestArtifactSlugsIncludeExtensions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1763,6 +1895,7 @@ func TestArtifactSlugsIncludeExtensions(t *testing.T) {
 }
 
 func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1821,6 +1954,7 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
+	t.Parallel()
 	// The seeded specs' settlement would lock the child row this test holds; keep it
 	// out of the lock queue so only the two status patches are counted as waiters.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1906,6 +2040,7 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 }
 
 func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1969,6 +2104,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 }
 
 func TestIssueExternalLinksRequireAbsoluteHTTPURLs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2001,6 +2137,7 @@ func TestIssueExternalLinksRequireAbsoluteHTTPURLs(t *testing.T) {
 }
 
 func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2040,6 +2177,7 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 }
 
 func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2138,6 +2276,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 }
 
 func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
+	t.Parallel()
 	handler, sessions, cookie, request := newCookieServer(t)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
@@ -2177,6 +2316,7 @@ func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
 // same room admits the cookie. A bearer once named its own session in a header the socket read,
 // which made it a second, weaker door into Dispatch.
 func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
+	t.Parallel()
 	handler, _, cookie, request := newCookieServer(t)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
@@ -2223,6 +2363,7 @@ func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 }
 
 func TestArtifactUploadSummaryCreatesNamedVersions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Named uploads", "before")
 	for _, test := range []struct {
@@ -2252,6 +2393,7 @@ func TestArtifactUploadSummaryCreatesNamedVersions(t *testing.T) {
 }
 
 func TestQuiesceDocumentsHookIsGatedByTestHooksEnabled(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, "alice")
 	if response.Code != http.StatusNotFound {
@@ -2260,6 +2402,7 @@ func TestQuiesceDocumentsHookIsGatedByTestHooksEnabled(t *testing.T) {
 }
 
 func TestJSONMutationsRequireApplicationJSON(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	body := `{"key":"TEST","name":"Test project"}`
 
@@ -2283,6 +2426,7 @@ func TestJSONMutationsRequireApplicationJSON(t *testing.T) {
 }
 
 func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", strings.NewReader(strings.Repeat(" ", 8<<20)))
 	request.Header.Set("Content-Type", "application/json")
@@ -2292,4 +2436,51 @@ func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated large body status = %d body=%s, want %d", response.Code, response.Body.String(), http.StatusUnauthorized)
 	}
+}
+
+// The two waits below live here, in a file every build compiles, because tests built with and
+// without -race both call them: the xid-window tests (built without -race only), and the
+// read-only results and drive tests (built with it too).
+
+// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
+// for a quiet spell, so a test that needed settlement to run first measures its request alone.
+func awaitSettledDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	awaitQuietDatabase(t, database, true)
+}
+
+// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
+// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
+// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
+// (docs' settlement) - so a request made on a closed issue waits for the quiet alone. The quiet
+// spell is what the measurement needs (no background writer beside it), not a bound: the wait ends
+// only once the database has held quiet that long, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure says whether the last read found the database busy.
+func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
+	t.Helper()
+	const quiet = 300 * time.Millisecond
+	what := "the database to fall quiet (busy at the last read)"
+	if settled {
+		what = "documents to finish settling and the database to fall quiet (busy at the last read)"
+	}
+	var calm time.Time
+	testwait.Until(t, what, func() (bool, bool) {
+		var busy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select ($1::boolean and exists (select 1 from doc_settlements_pending))
+			    or exists (select 1 from pg_stat_activity
+			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
+		`, settled).Scan(&busy); err != nil {
+			t.Fatalf("read settlement state: %v", err)
+		}
+		switch {
+		case busy:
+			calm = time.Time{}
+		case calm.IsZero():
+			calm = time.Now()
+		case time.Since(calm) >= quiet:
+			return busy, true
+		}
+		return busy, false
+	})
 }

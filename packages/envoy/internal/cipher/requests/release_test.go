@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // grantUsedDetails reads the whole detail of each grant.used audit row of grantID, oldest first.
@@ -39,11 +38,11 @@ func grantUsedDetails(t *testing.T, m *Machine, grantID string) []map[string]any
 // (none here, as a client from before the field sends) and the narrowing it applied, the proxy's
 // names the names behind the airlock alone and marks them as the airlock's.
 func TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {

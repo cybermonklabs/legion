@@ -23,6 +23,7 @@ const roleHoldersPublishVersion = 20261116165926
 // this kind's rows alone, so another issue's publish and another kind's second row of the same issue
 // are both untouched by it.
 func TestTheOutboxTakesTheRoleHoldersPublishKindWith20261116165926(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, roleHoldersPublishVersion-1)
@@ -47,14 +48,14 @@ func TestTheOutboxTakesTheRoleHoldersPublishKindWith20261116165926(t *testing.T)
 		"merge_queue_read", "merge_queue_removal", "role_holders_publish",
 	}
 	if len(kinds) != 25 {
-		t.Fatalf("the list names %d kinds, want the 25 the daemon writes", len(kinds))
+		t.Fatalf("the list names %d kinds, want the 25 the daemon wrote at 20261116165926", len(kinds))
 	}
 	for _, kind := range kinds {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	t.Logf("after the migration the outbox takes all 25 kinds, role_holders_publish among them")
+	t.Logf("after the migrations the outbox takes all 25 kinds of 20261116165926, role_holders_publish among them")
 	if err := queue("quiesce", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}
