@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"maps"
 	"runtime"
 	"runtime/debug"
@@ -22,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -1273,20 +1271,11 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	sh.versions(t, write)
 }
 
-// captureRenderReuseWarnings captures the schema warnings until the subtest ends. The restoration
-// test calls this same helper without repeating the full document-repair workload.
-func captureRenderReuseWarnings(t *testing.T) *storetest.LockedLog {
-	t.Helper()
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	return logs
-}
-
 // E12. A document outside the schema: a warm repair's rendering is taken and counted a change; a
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureRenderReuseWarnings).
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	const updatedOutside = "updated document outside Proof schema"
 	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
 	// has no token for any caller to name (ReplaceText's one exception).
@@ -1298,7 +1287,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 	}
 	t.Run("warm repair", func(t *testing.T) {
 		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureRenderReuseWarnings(t)
+		logs := captureWarnings(t)
 		writeSchemaInvalidElement(t, service, artifactID)
 		m := sh.measure()
 		write := sh.write(t, replaceWhole(service, artifactID))
@@ -1313,7 +1302,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 	})
 	t.Run("pushed outside after the fork read", func(t *testing.T) {
 		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureRenderReuseWarnings(t)
+		logs := captureWarnings(t)
 		pushed := false
 		sh.onForkRead = func() {
 			if !pushed {
@@ -1338,7 +1327,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		service, artifactID, sh := newWarmRenderReuseRoom(t)
 		writeSchemaInvalidElement(t, service, artifactID)
 		closeDocumentRoom(t, service, artifactID)
-		logs := captureRenderReuseWarnings(t)
+		logs := captureWarnings(t)
 		m := sh.measure()
 		write := sh.writeThenLoad(t, replaceWhole(service, artifactID))
 		sh.check(t)
