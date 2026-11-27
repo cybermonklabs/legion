@@ -53,11 +53,11 @@ func useTestBlockSchema(t testing.TB, value BlockSchema) {
 
 // A block[] attribute's name is the kind of the links it makes, so it is one `?kind=` can name and
 // never a structural edge kind; its targets are types whose blocks the link graph holds; only it
-// carries targets. The shipped schema declares two: a plan task's serves and needs, the first of
-// which a check shares.
+// carries targets. The shipped schema declares three: a plan task's serves, needs and parent, the
+// first of which a check shares.
 func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("the shipped schema's link kinds = %v, want needs and serves", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves"}) {
+		t.Fatalf("the shipped schema's link kinds = %v, want needs, parent and serves", kinds)
 	}
 	if err := validateBlockSchema(blockPointerTestSchema(nil)); err != nil {
 		t.Fatalf("validate the test schema: %v", err)
@@ -97,8 +97,8 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 		{Name: "note", BlockAttributeSchema: BlockAttributeSchema{Kind: BlockAttributeString}},
 	}})
 	useTestBlockSchema(t, twice)
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("link kinds of the types declaring serves = %v, want [needs serves]", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves"}) {
+		t.Fatalf("link kinds of the types declaring serves = %v, want [needs parent serves], serves once", kinds)
 	}
 	var served BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &served); err != nil || len(served.Types) != len(twice.Types) {
@@ -151,7 +151,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 		if row.OK && strings.Join(parsed, " ") != row.Value {
 			t.Errorf("ParseBlockPointerValue(%q) = %q, want the references as written", row.Value, parsed)
 		}
-		if _, err := parseTypedAttributeValue(attr, row.Value); (err == nil) != row.OK {
+		if _, err := parseTypedAttributeValue("serves", attr, row.Value); (err == nil) != row.OK {
 			t.Errorf("parseTypedAttributeValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
 		}
 		// A tree holds the value as the array Yjs gives back.
@@ -161,7 +161,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				items = append(items, item)
 			}
 		}
-		if err := validateAttributeValue(attr, items); (err == nil) != row.OK {
+		if err := validateAttributeValue("serves", attr, items); (err == nil) != row.OK {
 			t.Errorf("validateAttributeValue(%q) (%s) = %v, want accepted %t", items, row.Why, err, row.OK)
 		}
 	}

@@ -1,0 +1,83 @@
+{
+  "markdown": ":::plan_task{#default}\nShip the parser.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nRead the grammar.\n:::\n\n:::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite the parser.\n:::\n\n:::plan_task{#t3 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nTest the parser.\n:::\n",
+  "number": 1,
+  "named": false,
+  "summary": null,
+  "authors": [
+    {
+      "kind": "user",
+      "id": "alice",
+      "proven": true
+    }
+  ],
+  "created_at": "2026-11-24T04:22:32.250285Z",
+  "size": 328,
+  "sha256": "4103f20bfece316c4a264111d92ee3f2f593449bef54ffbf7a914b03bf447b52",
+  "blocks": [
+    {
+      "id": "default",
+      "type": "plan_task",
+      "from": 0,
+      "to": 43,
+      "token": "sha256:e26122e9c35455f324ae39c4c5d2574c08fe1d9390774f0a747f05109f23e36a",
+      "references": {
+        "comments": 0,
+        "asks": 0
+      }
+    },
+    {
+      "id": "t1",
+      "type": "plan_task",
+      "from": 45,
+      "to": 138,
+      "token": "sha256:e77e4f87465f38e9b2b3d0ccab0de03a4ac2522824c09abea2f43d9503dc8833",
+      "references": {
+        "comments": 0,
+        "asks": 0
+      },
+      "attributes": [
+        {
+          "name": "parent",
+          "value": "dispatch://ACME-1/artifact/plan-md#b-default",
+          "kind": "block[]"
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "type": "plan_task",
+      "from": 140,
+      "to": 233,
+      "token": "sha256:a1c3d3f1f8102e544d1c350e0c3a7097eb02261d1c2f0d4c69d06277015673a8",
+      "references": {
+        "comments": 0,
+        "asks": 0
+      },
+      "attributes": [
+        {
+          "name": "parent",
+          "value": "dispatch://ACME-1/artifact/plan-md#b-default",
+          "kind": "block[]"
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "type": "plan_task",
+      "from": 235,
+      "to": 327,
+      "token": "sha256:0413f7e336eadd749de44f3d35cbf4e9cf7432df302b41969e31913cd83734ea",
+      "references": {
+        "comments": 0,
+        "asks": 0
+      },
+      "attributes": [
+        {
+          "name": "parent",
+          "value": "dispatch://ACME-1/artifact/plan-md#b-default",
+          "kind": "block[]"
+        }
+      ]
+    }
+  ]
+}

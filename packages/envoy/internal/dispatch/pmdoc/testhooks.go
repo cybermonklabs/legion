@@ -4,7 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 )
+
+// createStaged is whether this process creates the elements its manifest stages for the next
+// version (CreateStagedForTest). It is apart from the manifest, so the store's installer, which
+// installs the manifest again at each wake, leaves it as it is.
+var createStaged atomic.Bool
+
+// CreateStagedForTest makes this process create each element its manifest reads but stages for
+// the next version, until restore is called: refuseUncreatable refuses none. It changes what a
+// write may create and nothing a reader is told (SchemaCreatable, the editor's offer). Dispatch's
+// test setting DISPATCH_TEST_CREATE_STAGED calls it, and only beside DISPATCH_TEST_HOOKS=1, so a
+// test process can write what the next release creates. restore may be called more than once.
+func CreateStagedForTest() (restore func()) {
+	previous := createStaged.Swap(true)
+	return func() { createStaged.Store(previous) }
+}
 
 // UseManifestForTest makes manifest, a schema manifest in blocks.json's format, the one this
 // package reads and writes by, in place of the installed one, until restore is called. A test

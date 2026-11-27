@@ -521,10 +521,11 @@ func unknownBeside(doc *Node, err error) error {
 // element, and reading a stored tree or stored markdown never refuses one. held is the document
 // the write starts from, nil for a write that starts from nothing: an element held already holds
 // is not created by the write, which keeps what a newer build wrote and edits beside it. held is
-// called only when nodes hold such an element.
+// called only when nodes hold such an element. A test process told to (CreateStagedForTest)
+// refuses none.
 func refuseUncreatable(nodes []*Node, held func() *Node) error {
 	manifest := active.Load()
-	if len(manifest.uncreatable) == 0 {
+	if len(manifest.uncreatable) == 0 || createStaged.Load() {
 		return nil
 	}
 	var made []Element
