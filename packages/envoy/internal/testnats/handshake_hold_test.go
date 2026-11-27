@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -138,10 +139,17 @@ const hookWentOn = "the hook's goroutine went on after HoldWriteLock"
 // fails the test by name and returns there when it cannot take the lock, so the hook goes on: once
 // when its guard passes while another holder keeps the lock, and once when the binary's deadline is
 // already no more than the guard's spare away. A t.Fatal there would end the hook's goroutine
-// rather than the test, and the child would log that HoldWriteLock never returned. The child runs
-// under -timeout 45s, so its guard passes about 15 s in.
+// rather than the test, and the child would log that HoldWriteLock never returned. Neither failure
+// depends on how long the child takes to reach its row. The child's -timeout is what the parent's
+// own deadline leaves less connLockSpare, so the first row's take, which leaves connLockSpare of the
+// child's deadline, has minutes in an ordinary run, and its guard is one that has already passed
+// (passedGuard). The second row's take leaves all but a millisecond of the child's -timeout, so it
+// finds the deadline spent whenever it runs. The child ran under -timeout 45s before, which left
+// its start 15 s to reach the first row's take: a child stalled longer than that on a loaded
+// machine failed that row on its spent deadline instead of its guard (INFRA-3904).
 func TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestHoldWriteLockOnAHooksGoroutineChild$", "-test.timeout=45s", "-test.v")
+	timeout := testwait.Remaining(t, connLockSpare)
+	child := exec.Command(os.Args[0], "-test.run=^TestHoldWriteLockOnAHooksGoroutineChild$", "-test.timeout="+timeout.String(), "-test.v")
 	child.Env = append(os.Environ(), holdChildEnv+"=1")
 	output, err := child.CombinedOutput()
 	text := string(output)
@@ -168,9 +176,10 @@ func TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 
 // TestHoldWriteLockOnAHooksGoroutineChild is the child of
 // TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns. Its first row holds the connection's lock
-// itself, so the guard of the HoldWriteLock its hook calls passes; that leaves the binary's deadline
-// no more than the guard's spare away, so the second row's HoldWriteLock finds it spent. It runs only
-// when the parent re-executes this binary.
+// itself and gives its hook's take a guard that has already passed, so the take finds the lock held
+// when the guard passes. Its second row gives its take a spare of all but a millisecond of the
+// binary's -timeout, so the take finds the deadline spent. It runs only when the parent re-executes
+// this binary.
 func TestHoldWriteLockOnAHooksGoroutineChild(t *testing.T) {
 	if os.Getenv(holdChildEnv) == "" {
 		t.Skip(holdChildEnv + " is not set: this test is the child of TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns")
@@ -178,6 +187,7 @@ func TestHoldWriteLockOnAHooksGoroutineChild(t *testing.T) {
 	uri := URL(t)
 	t.Run("the guard passes", func(t *testing.T) {
 		hold := StartHandshakeHold(t, uri)
+		hold.lockGuard.after = passedGuard
 		conn, _, _ := proxiedClient(t, hold.Proxy)
 		lock, found := connLock(t, conn)
 		if !found {
@@ -189,9 +199,34 @@ func TestHoldWriteLockOnAHooksGoroutineChild(t *testing.T) {
 	})
 	t.Run("the deadline is spent", func(t *testing.T) {
 		hold := StartHandshakeHold(t, uri)
+		hold.lockGuard.spare = binaryTimeout(t) - time.Millisecond
 		conn, _, _ := proxiedClient(t, hold.Proxy)
 		holdOnAHooksGoroutine(t, hold, conn)
 	})
+}
+
+// passedGuard is a connLockGuard.after whose guard has passed before the take begins to wait.
+func passedGuard(time.Duration) (<-chan time.Time, func() bool) {
+	fired := make(chan time.Time, 1)
+	fired <- time.Now()
+	return fired, func() bool { return false }
+}
+
+// binaryTimeout is the -timeout the test binary began its tests under, failing t when it cannot be
+// read: a spare of all but a millisecond of it is more than the deadline leaves once the binary has
+// run any test for a millisecond, and less than the -timeout itself, so testwait.Left says the
+// deadline was spent rather than that the -timeout is too short.
+func binaryTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	registered := flag.Lookup("test.timeout")
+	if registered == nil {
+		t.Fatal("the test binary has no -test.timeout flag")
+	}
+	timeout, ok := registered.Value.(flag.Getter).Get().(time.Duration)
+	if !ok || timeout <= time.Millisecond {
+		t.Fatalf("the test binary's -test.timeout reads %v, want a duration over a millisecond", registered.Value)
+	}
+	return timeout
 }
 
 // holdOnAHooksGoroutine calls HoldWriteLock on a goroutine of its own, as a hook does, waits for
