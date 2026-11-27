@@ -69,6 +69,8 @@
   - TestAHeldRestartsTaskCarriesTheNews  # 0.3 s
   - TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired  # 0.4 s
   - TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod  # 0.3 s
+  - TestAKeptDecisionIsToldOnceWhenACatchUpOutlivesItsLease  # 2.1 s
+  - TestAKeptDecisionIsToldOnceWhenAReHeldCatchUpOutlivesItsLease  # 1.7 s
   - TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget  # 35.8 s
   - TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot  # 0.5 s
   - TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater  # 0.4 s
@@ -267,6 +269,7 @@
   - TestDefaultBranchesKeepsNoRefusal  # 0.0 s
   - TestDeploymentReadsTheConfigurationAlone  # 0.8 s
   - TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree  # 0.9 s
+  - TestEachKeptFaultSeedReachesTheStateOfItsFault  # 7.4 s
   - TestEachRecordNamesItsOwnAgentsSessionAndModel  # 13.0 s
   - TestEachRefresherJobRunsOnItsOwnCause  # 3.7 s
   - TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule  # 9.4 s
@@ -414,6 +417,7 @@
   - TestTheImageProbeResolvesARelativePluginRoot  # 0.0 s
   - TestTheInstallationsQueriesArePaced  # 0.4 s
   - TestTheIntakeGaveUpNoticeReachesTheControllerTopic  # 0.2 s
+  - TestTheKeptModelRunsOnlyRowsALaneWouldClaim  # 6.0 s
   - TestTheKeptPodRecordsGoWithTheIssuesWork  # 0.2 s
   - TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons  # 0.7 s
   - TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt  # 0.3 s
