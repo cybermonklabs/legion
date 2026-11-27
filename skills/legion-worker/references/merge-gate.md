@@ -1,6 +1,6 @@
 # The merge gate: review and the production check
 
-Read it when you review or approve, or work a look of a closed issue's production check.
+Read it when you review or approve, or work a look of a merged issue's production check.
 Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
 The merger's steps are all in its role prompt.
 
@@ -81,9 +81,9 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 
 After a forward merge, read the merge and this change's own commits since your last submitted review's footer `head` (`skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`, which lists your reviews).
 
-## The production check after the close
+## The production check after the merge
 
-- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the close opens no check.
+- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the merge opens no check.
   A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).
 
 - Reach the deploy as the deployment instructions say.

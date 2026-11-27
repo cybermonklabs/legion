@@ -97,7 +97,7 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, m
 	return e.startLook(ctx, tx, issue, &check, wakeMerge, merge.SHA, false)
 }
 
-// mergeOf is the merge a closed issue's check reads: the merge snapshot on the issue's row, or
+// mergeOf is the merge a merged issue's check reads: the merge snapshot on the issue's row, or
 // where an issue merged before the snapshot was kept, its merged pull request's row.
 func mergeOf(issue record.Issue, pr record.PullRequest) record.Merge {
 	if issue.Merge.Merged() {

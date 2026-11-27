@@ -2,7 +2,7 @@
 
 Read this when a person or your deployment instructions ask for a merge hold or its lift, and on each `tick`. A merge hold stops the merges of one or more repositories of your project, for a deploy that must apply first or another reason they give. The project's holds are one Dispatch document of the project, `merge-holds.md` (slug `merge-holds-md`), one line a hold under its `Holds` heading. Only you write it. No line means no hold.
 
-The architect reads the document before every `sign_off` and every enqueue, and the merger before it merges, so the document is the whole hold: send a hold to no tree, no architect and no role topic. Each change of the document wakes the architect that owns each issue in `accepting` and the merger of each issue in `merging`, held or not. It wakes no role of an issue out of the workflow, of an issue whose tree lingers, or of an issue, such as a root, that waits in `merging` after its pull request merged. It wakes no architect that holds the enqueue of a pull request no issue records: that architect reads the document again at its next wake.
+The architect reads the document before every `sign_off` and every enqueue, and the merger before it merges, so the document is the whole hold: send a hold to no tree, no architect and no role topic. Each change of the document wakes the architect that owns each issue in `accepting` and the merger of each issue in `merging`, held or not. It wakes no role of an issue out of the workflow, of an issue whose tree lingers, or of an issue, such as a root, that waits in `verifying` after its pull request merged. It wakes no architect that holds the enqueue of a pull request no issue records: that architect reads the document again at its next wake.
 
 ## Write a hold
 

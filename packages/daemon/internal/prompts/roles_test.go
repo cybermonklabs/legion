@@ -546,7 +546,7 @@ func TestNoPartSaysARoleStaysLiveUntilItsIssueEnds(t *testing.T) {
 }
 
 // retiredCheckSentences are what no role prompt part may say about the production check any more
-// (dispatch://INFRA-809). A merge that closes an issue opens a check only where the project's
+// (dispatch://INFRA-809). A merged issue opens a check only where the project's
 // `production_check` names a role, the one role it can name is the tester, and the check's own
 // record holds the role that works it; so no part makes the check the implementer's. And nothing
 // the daemon reads from a deployment wakes a look: Dispatch's `issue.deployed`, a Dispatch build,

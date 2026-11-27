@@ -1354,7 +1354,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
 			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, again)})
 	}
-	// The failure of the role an open check records ends the look of its closed issue's production
+	// The failure of the role an open check records ends the look of its merged issue's production
 	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
 	// out that doubles with each failed look in a row (endFailedLook). Which role that is the check's
 	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it

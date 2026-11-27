@@ -37,7 +37,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // is answered by its own call, and the architect the issue's notices reach is told in a
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
-// stopped at its merge closes the issue, as it closes an issue with no plan rows held from
+// stopped at its merge puts the issue in `verifying`, where its close waits for its checks, as it
+// does an issue with no plan rows held from
 // merging. A stopped task whose issue then leaves the workflow is left, and keeps why it was
 // stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
 // lingering tree, whose phase and running task the linger keeps, changes nothing.

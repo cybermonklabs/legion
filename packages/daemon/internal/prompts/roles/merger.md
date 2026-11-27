@@ -60,13 +60,13 @@ You write the issue workspace for one thing only: a merge of the base forward an
 
    If the list has no entry, or no removal comes after the newest entry, GitHub's timeline is behind the event. Run the command again about every ten seconds, for about one minute in all. If there is still no removal after the newest entry, run the watch command. Then act on its answer:
 
-   - `state` is `MERGED`: the pull request needs nothing more. The daemon closes the issue on the merge.
+   - `state` is `MERGED`: the pull request needs nothing more. The daemon moves the issue on at the merge, into `verifying` while its close waits for its checks.
    - `isInMergeQueue` is `true`: the pull request is in the queue again. Continue the watch.
    - Any other answer: tell the architect with `envoy_publish` to its encoded role token. Quote the output of both commands.
 
    Act on the `reason` of the last removal after the newest entry:
 
-   - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
+   - `merged`: GitHub merged the pull request. This is not a removal. The daemon moves the issue on at the merge, into `verifying` while its close waits for its checks.
    - `failed_checks`: the queue's own `merge_group` checks failed, on the head merged with the base and the entries ahead of it. Decide its cause as *A check that failed* below says.
    - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. Run the watch again, and decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Merge the base forward (*A head that conflicts with its base*).
