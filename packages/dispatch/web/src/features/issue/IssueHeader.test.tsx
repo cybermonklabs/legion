@@ -693,7 +693,7 @@ const claimedDetails: IssueDetails = {
 test.each(["click", "Enter"] as const)(
   "Release pressed by %s keeps the focus while its release is out, and hands it to Edit labels once the claim has gone",
   async (press) => {
-    const released = Promise.withResolvers<Issue>();
+    const released = Promise.withResolvers<Awaited<ReturnType<typeof api.releaseIssueClaim>>>();
     const release = spyOn(api, "releaseIssueClaim").mockReturnValue(released.promise);
     const { unmount, user } = header(false, claimedDetails);
     const stopFocusFixup = emulateChromiumFocusFixup();
@@ -713,7 +713,14 @@ test.each(["click", "Enter"] as const)(
         focus: focusedControl(),
       }).toEqual({ ariaDisabled: "true", disabled: false, focus: `button ${name}` });
 
-      await act(async () => released.resolve({ ...base, claim: null }));
+      await act(async () =>
+        released.resolve({
+          ...base,
+          claim: null,
+          claim_changed: true,
+          previous_claim: claimedDetails.claim,
+        })
+      );
       await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
       await afterFrameAndTasks();
       expect(focusedControl()).toBe("button Edit labels");
