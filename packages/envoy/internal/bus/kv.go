@@ -504,10 +504,12 @@ func (kv KeyValue) newestMarker(key string) (uint64, error) {
 // for as Bounded waits. The watch is taken as BoundedOnConnection takes its own (boundedBeside),
 // on a goroutine of its own beside call, which starts at once, so the wait ends at ctx's end
 // whatever taking the watch costs. Finding that client (clientOwning) takes each live client's
-// lock in turn, and a client holds its lock while it reads its connection's state through
-// nats.go's connection lock (Client.CoreSubOK, which the listener's /healthz asks of its role
-// lane, and the recovery's subscriptionsHealthy), which nats.go holds through a reconnect's dial
-// and handshake. Taken on the caller's goroutine, the watch kept call from starting until another
+// lock in turn, and Client.ResendRefusedCore, the send the listener's self-health probe makes of
+// its role lane when it finds the lane inactive (cmd/listener's checkRoleLane), holds its client's
+// lock while it reads the connection's status through nats.go's connection lock, which nats.go
+// holds through a reconnect's dial and handshake. Client.CoreSubOK, which /healthz asks of that
+// lane, and the recovery's subscriptionsHealthy read that status with the lock released
+// (connOpen). Taken on the caller's goroutine, the watch kept call from starting until another
 // client's held handshake ended, up to its connect timeout (connectTimeout, 5 s), past the
 // caller's bound: the listener's role lane reads a claim within 2 s
 // (TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake). The cost is

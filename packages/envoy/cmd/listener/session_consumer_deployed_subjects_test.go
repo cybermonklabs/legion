@@ -230,9 +230,11 @@ const subjectsReadJoined = 2 * time.Second
 // waits, within the publish's own bound, for a read of the deployed stream's subjects already in
 // flight. Here a newer build's subject that captures the lane is added after the client read the
 // stream's subjects, and the client's read of them again is in flight past 2 s: another publish of
-// the lane started it while the client's own lock was held (its CoreSubOK waits for nats.go's
-// connection lock, which testnats.HandshakeHold.HoldWriteLock holds), and the read waits for that
-// lock before its request goes out, so its own 2 s bound has not begun. The exception's judgement
+// the lane started it while the client's own lock was held, and the read waits for that lock
+// before its request goes out, so its own 2 s bound has not begun. The client's ResendRefusedCore,
+// the send the self-health probe makes on a role lane it finds inactive (checkRoleLane), holds
+// that lock: it reads the connection's status under it and so waits there for nats.go's
+// connection lock, which testnats.HandshakeHold.HoldWriteLock holds. The exception's judgement
 // joins that read. The locks are let go 3 s after the exception began, inside the publish's 5 s
 // bound, and the read lands and is kept: the client's subjects capture the lane, the judgement
 // answers JetStream, and the stream stores the exception under its report's one id
@@ -275,7 +277,7 @@ func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 	}
 
 	release := hold.HoldWriteLock(t, client.Connection())
-	go client.CoreSubOK()
+	go func() { _ = client.ResendRefusedCore() }()
 	awaitClientLockHeld(t, client)
 	// waits is the transport of a publish of the lane under a 50 ms deadline
 	// (bus.Client.PublishTakesJetStream), and whether it waited that deadline out: it reads the

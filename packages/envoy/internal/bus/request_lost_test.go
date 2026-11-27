@@ -230,19 +230,21 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	}
 }
 
-// A read through BoundedOn waits for no other client's connection. The listener's /healthz asks
-// whether its role lane's subscription stands (Client.CoreSubOK), which reads that client's
-// connection under the client's own lock and through nats.go's connection lock, as the recovery's
-// check of the subscriptions does (subscriptionsHealthy), and nats.go holds that lock through a
-// reconnect's dial and handshake. Finding the client that owns a read's connection (clientOwning)
-// takes each live client's lock in turn, so a read that took its connection watch before its call
-// started waited out the role lane's held handshake, up to its connect timeout (5 s), past its own
-// bound: the role lane reads a claim within 2 s (cmd/listener's roleHolderReadTimeout). Here
-// another client's reconnect handshake is held (testnats.HandshakeHold) and its CoreSubOK holds
-// that client's lock meanwhile, and the read must answer within that handshake attempt. It reads
-// through a handle on a connection no client owns, for which that search passes every live
-// client: a handle whose own client the search found first would end it before the held one on
-// some reads and not on others.
+// A read through BoundedOn waits for no other client's connection. The listener's self-health
+// probe sends its role lane's subscription again whenever it finds the lane inactive, as it does
+// while the lane's connection reconnects (cmd/listener's checkRoleLane), and that send
+// (Client.ResendRefusedCore) reads the lane's connection status under the client's own lock and
+// through nats.go's connection lock, which nats.go holds through a reconnect's dial and handshake.
+// Client.CoreSubOK, which /healthz asks of the lane, and the recovery's subscriptionsHealthy read
+// that status with the client's lock released (connOpen), so neither waits under it. Finding the
+// client that owns a read's connection (clientOwning) takes each live client's lock in turn, so a
+// read that took its connection watch before its call started waited out the role lane's held
+// handshake, up to its connect timeout (5 s), past its own bound: the role lane reads a claim
+// within 2 s (cmd/listener's roleHolderReadTimeout). Here another client's reconnect handshake is
+// held (testnats.HandshakeHold) and its ResendRefusedCore holds that client's lock meanwhile, and
+// the read must answer within that handshake attempt. It reads through a handle on a connection no
+// client owns, for which that search passes every live client: a handle whose own client the
+// search found first would end it before the held one on some reads and not on others.
 // It must not run in parallel: its read's watch holds liveClientsMu, the process's, up to 5 s.
 func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) {
 	const (
@@ -273,13 +275,24 @@ func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) 
 	t.Cleanup(hold.Release)
 	laneConn := lane.Connection()
 	hold.HoldReconnect(t, laneConn)
-	go lane.CoreSubOK()
-	// The other client's lock is held by its CoreSubOK once it stays taken across two looks 50 ms
-	// apart: every other hold of it lasts microseconds.
+	// The self-health probe's send, made while the lane reconnects, holds the lane's lock until the
+	// held attempt ends; resent closes once it returns.
+	resent := make(chan struct{})
+	go func() {
+		_ = lane.ResendRefusedCore()
+		close(resent)
+	}()
+	// The other client's lock is held by its ResendRefusedCore once it stays taken across two
+	// looks 50 ms apart: every other hold of it lasts microseconds.
 	deadline := time.Now().Add(lostRequestWait)
 	for taken := 0; taken < 2; time.Sleep(50 * time.Millisecond) {
+		select {
+		case <-resent:
+			t.Fatal("the other client's ResendRefusedCore returned during its held handshake: it did not hold its lock")
+		default:
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the other client's CoreSubOK did not hold its lock within %s of its held handshake", lostRequestWait)
+			t.Fatalf("the other client's ResendRefusedCore did not hold its lock within %s of its held handshake", lostRequestWait)
 		}
 		if !lane.mu.TryLock() {
 			taken++
