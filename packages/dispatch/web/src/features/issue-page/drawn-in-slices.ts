@@ -12,9 +12,10 @@ import { abortOnReaderAct } from "./useNodeEditing";
  * 3,161 ms at 390 px on Graph (`t6`'s profile). So the first commit draws the anchor's screen -
  * the anchor, the row the page's opening or the address names, else the first row, with the rows
  * that fill one screen above it and one below - and every other row is drawn in slices after it.
- * Every word of every row is in the document once the slices have run, and none of them is
- * hidden by anything but the browser's `content-visibility` (`styles.css`); no row is taken out
- * of the document again.
+ * Every word of every row is in the document once the slices have run, and no row is hidden or
+ * taken out of the document again (R4: no row is windowed out; the architect's ruling of
+ * dispatch://INFRA-5939/comment/42f48939-b821-43d5-b30a-2ac645a1cbf6 took out the
+ * `content-visibility` rule that once skipped rows far from the screen).
  *
  * Each slice is a task of its own, asked of `scheduler.postTask` where the browser has it and of
  * `setTimeout(0)` where it does not, and it commits its rows with `flushSync` inside that task,
@@ -52,8 +53,7 @@ export const SLICE_LIMIT_MS = 100;
 
 /** How tall a row is taken to be before any is drawn, which tells the first commit how many rows
  *  fill a screen above the anchor and below it. A screen of rows shorter than this is filled in
- *  the same task, before the browser paints (`fillScreen`). It is the height `styles.css` holds a
- *  row's place at until the row is first laid out (`contain-intrinsic-block-size`). */
+ *  the same task, before the browser paints (`fillScreen`). */
 export const ROW_GUESS_PX = 96;
 
 /** What the view's keys, its address and the Contents list ask of its rows. */
