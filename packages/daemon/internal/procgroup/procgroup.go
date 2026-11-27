@@ -127,7 +127,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		group := -cmd.Process.Pid
-		err := syscall.Kill(group, syscall.SIGTERM)
+		err := syscall.Kill(group, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			// The group was already gone by the time the signal reached it — cmd's own process
 			// exited in the race window between ctx firing and this call, and no child of it is
