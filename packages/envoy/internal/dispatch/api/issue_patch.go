@@ -12,9 +12,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -401,12 +403,36 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 
+	// The issues under this one that take their priority from it (refs.IssueInheritingDescendantRows):
+	// a write of its own priority or of its parent that moves what it passes down to them moves the
+	// priority each of them resolves to, or the issue it comes from, and appends an issue.updated
+	// on each of them (queueInheritedPriorityEvents). They are read here, under the dependency lock
+	// taken above and before any owner lock: every move, every create under a parent and every
+	// priority write takes that lock first, so what the issue passes down and the set the write
+	// reads stand until it commits. The owner lock of each of them joins the one lock call below,
+	// so the transaction holds the owner of every event it appends before its first append. A
+	// write that moves nothing the issue passes down reads and locks none of them, so a writer busy
+	// on an issue under it does not hold it up (movesPassedDownPriority).
+	var inheriting []refs.IssueDescendant
+	if priorityProvided || parentProvided {
+		moves, err := movesPassedDownPriority(ctx, tx, key, p0)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		if moves {
+			if inheriting, err = refs.IssueInheritingDescendantRows(ctx, tx, key); err != nil {
+				return issueWriteResult{}, err
+			}
+		}
+	}
+
 	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
 	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
-	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
-	named := make([]string, 0, 3)
+	// proposed parent, the rank neighbours and the issues under it that take their priority from
+	// it (lockPatchOwners, lockPatchOwnersAndParent). It never holds one of those locks while
+	// waiting for another that a second write holds. Validation, the dependency walk and the rank
+	// reads below are plain reads of issues whose locks it holds.
+	named := make([]string, 0, 3+len(inheriting))
 	if parent != nil {
 		named = append(named, *parent)
 	}
@@ -427,6 +453,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	step := call.step
 	if step != nil && step.fence != nil {
 		named = append(named, step.named)
+	}
+	for _, below := range inheriting {
+		named = append(named, below.Key)
 	}
 	lock := lockPatchOwners
 	if input.Status != nil || parentProvided {
@@ -793,8 +822,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq}, nil
 	}
 	// Every owner this transaction appends to must be in one LockOwners call before the
-	// first append: the issue itself, the status-change parent, and both ends of a reparent.
-	// lockPatchOwnersAndParent already holds each of those owner locks, so LockOwners returns at once.
+	// first append: the issue itself, the status-change parent, both ends of a reparent, and each
+	// issue under it that takes its priority from it, which the write appends to where it moves what
+	// the issue passes down. lockPatchOwners and lockPatchOwnersAndParent already hold each of those
+	// owner locks, so LockOwners returns at once.
 	owners := []model.Event{issueOwner(key).event("", actor, nil)}
 	ownerKeys := map[string]bool{key: true}
 	addOwner := func(parentKey *string) {
@@ -810,6 +841,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if parentChanged {
 		addOwner(before.Parent)
 		addOwner(afterParent)
+	}
+	for _, below := range inheriting {
+		addOwner(&below.Key)
 	}
 	if len(owners) > 1 {
 		if err := s.deps.Events.LockOwners(ctx, tx, owners...); err != nil {
@@ -925,6 +959,17 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			appended = append(appended, addedEvent)
 		}
 	}
+	// Where the write moved what the issue passes down to the issues under it that take their
+	// priority from it, each of them now resolves to another priority or takes it from another
+	// issue: one issue.updated on each, after the write's own events (J3 of dispatch://INFRA-5793).
+	// A step of a status change that unlinks a child appends its own, in its own transaction.
+	if passedDown := inheritedPriorityChanges(before, after); len(passedDown) > 0 && len(inheriting) > 0 {
+		inherited, err := s.queueInheritedPriorityEvents(ctx, tx, ledger, actor, key, payload.Ancestors, inheriting, passedDown)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		appended = append(appended, inherited...)
+	}
 	if call.comment != nil {
 		// The call's comment comes after the write's own events, on the issue's owner, which the
 		// write's lock holds. Its body is the one the row holds, which the comment route's checks
@@ -1038,6 +1083,124 @@ func appendedIssueLastSeq(key string, appended []*model.Event) int {
 		}
 	}
 	return last
+}
+
+// passedDownPriority is what the issue key passes down to each issue under it that takes its
+// priority from it (refs.IssueInheritingDescendantRows): own, its own priority, from key itself,
+// where it has one, else resolved, the priority it resolves to, and from, the issue that one comes
+// from (refs.IssuePriorityTerms). Each of those issues resolves to exactly this pair (J1 of
+// dispatch://INFRA-5793), so a write of key that moves it moves theirs with it, and a write that
+// keeps it moves none of theirs.
+func passedDownPriority(key string, own, resolved *int, from *string) (*int, *string) {
+	if own != nil {
+		return own, &key
+	}
+	return resolved, from
+}
+
+// movesPassedDownPriority reports whether write, a write that names the own priority or the
+// parent of the issue key, moves what key passes down (passedDownPriority), read through q before
+// the write. After the write key resolves to its own priority where it has one, else to what its
+// parent after the write passes down, else to none, which is the rule refuseResolvedP0WithoutScope
+// reads too. writeIssue asks it under the dependency lock that every write of a priority or a
+// parent takes, so the priorities and the parents it reads stand until the write commits, and
+// before any owner lock, so that a write which moves nothing under key locks no issue there.
+func movesPassedDownPriority(ctx context.Context, q queryer, key string, write p0Write) (bool, error) {
+	standing, found, err := readIssuePriorityStanding(ctx, q, key)
+	if err != nil || !found {
+		return false, err
+	}
+	priorityBefore, fromBefore := passedDownPriority(key, standing.own, standing.resolved, standing.from)
+	own, parent := standing.own, standing.parent
+	if write.namesPriority {
+		own = write.priority
+	}
+	if write.namesParent {
+		parent = write.parent
+	}
+	priorityAfter, fromAfter := passedDownPriority(key, own, nil, nil)
+	if own == nil && parent != nil {
+		above, found, err := readIssuePriorityStanding(ctx, q, *parent)
+		if err != nil {
+			return false, err
+		}
+		// A parent that no issue holds passes down nothing: the write's own read of its parent
+		// refuses it (validateIssueParent).
+		if found {
+			priorityAfter, fromAfter = passedDownPriority(*parent, above.own, above.resolved, above.from)
+		}
+	}
+	return !intPointersEqual(priorityBefore, priorityAfter) || !stringPointersEqual(fromBefore, fromAfter), nil
+}
+
+// inheritedPriorityChanges is the changed of the issue.updated a write of the issue appends on
+// each issue under it that takes its priority from it: each of resolved_priority and
+// priority_from whose half of what the issue passes down (passedDownPriority) moved between
+// before and after, in the order issueChangedFields names them, and none where neither moved. A
+// move of priority_from alone counts, as when an own 0 is set or cleared under a P0 issue.
+func inheritedPriorityChanges(before, after model.Issue) []string {
+	priorityBefore, fromBefore := passedDownPriority(before.Key, before.Priority, before.ResolvedPriority, before.PriorityFrom)
+	priorityAfter, fromAfter := passedDownPriority(after.Key, after.Priority, after.ResolvedPriority, after.PriorityFrom)
+	var changed []string
+	if !intPointersEqual(priorityBefore, priorityAfter) {
+		changed = append(changed, "resolved_priority")
+	}
+	if !stringPointersEqual(fromBefore, fromAfter) {
+		changed = append(changed, "priority_from")
+	}
+	return changed
+}
+
+// queueInheritedPriorityEvents queues on ledger one issue.updated on each issue of inheriting, the
+// issues under written that take their priority from it as the write read them under the
+// dependency lock, for a write of written that moved what it passes down (J3 of
+// dispatch://INFRA-5793): changed names the fields it moved, the actor is the write's, and the
+// payload is the issue as the write leaves it, whole, as an issue.updated carries it
+// (newIssueEventPayload's type). The payloads are read in one statement (loadIssues) rather than
+// one loadIssue per issue, and each issue's ancestors follow from the descent's parent links and
+// ancestors, written's own after the write, rather than one walk per issue: a write over a large
+// tree pays one descent, one read and one batch however many issues are under it. It answers the
+// events it queued, nearest first, which the write's batch fills in as it runs.
+func (s *server) queueInheritedPriorityEvents(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, actor model.Actor, written string, ancestors []string,
+	inheriting []refs.IssueDescendant, changed []string,
+) ([]*model.Event, error) {
+	chains := make(map[string][]string, len(inheriting)+1)
+	chains[written] = ancestors
+	keys := make([]string, 0, len(inheriting))
+	for _, below := range inheriting {
+		// Each issue comes after its parent. One that a raced reparent's cycle brings back deeper,
+		// written itself among them, takes one event, at its nearest place.
+		if _, seen := chains[below.Key]; seen {
+			continue
+		}
+		// The chain stops at refs.IssueDepthCap links, as refs.IssueAncestors' walk does.
+		above := chains[below.Parent]
+		above = above[:min(len(above), refs.IssueDepthCap-1)]
+		chain := make([]string, 0, len(above)+1)
+		chains[below.Key] = append(append(chain, below.Parent), above...)
+		keys = append(keys, below.Key)
+	}
+	issues, err := s.loadIssues(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	queued := make([]*model.Event, 0, len(keys))
+	for _, key := range keys {
+		issue, stored := issues[key]
+		if !stored {
+			continue
+		}
+		payload := model.NewIssueEventPayload(issue, model.ReferenceChanges{})
+		payload.Changed = changed
+		payload.Ancestors = chains[key]
+		event, err := s.queueEvent(ledger, issueOwner(key).event("issue.updated", actor, payload))
+		if err != nil {
+			return nil, err
+		}
+		queued = append(queued, event)
+	}
+	return queued, nil
 }
 
 // askIDs is the ids of asks, in their order.

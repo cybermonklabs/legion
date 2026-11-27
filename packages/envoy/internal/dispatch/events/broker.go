@@ -424,7 +424,10 @@ func lockEventOwner(batch *store.WriteBatch, e *model.Event) {
 // Quiet reports whether an event carries nothing for a reader that follows its owner topic: a
 // delivery receipt, an anchor refresh, settings or per-viewer bookkeeping, a targeted message the
 // session it names already had through the synchronous listener send, an ask edit that only moved
-// the version it names, or a document version nobody named.
+// the version it names, a document version nobody named, or an issue update that moved only the
+// priority the issue resolves to or the issue that priority comes from: a write to another issue
+// above it appends that one, which asks nobody anything and which one write appends on every issue
+// under it that takes its priority from it.
 //
 // It is the half of Notify that does not depend on who acted, and it is what the outbox puts on
 // the wire (`quiet`), because the two answer different questions. Notify answers whether to wake
@@ -443,6 +446,21 @@ func Quiet(e model.Event) bool {
 		}
 	}
 	switch e.Type {
+	case "issue.updated":
+		// A write to one issue that moves what it passes down to the issues under it that take
+		// their priority from it - a change or a clear of its own priority, a move, a detach -
+		// appends one issue.updated on each of them whose changed names resolved_priority,
+		// priority_from or both, and nothing else (J3 of dispatch://INFRA-5793). Nobody asked those
+		// issues anything and nobody on them did anything, and one write can append thousands of
+		// them, so they wake no route, claimant or author and no follower is shown them. The
+		// readers that keep an issue's resolved priority, the Legion daemon and the delivery live
+		// hub, read every event whatever Quiet says, and the daemon tells this event apart by the
+		// same test (resolvedOnly in packages/daemon/internal/intake/decode.go). No other
+		// issue.updated names only those fields: the written issue's own event names at least the
+		// field its write moved, and one whose write moved no value names none, which is not quiet.
+		if resolvedPriorityOnly(e.Payload) {
+			return true
+		}
 	case "comment.anchor_refreshed", "ask.anchor_refreshed":
 		// Refresh is a document mutation side effect, not a human addressing its
 		// author. Retain it for every stream consumer without waking anyone.
@@ -522,8 +540,8 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
-// their field the same way.
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit, namedVersion and
+// resolvedPriorityOnly read their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {
 	case model.MessageEventPayload:
@@ -551,6 +569,46 @@ func quietAskEdit(payload any) bool {
 	default:
 		return false
 	}
+}
+
+// resolvedPriorityOnly reports whether an issue event's changed is not empty and names only
+// resolved_priority and priority_from, from either payload shape, as targetedMessage reads its
+// field: the typed model.IssueEventPayload at append time and the map the outbox decodes at
+// publish time.
+func resolvedPriorityOnly(payload any) bool {
+	switch update := payload.(type) {
+	case model.IssueEventPayload:
+		if len(update.Changed) == 0 {
+			return false
+		}
+		for _, field := range update.Changed {
+			if !resolvedPriorityField(field) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		// Changed is omitzero, so the decoded field is absent from an event that names none, and a
+		// list of strings otherwise. An entry that is no string matches neither field.
+		names, _ := update["changed"].([]any)
+		if len(names) == 0 {
+			return false
+		}
+		for _, name := range names {
+			if field, _ := name.(string); !resolvedPriorityField(field) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// resolvedPriorityField reports whether field is one of the two an issue event names where the
+// priority the issue resolves to, or the issue it comes from, moved.
+func resolvedPriorityField(field string) bool {
+	return field == "resolved_priority" || field == "priority_from"
 }
 
 // Subscribe returns a committed-event stream and a cancellation function.

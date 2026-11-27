@@ -1199,6 +1199,33 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 	return issue, err
 }
 
+// loadIssues reads every issue of keys, which names each key once, as loadIssue reads one, in one
+// statement (issueRowsStatement) rather than one loadIssue per key, and answers them by key. A key
+// no issue carries has no entry.
+func (s *server) loadIssues(ctx context.Context, q queryer, keys []string) (map[string]model.Issue, error) {
+	issues := make(map[string]model.Issue, len(keys))
+	if len(keys) == 0 {
+		return issues, nil
+	}
+	rows, err := q.Query(ctx, issueRowsStatement, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var links []byte
+		issue, _, err := scanIssueRow(rows, &links)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(links, &issue.ExternalLinks); err != nil {
+			return nil, fmt.Errorf("decode the external links of %s: %w", issue.Key, err)
+		}
+		issues[issue.Key] = issue
+	}
+	return issues, rows.Err()
+}
+
 // issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
 // is the issue read's first queued statement (getIssue), whose callback records a missing issue
 // for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch found. The
@@ -1206,8 +1233,30 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 // priority terms are package-level values of their own, so the concatenation is work a request
 // would repeat for a statement that never differs, and pgx caches a prepared plan per statement
 // text.
-var issueRowStatement = `
-		with recursive subjects as (select $1::text as key),
+var issueRowStatement = issueRowSelect(`select $1::text as key`, ``, `i.key = $1`)
+
+// issueRowsStatement is issueRowStatement's key-array form: every issue of $1, a text array that
+// names each key once, read as issueRowStatement reads one, in one statement, each row with the
+// issue's external links after the columns scanIssueRow scans (issueRowLinksColumn), which the
+// single read takes from a statement of its own (issueExternalLinksStatement). A key no issue
+// carries answers no row, and the rows come in no order. Its terms climb every key's chain
+// together, as the listing's do for a page, so a write that appends an event on each of many
+// issues reads every payload in one round trip (loadIssues).
+var issueRowsStatement = issueRowSelect(`select unnest($1::text[]) as key`, `,
+		       `+issueRowLinksColumn, `i.key = any($1::text[])`)
+
+// issueRowLinksColumn is an issue's external links as one JSON array, in the order
+// issueExternalLinksStatement reads them, '[]' for none.
+const issueRowLinksColumn = `coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
+		                 from issue_external_links l where l.issue_key = i.key), '[]')`
+
+// issueRowSelect is the text of issueRowStatement and of its key-array form, issueRowsStatement,
+// so the two read every column alike: subjects is the term of the keys whose chains the terms
+// climb, links the columns after every one scanIssueRow scans ("" for none), and where the issues
+// the statement answers.
+func issueRowSelect(subjects, links, where string) string {
+	return `
+		with recursive subjects as (` + subjects + `),
 		` + issueAdvancesTerms + `,
 		` + issueComponentsTerms + `,
 		` + refs.IssueRepoTerms + `,
@@ -1224,15 +1273,16 @@ var issueRowStatement = `
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
-		       ` + refs.IssueRepoColumns + `
+		       ` + refs.IssueRepoColumns + links + `
 		from issues i
 		` + issueProgressLateral + `
 		` + issueAdvancesJoin + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
 		` + refs.IssuePriorityJoin + `
-		where i.key = $1
+		where ` + where + `
 	`
+}
 
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
@@ -1253,8 +1303,9 @@ const issueCommentCountStatement = `select count(*) from comments where issue_ke
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
-// after this row or queued beside it.
-func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
+// after this row or queued beside it. extra receives the columns a row carries after those, which
+// issueRowsStatement's rows do (issueRowLinksColumn).
+func scanIssueRow(row pgx.Row, extra ...any) (model.Issue, model.IssueProgress, error) {
 	var issue model.Issue
 	var createdBy []byte
 	var components componentsScan
@@ -1275,7 +1326,8 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	targets = append(targets, claim.targets()...)
 	targets = append(targets, progress.targets()...)
 	targets = append(targets, components.targets()...)
-	if err := row.Scan(append(targets, repo.targets()...)...); err != nil {
+	targets = append(targets, repo.targets()...)
+	if err := row.Scan(append(targets, extra...)...); err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	own, resolvedRepo, err := repo.resolve(issue.Key)
