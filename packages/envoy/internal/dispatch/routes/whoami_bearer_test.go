@@ -45,7 +45,7 @@ func bearerRouter(t *testing.T, database *store.Store, broker *ciphertokentest.S
 	}
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL:      broker.Server.URL,
-		Account:        ciphertoken.NewAccountToken(account),
+		Account:        ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", account),
 		Origins:        []string{bearerOrigin},
 		Replay:         store.NewDPoPProofs(database.Pool),
 		Address:        auth.ForwardedAddress,
