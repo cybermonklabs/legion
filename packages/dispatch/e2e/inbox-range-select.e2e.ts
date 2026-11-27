@@ -1739,10 +1739,9 @@ test("at 390 px a range action that takes the row the reading view shows hands t
     await expect(readingView(page), "the page draws a reading view with no item left").toHaveCount(
       0
     );
-    await expect(
-      page,
-      "the reading view stayed open with no item left: the address still names the item"
-    ).not.toHaveURL(/[?&]item=/);
+    await expect(page, "the address still names the item though no item is left").not.toHaveURL(
+      /[?&]item=/
+    );
     expect(await empty.count(), "the list draws its one empty message").toBe(1);
     expect(
       await holdsFocus(empty),

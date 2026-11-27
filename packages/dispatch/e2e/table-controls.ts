@@ -1350,7 +1350,7 @@ async function expectOneBar(
     reading.placeholderWidth,
     `${where}: the search box has ${Math.round(reading.room)}px for its placeholder "${reading.placeholder}", which takes ${Math.round(reading.placeholderWidth)}px in the box's font`
   ).toBeLessThanOrEqual(reading.room);
-  await assertPageFits(page);
+  await expectPageFitsAt(page, where);
   if (reading.width >= NARROW_BELOW) return reading;
   const chips = reading.controls.filter((one) => one.control === CONTROL.chip);
   const kept = name === "priorities page" ? chips.filter((one) => MORE_CHIPS.test(one.name)) : [];
@@ -1769,6 +1769,61 @@ function expectClearBesideTrigger(reading: BarReading, at: string): void {
   ).toBe(true);
 }
 
+/** The frames `restingTriggerFill` reads a trigger over before it gives up on its fill holding
+ *  still: once the trigger's fades have ended, two frames running settle it. */
+const RESTING_FILL_FRAMES = 20;
+
+/** The fill **Filter**'s trigger in `bar` rests on, read with the pointer off it. A trigger drawn
+ *  quiet, as one that lost its tint is, takes the hover fill under the pointer
+ *  (`web/src/components/bar-look.tsx`), so the pointer leaves it before the fill is read: it moves
+ *  to the window's corner, as `expectBarDesign`'s `toRest` moves it. Every button fades its fill
+ *  over 150 ms (`web/src/styles.css`), so the fill is taken once the trigger's own transitions have
+ *  ended and two frames running read the same fill with no transition on it. A fill that does not
+ *  hold within `RESTING_FILL_FRAMES` frames fails, naming `where` and the fills it read. */
+async function restingTriggerFill(page: Page, bar: Locator, where: string): Promise<string> {
+  const viewport = page.viewportSize();
+  if (viewport === null) {
+    throw new Error(`${where}: the page has no viewport, so the pointer has no corner to rest in`);
+  }
+  await page.mouse.move(viewport.width - 1, viewport.height - 1);
+  // The page itself waits out the trigger's fades and takes a fill only once two frames running
+  // agree with no transition on, so the branch below reads a settled answer, not one instant's.
+  const { fill, seen } = await control(bar, CONTROL.panelTrigger).evaluate(
+    async (trigger, frames) => {
+      const seen: string[] = [];
+      let last: string | undefined;
+      for (let frame = 0; frame < frames; frame++) {
+        const running = trigger
+          .getAnimations()
+          .filter((animation) => animation instanceof CSSTransition);
+        if (running.length > 0) {
+          // A fade that another replaces rejects its `finished`; the next turn waits for that one.
+          await Promise.allSettled(running.map((fade) => fade.finished));
+          last = undefined;
+        }
+        const drawn = Promise.withResolvers<void>();
+        requestAnimationFrame(() => drawn.resolve());
+        await drawn.promise;
+        const now = getComputedStyle(trigger).backgroundColor;
+        seen.push(now);
+        const fading = trigger
+          .getAnimations()
+          .some((animation) => animation instanceof CSSTransition);
+        if (now === last && !fading) return { fill: now, seen };
+        last = now;
+      }
+      return { fill: undefined, seen };
+    },
+    RESTING_FILL_FRAMES
+  );
+  if (fill === undefined) {
+    throw new Error(
+      `${where}: the trigger's fill did not hold for two frames running within ${RESTING_FILL_FRAMES} frames; it read ${seen.join(", ")}`
+    );
+  }
+  return fill;
+}
+
 /** `k-bar`'s **Filters** and **Clear filters** on a fault tab's bar, with the flag and the column
  *  filter of `address` on (`expectFlagAndColumn`), read as the project List's: at every width the
  *  trigger is drawn on a fill; in the wide layout Clear filters is the control right after the
@@ -1784,12 +1839,12 @@ async function expectClearTakesBoth(
 ): Promise<void> {
   const on = `${at}, a flag and a column on`;
   // `expectFlagAndColumn` waited until the trigger counted the two, and two frames more, and shut
-  // its panel, so the bar read here stands for them.
+  // its panel, so the bar read here stands for them. Shutting the panel clicked the trigger and
+  // left the pointer on it, so the trigger's fill is read at rest (`restingTriggerFill`).
   const two = await readBar(bar);
-  expect(
-    two.controls.find((each) => each.control === CONTROL.panelTrigger)?.background,
-    `${on}: its trigger has no fill`
-  ).not.toMatch(NO_FILL);
+  expect(await restingTriggerFill(page, bar, on), `${on}: its trigger has no fill`).not.toMatch(
+    NO_FILL
+  );
   if (two.width < NARROW_BELOW) {
     expect(
       two.controls.filter((each) => each.control === "clear").length,
@@ -1932,9 +1987,6 @@ export async function expectBarDesign(
         ["Needs you", `Status: ${fault.word}`],
         at
       );
-      // Shutting the panel clicked the trigger, and a trigger under the pointer is drawn on its
-      // hover fill, so the pointer rests in the corner before Filters' fill is read.
-      await toRest();
       await expectClearTakesBoth(page, tab.row, flagAndColumn, at);
       const six = `${at}, six narrowings on`;
       await page.goto(faultAddress(fault, 6));
@@ -1962,12 +2014,14 @@ export async function expectBarDesign(
   // wide layout - Clear filters beside it in its group, a button of its own.
   await narrowBar(page, name, scene, surface, 1, phone, where);
   // `narrowBar` waited until the trigger counted the one narrowing, and two frames more for the
-  // chips line (`settledBar`), so the bar read here stands for it.
+  // chips line (`settledBar`), so the bar read here stands for it. The pointer can still be on the
+  // trigger - picks in its panel end on the click that shuts it - so the trigger's fill is read at
+  // rest (`restingTriggerFill`).
   const one = await readBar(bar);
-  const tinted = one.controls.find((each) => each.control === CONTROL.panelTrigger);
-  expect(tinted?.background, `${where}, one narrowing on: its trigger has no fill`).not.toMatch(
-    NO_FILL
-  );
+  expect(
+    await restingTriggerFill(page, bar, `${where}, one narrowing on`),
+    `${where}, one narrowing on: its trigger has no fill`
+  ).not.toMatch(NO_FILL);
   const clear = one.controls.filter((each) => each.control === "clear");
   if (narrow || !CLEARS.includes(name)) {
     expect(clear.length, `${where}, one narrowing on: ${saidOf(one)}, a Clear filters`).toBe(0);

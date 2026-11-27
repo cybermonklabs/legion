@@ -2553,7 +2553,9 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
     const narrowed = rows.filter(matches);
     const expectedIds = narrowed.map((row) => row.id).sort();
     // The list is read once it holds the narrowed count, never in the frame the pick landed in.
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(expectedIds.length);
+    await expect(page.locator("[data-inbox-row]"), `the ${field} field`).toHaveCount(
+      expectedIds.length
+    );
     expect([...(await drawnIds(page))].sort(), `the ${field} field`).toEqual(expectedIds);
     await expect(chips.filter({ hasText: new RegExp(`^${field}`, "i") })).not.toHaveCount(0);
     await expectInboxFacetCounts(page, main, field, narrowed);
