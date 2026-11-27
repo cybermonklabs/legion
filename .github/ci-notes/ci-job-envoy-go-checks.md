@@ -6,7 +6,9 @@ arithmetic stays on its line in the workflow file. The file holds two jobs since
 split envoy-go-checks in two, envoy-go-checks and envoy-go-build
 (`.github/ci-notes/ci.md#two-jobs-that-call-one-file`).
 
-## The two steps whose scripts the gate does not read
+<a id="the-two-steps-whose-scripts-the-gate-does-not-read"></a>
+
+## The two steps whose scripts retry a download of their own
 
 Two steps of this file start a download retried inside a script outside `.github/scripts/`, and
 each budget is derived by hand.

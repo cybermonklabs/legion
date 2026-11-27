@@ -185,7 +185,9 @@ the archive names its build (`legion@<commit>`), which legacy-subjects-gate.sh's
 connections reads; -buildvcs=false records no other commit. Its Build envoy binary step reads the
 stamp back from the binary and fails without it.
 
-## The build steps whose notices script the gate does not read
+<a id="the-build-steps-whose-notices-script-the-gate-does-not-read"></a>
+
+## The build steps and the go-licenses install their notices script retries
 
 `Build envoy binary`, in `build`, and `Build agent-secrets binaries`, in `release_build`, each run
 `scripts/go-third-party-notices.sh`, the first once and the second once for each archive it packs.

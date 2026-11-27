@@ -6,7 +6,9 @@ jobs' rigs are and how they work is in `.github/ci-budgets.md`, "The download-re
 "The download-retry-images job's rig"; the second rig is the download-retry-images job's and the
 download-retry-images-worker job's both.
 
-## Each image build's budget: the gate's price for that build
+<a id="each-image-builds-budget-the-gates-price-for-that-build"></a>
+
+## Each image build's budget: its key's price, the probe and what the fault adds
 
 The `--budget` each report step of the download-retry-images and download-retry-images-worker
 jobs holds its build to has three terms.

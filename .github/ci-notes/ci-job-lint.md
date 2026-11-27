@@ -4,7 +4,9 @@ The derivations behind the budgets of `.github/workflows/ci-job-lint.yaml` that 
 file with `# why:` lines, as `.github/ci-notes/README.md` says. Each value's own arithmetic stays
 on its line in the workflow file.
 
-## The notices step whose script the gate does not read
+<a id="the-notices-step-whose-script-the-gate-does-not-read"></a>
+
+## The notices step and the go-licenses install its script retries
 
 `Check every Go release archive's third-party notices can be written and the cross-built commands
 compile` runs `.github/scripts/go-release-notices.sh`, which runs `scripts/go-third-party-notices.sh`

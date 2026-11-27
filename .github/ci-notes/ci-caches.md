@@ -908,7 +908,9 @@ main's `if:` (main alone), its outputs, which dispatch-builds-superseded keeps, 
 the pin, which takes the place of a second copy of the commit in this job's env. None of those is
 a retried step, so neither term moves.
 
-## The notices step whose script the gate does not read
+<a id="the-notices-step-whose-script-the-gate-does-not-read"></a>
+
+## The notices step and the go-licenses install its script retries
 
 `Write every Go release archive's third-party notices and cross-build the commands`, in the notices
 job, runs `.github/scripts/go-release-notices.sh`, the script ci.yaml's lint job runs, and so waits

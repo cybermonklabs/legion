@@ -4,7 +4,9 @@ The derivations behind the budgets of `.github/workflows/release-envoy-infra.yam
 this file with `# why:` lines, as `.github/ci-notes/README.md` says. Each value's own arithmetic
 stays on its line in the workflow file.
 
-## The build step whose notices script the gate does not read
+<a id="the-build-step-whose-notices-script-the-gate-does-not-read"></a>
+
+## The build step and the go-licenses install its notices script retries
 
 `Build pulumi-resource-envoy-infra and envoy-infra` runs `scripts/go-third-party-notices.sh`
 twice for each target of `.github/envoy-infra-targets.json`. The script installs go-licenses
