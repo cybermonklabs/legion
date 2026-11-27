@@ -24,8 +24,9 @@ const mainsNewestAtTheChainsMerge = 20261126110259
 
 // mergeHistoryDatabase is a database of its own, as a URL a daemon's postgres_dsn takes, and a
 // store open on it. With main it holds main's schema, every embedded migration up to
-// mainsNewestAtTheChainsMerge, applied as Migrate applies each but with no version row, since the
-// census reads none; without it, every migration, as Migrate leaves it.
+// mainsNewestAtTheChainsMerge, each applied and its version recorded as Migrate records it, so a
+// Migrate of it would apply this branch's own migrations alone, as it would on a deployment's
+// database; without it, every migration, as Migrate leaves it.
 func mergeHistoryDatabase(t *testing.T, main bool) (string, *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -45,7 +46,7 @@ func mergeHistoryDatabase(t *testing.T, main bool) (string, *store.Store) {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	applied := 0
+	var versions []int64
 	for _, migration := range all {
 		if migration.Version > mainsNewestAtTheChainsMerge {
 			continue
@@ -56,10 +57,20 @@ func mergeHistoryDatabase(t *testing.T, main bool) (string, *store.Store) {
 		}); err != nil {
 			t.Fatalf("apply %s as main's run did: %v", migration.Name, err)
 		}
-		applied++
+		versions = append(versions, int64(migration.Version))
 	}
-	if applied == 0 {
+	if len(versions) == 0 {
 		t.Fatalf("no embedded migration stands at or below %d, so this database is not main's", mainsNewestAtTheChainsMerge)
+	}
+	// A timestamp version is past int4, so Migrate widens the column at the first one it records.
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "alter table schema_version alter column version type bigint"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "insert into schema_version (version) select unnest($1::bigint[])", versions)
+		return err
+	}); err != nil {
+		t.Fatalf("record main's versions: %v", err)
 	}
 	return dsn, st
 }
