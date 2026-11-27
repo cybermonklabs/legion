@@ -125,6 +125,7 @@ func v2ReadClasses() map[string]readEntry {
 		"GET /api/v2/issues/{key}/messages":                        declaredRead("GET /api/v1/issues/{key}/messages"),
 		"GET /api/v2/issues/{key}/references":                      declaredRead("GET /api/v1/issues/{key}/references"),
 		"GET /api/v2/issues/{key}/role-holder-set":                 declaredRead("GET /api/v1/issues/{key}/role-holders"),
+		"GET /api/v2/issues/{key}/step-tasks":                      declaredRead("GET /api/v1/issues/{key}/steps"),
 		"GET /api/v2/issues/{key}/steps":                           declaredRead("GET /api/v1/issues/{key}/steps"),
 		"GET /api/v2/issues/{key}/subscribers":                     declaredRead("GET /api/v1/issues/{key}/subscribers"),
 		"GET /api/v2/known-sessions":                               declaredRead("GET /api/v1/agents/known"),

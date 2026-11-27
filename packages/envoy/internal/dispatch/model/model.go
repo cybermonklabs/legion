@@ -4244,11 +4244,13 @@ type PlannedStep struct {
 	State string `json:"state" enum:"not started,running,passed,failed,stopped"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps, and what GET /api/v2/issues/{key}/steps lists its
-// runs from (api.issueStepTasks): the tasks of the issue's newest plan, in the plan's order, each
-// with its needs, its planned steps and every run of them; then every other task with a run, in
-// the order of each such task's first run. An issue with no plan and no run answers no task; a key
-// no issue carries answers 404 NOT_FOUND on /api/v1, and no IssueSteps.
+// IssueSteps is GET /api/v1/issues/{key}/steps, and what the /api/v2 reads page
+// (api.issueStepTasks): GET /api/v2/issues/{key}/step-tasks pages its Tasks, and GET
+// /api/v2/issues/{key}/steps its runs, task after task. Its Tasks are the tasks of the issue's
+// newest plan, in the plan's order, each with its needs, its planned steps and every run of them;
+// then every other task with a run, in the order of each such task's first run. An issue with no
+// plan and no run answers no task; a key no issue carries answers 404 NOT_FOUND on /api/v1, and no
+// IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`

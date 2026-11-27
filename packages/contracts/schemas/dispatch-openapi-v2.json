@@ -12940,6 +12940,119 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v2/issues/{key}/step-tasks": {
+      "get": {
+        "description": "The tasks of the issue's workflow and every run of their steps, one task an item: each {task, needs, planned?, steps}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not, with needs and planned as GET /api/v1/issues/{key}/steps describes them: needs the ids of the tasks of that plan the task needs ([] for a task that needs none, and null where the plan's node recorded none), and planned each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. Each task's runs come in the order they ran, each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too; an issue with no plan and no run reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "operationId": "getApiV2IssuesByKeyStepTasks",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOfStepTask"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-list": {
+          "default_limit": 50,
+          "max_limit": 200,
+          "min_limit": 1
+        },
+        "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
+          "AS_OF_TOKEN_NOT_SERVED": 403,
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_LIMIT": 400,
+          "INVALID_OFFSET": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "ISSUE_NOT_FOUND": 404,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "QUERY_KEY_UNKNOWN": 400,
+          "SIGNIN_UNAVAILABLE": 503,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        }
+      }
+    },
     "/api/v2/issues/{key}/steps": {
       "get": {
         "description": "Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
@@ -37426,6 +37539,36 @@
         ],
         "type": "object"
       },
+      "PageOfStepTask": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepTask"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PageOfSubscriber": {
         "additionalProperties": false,
         "properties": {
@@ -38236,6 +38379,33 @@
         "required": [
           "id",
           "steps"
+        ],
+        "type": "object"
+      },
+      "PlannedStep": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "not started",
+              "running",
+              "passed",
+              "failed",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step",
+          "name",
+          "state"
         ],
         "type": "object"
       },
@@ -41103,6 +41273,44 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "StepTask": {
+        "additionalProperties": false,
+        "properties": {
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "planned": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedStep"
+            },
+            "type": "array"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepRecord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "needs",
+          "steps"
+        ],
         "type": "object"
       },
       "Subscriber": {

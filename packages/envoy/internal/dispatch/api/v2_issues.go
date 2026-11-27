@@ -7,11 +7,12 @@ package api
 // J3); the patch, which takes the design gates PUT /api/v1/issues/{key}/design-gates wrote (J16);
 // the claim; and an issue's collaborators, coverage, decisions and the keep of one, references,
 // checks, results and the retraction of one, subscribers, the steps #4400 added to /api/v1 and the
-// write of one, the rating of a retro's run and the plan of a run #4488 added, the dry run of a
-// result #4517 added, and the experiment and the variant of a run #5014 added. Every route runs
-// the work its /api/v1 route runs (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs,
-// claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf,
-// writeDecisionKeep, issueClosure, readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom,
+// write of one, the tasks of those steps with the needs #4948 added, the rating of a retro's run
+// and the plan of a run #4488 added, the dry run of a result #4517 added, and the experiment and
+// the variant of a run #5014 added. Every route runs the work its /api/v1 route runs
+// (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs,
+// releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep,
+// issueClosure, readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom,
 // retractCheckResultAs, subscribersOf, unsubscribeSession, issueStepTasks, putIssueStepFrom,
 // putIssueStepRatingFrom, putIssueStepExperimentFrom, putIssuePlanFrom), each path object checked
 // first and answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
@@ -563,6 +564,11 @@ type issueSubscribersV2Query struct {
 
 // issueStepsV2Query is GET /api/v2/issues/{key}/steps's query: one page.
 type issueStepsV2Query struct {
+	pageQuery
+}
+
+// issueStepTasksV2Query is GET /api/v2/issues/{key}/step-tasks's query: one page.
+type issueStepTasksV2Query struct {
 	pageQuery
 }
 
@@ -1213,32 +1219,58 @@ func (s *server) putResultStateV2(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
-// listIssueStepsV2 answers GET /api/v2/issues/{key}/steps: one page of the runs GET
-// /api/v1/issues/{key}/steps lists (issueStepTasks), task after task in its order, the issue held
-// to exist first.
-func (s *server) listIssueStepsV2(w http.ResponseWriter, r *http.Request) {
+// readIssueStepTasksV2 is the read GET /api/v2/issues/{key}/steps and GET
+// /api/v2/issues/{key}/step-tasks page: the tasks GET /api/v1/issues/{key}/steps answers
+// (issueStepTasks), the caller authenticated and the issue held to exist first. ok is false once
+// it has answered the request with a refusal or an error.
+func (s *server) readIssueStepTasksV2(w http.ResponseWriter, r *http.Request) (tasks []model.StepTask, ok bool) {
 	if !s.requireAuthenticated(w, r) {
-		return
+		return nil, false
 	}
 	key := r.PathValue("key")
 	if !s.requireIssueV2(w, r, key) {
-		return
+		return nil, false
 	}
 	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return nil, false
 	}
 	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
+		return nil, false
+	}
+	return issueStepTasks(key, plan, steps).Tasks, true
+}
+
+// listIssueStepsV2 answers GET /api/v2/issues/{key}/steps: one page of the runs GET
+// /api/v1/issues/{key}/steps lists (readIssueStepTasksV2), task after task in its order.
+func (s *server) listIssueStepsV2(w http.ResponseWriter, r *http.Request) {
+	tasks, ok := s.readIssueStepTasksV2(w, r)
+	if !ok {
 		return
 	}
-	records := make([]model.StepRecord, 0, len(steps))
-	for _, task := range issueStepTasks(key, plan, steps).Tasks {
+	runs := 0
+	for _, task := range tasks {
+		runs += len(task.Steps)
+	}
+	records := make([]model.StepRecord, 0, runs)
+	for _, task := range tasks {
 		records = append(records, task.Steps...)
 	}
 	WriteJSON(w, http.StatusOK, pageOf(records, v2Query[issueStepsV2Query](r).pageQuery))
+}
+
+// listIssueStepTasksV2 answers GET /api/v2/issues/{key}/step-tasks: one page of the tasks GET
+// /api/v1/issues/{key}/steps answers (readIssueStepTasksV2), each with its needs, its planned
+// steps and its runs, in its order.
+func (s *server) listIssueStepTasksV2(w http.ResponseWriter, r *http.Request) {
+	tasks, ok := s.readIssueStepTasksV2(w, r)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, pageOf(tasks, v2Query[issueStepTasksV2Query](r).pageQuery))
 }
 
 // putIssueStepV2 answers PUT /api/v2/issues/{key}/steps/{id}: the write PUT

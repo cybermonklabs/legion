@@ -4,6 +4,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -24,10 +26,20 @@ func init() { addTourSteps("steps", stepsTourSteps) }
 // names no identity, the end, the rating or the experiment, sent to an id no record has. It holds
 // #4488's plans too: the plan of a run, whose write makes the plan whatever id it names, so its
 // {id} names no missing object, and the read of a project's finished issues, one closed with its
-// plan.
+// plan. And it holds the read of an issue's tasks #4948 gave their needs: a plan of two tasks, b
+// needing a, a run of a, and b unrun.
 func stepsTourSteps() []tourStep {
 	issueMissing := tourMissing{Param: "key", Value: "NOPE-404", Code: apicode.IssueNotFound}
 	return []tourStep{
+		{
+			Method: http.MethodGet, Pattern: "/issues/{key}/step-tasks", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue := tour.issue(t)
+				tour.writeTwoTasks(t, issue)
+				return tourRequest{Path: map[string]string{"key": issue.Key}, As: tourPerson("alice")}
+			},
+			Missing: []tourMissing{issueMissing},
+		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/steps", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
@@ -131,6 +143,38 @@ func tourDefaultPlan() map[string]any {
 		"generation": 1, "source": "default",
 		"tasks": []map[string]any{{"id": "default", "steps": []string{"planner", "implementer", "tester", "reviewer"}}},
 	}
+}
+
+// tourTwoTaskPlan is the plan of an issue's first run that its owner gave in document, at version
+// 1, in the shape the daemon writes it: task a, an implementer then a reviewer, which needs no
+// task, and task b, a tester, which needs a.
+func tourTwoTaskPlan(document string) map[string]any {
+	return map[string]any{
+		"generation": 1, "source": "owner", "artifact_id": document, "version": 1,
+		"tasks": []map[string]any{
+			{"id": "a", "steps": []string{"implementer", "reviewer"}, "needs": []string{}},
+			{"id": "b", "steps": []string{"tester"}, "needs": []string{"a"}},
+		},
+	}
+}
+
+// tourTaskStart is the start of step place of task in an issue's first run, an implementer's, as
+// the daemon writes it (tourStepStart).
+func tourTaskStart(task string, place int) map[string]any {
+	start := tourStepStart()
+	start["task"], start["step"] = task, place
+	return start
+}
+
+// writeTwoTasks writes tourTwoTaskPlan as the plan of issue's first run, its document the issue's
+// spec, and the start of task a's implementer, and answers that run's id: task b, which needs a,
+// runs nothing.
+func (tour *routeTour) writeTwoTasks(t *testing.T, issue tourIssue) string {
+	t.Helper()
+	tour.writePlan(t, issue, uuid.NewString(), tourTwoTaskPlan(issue.Document))
+	run := uuid.NewString()
+	tour.writeStep(t, issue, run, tourTaskStart("a", 1))
+	return run
 }
 
 // stepWriteOf is the write of body as run of issue, as its project's Legion daemon sends it: the
@@ -308,5 +352,68 @@ func TestV2PlanAndRatingWritesOfWhatTheyHoldWriteNothing(t *testing.T) {
 	if finished := read.Items[0]; finished.Issue != issue.Key || finished.Plan == nil || finished.Plan.ID != written.ID ||
 		len(finished.Ratings) != 1 || finished.Ratings[0].Rating != 4 || finished.Ratings[0].StepID != retro {
 		t.Fatalf("the list answered %s, want %s with plan %s and the retro's one rating, 4", listed.Body.String(), issue.Key, written.ID)
+	}
+}
+
+// TestV2StepTasksMatchV1AndPage: GET /api/v2/issues/{key}/step-tasks pages, one task an item, the
+// tasks GET /api/v1/issues/{key}/steps answers, each as /api/v1 answers it: task a of the plan with
+// needs [], its planned steps and its run; task b of the plan, which needs a and ran no step, with
+// needs ["a"], its tester planned and not started, and runs []; and task unplanned, which the plan
+// does not name, with null needs, no planned and its run. limit=1&offset=1 answers b alone, of a
+// total of 3, and an issue with no plan and no run reads []. /api/v1's answer links the /api/v2
+// read (R3.1). The faults are a read that leaves out a task's needs or its planned steps, which
+// answers a and b otherwise than /api/v1 does, and a /api/v1 answer that links GET
+// /api/v2/issues/{key}/steps, whose items are runs.
+func TestV2StepTasksMatchV1AndPage(t *testing.T) {
+	tour := newRouteTour(t)
+	route := tour.stepRoute(t, tourStep{Method: http.MethodGet, Pattern: "/issues/{key}/step-tasks"})
+	issue := tour.issue(t)
+	implementing := tour.writeTwoTasks(t, issue)
+	unplanned := uuid.NewString()
+	tour.writeStep(t, issue, unplanned, tourTaskStart("unplanned", 1))
+	of := func(key string, query url.Values) tourRequest {
+		return tourRequest{Path: map[string]string{"key": key}, Query: query, As: tourPerson("alice")}
+	}
+
+	v1 := dispatchRequest(t, tour.handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/steps", nil, "alice")
+	if v1.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues/%s/steps answered %d %s, want 200", issue.Key, v1.Code, v1.Body.String())
+	}
+	if link, want := v1.Header().Get("Link"), successorLinkOf("/api/v2/issues/"+issue.Key+"/step-tasks"); link != want {
+		t.Errorf("GET /api/v1/issues/%s/steps links %q, want %q", issue.Key, link, want)
+	}
+	v1Tasks := decodeBody[struct {
+		Tasks []any `json:"tasks"`
+	}](t, v1).Tasks
+
+	listed := tour.send(t, route, of(issue.Key, nil), "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("GET /api/v2/issues/%s/step-tasks answered %d %s, want 200", issue.Key, listed.Code, listed.Body.String())
+	}
+	want := []stepsTask{
+		{Task: "a", Needs: &[]string{}, Planned: []string{"1 implementer running", "2 reviewer not started"}, Runs: []string{implementing}},
+		{Task: "b", Needs: &[]string{"a"}, Planned: notStarted("tester")},
+		{Task: "unplanned", Runs: []string{unplanned}},
+	}
+	if got := stepsTasks(model.IssueSteps{Tasks: decodeBody[page[model.StepTask]](t, listed).Items}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("GET /api/v2/issues/%s/step-tasks lists\n%+v\nwant\n%+v", issue.Key, got, want)
+	}
+	if read := decodeBody[page[any]](t, listed); read.Total != len(want) || !reflect.DeepEqual(read.Items, v1Tasks) {
+		t.Fatalf("GET /api/v2/issues/%s/step-tasks answered %s, want a total of %d and the tasks GET /api/v1/issues/%s/steps answers, %s",
+			issue.Key, listed.Body.String(), len(want), issue.Key, v1.Body.String())
+	}
+
+	paged := tour.send(t, route, of(issue.Key, url.Values{"limit": {"1"}, "offset": {"1"}}), "")
+	if read := decodeBody[page[any]](t, paged); paged.Code != http.StatusOK || read.Total != len(want) || read.Limit != 1 ||
+		read.Offset != 1 || len(read.Items) != 1 || !reflect.DeepEqual(read.Items[0], v1Tasks[1]) {
+		t.Fatalf("GET /api/v2/issues/%s/step-tasks?limit=1&offset=1 answered %d %s, want task b alone, of a total of %d",
+			issue.Key, paged.Code, paged.Body.String(), len(want))
+	}
+
+	none := tour.issue(t)
+	empty := tour.send(t, route, of(none.Key, nil), "")
+	if read := decodeBody[page[any]](t, empty); empty.Code != http.StatusOK || read.Total != 0 || read.Items == nil || len(read.Items) != 0 {
+		t.Fatalf("GET /api/v2/issues/%s/step-tasks, an issue with no plan and no run, answered %d %s, want 200 and items []",
+			none.Key, empty.Code, empty.Body.String())
 	}
 }

@@ -374,7 +374,8 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 // plan first, plan as workflowstore.NewestPlan reads it (nil for an issue with no plan), in the
 // plan's order and each with its planned steps and its needs, then each other task a run of steps
 // names, in the order of its first run, each task with its runs in the order they ran. GET
-// /api/v2/issues/{key}/steps lists the runs in that order.
+// /api/v2/issues/{key}/step-tasks pages its Tasks, and GET /api/v2/issues/{key}/steps lists the
+// runs in that order (readIssueStepTasksV2).
 func issueStepTasks(issue string, plan *workflowstore.Plan, steps []workflowstore.StepRead) model.IssueSteps {
 	read := model.IssueSteps{Issue: issue, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}

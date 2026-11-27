@@ -56,6 +56,7 @@ func init() {
 	}
 	readRowDrives["GET /api/v2/issues/{key}/checks"] = checks
 	copyRead("/issues/{key}/role-holder-set", "/issues/{key}/role-holders", "/issues/$issue/role-holder-set")
+	copyRead("/issues/{key}/step-tasks", "/issues/{key}/steps", "/issues/$issue/step-tasks")
 	copyRead("/known-sessions", "/agents/known", "/known-sessions?id=$session")
 	copyRead("/limit-set", "/limits", "/limit-set")
 	copyRead("/me", "/whoami", "/me")
