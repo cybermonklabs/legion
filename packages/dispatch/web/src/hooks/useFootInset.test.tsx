@@ -438,3 +438,37 @@ test("footPassNow drops a float whose box is gone before its ResizeObserver runs
     expect(footPassNow()).toBe(false);
   });
 });
+
+// A float's `ResizeObserver` can arrive after the frame that runs the pass: the status corner's
+// box went to 0 as the selection bar went, before its observer ran. The frame's pass reads every
+// held float's box again before it gives any room, so a float that lost its box gets none, and a
+// float whose box stands as it was gets the room it had. The reader stays at the start of the
+// box's scroll, out of any room, so room no float needs goes at that pass.
+
+test("the frame's pass gives no end room for a float whose box went to 0 before its ResizeObserver ran, and the float beside it keeps its room", async () => {
+  await withTheTable({ float: true, tall: true }, async (box) => {
+    expect(box.getAttribute("style")).toContain("128px");
+    // The tall float stays mounted, with no box. No resize callback has run.
+    screen.getByTestId("tall-float").getBoundingClientRect = () => new DOMRect();
+    const asked = points;
+    scrollBox(box, 0);
+    await nextFrame();
+    expect(points).toBeGreaterThan(asked);
+    expect(box).toHaveAttribute(MARK_ATTRIBUTE);
+    expect(box.getAttribute("style")).toContain("80px");
+    expect(box.getAttribute("style")).not.toContain("128px");
+  });
+});
+
+test("the frame's pass gives a float whose box stands as it was the same end room as before", async () => {
+  await withTheTable({ float: true }, async (box) => {
+    const room = box.getAttribute("style");
+    expect(room).toContain("80px");
+    const asked = points;
+    scrollBox(box, 0);
+    await nextFrame();
+    expect(points).toBeGreaterThan(asked);
+    expect(box).toHaveAttribute(MARK_ATTRIBUTE);
+    expect(box.getAttribute("style")).toBe(room);
+  });
+});

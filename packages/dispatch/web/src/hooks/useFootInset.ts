@@ -729,21 +729,41 @@ function standsInRoom(scroller: HTMLElement, room: number): boolean {
 }
 
 /**
+ * Reads the box of every held float again (`measureFloat`) and, where one changed, places the
+ * floats anew (`publishFloats`), since a float's `ResizeObserver` can arrive after the frame that
+ * runs a pass. In WebKit the status corner's box went to 0 as the selection bar went, before its
+ * observer ran, and a pass that read the corner where it was placed gave `main` 42px of end room
+ * for it, which the reader then stood in, so the room stayed (`standsInRoom`).
+ */
+function measureHeldFloats(): void {
+  let changed = false;
+  for (const floats of layerFloats.values()) {
+    for (const element of floats.keys()) {
+      if (measureFloat(floats, element)) changed = true;
+    }
+  }
+  if (changed) placedFloats = publishFloats();
+}
+
+/**
  * One pass over the scrollers under the floats (`FOOT_LAYERS` says what those are and why each
- * part holds). It finds the scroller under each point of each float and the floats found over
- * each scroller, and gives each scroller whose clearance is more than 0 its end room. Room a
- * scroller would lose - all it holds, where the pass does not find it, or the part above what it
- * now needs - it keeps whole while the reader stands in that part (`standsInRoom`), and every
- * other scroller marked before that it does not find it unmarks. After a window resize it
- * unmarks every scroller first, so each mark it keeps is read afresh. It reads every box before
- * it writes anything, and between unmarking and marking a scroller it reads only styles, so the
- * browser never lays out a scroller without its end room and clips a scroll at its end. It
- * then listens, or stops, as `listenWhileNeeded` says.
+ * part holds). It first reads every held float's box again (`measureHeldFloats`), so it works
+ * from each float as it is now, never as the last `publish` placed it. It then finds the scroller
+ * under each point of each float and the floats found over each scroller, and gives each scroller
+ * whose clearance is more than 0 its end room. Room a scroller would lose - all it holds, where
+ * the pass does not find it, or the part above what it now needs - it keeps whole while the
+ * reader stands in that part (`standsInRoom`), and every other scroller marked before that it
+ * does not find it unmarks. After a window resize it unmarks every scroller first, so each mark
+ * it keeps is read afresh. Once the floats are placed it reads every box before it writes
+ * anything, and between unmarking and marking a scroller it reads only styles, so the browser
+ * never lays out a scroller without its end room and clips a scroll at its end. It then listens,
+ * or stops, as `listenWhileNeeded` says.
  * The document's scroller that holds an element sticky to its foot the spacer lands above takes
  * its room above that element (`footHeldAbove`), from that element's top.
  */
 function clearScrollers(): void {
   clearFrame = 0;
+  measureHeldFloats();
   const screen = window.innerHeight;
   const gap = remPixels();
   const found = new Map<HTMLElement, FoundScroller & { readonly floats: Band[] }>();
@@ -812,21 +832,13 @@ export function afterFootPass(settled: () => void): void {
 }
 
 /**
- * Reads the boxes of the held floats again, since a float's `ResizeObserver` can arrive after
- * the frame that runs the foot pass. Runs the pass at once (`clearScrollers`), cancels any
- * queued frame, and reports whether any scroller's end room changed. The selection bar's
- * hand-off calls this before fitting the list and again after the landing scrolls the list.
- * The first pass drops floats that no longer have a box. The second can release room that
- * the list's scroll kept at its end, before the first painted frame.
+ * Runs the foot pass at once (`clearScrollers`, which first reads the boxes of the held floats
+ * again), cancels any queued frame, and reports whether any scroller's end room changed. The
+ * selection bar's hand-off calls this before fitting the list and again after the landing
+ * scrolls the list. The first pass drops floats that no longer have a box. The second can
+ * release room that the list's scroll kept at its end, before the first painted frame.
  */
 export function footPassNow(): boolean {
-  let changed = false;
-  for (const floats of layerFloats.values()) {
-    for (const element of floats.keys()) {
-      if (measureFloat(floats, element)) changed = true;
-    }
-  }
-  if (changed) placedFloats = publishFloats();
   if (clearFrame !== 0) cancelAnimationFrame(clearFrame);
   const before = new Map(marks);
   clearScrollers();
@@ -957,9 +969,10 @@ function publish(): void {
  * parent element itself, or, where that is `display: contents` and has no box, the nearest
  * ancestor that has one, found again at each measure, since a resize can change which that is.
  *
- * A float is measured when its own size changes, when the window resizes, and before an
- * immediate pass (`footPassNow`). The hook reads its height, floor (`--foot-floor`) and left
- * and right edges each time: a resize can cross a breakpoint that changes the floor or edges.
+ * A float is measured when its own size changes, when the window resizes, and at the start of
+ * each pass over the scrollers (`clearScrollers`). The hook reads its height, floor
+ * (`--foot-floor`) and left and right edges each time: a resize can cross a breakpoint that
+ * changes the floor or edges.
  * A float with no box (height 0) counts nothing.
  */
 export function useFootInset(
