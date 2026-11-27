@@ -36,6 +36,30 @@ func TestReviewRoundsAndSendBacksComeFromThePhaseTimeline(t *testing.T) {
 	}
 }
 
+// TestASendBackThatWaitedOnChildrenIsCounted: a review that requests changes while a Dispatch child
+// of the issue is open moves it into `awaiting_children` first, and the return from there brings it
+// to implementing (dispatch://INFRA-3320, record.ReturnStep in packages/daemon/internal/record).
+// The move from reviewing to implementing across that wait is the send-back.
+func TestASendBackThatWaitedOnChildrenIsCounted(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(8)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(1), "testing").
+		observeString(legion.FieldPhase, hour(2), "reviewing").
+		// The reviewer requested changes while a child of the issue was open.
+		observeString(legion.FieldPhase, hour(3), "awaiting_children").
+		observeString(legion.FieldPhase, hour(5), "implementing").
+		observeString(legion.FieldPhase, hour(6), "testing").
+		observeString(legion.FieldPhase, hour(7), "reviewing").
+		observeString(legion.FieldPhase, hour(8), "done")
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if row := w.fact(t, "INFRA-1"); !row.SentBack {
+		t.Fatalf("sent_back = %t, want the move from reviewing at hour 2 to implementing at hour 5, across the wait on children, counted", row.SentBack)
+	}
+	if share := valueOf(w.rework(t).SentBack.Share); share != 1 {
+		t.Fatalf("sent-back share = %g, want 1", share)
+	}
+}
+
 // TestAReviewStillRunningAtTheFirstObservationIsOneRound: review rounds are "entries into
 // `reviewing`, or into status `needs_review` before observations" (the spec's metric 3). The issue
 // below entered `needs_review` before the sampler's first read, and that read found it still in

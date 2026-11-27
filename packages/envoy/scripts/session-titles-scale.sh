@@ -7,17 +7,17 @@
 # them, and store.FillSessionTitles, timed together as one span, which must end within 60 s. It runs
 # TestSessionTitlesBootScale (internal/dispatch/store), once for each session count, each run on a
 # database of its own that holds the larger of 1.5 million and 1.25 times production's newest event
-# id of titled session events, about 2 KB of JSON payload each. It is what a Job in the cluster's
-# builds namespace runs, from packages/envoy of a clone, beside a Postgres of the Job's own. Never
-# run it against a server that holds anything of value: the test creates and drops its databases
-# there.
+# id of titled session events, each with about 1.7 KB of JSON payload that does not compress
+# (production's mean is about 2 KB). It is what a Job in the cluster's builds namespace runs, from
+# packages/envoy of a clone, beside a Postgres of the Job's own. Never run it against a server that
+# holds anything of value: the test creates and drops its databases there.
 #
 # DISPATCH_SESSION_TITLES_SCALE_URL (required) names that Postgres server, as a URL whose role may
 # create databases; its database path is ignored.
 # DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID (required) is production's newest event id on the
 # day of the run, read through GET /api/v1/events/log.
-# DISPATCH_SESSION_TITLES_SCALE_SESSIONS (the test's default is "110000 11000") lists the session
-# counts of the runs, space-separated.
+# DISPATCH_SESSION_TITLES_SCALE_SESSIONS (default "110000 11000") lists the session counts of the
+# runs, space-separated.
 # DISPATCH_SESSION_TITLES_SCALE_LOAD, the negative control's alone, makes each run load that many
 # events instead of the floor, which each run must then refuse.
 # SESSION_TITLES_SCALE_SCRATCH (default /scratch) holds GOCACHE, GOTMPDIR and the test's log.

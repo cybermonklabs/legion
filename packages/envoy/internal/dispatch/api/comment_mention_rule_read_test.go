@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -50,7 +51,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	unpark := <-timers
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-	waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
+	waitUntil(t, "both sends on the issue's held lane", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.lanes[held]) == 2
@@ -60,7 +61,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	failer.stage.Store(ruleReadArmed)
 	unpark()
 	var parked func()
-	waitUntil(t, 10*time.Second, "the first send parked again, or a send reaching s1", func() bool {
+	waitUntil(t, "the first send parked again, or a send reaching s1", func() bool {
 		select {
 		case parked = <-timers:
 			return true
@@ -120,6 +121,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 // WARN of each is logged as it goes. Parking the failed first read as a wait behind an event (in
 // serve, park's waited without `&& !again.unread`) makes the second row fail on the gauges.
 func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const warning = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 	for _, row := range []struct {
 		name string
@@ -168,7 +170,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			unpark := <-timers
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-			waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
+			waitUntil(t, "both sends on the issue's held lane", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return len(sender.lanes[held]) == 2
@@ -182,11 +184,14 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			for try := 1; try <= 4; try++ {
 				failer.take()
 				unpark()
-				select {
-				case unpark = <-timers:
-				case <-time.After(20 * time.Second):
-					t.Fatalf("try %d: the first send neither parked again nor went", try)
-				}
+				waitUntil(t, fmt.Sprintf("try %d: the first send parked again, or a send reaching s1", try), func() bool {
+					select {
+					case unpark = <-timers:
+						return true
+					default:
+						return len(state.bodiesTo("s1")) > 0
+					}
+				})
 				reads, statements, writes := failer.take()
 				t.Logf("try %d with the rule's reads failing: %d reads of the rule, %d statements on comment_deliveries (%d writes); s1 took %q",
 					try, reads, statements, writes, state.bodiesTo("s1"))
@@ -210,7 +215,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			settledCommentDeliveries(t, database, second)
 			// A send's WARN as it goes (reportLate) comes after its attempt settles: the lanes are
 			// done with once no goroutine serves one.
-			waitUntil(t, 10*time.Second, "no goroutine serving a lane", func() bool {
+			waitUntil(t, "no goroutine serving a lane", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return sender.serving == 0

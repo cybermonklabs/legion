@@ -9,22 +9,20 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"golang.org/x/sys/unix"
 )
 
-// Provision ports provisionIssueWorkspace (packages/workspace/src/workspace.ts). It updates an
-// existing working copy, obtains the shared clone through a temporary sibling, protects unreachable
-// worker commits before every fetch, resolves a bookmark before adding, and leaves pane credentials
-// on the clone.
-// The clone and the fetch reach the repository through request.Source: a pod's feed with no
-// credential, or GitHub with the one-shot credential. An issue with no branch starts at
-// request.DefaultBranch, which the request must name. Every command on the shared clone runs under
-// request.StoreLock, the `jj workspace add` that registers the issue's workspace with no files
-// among them. Only the checkout (`jj sparse reset`), which writes the issue's own working copy and
-// nothing of the clone's, runs with the lock let go, holding one of request.CheckoutSlot's places
-// instead.
+// Provision updates an existing working copy, obtains the shared clone through a temporary
+// sibling, protects unreachable worker commits before every fetch, resolves a bookmark before
+// adding, and leaves pane credentials on the clone. The clone and fetch reach the repository
+// through request.Source: GitHub for tmux, and the cache-plus-GitHub issue-pod source for
+// Kubernetes. An issue with no branch starts at request.DefaultBranch, which the request must name.
+// Every command on the shared clone runs under request.StoreLock; only the checkout (`jj sparse
+// reset`), which writes the issue's own working copy and nothing of the clone, runs with the lock
+// let go, holding one of request.CheckoutSlot's places instead.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -44,7 +42,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	}
 	workspace.DefaultBranch = request.DefaultBranch
 	if request.Source == nil {
-		return Workspace{}, errors.New("workspace request names no way to the repository: FromFeed or FromGitHub")
+		return Workspace{}, errors.New("workspace request names no repository source")
 	}
 	if err := request.Source.check(request.Repo); err != nil {
 		return Workspace{}, err
@@ -69,7 +67,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	defer func() {
 		_ = source.remove()
 	}()
-	if err := ensureRepoClone(ctx, run, WallClock{}, workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
+	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), source); err != nil {
 		return Workspace{}, err
 	}
 	if err := ensureFetchConfiguration(ctx, run, workspace.Clone, source); err != nil {
@@ -109,6 +107,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// provision.
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
+	}
+	if source.issue != nil {
+		if err := configureIssueCloneMaintenance(ctx, run, workspace.Clone); err != nil {
+			return Workspace{}, err
+		}
 	}
 	if err := configurePackWindows(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
@@ -162,20 +165,12 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 }
 
 // CheckedOut is whether workspace's checkout finished: it holds at least one sparse pattern — the
-// whole tree (`.`) after Provision's checkout, or whatever narrower set an agent chose since, which
-// a launch must not undo. Provision registers a workspace with no pattern and no file (`jj
+// whole tree (`.`) after Provision's checkout, or whatever narrower set an agent chose since,
+// which a launch must not undo. Provision registers a workspace with no pattern and no file (`jj
 // workspace add --sparse-patterns empty`) and checks it out after (`jj sparse reset`), so a
-// workspace whose checkout failed or was cut short — a jj error, a full disk, a daemon stopped
-// mid-checkout — holds no pattern until a provision checks it out. A shared clone made from a
-// pod's feed permanently holds none either, its patterns cleared when it was made so it carries no
-// working tree (feedClone's `jj sparse set --clear`), and that is no unfinished checkout. So
-// CheckedOut refuses two directories rather than answering for them: the shared clone itself, and
-// any directory under the clone root that clone sits in (CloneRoot). A clone's empty pattern set
-// would answer false, the caller would read that as an unfinished checkout, and its `jj sparse
-// reset` would write the whole tree into the clone. The read never snapshots the working copy
-// (--ignore-working-copy): a pane may be writing it, and a snapshot would run the working-copy
-// filters, fsmonitor and signing programs a tree agent can configure. A directory with no `.jj` is
-// refused, as every jj command in a workspace is (guardWorkspace).
+// workspace whose checkout failed or was cut short holds no pattern until a provision checks it
+// out. A clone itself intentionally has no sparse pattern, so CheckedOut refuses it and directories
+// under its clone root rather than treating it as an unfinished workspace.
 func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, error) {
 	// A clone sits at <clone root>/<owner>/<name> (Location), so the root it sits in is its
 	// grandparent, and the clone itself is under that root. The clone's own case is therefore
@@ -196,9 +191,8 @@ func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, err
 	return strings.TrimSpace(listed.Stdout) != "", nil
 }
 
-// whyACloneHasNoAnswer is the tail of both of CheckedOut's refusals: the reason a clone's pattern
-// set answers nothing, which is the same whichever clone directory was asked about.
-const whyACloneHasNoAnswer = " A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone"
+// whyACloneHasNoAnswer is the tail of both CheckedOut refusals.
+const whyACloneHasNoAnswer = " A clone holds no sparse pattern by design, because it carries no working tree. An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone"
 
 // underDirectory is whether dir is root or lies below it, compared one path segment at a time
 // (filepath.Rel, then filepath.IsLocal, as cmd/legion's sessions.go and runtime/sandbox's
@@ -327,9 +321,9 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // would case differently — is in no layout this inverts, and is refused rather than guessed at.
 //
 // It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
-// the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
-// for the clone of the directory a process stands in. A caller's own refusals — the derivation's
-// absolute path among them — stay with that caller.
+// the pair it was handed is a workspace Location names, and layoutWorkspace asks it for the clone
+// of a directory a process stands in. A caller's own refusals — the derivation's absolute path
+// among them — stay with that caller.
 func locationOf(dir string) (Workspace, error) {
 	stateDir := dir
 	for range layoutDepth {
@@ -348,6 +342,23 @@ func locationOf(dir string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("the workspace of %s under %s lies at %s", repository, stateDir, want.Dir)
 	}
 	return want, nil
+}
+
+// layoutWorkspace is the workspace at dir, cleaned, with the clone its place in the layout derives
+// (locationOf), from dir's path and from nothing inside dir: the derivation that WorkspaceOf
+// (gitworktree.go) and GuardJJ (config.go) both make for a directory a process other than the
+// daemon's own runner stands in. A dir that is no absolute path, or that the layout does not
+// account for, is refused, naming it.
+func layoutWorkspace(dir string) (Workspace, error) {
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return Workspace{}, fmt.Errorf("the workspace %s is no absolute path, so the clone it belongs to cannot be derived", dir)
+	}
+	workspace, err := locationOf(dir)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
+	}
+	return workspace, nil
 }
 
 // located is whether workspace's directory and clone are the pair Location derives for the issue

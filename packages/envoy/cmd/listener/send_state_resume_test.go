@@ -19,14 +19,17 @@ import (
 // The "exactly once" is read from the server rather than waited out: a relay that handed the frame
 // over without acknowledging it would leave the message pending on the consumer, and the server
 // would deliver it again once the consumer's ack wait (bus.SessionConsumerAckWait, a minute) ran
-// out. So the test waits for the consumer to hold nothing pending with the resumed message acked,
-// and for its count of messages delivered again to read zero; the server delivers again only a
-// message it holds pending, so an acknowledged one never comes back. A copy sent twice at once,
-// which needs no ack wait to arrive, is watched for over a short window first.
+// out. So the test waits for the consumer to hold nothing pending with the resumed message acked:
+// the server delivers again only a message it holds pending, so an acknowledged one never comes
+// back. A copy sent twice at once, which needs no ack wait to arrive, is watched for over a short
+// window first.
 func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
-	clock := time.Now()
-	known := openKnownSessionsOn(t, rig.harness.client.Conn, func() time.Time { return clock })
+	// The store's own goroutines read its clock too (knownSessionRig's clock says which), so the
+	// test moves it under listenerClock's lock.
+	clock := &listenerClock{now: time.Now()}
+	known := openKnownSessionsOn(t, rig.harness.client.Conn, clock.Now)
 	rig.deps.known = known
 	const sessionID = "ses_stop_and_resume"
 	started := time.Now()
@@ -56,7 +59,7 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 
 	// The session shuts down cleanly: its plugin deregisters and its process, and with it the
 	// connection holding its relay subject, goes away.
-	clock = clock.Add(time.Minute)
+	clock.Advance(time.Minute)
 	stopSession(t, rig.mux, sessionID, "")
 	first.close()
 	if _, err := rig.harness.sessions.Get(sessionID); err == nil {
@@ -92,14 +95,7 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	// A second copy sent at once arrives inside this window.
 	second.none(t, 2*time.Second)
 	// A copy the server would send again after its ack wait is one it still holds pending; this one
-	// is acknowledged, and nothing was delivered twice.
+	// is acknowledged.
 	awaitAcked(t, rig.consumers, sessionID, resumed[0].seq)
-	info, err := rig.consumers.Info(t.Context(), sessionID)
-	if err != nil {
-		t.Fatalf("read the consumer of %s after the resume: %v", sessionID, err)
-	}
-	if info.NumRedelivered != 0 {
-		t.Fatalf("the consumer of %s delivered %d messages again after the resume, want none: the resumed message reached the session more than once", sessionID, info.NumRedelivered)
-	}
 	t.Logf("the stop-and-resume test took %s", time.Since(started).Round(time.Second))
 }

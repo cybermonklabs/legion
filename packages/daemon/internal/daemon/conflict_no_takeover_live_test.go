@@ -19,7 +19,7 @@
 // and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
-// other whole-daemon proofs boot it (startDaemonWithin), so the proof exercises the real
+// other whole-daemon proofs boot it (startDaemonLogging), so the proof exercises the real
 // configuration, the real store and its migrations, the real HTTP API, the real claim supervision
 // and its worker stream, the real openWorkflow, the real JetStream consumers, the real merge-state
 // reads and the real outbox lanes — the lane that runs the second read (record.ConflictConfirm)
@@ -113,6 +113,9 @@ type conflictNoTakeoverLive struct {
 // it replaced refused and its completion at the new head taken, and last the control, a conflict
 // whose required check passed, which the second read gets nothing.
 func TestAConflictKeepsThePhaseAndTakesNoTurnOverLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictNoTakeoverLive(t)
 	r.step("step1-the-tester-works-the-assignment-its-phase-handed-it", r.testerWorksItsAssignment)
 	r.step("step2-the-first-conflicting-read-waits-for-a-second-and-sends-nothing", r.firstReadSendsNothing)
@@ -208,7 +211,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 
 // Step 2. Another pull request lands on the base and GitHub answers the issue's head conflicting
 // with it, while the tester's turn runs. The push onto the base asks the daemon to read every open
-// pull request on that base (workflow's basePush, askMergeStateFor: the issue stands in testing),
+// pull request on that base (workflow's basePush, mergeStateOwed: the issue stands in testing),
 // and this read of the issue's head is its first conflicting one: the daemon records it, queues its
 // second read a minute on (record.ConflictConfirm), logs it and acts on nothing. No role of the
 // issue is sent anything on its role topic, the architect's included, and neither the tester's

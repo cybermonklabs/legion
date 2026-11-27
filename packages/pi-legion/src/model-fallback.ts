@@ -19,6 +19,7 @@ import type {
   SessionContext,
 } from "@legion/pi-shared/pi-types";
 import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provider-refusal";
+import { turnGoesOn } from "./turn-end";
 
 /**
  * The session's model across a provider's refusal (INFRA-956 R1): a content filter that refuses a
@@ -70,6 +71,12 @@ export interface ModelFallbackDeps {
     ctx: FallbackChainContext,
     model: HostModel
   ) => Promise<HostModel | undefined>;
+  /** `fallbackModels` (`@legion/pi-shared/fallback-chain`): every model below this one in the same
+   * chain, in its order, which the cyber-policy ladder searches for one of the same family. */
+  readonly fallbackModels: (
+    ctx: FallbackChainContext,
+    model: HostModel
+  ) => Promise<readonly HostModel[]>;
   readonly log: FallbackChainLog;
   /** The host's own timer for the pane (`SessionContext.setTimeout`): runs `callback` once,
    * `delayMs` from now, and answers whether it set the timer. This repository's `SessionContext`
@@ -124,6 +131,20 @@ export interface ModelFallback {
    * the fallback model and come back at its second request.
    */
   readonly maybeRestore: (ctx: ModelFallbackContext) => Promise<void>;
+  /**
+   * The first model below the session's own in its chain whose family is the session model's own
+   * (`HostModel.identity.class`), or undefined when the chain holds none, when the session's model
+   * names no family the catalog knows (`unknown`, a gateway's alias, whose family nothing here
+   * can tell), or when this host exposes no registry to walk with. Every model of another family
+   * in the chain is passed over: the cyber-policy ladder's last rung never changes family.
+   */
+  readonly sameFamilyFallback: (ctx: ModelFallbackContext) => Promise<HostModel | undefined>;
+  /**
+   * Moves the session to `next` as one step down its chain, and arms the return to the model the
+   * walk started from on the refusal cooldown, exactly as a content filter's step does
+   * (`walkChain`). Answers whether the session is on `next` with its return armed.
+   */
+  readonly stepDownTo: (ctx: ModelFallbackContext, next: HostModel) => Promise<boolean>;
 }
 
 /** The newest `model_change` on the branch, the one before it, and the one the walk ending there
@@ -208,7 +229,7 @@ function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | 
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
  * host stamps every entry with an ISO time (`SessionEntryBase`,
- * `session/session-entries.ts:98-116` at the pinned tag). */
+ * `session/session-entries.ts:99-117` at the pinned tag). */
 function changedAt(entry: ModelChangeEntry): number | undefined {
   const at = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
   return Number.isFinite(at) ? at : undefined;
@@ -404,12 +425,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1782-1816` and `:3153-3163` at tag
-   * `v18.18.6-sami.20261123-024918`).
+   * (`turn-recovery.ts:2177-2211` and `:3605-3615` at tag
+   * `v18.18.6-sami.20261127-010836`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
-   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:322-325` at the
+   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:327-331` at the
    * pinned tag), so nothing on the branch would carry the host's claim at all.
    */
   const walkChain = async (ctx: ModelFallbackContext, current: HostModel): Promise<void> => {
@@ -431,12 +452,23 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       });
       return;
     }
+    await applyStep(ctx, current, next);
+  };
+
+  /** Sets `next` as one step down the chain from `current` and arms the return on the
+   * `model_change` entry the switch wrote; answers whether the arming was saved. */
+  const applyStep = async (
+    ctx: ModelFallbackContext,
+    current: HostModel,
+    next: HostModel
+  ): Promise<boolean> => {
+    const selector = modelSelector(current);
     if (!(await deps.setModel(next))) {
       deps.log.warn("legion: the next model of the chain could not be set; staying on this one", {
         model: selector,
         next: modelSelector(next),
       });
-      return;
+      return false;
     }
     const change = newestModelChange(ctx);
     if (change === undefined) {
@@ -444,7 +476,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         model: selector,
         next: modelSelector(next),
       });
-      return;
+      return false;
     }
     save(
       step({
@@ -455,29 +487,64 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         now: deps.now(),
       })
     );
+    return true;
+  };
+
+  /** The family the host's catalog gives `model`, or undefined when it gives none it knows. */
+  const familyOf = (model: HostModel | undefined): string | undefined => {
+    const family = model?.identity?.class;
+    return family === undefined || family === "" || family === "unknown" ? undefined : family;
+  };
+
+  const sameFamilyFallback = async (ctx: ModelFallbackContext): Promise<HostModel | undefined> => {
+    const current = ctx.models?.current?.();
+    const family = familyOf(current);
+    if (current === undefined || family === undefined) {
+      deps.log.warn(
+        "legion: the session's model names no family the catalog knows, so no weaker model of its family is chosen",
+        { model: current === undefined ? undefined : modelSelector(current) }
+      );
+      return undefined;
+    }
+    const chain = chainContext(ctx);
+    if (chain === undefined) {
+      deps.log.warn("legion: this host exposes no model registry to find a weaker model with", {
+        model: modelSelector(current),
+      });
+      return undefined;
+    }
+    const candidates = await deps.fallbackModels(chain, current);
+    return candidates.find(
+      (candidate) => !sameModel(candidate, current) && familyOf(candidate) === family
+    );
   };
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
-    // The host is about to go on with this turn itself, with a retry or a hook's continuation, so
-    // it has not settled; acting on it would step the session down twice
-    // (`session/agent-session.ts:5902-5910` at the pinned tag). An end that waits only on a
-    // background job's result (`awaitingAsyncWork`) has settled: the host reaches it only after
-    // each of its own retries and continuations has declined the turn (`:6012-6015`), and the
-    // job's result starts the next turn on the model this end leaves the session on.
+    // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
+    // acting on it would step the session down twice (`session/agent-session.ts:6371-6379` at the
+    // pinned tag). An end that waits only on a background job's result has settled, and the job's
+    // result starts the next turn on the model this end leaves the session on.
     //
     // One window stays open there. The host does not wait for this handler (it fires the
-    // extensions' `agent_end` without awaiting them, `:6560`), and it picks each request's model
-    // before that request's `context` hook runs, so a request of a run a job's result starts that
-    // the host selects before the walk below has finished `setModel` goes to the model that
-    // refused; requests selected after the switch completes use the new model. There is no bound
-    // of one request: while `setModel` is still pending, every request selected meanwhile takes
-    // the old model. Measured on 2026-11-21 at the pinned build with a job that had already ended
-    // when the refused turn ended, the result's first request went to the next model in 5 of 5
-    // runs: that is the outcome when the switch is fast (it awaits only the model registry and
-    // `setModel`), not a bound; a `setModel` that waits on the network (a local backend's model
-    // metadata) can be slow. What would close it is in the host: awaiting the extensions'
-    // `agent_end` handlers before it starts the run a background job's result asks for.
-    if (event.willContinue === true && event.awaitingAsyncWork !== true) return;
+    // extensions' `agent_end` without awaiting them, `session/agent-session.ts:7103` at the pinned
+    // tag), and it picks each request's model before that request's `context` hook runs
+    // (`agent/src/agent-loop.ts:2090-2093`). What a request does wait for is a switch already under
+    // way: `pi.setModel` runs the switch inside `trackModelSwitch`
+    // (`session/model-controls.ts:329-351`), and each main request waits for it before the host
+    // reads its model (`settleModelSwitch`, `session/session-tools.ts:2406-2417`, a hook that
+    // `agent-session.ts:3948` registers and `agent-loop.ts:1469` runs before each model call). So a
+    // request of a run a job's result starts goes to the model that refused only when the host
+    // selects it before the switch has started: while the walk below still awaits the chain's next
+    // model, the model's key or its metadata (`refreshSelectedModelMetadata`,
+    // `model-controls.ts:325`, which for a local backend can wait on the network), every request
+    // selected meanwhile takes the old model, so there is no bound of one request; a request
+    // selected once the tracked switch has started waits for it and takes the new one. Measured on
+    // 2026-11-21 on Oh My Pi 18.18.6-sami.20261119-162325, a build whose requests did not wait for
+    // a switch, with a job that had already ended when the refused turn ended, the result's first
+    // request went to the next model in 5 of 5 runs. What would close the window is in the host:
+    // awaiting the extensions' `agent_end` handlers before it starts the run a background job's
+    // result asks for.
+    if (turnGoesOn(event)) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
     const outcome = classifyTurnEnd(event);
@@ -660,7 +727,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261123-024918`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261127-010836`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -669,7 +736,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3736` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:4318` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and
@@ -704,6 +771,27 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         await restoreIfDue(ctx);
       } catch (error) {
         contained("put the session back on the model it fell back from", error);
+      }
+    },
+    sameFamilyFallback: async (ctx) => {
+      try {
+        return await sameFamilyFallback(ctx);
+      } catch (error) {
+        contained("find a weaker model of the session model's family", error);
+        return undefined;
+      }
+    },
+    stepDownTo: async (ctx, next) => {
+      try {
+        const current = ctx.models?.current?.();
+        if (current === undefined) {
+          deps.log.warn("legion: this host names no model to step down from");
+          return false;
+        }
+        return await applyStep(ctx, current, next);
+      } catch (error) {
+        contained("step down to a weaker model of the session model's family", error);
+        return false;
       }
     },
   };

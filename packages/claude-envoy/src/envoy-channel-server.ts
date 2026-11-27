@@ -36,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -135,7 +135,7 @@ import {
   phaseStallFile,
 } from "./legion-phase-hook"
 import {
-  executeLegionTool,
+  answerLegionTool,
   LEGION_TOOL_NAME,
   type LegionToolRuntime,
   legionToolDefinition,
@@ -149,6 +149,7 @@ import {
   replayStateFile,
   replayStateWriter,
 } from "./replay-state"
+import { logRoleClaimWarnings } from "./role-claim-warnings"
 import {
   pruneStaleSessionHandoffs,
   pruneStaleSessionRoles,
@@ -478,6 +479,11 @@ export function mcpResult(value: unknown): {
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
 }
 
+/** Writes one line to the server's warning log, its stderr. */
+function warnOnStderr(line: string): void {
+  process.stderr.write(`envoy-channel: ${line}\n`)
+}
+
 function projectDirectory(): string {
   return claudeProjectDirectory(
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
@@ -513,12 +519,38 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
+}
+
+/**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms`, or undefined while nothing configures
+ * Dispatch. It trades under this session's id, as `postDispatchReply` does: no pod sets
+ * `AGENT_SECRETS_SESSION`, so a trade that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**
@@ -573,6 +605,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -606,7 +645,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -618,7 +659,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },
@@ -631,12 +674,6 @@ export function createChannelDelivery(input: {
         return tail.then(() => false)
       }
       if (late === true && passOverLateBtw(rendered)) return tail.then(() => false)
-      // A payload the card could not lay out is shown as the text its sender sent, said once here.
-      if (rendered.payloadShownAsText !== undefined) {
-        process.stderr.write(
-          `envoy-channel: message ${rendered.envelope?.event_id ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
-        )
-      }
       return queued(async () => {
         // A message Dispatch accepted as this session's own turn is never also a card. A failure
         // after that acceptance throws, so the frame is not answered and the listener sends it
@@ -1561,8 +1598,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     ) {
       return "settled"
     }
+    const sessionID = identity.id
     const claim = await options.client.setRole({
-      sessionID: identity.id,
+      sessionID,
       role: persisted.role,
       soft: true,
       previousSessionID: persisted.session_id,
@@ -1573,6 +1611,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (claim.holder !== persisted.session_id) await rm(previousFile, { force: true })
       return "settled"
     }
+    logRoleClaimWarnings(warnOnStderr, persisted.role, sessionID, claim.warnings)
     heldRole = persisted.role
     const currentFile = roleStateFile(options.stateDirectory, identity.id)
     if (previousFile !== currentFile) await rm(previousFile, { force: true })
@@ -1651,8 +1690,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (afterOutage) fireRegained(role, "reregistered")
       return
     }
+    const sessionID = identity.id
     const result = await options.client.setRole({
-      sessionID: identity.id,
+      sessionID,
       role,
       soft: true,
       clientInstanceID: options.clientInstanceID,
@@ -1666,6 +1706,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       await refreshRoleRecord()
       return
     }
+    logRoleClaimWarnings(warnOnStderr, role, sessionID, result.warnings)
     fireRegained(role, "reclaimed")
   }
 
@@ -2419,14 +2460,20 @@ export async function executeEnvoyTool(
       // The claim names this process, as every claim this server makes does: the listener
       // records it as the role's holder, so a second process on this session id cannot be
       // mistaken for the one holding the role.
+      const sessionID = identity.id
       const result = await runtime.client.setRole({
-        sessionID: identity.id,
+        sessionID,
         role: args.role,
         clientInstanceID: runtime.clientInstanceID,
       })
       if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
+      // The listener's warnings about the claim go to the log and, beside the interest row, to the
+      // agent, which must know of a handover of the replaced session the claim did not make.
+      logRoleClaimWarnings(warnOnStderr, args.role, sessionID, result.warnings)
       await runtime.session.rememberRole(args.role)
-      return result.interest
+      return result.warnings.length === 0
+        ? result.interest
+        : { ...result.interest, warnings: result.warnings }
     }
     case EnvoyToolOperation.getRole: {
       const args = parseArguments(spec, input)
@@ -2473,7 +2520,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2481,7 +2528,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2645,17 +2692,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update message, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      const answer = await answerLegionTool(
+        legionRuntime,
+        request.params.arguments ?? {},
+        {
+          phaseClosed: () => phaseHook?.phaseClosed(),
+          updateAnswered: () => phaseHook?.updateAnswered(),
+        },
+        extra.signal,
+      )
       return mcpResult(answer)
     }
     if (runtime === undefined)
@@ -2791,16 +2836,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
-        const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),

@@ -45,7 +45,7 @@ type ClosedFacts struct {
 
 // FactsAt is the issue's facts at moment: the facts grown by the time from AsOf to it (Grown),
 // which a moment before AsOf closes back. A reader that must not shrink a row read behind its
-// writer's clock guards that itself (legionfacts' Row.At).
+// writer's clock guards that itself, as the reader of the rows dispatch://INFRA-5577 stores does.
 func (c ClosedFacts) FactsAt(moment time.Time) IssueFacts {
 	return c.Grown(c.Growth, moment.Sub(c.AsOf))
 }
@@ -79,6 +79,7 @@ func ProjectFactsClosed(population *Population, wanted map[string]bool) map[stri
 	for at, issues := range byMoment {
 		first := newComputation(population.at(at))
 		later := newComputation(population.at(at.Add(growthSpan)))
+		first.roots, later.roots = base.roots, base.roots
 		for _, issue := range issues {
 			facts := first.factsOf(issue)
 			growth := growthBetween(facts, later.factsOf(issue))

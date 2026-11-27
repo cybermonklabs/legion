@@ -12,11 +12,12 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
 - A bounded wait is the module's `internal/testwait`.
-  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
-  `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
+  `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
-  In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
+  In both modules, `Until` waits until a reading holds and returns it, at `Poll`, and `Context` is a context for a call that takes one, or for a socket's deadline; `packages/envoy`'s `UntilPolling` is `Until` at a pace of the caller's. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them, and the daemon module's `Eventually`, fails at once.
+  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in `daemon-go-race`, `-timeout 30m`, about 29.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
@@ -36,6 +37,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
+  `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it runs a compiled set itself (`RuleSet.Check`) or hands one to the daemon's branch create.
+  Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
+  It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
@@ -44,11 +50,13 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A server that takes neither and can listen on a unix socket listens on one in a directory of the test's own (`testtmp.Dir`), and on no TCP port, as `internal/ompsessions`' PgBouncer does in a directory docker mounts into its container.
+  A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
   A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
-  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
+  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, a leaf node listener a test's configuration opens (in `packages/envoy` the configuration names a `testport.LoopbackIP` address itself, since the start sets only the client and monitoring hosts), and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
   So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods, the route tests' servers and rogues among them: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
   Of those, the route check's staged hub (`clusteredhub_routecheck_fixture_live_test.go`) keeps each server's route port, and each peer's, on the `127.0.0.x` address the rows name it by, `127.0.0.1` being the pods' IP: the check takes a route connection from a pod IP as the hub's own, and a route from `127.0.0.1` reads as from `127.0.0.1` on any loopback (the Linux kernel's sources every loopback connection from `127.0.0.1` whatever `127/8` address it dials; gVisor's sources it from the address dialed). Their client and monitoring ports are at addresses of their own, and a test checks that a client at `127.0.0.1` reaches none of them (`requireNoStrayReaches`).
   A stray client can still dial such a route port: a reservation stops a second bind, not a dial. The check reads nothing of it: it skips a route connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split (`infra/routes/log.go`, `routeConnections`). The route check's first row has a stray log in at each server's route port and requires the check to stay clean.
@@ -61,10 +69,35 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
 
+- A test that needs `packages/envoy`'s notification stream full fills it with `internal/testnats`'s `FillStream`: `internal/bus/bustest`'s `FillStream` outside package bus, which passes it the bus's stream and subjects that stream captures, and `testnats.FillStream` itself in package bus, which cannot import `bustest`.
+  It publishes until the stream's own count, its info's bytes against its byte limit, leaves less room than a one-byte fill message takes, so the stream refuses every message the test then sends whose stored size (subject, headers and payload) is no smaller, every envelope among them. It measures that size from a one-byte message the stream stored alone, by the sequences around it, so another writer into the stream does not skew it.
+  A refusal alone does not show the stream full: a three-copy stream's leader counts the message it last acknowledged as still in flight until it has finished applying it, a moment after the acknowledgement, so the publish that follows can be refused while the stream has room for it (nats-server 2.15.1). A fill that stopped at such a refusal left room for the role forward its test expected refused, and the stream stored the forward (dispatch://INFRA-3904).
+  It does not fill a stream with no byte limit, which fails the test, and a test that reads back what a fill stored keeps a loop of its own, as the single-server `TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage` does.
+
+- A test that counts the client connections an in-process test NATS server took, open and closed, or reads when each opened and closed, takes `packages/envoy/internal/testnats`'s `Server.Connections`.
+  One read of `/connz?state=all` can leave out a connection that has just closed, or list it twice: nats-server takes a closing connection out of its open list in the close, and saves its closed record from a goroutine of its own. `Connections` reads until the listing names each connection the server counted (`total_connections`) once, and `connections_test.go` holds it to that.
+  It lists client connections alone, not leaf nodes, routes or gateways; it reads an in-process `*testnats.Server`, not a container; on a server that has dropped closed records past `max_closed_clients` it fails where `testwait.Until` ends, 30 s before the test binary's deadline; and it waits for no connection that has not been made yet, so a test that counts an operation's connections waits for that operation first.
+  A reader of open connections alone keeps its own body, since a closed record's lateness does not reach it: `cmd/dispatch`'s `natsSubscribers`, which looks for live subscribers, and `packages/daemon/internal/testnats`'s `Connections`, which lists the open clients its drain and leak check read.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
+
+## A test database's teardown waits for its binary
+
+`packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
+(`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
+that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
+`testwait.TeardownContext(t)` in its cleanup, bounded to stay before go test's alarm and finite
+under `-timeout 0`. A clone teardown after `testpg.Main` takes `testwait.TeardownDeadline`: the
+binary's parsed `-timeout` plus its post-test grace, because Go stops its own alarm when `m.Run`
+returns.
+
+Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
+retry span to exit under load. When the binary's bound does end, the error names the database and
+the backends still attached from `pg_stat_activity`; clear those backends rather than retrying the
+test.
 
 
 ## Bun tests
@@ -134,6 +167,17 @@ itself, whose tests import its sources by relative path.
   which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
   damage shows only where it is hardest to read.
 
+- Hand a child whose `HOME` the test replaces, and a stand-in that runs the real program, the
+  program itself: `realHostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
+  scope, before any directory of the test's own goes first on `PATH`, never `name` from `PATH`. On
+  a machine where `name` on `PATH` is a mise shim, the shim reads its configuration from the
+  child's `HOME` and from the directories above the child's working directory. Under a `HOME` of
+  the test's own it refuses the real home's config as untrusted, or finds no version, and exits 1
+  before the program runs; behind a stand-in of the same name first on `PATH` it falls back to the
+  stand-in, which runs the shim again, and mise stops with "shim fallback recursion detected".
+  `realHostTool` takes what `mise which` names for a shim, or the program the shim would fall back
+  to, and skips the directory a stand-in lives in when it is given one.
+
 - `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
   of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
   later file of the process reads the mocked module (`packages/pi-shared/test/host-registry.ts` says
@@ -198,10 +242,45 @@ itself, whose tests import its sources by relative path.
   GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
   broken, and the rows run and fail rather than pass in silence.
 
+- A Go test of `packages/daemon` that reads a process's `SigIgn` or `SigCgt` mask from
+  `/proc/<pid>/status` calls `testkernel.RequireSignalMasks(t, "SigIgn")` (or with `"SigCgt"`)
+  first (`packages/daemon/internal/testkernel`). The probe reads the status of a shell that ignores
+  SIGUSR1 and catches SIGUSR2, so it finds a line that is there but does not follow the process as
+  well as one that is missing: the build cluster's gVisor has no mask line at all. It prints one
+  `kernel probe:` line either way, as `requireKernel` in `packages/envoy/cmd/cipher` does, then
+  skips the row where the kernel lacks the masks, and fails it under `GITHUB_ACTIONS`. A row whose
+  claim a shell can show by behaviour makes that read in the test itself and the mask read in a
+  subtest, so the test still proves its claim on gVisor: a non-interactive shell can set no trap
+  for a signal it was started ignoring (`startsIgnoring` in
+  `packages/daemon/internal/daemon/foreground_test.go`), and a shell started ignoring SIGHUP
+  survives the hangup it sends itself (`ghHangupProbe` in `packages/daemon/cmd/legion/gh_test.go`).
+  A row that cannot run because the test process itself was started with its signal ignored is a
+  machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
+  CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
+  default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
+  with nothing proved, since CI runs it without `-v`.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
+
+- A server a suite or a rig script starts never binds a port the caller found free and let go of:
+  any other program on the machine can take that port first, and the server then fails to start
+  or another program answers in its place. The server binds port 0 and the caller reads the port
+  from what the server reports (natsd's `-p -1 -m -1`, the listener's `PORT=0`, a broker's
+  `*_LISTEN_ADDR` of `127.0.0.1:0`, `moto_server -p 0`, `python3 -u -m http.server 0`,
+  `Bun.serve({ port: 0 })`), or takes a socket the caller holds (`start_held` in
+  `scripts/e2e/lib/rig.sh`), or listens on a unix socket in a directory of the run's own and on no
+  TCP port, as the Dispatch e2e harness's Postgres does in both providers
+  (`packages/dispatch/e2e/harness-postgres.ts`). A URL a server must hold before it binds names a
+  front bound first and pointed at the port the server reports (`dev-airlock-stands front`, as
+  `packages/envoy/scripts/dev-broker.sh` and `lib/project-access-stack.sh` run it). A port a
+  process names as closed for its whole life is held bound and never listening (`holdRefusedPort`
+  in `@legion/test-fixtures/refused-port`, which the outside-path-reach tests' `closedPort` takes),
+  and a broker that must refuse and later answer at one address is a listener the row holds from
+  its start, which drops each connection until it relays to the broker (`heldBrokerAddress` in
+  `packages/claude-envoy/tests/channel-nats.test.ts`).
 
 - Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
   unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
@@ -213,13 +292,17 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 125 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
-  cache that exists to be shared by both languages and either fills for the other. The Go build and
+  cache that exists to be shared by both languages and either fills for the other. Where the test's
+  `TMPDIR` is on another filesystem than that cache, as on a dev box whose `TMPDIR` is on a data
+  disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
+  the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
+  test does not depend on where the machine puts the two. The Go build and
   module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
@@ -274,15 +357,41 @@ itself, whose tests import its sources by relative path.
   third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
   the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
   that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`; a row that needs more than the command's
+  guard by design, such as one that starts a cold role pane (5-6 s, more than Bun's 5000 ms default),
+  which calls `@legion/test-fixtures/deadline`'s `useRowGuard(ms)` for the shared wait's deadline and
+  passes the same value as `test`'s third argument, which Bun honours as the row's kill under
+  `bun test`, `--parallel` and `bun run test` alike, so the two agree in every mode (the guard is
+  forgotten at the next mark, so it belongs to that one row); and if that row's own cleanup runs past
+  the command's guard in raw awaits (no shared wait), its `afterEach` passes the same value as its
+  own hook timeout, which Bun arms a clock of its own for; and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it. Such a row takes a guard
+  of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev
+  box's), and the `"//"` note of its package's `package.json`, where the command's guards are
+  written, gives that number with the readings and their runs. A file whose rows need a much larger
+  guard than the rest runs in a second `bun test` command of the same script, with its own
+  `--timeout` and the same preload. Tests written before this rule still set guards of their own
+  (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's guard as
+  it is carried to the shared wait.
+
+- The guard belongs on the command line, because Bun 1.4.4 gives no other way to raise it across a
+  whole non-parallel run. It reads no `[test] timeout` from `bunfig.toml`, and a `setDefaultTimeout`
+  from a preload holds only for the first file of a non-parallel (shared-process) `bun test`: a
+  two-file run with `setDefaultTimeout(20000)` in a preload passed the first file's 8 s row and
+  timed the second file's out at 5000 ms, and a `setDefaultTimeout` inside a `beforeEach` changes
+  nothing, because a row's guard is fixed when the row is registered. Under `--parallel` each file is
+  its own process and reloads the preload, so a preload's `setDefaultTimeout` does hold there. So
+  `packages/test-fixtures` and `packages/pi-envoy`, which run non-parallel, keep `--timeout` in their
+  `test` scripts, and a plain `bun test` in them (no `--timeout`) gives each row Bun's 5000 ms
+  default, not the script's guard. `packages/pi-legion` runs `--parallel=4`, so its `test` script
+  sets the guard through a preload instead (`test-timeout-preload.ts`): inside a `--test-worker` it
+  calls `setDefaultTimeout` beside `@legion/test-fixtures/deadline`'s `declareGuard`, so Bun's kill
+  and the shared wait's deadline are one length for every worker. It sets neither outside a worker,
+  because a non-parallel `bun test` would raise the deadline for the first file alone, so `bun test`
+  (and a `--parallel` run of a single file, which takes no worker) keeps Bun's 5000 ms, as on main;
+  only the `--parallel=4` `bun run test` gets the 300000 ms guard. The declared guard wins over the
+  command line, so the worker `--timeout=5000` that `--parallel` injects does not lower it; a package
+  that declares none takes the command line's `--timeout`, unchanged.
 
 ## A test that looks for a process it started
 
@@ -304,6 +413,36 @@ included.
 When a test waits for a process that the code under test starts, the code tells the test that
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
+
+## A Go test that starts a copy of its own test binary
+
+A copy of a Go test binary that a test starts with a marker, an environment variable or a first
+argument, gets its role from the package's `TestMain`, which runs that role and no test. In a build
+of the tests without that `TestMain` (a build constraint that keeps its file out of one build, a
+split of the test files) the copy runs every test, and each test that starts a copy starts more:
+on 2026-11-25 a copy of `packages/envoy/clitest`'s tests, split so that its `TestMain` was in an
+`integration` build alone, grew to 21,523 live copies and 505,340 threads, and stopped a 288-CPU
+host for 3.5 hours.
+
+So before every start of such a copy, a test asks one function of its package that returns an
+error in a process that carries a copy's marker itself (`fakeCopyRefusal` in
+`packages/envoy/clitest`, `legionCopyRefusal` in the daemon's `cmd/legion`, `helperCopyRefusal` in
+its `internal/launcher`), and refuses to start the copy on that error. A test that must set a
+copy's marker in its own process, because a copy started by code under test inherits it from there,
+starts every copy of its own before it sets it.
+
+The package has two tests of this. One is a unit test of that function: under `t.Setenv` of the
+marker (and, for a role given by the first argument, with `os.Args` set and put back) it returns
+the error, and with the marker unset it returns nil. While `TestMain` is in the build no copy ever
+reaches the function, so this test is the one that fails when the check is deleted. The other
+starts one copy with its marker and `-h`. Whatever the role does with `-h`, the testing package
+reads it before any test runs: in a build without `TestMain` that copy prints the testing package's
+flag usage and exits, so the test fails by name and starts nothing more. That covers a role chosen
+by an environment variable alone: Go stops reading flags at the first argument that is not one, so
+a copy whose role is its first argument (the launcher's `worker-shim` stand-in) never reads a `-h`
+after it, and for such a role the unit test, with `os.Args` set, is the only test. A copy started
+with `-test.run=^Name$`, whose named test reads its marker, is not of this kind: without
+`TestMain` it still runs that one test.
 
 ## The act rule of a Dispatch unit test
 
@@ -327,6 +466,22 @@ printed an act message, naming each message with its component and the frames th
   the row. Under a lane's load that is rare, and the file alone does not show it:
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
 
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
@@ -434,9 +589,15 @@ and each command runs there.
   for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
   query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
   that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
-  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-  imports that module at its top: a load that a row starts can arrive between two of that row's
-  `act` scopes or in a later row, where React reports a suspended resource outside `act`
+  row whose wait can end before such a load does warms the module before it mounts: a `waitFor` or
+  `findBy*` on a held clock (`jest.useFakeTimers()`) spends its budget in fake time, and a load can
+  outlast a `timeout` a row sets below the suite's budget (`web/src/__tests__/setup.ts`). The
+  web-cold lane holds each lazy load 1 s, and the engine's loads come one after another, 2 to 3 s
+  in all: rows of `reference-titles.test.tsx` and `document-references.test.tsx` that waited 2 s,
+  and rows of `SearchPalette.test.tsx` on a held clock, failed there. A test file whose rows mount
+  a lazily loaded part that no row reads, such as the shell's margin, imports that module at its
+  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
+  row, where React reports a suspended resource outside `act`
   (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
   `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
   do).
@@ -493,12 +654,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
-statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
-and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
-Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -516,6 +680,112 @@ A test that reads `pg_locks` or `pg_stat_activity` names its own database in the
 databases cloned from the same template, so a predicate on a relation or a lock key alone counts
 their waiters as its own.
 
+A test beside seven others shares the runner's four cores with them, so a test that proves two
+calls run at once, or that a request does not wait on something, by how many milliseconds it
+took, fails on a correct product whenever the machine is busy. Prove it by the order of events
+instead, with the test binary's deadline as the only bound (`testwait.Receive`): hold each call at
+the stand-in until all of them have arrived, or hold the thing the request must not wait on until
+after its response. A product bound the test does not mean to race takes a value past any run
+through a field of the server that only a test sets, as `server.mentionLookupBound` and
+`server.duplicateBound` do; a package variable would change it for the parallel tests beside it
+(`comment_delivery_sender_test.go`, `TestMentionLookupsOfOneCommentRunAtOnce`).
+
+A test in `internal/dispatch/docs`, and a helper it calls (`storetest`, `lockstep`, `docstest`),
+registers its cleanups with `testcleanup.Add(t, f)`, not `t.Cleanup(f)`. testing keeps a finished
+parallel test, and every closure its cleanups captured, until the package's last parallel test
+ends, so a document service, a room of a 400 KB document or a peer that a cleanup shuts down stays
+live for the rest of the run; `testcleanup.Add` lets go of it once the cleanup has run. Under the
+race detector every live byte costs about three (the heap and the detector's shadow of it), and
+envoy-go-race-docs fails its step when the binary passes 8 GB
+(`.github/workflows/ci-job-envoy-go-race-docs.yaml`).
+
+A docs test stays serial, and says so on its first line with what it measured, when run alone it
+adds far more memory than the others: a few hundred megabytes or more of live heap after a
+collection, about three times that under the race detector. Beside the package's other tests
+such a test would take the binary toward the step's limit.
+
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
+as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
+The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+test already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
+`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
+helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
+bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
+one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
+## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
+
+Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
+e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
+`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
+(`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
+(`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
+`gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
+comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
+runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
+others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
+by 2026-11-25.
+
+## A test in Dispatch's smaller packages runs beside the others
+
+Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
+  `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
+  `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+- `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
+  `internal/testport`, `internal/textcheck`;
+- `natsversion`, `natsversion/cmd/natsfloor`.
+
+The ten of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
+`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
+(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+`internal/dispatch/refs` follows the same rule and runs 4 at once through the same
+`storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
+re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
+resolver tests that replace the default logger.
+
+A test stays serial when it, or a helper it calls, changes something the whole test process
+shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
+through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
+variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `HeartbeatInterval`,
+`PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
+`syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
+bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
+on a correct product or pass with the defect present; the comment names the span. A wait for an
+event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
+and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
+marker in these packages: a new test with neither the call nor the comment runs alone for no
+reason.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -532,18 +802,43 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
+steps); `envoy-go` leaves it out of its unit legs, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
+`.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
+its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A
+package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs once in a
+leg of each of two jobs, a plain one and a race one, each in a mode of its own.
+When you add, remove, rename or move a package of either module, change its line there in the same
+change. A package `go list ./...` prints and the file does not name still runs, in exactly one
+leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
+of the module warns, naming it, until the file does. A package under one of envoy's race trees
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) must be listed in
+the race leg of its tree: the import of `.github/scripts/ci_job_reads.py` refuses it unlisted, so
+the ci-filters job fails naming it, and the changes job's filter generation falls open and selects
+every job, which the lint job then fails on (its checks refuse the fall-open filters file, without
+naming the package), since the last plain leg would run it without the race detector. A line that
+names a directory that is no package, or a package in two places (but the two legs of a package
+`twice` names), fails every leg of the module. Put a new package in the leg its measured time
+fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and `.github/ci-notes/ci.md`, "Why
+envoy's Go tests run in legs", say how the legs are balanced.
+
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
-packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
-`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+under the race detector, once per run, split by test name over the three race legs
+`.github/go-legs.yaml` gives it, a group of
+`.github/go-legs/packages/daemon/internal/daemon.yaml` each, whose step
+is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
+job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. A
+test you add, rename or delete needs no edit of that file to keep CI green: a test no group names
+runs in the group `.github/scripts/go_legs.py` places it in, the same in every leg, and a name the
+package no longer declares matches nothing, each with a warning on the legs' logs for the next
+rebalance. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
@@ -585,12 +880,13 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
+The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
+Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-That job runs the command with `-v` for a second check Go's detector does not make:
+The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
-A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.
@@ -598,7 +894,7 @@ A settlement timer's callback therefore holds the service and the room's state w
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
-A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `GODEBUG=checkfinalizers=1` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
 
 ## A database a Go test creates
 
@@ -612,6 +908,19 @@ copy writes a few hundred bytes. `storetest`'s own test fails when a clone write
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+The same test then runs `testdb.WithoutJIT(name)` on the database it made (`alter database … set
+jit = off`; `internal/testpg/testdb` in each module), so every session on it starts with JIT off,
+as production's database does: Dispatch runs on Cloud SQL, which does not support PostgreSQL's
+LLVM JIT (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and CI's
+Postgres image runs with `jit = on`. Under it a statement whose estimate passes `jit_above_cost`
+compiles before it runs: in `internal/dispatch/refs` one oracle statement spent 445-475 ms of each
+453-564 ms run compiling, 200 times a run. The setting is the database's, and a clone does not
+copy its template's, so each database takes it when it is made, a template included. Each
+module's `internal/textcheck` test `TestEveryCreatedDatabaseRunsWithoutJIT` fails on any function
+that opens a database's creation in a string and calls no `WithoutJIT`, and
+`TestEveryDatabaseRunsWithoutJIT` (Dispatch's `storetest`, the daemon's `testpg`) reads `jit = off`
+from the source `database` on each kind of database those harnesses hand out.
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
@@ -639,9 +948,17 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
-in place, and the tests run beside each other on databases of their own.
+in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
+each driving its engine over a clone of its own (`migratedPool`), four at a time unless the command
+line names a `-parallel` (`workflowTestParallelism`).
 
 Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
 need the schema as it stood at some earlier version. Its own tests take
@@ -655,13 +972,26 @@ A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DS
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
 of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
 than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
-URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
-`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` (`testpool.PoolConns`) where it
+sets no size; `testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
 `internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
 another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
 hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
 key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
 `pool_max_conns`.
+
+A pool a test builds itself takes its size from Envoy's public `testpool` package, which holds the
+same rule: a `pool_max_conns` the DSN names wins, and `testpool.PoolConns` is the size where it
+names none. Envoy's `storetest.URL` and a test's own temporary database name none. `testdb.Outage`
+keeps the query of the DSN it is given, so its DSN names a size where the caller's does: an Outage
+of `testDSN(t)` (`store/bound_outage_test.go`) or of `testdb.Database` carries the bounded size,
+which its pool keeps, and `testdb.Outage`'s on an unsized URL names none.
+`testpool.ParseConfig` and `testpool.NewPool` apply the rule to a DSN, and `testpool.Size` to a
+configuration another factory parsed: `owedwrite_test.go`'s pool, on an Outage of a literal
+unsized URL, takes the daemon store's `PoolConfig` for its dial hook, then `testpool.Size`. A test
+that needs another size names it in the DSN or sets MaxConns itself. `testpool` is a public
+package of the Envoy module, which the daemon imports through its replace, and imports only pgx
+and the standard library: Envoy's `internal/testpg` imports testcontainers.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
@@ -690,6 +1020,14 @@ The daemon's own production clients are named too: `natsauth.Connect` takes the 
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
 
+A JetStream `no_wait` pull asks the consumer's current pending count; it is not a read of the
+stream's store. nats-server stores a published message and sends its publish acknowledgement before
+its signal goroutine raises the matching consumer's pending count. A test that publishes messages
+and must then pull them makes a waiting pull for its batch and waits with the test's own deadline
+(`testwait.Context(t)`), not a `no_wait` pull or a fixed read timeout: a loaded machine may delay
+the signal after the acknowledgement without losing the stored messages. A test whose claim is the
+`404 No Messages` answer of an empty consumer still uses `no_wait`.
+
 ## A test that deletes a KV watcher's consumer
 
 A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
@@ -713,80 +1051,77 @@ A since read answers only the edges at or below the event log's safe horizon (`g
 `sinceHorizon` in `packages/envoy/internal/dispatch/api/references.go`), and waits at most
 `referencesSinceWait`, one second, for a horizon above the events committed before the read. Past
 that wait it answers at the horizon it has and leaves the rest to a later read: the route defers,
-it never loses an edge. The horizon is instance-wide,
-so any transaction holding a transaction id on the Postgres instance holds it back, and in
-`packages/envoy/internal/dispatch/api` the holder is the test process itself: `storetest.Open`'s
-`create database … template … strategy file_copy` and `storetest`'s
-`drop database … with (force)` (`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
+it never loses an edge. Only an event write of Dispatch's own database holds the horizon back
+(`packages/envoy/internal/dispatch/events/horizon.go`, "Costs"): a transaction in another database
+on the server, or one of Dispatch's database that writes no event, holds nothing. In
+`packages/envoy/internal/dispatch/api` the holders are the test's own event writes and those of
+the server under test, which a loaded machine can keep open past that second.
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
 owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,
-for as long as the horizon says it is held back (the wait of the next section, run as a
-`horizontest.Watch`). The helper is `awaitHorizonRead`, with `awaitSinceRead` for a since read
-(`packages/envoy/internal/dispatch/api/references_test.go`); it takes the read as a function, so
-each call site keeps its own reader. The event log route answers through the same horizon
-(`sinceHorizon`), and its tests read it with the same helper (`events_log_test.go`).
+until the answer is whole (the wait of the next section, run as a watch in the test's own process,
+`horizontest.NewWatchInProcess`). The helper is `awaitHorizonRead`, with `awaitSinceRead` for a
+since read (`packages/envoy/internal/dispatch/api/references_test.go`); it takes the read as a
+function, so each call site keeps its own reader. The event log route answers through the same
+horizon (`sinceHorizon`), and its tests read it with the same helper (`events_log_test.go`).
 
-A test that takes one read as final fails under a transaction someone else holds:
+A test that takes one read as final fails under an event write held past that second:
 `TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured
 for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it failed 15 of 40 runs
 with a transaction held 2 s of every 2.5 s; under that same pulse, reading again, it passed 40 of
-40.
+40. Those runs were measured while any transaction on the server held the horizon back.
 
-Prove such a test under a loop that holds the state, as
-`docs/solutions/testing/code-that-waits-on-instance-wide-database-state-is-tested-under-a-loop-that-holds-that-state-pr2392.md`
-prescribes:
-
-```sh
-while true; do
-  psql "$LEGION_TEST_PG_DSN" -Atc 'select pg_current_xact_id(), pg_sleep(2)'
-  sleep 0.5
-done
-```
-
-The holder must release each transaction: one that never commits holds the horizon back for good,
-so the re-read goes on while the horizon keeps warning, and the test fails once the run's own
-deadline is near, naming the hold.
+Prove such a test with the horizon held: hold an event write of the test's own database open with
+`holdEventWrite` (`packages/envoy/internal/dispatch/api/event_horizon_helpers_test.go`), and call
+the `release` it returns on a timer longer than `referencesSinceWait` and shorter than
+`horizontest.OwnHoldBound`, 5 s. `holdEventWrite` ends the hold only on that release, at the
+test's first failure or at its end, never on a clock of its own. A transaction in another
+database, such as a `psql` loop that runs `select pg_current_xact_id(), pg_sleep(2)`, no longer
+holds the horizon, so it proves nothing. The re-read's wait (`horizontest.NewWatchInProcess`)
+fails on a hold of the test's own database that has stood `OwnHoldBound`, as an own-database hold,
+and names it; a hold past `referencesSinceWait` that the timer releases inside that bound is one
+the re-read waits out.
 
 ## A test that waits for the event feed's first frame
 
 The rule above bounds a *re-read*: the route answers at the horizon it has, so the test asks again.
 A test waiting for the event feed's `events_start` has nothing to ask again.
 That frame is the last thing a new subscription sends, not the first: `feedEvents` writes it only once `events.Horizon.Await` has returned
-(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and the horizon's proof is instance-wide, so the frame is as late as the longest write transaction open anywhere on the Postgres instance.
-No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day someone holds a transaction for a minute.
+(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and every event write of Dispatch's database holds the horizon back until it ends, so the frame is as late as the longest event write open there: a test's own fixture, or the server's own writes on a loaded machine.
+No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day a write is held for a minute.
 
-So the test waits on what the server says about itself.
-`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
-The wait is `horizontest.Wait` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it: `cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) reads the warnings out of the Dispatch process's output (`horizontest.Lines`), and `internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, read them as records (`horizontest.WaitInProcess`, `PollInProcess`, `Listen`), so `pending_for` and `database` are typed values there and are not parsed.
-The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout; while the warning keeps arriving the wait goes on, and it fails when the warning stops.
-Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
+So no wait on the horizon has a clock of its own.
+The wait is `horizontest` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it.
+The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout.
 In `api` the same wait covers every other wait behind the horizon: a live event, the relay's publishing and a subscription reaching it, the delivery hub's event feed and the deltas it drives, a persisted horizon, and a pass of the suggestion outcome sweep on a log that holds events, which reads only up to the horizon and awaits it on its first pass (`suggestion_outcomes_test.go`; the sweep's own settle is waited out first, on the database's clock, so the wait is on the horizon alone).
-A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` and the two-process sweep row in `cmd/dispatch` keep their own bounds (measured under a 45 s and a 75 s hold: they pass at once).
-`cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
-`Listen` hands every record on to the handler it replaced, and when that is slog's own default handler it writes as that handler does through a logger of its own: slog's handler writes through the log package, and a record handed to it while `slog.SetDefault` has the log package pointed back at the new handler deadlocks every goroutine that logs (`TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn`).
+A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` waits for its fact with `testwait` (no horizon wait, and no bound but the test binary's deadline), and the two-process sweep row in `cmd/dispatch` keeps its own bound (measured under a 45 s and a 75 s hold: both pass at once).
 
-The wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
+`cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) waits on what the Dispatch process says about itself (`horizontest.Wait`).
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query; the wait reads it out of the process's output (`horizontest.Lines`), and while the warning keeps arriving the wait goes on.
+Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
+`cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
+Such a wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
 It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the test's own database for a holder that has held the horizon back at least `horizontest.OwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
-Silence alone does not fail a wait: the warnings come from a goroutine of the horizon's that a loaded machine can put off while a transaction still holds the horizon, so at the base bound or the end of an extension window the wait reads the instance's holder itself, with the query the diagnosis runs (`events.StallHolderSQL`), through the test's own pool or, for a Dispatch process, a connection of its own (`horizontest.Dialed`), and fails only when no transaction holds an id; a holder it finds counts as a warning.
-That read finds no holder when the machine is merely slow to run the server: a relay the CPU has not run yet has no observation pending on a transaction, so the horizon logs nothing, and the base bound fails the row for the machine's speed.
-A test whose verdict is what arrives rather than how soon calls `horizontest.UntilTheDeadline(t)` first: every wait on the horizon it and its subtests make then goes on while the horizon says nothing, and ends only at an own hold past `horizontest.OwnHoldBound` (named by a warning or found by the wait's own read of the holder) or at the drain, naming what it waited for; under `go test -timeout 0` there is no drain, and such a wait has no end, as `testwait.Until`'s has none.
-`packages/envoy/internal/dispatch/api/live_events_horizon_test.go` calls it in every test that waits on the horizon (dispatch://INFRA-3904): its replaced-log row failed at the base bound on a box at load 650-860, and an event of its feed held 3.5 s with no transaction open fails it the same way.
-Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
+Silence alone does not fail it: the warnings come from a goroutine of the horizon's that a loaded machine can put off while an event write still holds the horizon, so at the base bound or the end of an extension window the wait reads the database's oldest event writer itself, with the query the diagnosis runs (`events.StallHolderSQL`), through a connection of its own (`horizontest.Dialed`), and fails only when no event write holds the horizon; a holder it finds counts as a warning.
+
+`internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, wait with `horizontest.WaitInProcess`, `PollInProcess`, `AwaitPersisted` and `NewWatchInProcess`, which read no warning.
+Such a server's horizon logs to `slog.Default`, which every test of the process shares, and a test that changes the default logger cannot run beside the others (the rule above, "A test in `internal/dispatch/api` runs beside the others").
+Nor does silence end such a wait: when the machine is merely slow to run the server, nothing holds the horizon — a relay the CPU has not run yet has no observation pending on an event write, so the horizon logs nothing and the database shows no event writer — and beside seven other tests that silence outlasted the base bound (dispatch://INFRA-3904): `TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent`'s next event did not arrive in 3.251 s, the horizon having stopped warning 3 s before, and the replaced-log row of `live_events_horizon_test.go` failed at the base bound on a box at load 650-860.
+So the wait reads the database's oldest event writer itself, through the server's own pool, from the base bound on, again an extension window after each holder it found, and no more often than every `horizontest.Poll`.
+It ends only when what it waits for arrives, when a holder it read is a client of the test's own database that has held the horizon back at least `horizontest.OwnHoldBound`, or at the drain, where it fails naming what it waited for and the newest holder it read.
+Under `go test -timeout 0` there is no drain, and such a wait has no end, as `testwait.Until`'s has none.
+
+Each failure names the newest warning or holder, so the holder is in the output; the own-database failure also names that client's `application_name` and pid, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
 The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
-The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which the wait samples the warnings, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
-`horizontest.OwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
-The bound is read off the warning itself, so the wait needs no clock of its own: the shorter of the warning's `pending_for`, the age of the oldest pending observation, and the age of the holder it names, its `xact_start` against the warning's own time. `pending_for` alone is not the holder's: a foreign holder released since can have carried the oldest observation past the bound while the holder now named is a transaction of the test's own database that began a moment ago. A hold shorter than the bound extends the wait exactly as a foreign hold does.
+The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which a wait samples the warnings, and the most often a wait in the test's own process reads the holder, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`horizontest.OwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of `cmd/dispatch`'s `events_start` test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read off the warning itself, so the wait needs no clock of its own: the shorter of the warning's `pending_for`, the age of the oldest pending observation, and the age of the holder it names, its `xact_start` against the warning's own time. `pending_for` alone is not the holder's: an earlier holder released since can have carried the oldest observation past the bound while the holder now named began a moment ago. A hold shorter than the bound extends the wait. A holder the wait read itself holds for its own age, on the database's clock.
 Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
 
 The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
-Prove it with a transaction held longer than that bound, and hold it so that it is still open when the socket subscribes, not merely when `go test` starts:
-the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
-A rolling hold — a new 25 s transaction every second — does not depend on that, and is the recipe to use.
-Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under a rolling hold the old 10 s deadline failed all five runs it was measured over, three at one head and two at another, and the wait on the signal passed 50 of 50;
-five runs are enough against that deadline because the rolling hold keeps a transaction open whenever the socket subscribes, so what fails it is the shape of the hold rather than the weight of a sample.
-The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
-started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
+These waits were proved while a transaction in any database on the server held the horizon back, under a rolling hold in another database, a new 25 s transaction every second, held so that it was still open when the socket subscribed and not merely when `go test` started: the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under that rolling hold the old 10 s deadline failed all five runs it was measured over, and the wait on the signal passed 50 of 50.
+Such a hold in another database delays nothing now. What a wait rides out is an event write of the server's own database shorter than `horizontest.OwnHoldBound`; one that stands longer fails the wait by design.
 
 ## A document test that waits for a room's appends
 
@@ -844,6 +1179,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
 
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
+
 ## A fake HTTP server whose client gives up on requests
 
 A fake `httptest` server whose handler fails the test on a request body it cannot read stops with `Shutdown` before `Close` when its client sends requests the test does not wait for, as the Cloud SQL connector does when it gives up on a refresh.
@@ -892,6 +1236,11 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
+- A machine's `PATH` can lead with wrappers of git or jj that are not Legion's: a mise shim, which finds its version under the caller's `HOME` and none under a test's, and a person's own shim, which checks every commit against a list it decrypts with that `HOME`'s keys.
+  A fixture runs git and jj under a home of the test's, and so does the code under test, which looks each up by name on the process's `PATH`, so on such a machine every bundle test of `packages/daemon/internal/launcher` failed at its setup.
+  So Guard also puts first on `PATH` a directory of links to the git and jj that the `PATH`'s own git and jj run, each read from the running program (`/proc/<pid>/exe` of the parent of a shell it starts) under the process's own `HOME`, so neither a fixture nor the code under test meets the wrapper.
+  The directory sits in the user's cache (`legion-fixtureenv/<hash of the two programs>`), shared by every test binary that reads the same two programs; a git or jj on `PATH` that cannot be read that way fails the `TestMain`, naming it, and off Linux, which alone has that `/proc`, Guard leaves `PATH`'s git and jj as they are.
+
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
@@ -911,6 +1260,24 @@ that other work shares.
   `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
   `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host
   configuration of its own sets the limits in that same modifier.
+- A test binary that starts itself again as a helper process links no testcontainers-go. That
+  library's package init reads every process on the machine, which cost 7.6 to 11.5 s and 600 to
+  910 MB of allocation at each start of `internal/daemon`'s test binary on a box that ran 13,000 to
+  20,000 processes, and the binary pays it at each of its starts. Such a test drives its container
+  through the docker CLI, with `--cpus` and `--memory` on `docker create`, as
+  `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
+  test binary that is killed before it removes them. It publishes and dials on the machine of the
+  daemon the docker CLI itself resolves (`docker context inspect`), so the order in which
+  `DOCKER_HOST`, `DOCKER_CONTEXT` and the current context win is the CLI's, not a copy of it.
+  `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
+  `internal/testnats` calls `internal/testbinary`'s `LinksNoTestcontainers`, which fails when the
+  library is linked again; `.github/scripts/testcontainers_links.py` holds every command and every
+  self-starting test binary of both modules to the same rule in CI and names the import chain.
+  A developer container on the host's Docker socket reads that socket as its own machine, whose
+  127.0.0.1 is the container's: set `TESTCONTAINERS_HOST_OVERRIDE` to the host as the container
+  reaches it (the bridge gateway, `host.docker.internal`). The fixture dials its ports there and
+  publishes them on every interface of the host, as testcontainers-go does for the envoy module's
+  tests under the same variable.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
   lists each proof's containers and their limits.

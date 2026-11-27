@@ -28,7 +28,8 @@
 //
 // The loader, the history's shape and the delivery history are evals/evalbench's of
 // cybermonklabs/legion#3976 (Load, infra.go and delivery.go), whose calls of its fixture package
-// are this package's own code and legiontest's here.
+// are this package's own code here: a file of it that is not a test imports no seeder of the test
+// rigs (internal/textcheck's TestOnlyTestFilesImportTheDeliveryAndLegionSeeders).
 package legionbench
 
 import (

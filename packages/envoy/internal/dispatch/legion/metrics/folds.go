@@ -11,13 +11,14 @@ import (
 // every delivery and CI number is (measures/parts.go): a day builder (the functions named
 // <Measure>Day) turns the facts of the issues that finished on one UTC day, and the filings of
 // that day, into the day's parts, and one exported fold (the functions named Fold<Measure>) turns
-// any set of those parts into the answer, reading no database. The refresher stores the parts as
-// eval_days rows (evals/legion_days.go) and the eval routes fold a window's rows.
+// any set of those parts into the answer, reading no database. No route reads them yet: a later
+// slice of cybermonklabs/legion#3976 stores the parts as day rows and folds a window's rows with
+// these folds.
 //
-// A part folds the per-issue values IssueFacts holds (factsOf), which issue_facts stores: each
-// finished issue's work time, its part of each of the seven bars, its idle hours in each role,
-// its slot wait, its rework row and its children. A filing is an IssueFiling, which issue_filings
-// stores.
+// A part folds the per-issue values IssueFacts holds (factsOf), which dispatch://INFRA-5577
+// stores as one row an issue: each finished issue's work time, its part of each of the seven
+// bars, its idle hours in each role, its slot wait, its rework row and its children. A filing is
+// an IssueFiling, which that slice stores as rows too.
 //
 // Every series is stored in three cuts (R6, D5), which CutSeries names: every issue
 // (`<series>`), the roots of their trees (`<series>:roots`, an issue whose tree root is itself)
@@ -29,11 +30,11 @@ import (
 // A sample series holds one value per finished issue of the day: its work time, its hours on a
 // bar (zero on a bar no hour of it fell on), its idle hours in a role, its slot wait, its review
 // rounds, its hours after its first review, or a finished root's work time. Its fold merges the
-// parts' sample lists and reads measures.Quantile over the merge, never the mean of the days'
-// quantiles. A count is a sum, and a share is the summed numerator over the summed denominator.
-// Every number a fold answers is rounded to four decimals (round). A set that holds no part of a
-// fold's series reads no value (nil), never 0; a part built for a cut no issue of the day is in
-// is a zero part, and reads as zero counts and no quantile.
+// parts' sample lists and reads measures.SortedSamples.Quantile over the merge, never the mean of
+// the days' quantiles. A count is a sum, and a share is the summed numerator over the summed
+// denominator. Every number a fold answers is rounded to four decimals (round). A set that holds
+// no part of a fold's series reads no value (nil), never 0; a part built for a cut no issue of the
+// day is in is a zero part, and reads as zero counts and no quantile.
 
 // The series of the six Legion evals before their cut (CutSeries). legion-phase-time's series
 // are its seven bars' roles (architect, planner, implementer, tester, reviewer, merger and
@@ -64,7 +65,9 @@ const (
 // RootFigures are legion-splitting's series that count the finished roots alone whatever the cut
 // (metric 4): SplittingDay builds them in the all and the roots cut, the same in both, and never
 // in the children cut, which holds no root. The eval still has that cut of each, as every Legion
-// series has its three, and it reads no data.
+// series has its three, and it reads no data. The eval registry's catalogue and its tests (#3976)
+// read this list, so it stays exported; TestSplittingDayBuildsEachRootFigureInTheAllAndRootsCuts
+// holds SplittingDay to it.
 var RootFigures = []string{SeriesRoots, SeriesHoursWithChildren, SeriesHoursWithoutChildren}
 
 // The named counts a Legion part carries beside its value: a phase-time bar's five segments, each
@@ -87,8 +90,7 @@ func CutSeries(series string, cut Scope) string {
 	return series + ":" + string(cut)
 }
 
-// SplitCutSeries is CutSeries the other way: a stored Legion series' name before its cut, and
-// the cut, which is how the eval folds and the items route read a series name.
+// SplitCutSeries is CutSeries the other way: a Legion series' name before its cut, and the cut.
 func SplitCutSeries(name string) (string, Scope) {
 	for _, cut := range [...]Scope{ScopeRoots, ScopeChildren} {
 		if base, found := strings.CutSuffix(name, ":"+string(cut)); found {
@@ -109,8 +111,8 @@ func FilingSeries(class string) string {
 }
 
 // InCut is whether an item counts in cut: every item in the all cut, a root in the roots cut and
-// any other item in the children cut. It is the one statement of the eval's cuts, which the day
-// builders cut their parts by and the eval items route answers the issues of a cut by.
+// any other item in the children cut. It is the one statement of the cuts, which the day builders
+// cut their parts by.
 func InCut(cut Scope, root bool) bool {
 	switch cut {
 	case ScopeRoots:
@@ -298,9 +300,10 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 }
 
 // SampleFold is one sample series folded: how many values its parts hold, their sum, and their
-// median and 90th percentile (measures.Quantile over the merge of every part's samples). Median
-// and P90 are nil when the parts hold no value. The statistics a series of it answers are `n`,
-// `sum` (an hours series' `hours`), `median` and `p90`.
+// median and 90th percentile (measures.SortedSamples.Quantile over the merge of every part's
+// samples). Median and P90 are nil when the parts hold no value. Each fold below states which
+// statistics its series exposes (`n`, `median`, `p90`, and where the measure reports a total,
+// `hours` from Sum).
 type SampleFold struct {
 	N      int
 	Sum    float64

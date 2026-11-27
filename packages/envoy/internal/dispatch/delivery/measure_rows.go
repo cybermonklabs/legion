@@ -52,16 +52,20 @@ type MergedRows struct {
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
 // followed by their production jobs, side by side on the pool (readAll).
 func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
-	return readMergedRows(ctx, q, settings, from, to, nil)
+	return readMergedRows(ctx, q, settings, from, to, "", nil)
 }
 
-// readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
-// before it.
-func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
+// readMergedRows is ReadMergedRows, narrowed to repo's pull requests when repo is non-empty and,
+// with createdBefore set, to only the apply runs GitHub created before it.
+func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, repo string, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
 	err := readAll(ctx, q,
 		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
+			if repo != "" {
+				rows.PullRequests, err = listRepoPullRequestsInWindow(ctx, q, repo, from, to)
+			} else {
+				rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
+			}
 			return err
 		},
 		func(ctx context.Context) error {
@@ -75,29 +79,19 @@ func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 	return rows, nil
 }
 
-// ApplyRows is MergedRows' apply runs and their jobs, read from a moment on (readApplyRows).
-type ApplyRows struct {
-	Runs []DeliveryRun
-	Jobs map[int64][]DeliveryRunJob
-}
-
 // readApplyRows reads the apply runs and their production jobs (the jobs a deploy is judged by)
 // of a window from from, MergedRows.ApplyRuns and ApplyJobs as readMergedRows reads them, with
 // createdBefore as readMergedRows takes it.
-func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, createdBefore *time.Time) (ApplyRows, error) {
+func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, createdBefore *time.Time) (RunsWithJobs, error) {
 	runs, err := listRuns(ctx, q, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
-		return ApplyRows{}, err
+		return RunsWithJobs{}, err
 	}
-	runIDs := make([]int64, len(runs))
-	for i, run := range runs {
-		runIDs[i] = run.RunID
-	}
-	jobs, err := ListRunJobsForRuns(ctx, q, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	jobs, err := ListRunJobsForRuns(ctx, q, settings.DeployRepo, runIDsOf(runs), settings.Production().JudgedJobNames())
 	if err != nil {
-		return ApplyRows{}, err
+		return RunsWithJobs{}, err
 	}
-	return ApplyRows{Runs: runs, Jobs: jobs}, nil
+	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
 }
 
 // ReadWindowRows is a delivery route's read of [from, to): MergedRows, with failedJobs each apply
@@ -151,10 +145,7 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 		return err
 	}}
 	if failedJobs {
-		applyIDs := make([]int64, len(listed.apply))
-		for i, run := range listed.apply {
-			applyIDs[i] = run.RunID
-		}
+		applyIDs := runIDsOf(listed.apply)
 		reads = append(reads, func(ctx context.Context) (err error) {
 			failed, err = listRunJobsFailedForRuns(ctx, pool, settings.DeployRepo, applyIDs, names)
 			return err
@@ -177,11 +168,12 @@ type Deploys struct {
 	Started RunsWithJobs
 	// Applies is the deploys among Started (ProductionApplies), in compareApplies' order.
 	Applies []Apply
-	// Earlier is the pull requests merged before the window that Applies can ship, and the deploy
-	// runs on main GitHub created before the window, which can ship them first: MergedRows from
-	// since (ReadDeploys says what it is) up to the window's start, its apply runs those created
-	// in that span alone. Empty where no pull request merged before the window can ship with one
-	// of Applies.
+	// Earlier is the deploy repository's pull requests merged before the window that Applies can
+	// ship, and the deploy runs on main GitHub created before the window, which can ship them
+	// first: MergedRows from since (ReadDeploys says what it is) up to the window's start, its
+	// pull requests narrowed to settings.DeployRepo before the row cap and its apply runs those
+	// created in that span alone. Empty where no pull request merged before the window can ship
+	// with one of Applies.
 	Earlier MergedRows
 }
 
@@ -219,7 +211,7 @@ func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from t
 	if !since.Before(from) {
 		return deploys, nil
 	}
-	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, &from); err != nil {
+	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, settings.DeployRepo, &from); err != nil {
 		return Deploys{}, err
 	}
 	return deploys, nil

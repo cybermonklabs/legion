@@ -35,13 +35,13 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 
 | Need | Setting | Notes |
 | --- | --- | --- |
-| Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
+| Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. Dispatch also refuses a URL holding an `@` after its user name and password, naming the variable alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`. A database name holding an `@` is refused however it is written. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
-| An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
+| An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone, as for each model endpoint, `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_GITHUB_API_BASE`. |
 | NATS | `NATS_URLS`, `NATS_NKEY_SEED_FILE` | Where Dispatch publishes its events for agents. The Agents page's live view also needs it. Dispatch refuses a NATS server on another machine unless `ENVOY_ALLOW_REMOTE_NATS=1`. A NATS that is down, or refuses Dispatch's credential, when Dispatch starts does not stop it: Dispatch serves, connects once NATS answers, and publishes what was written meanwhile. Set `DISPATCH_NATS_DISABLED=1` to run without it. |
 | An address to listen on | `DISPATCH_LISTEN_HOST`, `DISPATCH_PORT` | Port `8766` by default. |
 | Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v1/search/coverage` shows how far it has got. |
@@ -262,8 +262,10 @@ with Docker, Bun, and Go installed:
    It runs a container named `dispatch-pg` on `127.0.0.1:55432` from a pinned image, pgvector on
    PostgreSQL 18 (Dispatch's migrations need its `vector` extension, and 18 is the version
    Dispatch's tests and dev databases run), and starts or reuses that container when it is already
-   there. A `dispatch-pg` made from another image or PostgreSQL major is refused, with the commands
-   that dump its databases and restore them into a new container on the right one.
+   there. The migrations also need `btree_gin`, a contrib extension that PostgreSQL includes, and a
+   migration creates each of the two extensions. A `dispatch-pg` made from another image or
+   PostgreSQL major is refused, with the commands that dump its databases and restore them into a
+   new container on the right one.
 
 2. Build the web app:
 
@@ -430,7 +432,7 @@ that the GitHub client counts on every request a pass sends:
 
 - GitHub gave no answer: a network error, the client's own 20-second timeout, or a body the client
   could not read or that was past its size limit.
-- GitHub answered with a 5xx status or with 401.
+- GitHub answered with a 408, a 5xx status or 401.
 - A rate limit: a 429, a 403 that carries a limit, a GraphQL answer that reports a limit (also
   with status 200), or a limit already recorded that held the request before it was sent.
 
@@ -573,7 +575,7 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 26 for the work it runs once across the servers, the
+to 64 connections for requests, up to 28 for the work it runs once across the servers, the
 delivery intakes' holds and the keyword fill's hold,
 up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
@@ -587,7 +589,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 117
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 119
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -640,6 +642,14 @@ What a reader sees while two servers are serving:
   that cannot store them does not start, and the roll keeps the servers it would have replaced. A
   version older than the first that stores them stores nothing, so a roll away from one of those
   versions can still leave a page asking for files no server has.
+- A document that a server of the earlier version removes or makes again during the rollout can
+  leave this version's record of it out of step: `envoy-dispatch census --store` then names it
+  `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
+  `gone`; an `orphaned` line says `no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+- A comment that a server of the earlier version writes during the rollout, and a document block
+  it indexes then, can keep a record that names no project: `envoy-dispatch census --store` then
+  names it `unscoped`. Once every server runs this version, run
+  `envoy-dispatch backfill-graph-store` again, which gives it its project.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.

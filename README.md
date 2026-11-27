@@ -147,11 +147,12 @@ root `package.json`.
 
 ```sh
 bun install                                                  # every workspace
-bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+.github/scripts/check-biome-tree.sh                          # what CI's required lint job runs: `bunx biome check .`, failing on a file too large for Biome to read
+bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # one package, every warning and error printed, as CI's Biome steps print them
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
-bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+bun run --cwd packages/contracts gen:api && bunx tsc --noEmit -p scripts/dispatch  # likewise each scripts/ directory with a tsconfig.json
 go -C packages/daemon test ./...                             # the Legion daemon
 go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
 go -C packages/daemon test ./internal/api -run '^TestName$'  # one test
@@ -160,6 +161,18 @@ gofmt -l packages/daemon packages/envoy
 (cd packages/daemon && go build ./cmd/legion)                # then ./legion <command> --help
 bun run dispatch:local                                       # Dispatch, seeded and signed in
 ```
+
+The Bun test scripts that run a package's files side by side name their worker count:
+`--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
+`test:harness`. A bare `--parallel` starts one worker per CPU. On a 180-CPU machine whose user may
+run 4,096 tasks, that failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27
+rows of pi-legion's (threads refused with EAGAIN). On CI's 4-CPU runners eight workers take no
+longer than four: `test:web` 100 s against 101 s, `test:harness` 78 s against 113 s (medians of
+three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count. Most of its tasks are
+the Oh My Pi processes its tests start, and Oh My Pi sizes each of its thread pools to the
+machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp-harness.ts`,
+`ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
+on a 64-CPU machine and holds 40 with the pools set.
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
@@ -195,8 +208,8 @@ entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
 and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+skills, and `CONTRIBUTING.md` the pull request process. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 

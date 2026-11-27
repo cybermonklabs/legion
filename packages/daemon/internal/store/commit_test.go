@@ -139,17 +139,18 @@ func returned(t *testing.T, done <-chan transacted) transacted {
 	}
 }
 
-// captureCommitLog sends the process's default logger into a locked buffer for the length of the
-// test, which is where Transact and its watcher write: the watcher writes from a goroutine of its
-// own while the test reads. No test of this package runs in parallel, so the swap is safe. A test
-// that fails prints what the buffer holds.
-func captureCommitLog(t *testing.T) *testlog.Buffer {
+// captureLog sends pool's log (Pool.log) into a locked buffer for the length of the test, which is
+// where the pool writes its refusals (logRefusal) and where Transact and its watcher write their
+// lines about a commit over it (logOf): the watcher writes from a goroutine of its own while the
+// test reads. The log and the stacks already logged (Pool.refused) are the pool's own, so a test
+// running beside this one writes none of its lines here, and a test the binary runs again (-count)
+// opens a pool of its own and logs its own stacks again. A test that fails prints what the buffer
+// holds.
+func captureLog(t *testing.T, pool *Pool) *testlog.Buffer {
 	t.Helper()
 	var log testlog.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&log, nil)))
+	pool.log = slog.New(slog.NewTextHandler(&log, nil))
 	t.Cleanup(func() {
-		slog.SetDefault(previous)
 		if t.Failed() {
 			t.Logf("the log:\n%s", log.String())
 		}
@@ -194,6 +195,7 @@ func (r *commitRig) wantHooks(t *testing.T, want int32) {
 }
 
 func TestACommitWhoseReplyComesAfterTheCancelRunsItsHooks(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
@@ -211,6 +213,7 @@ func TestACommitWhoseReplyComesAfterTheCancelRunsItsHooks(t *testing.T) {
 }
 
 func TestACommitWhoseReplyNeverComesIsReadFromTheStore(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
@@ -227,14 +230,17 @@ func TestACommitWhoseReplyNeverComesIsReadFromTheStore(t *testing.T) {
 		t.Fatalf("Transact = %v, want nil: the store says the transaction committed", got.err)
 	}
 	rig.wantHooks(t, 1)
-	if took, bound := got.at.Sub(cancelled), CommitSettleBound+500*time.Millisecond; took > bound {
+	took, bound := got.at.Sub(cancelled), CommitSettleBound+500*time.Millisecond
+	t.Logf("Transact returned %s after the cancel", took)
+	if took > bound {
 		t.Fatalf("Transact returned %s after the cancel, want at most %s", took, bound)
 	}
 }
 
 func TestACommitWithNoCancelWaitsForItsReply(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 	hold := CommitSettleBound + time.Second
 
@@ -257,8 +263,9 @@ func TestACommitWithNoCancelWaitsForItsReply(t *testing.T) {
 }
 
 func TestACommitCutAfterItLandedIsReadFromTheStore(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 
 	fired := rig.fault.Cut(commitMatch, testdb.CutAfterCommit)
@@ -275,6 +282,7 @@ func TestACommitCutAfterItLandedIsReadFromTheStore(t *testing.T) {
 }
 
 func TestACommitCutBeforeItLandedRunsNoHookAndItsRetryDoes(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 
@@ -302,6 +310,7 @@ func TestACommitCutBeforeItLandedRunsNoHookAndItsRetryDoes(t *testing.T) {
 
 // The ERROR answer alone: a FATAL or PANIC answer is held at commitErrorKind.
 func TestARollbackTheServerAnswersRunsNoHook(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 
@@ -326,6 +335,7 @@ func (unsentError) Error() string     { return "nothing reached the server" }
 func (unsentError) SafeToRetry() bool { return true }
 
 func TestACommitErrorIsSortedByWhetherTheServerAnswered(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		err  error
@@ -348,8 +358,9 @@ func TestACommitErrorIsSortedByWhetherTheServerAnswered(t *testing.T) {
 }
 
 func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	// parent stays live for the whole test; child, which shares its hold mark, is the only
 	// context Transact sees.
 	parent := WithTransactionTracking(context.Background())
@@ -436,8 +447,9 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 // and the transaction's later hooks still run. Nothing above the watcher recovers, as net/http
 // does for a route's goroutine, so a panic there would end the daemon.
 func TestAHookThatPanicsOnTheWatchersGoroutineIsLoggedAndTheRestRun(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	parent := WithTransactionTracking(context.Background())
 	child, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -476,6 +488,7 @@ func TestAHookThatPanicsOnTheWatchersGoroutineIsLoggedAndTheRestRun(t *testing.T
 // closes, as the watcher does, rather than reading a closed pool until its context ends: its
 // context here ends only after a minute, and it answers well before that.
 func TestARetryWhoseOutcomeIsUnknownEndsWhenThePoolCloses(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx, cancel := context.WithTimeout(WithTransactionTracking(context.Background()), time.Minute)
 	defer cancel()
@@ -499,6 +512,7 @@ func TestARetryWhoseOutcomeIsUnknownEndsWhenThePoolCloses(t *testing.T) {
 // once and run once, as main answered it, and a serialization failure runs again until a run
 // commits.
 func TestARetryRunsAgainOnlyAfterAFailureThatPasses(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	for _, row := range []struct {
 		name string
@@ -545,6 +559,7 @@ func TestARetryRunsAgainOnlyAfterAFailureThatPasses(t *testing.T) {
 
 // The body's own cancel: the id read already refuses the ended context.
 func TestAContextEndedBeforeTheCommitCommitsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
@@ -568,6 +583,7 @@ func TestAContextEndedBeforeTheCommitCommitsNothing(t *testing.T) {
 // A cancel that lands between the id read and the commit, which only the guard before the commit
 // refuses.
 func TestACancelAfterTheIDReadCommitsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
@@ -587,8 +603,9 @@ func TestACancelAfterTheIDReadCommitsNothing(t *testing.T) {
 }
 
 func TestATransactionThatWroteNothingNeedsNoRead(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 
 	// The store refuses every connection once the reply is lost, so a read of the outcome fails.
@@ -610,6 +627,7 @@ func TestATransactionThatWroteNothingNeedsNoRead(t *testing.T) {
 }
 
 func TestAnOutcomeStillInProgressIsUnknownUntilItEnds(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := context.Background()
 
@@ -647,8 +665,9 @@ func TestAnOutcomeStillInProgressIsUnknownUntilItEnds(t *testing.T) {
 // unknown at first, and the watcher reads the abort and drops the hooks. Every status is
 // PostgreSQL's own; only the lost reply's error is given.
 func TestTheWatcherDropsTheHooksOfATransactionThatAborts(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	ctx := context.Background()
 	open, err := rig.observer.Begin(ctx)
 	if err != nil {
@@ -683,8 +702,9 @@ func TestTheWatcherDropsTheHooksOfATransactionThatAborts(t *testing.T) {
 }
 
 func TestTheOutcomeWatchEndsWhenThePoolCloses(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t)
+	log := captureLog(t, rig.pool)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
 
@@ -714,6 +734,7 @@ func TestTheOutcomeWatchEndsWhenThePoolCloses(t *testing.T) {
 // return it is false, and OnCommit panics there, since that transaction's hooks were taken when
 // the body returned and a hook appended later would never run.
 func TestCommitScopedIsTrueOnlyWithinTransact(t *testing.T) {
+	t.Parallel()
 	if CommitScoped(context.Background()) {
 		t.Fatal("CommitScoped(context.Background()) = true, want false")
 	}
@@ -745,12 +766,14 @@ func onCommitPanic(ctx context.Context) (recovered any) {
 }
 
 func TestOnCommitPanicsOutsideATransaction(t *testing.T) {
+	t.Parallel()
 	if recovered := onCommitPanic(context.Background()); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "store.Transact") {
 		t.Fatalf("OnCommit outside a transaction panicked with %v, want a panic naming store.Transact", recovered)
 	}
 }
 
 func TestAPanicInTheBodyGivesItsConnectionBack(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 

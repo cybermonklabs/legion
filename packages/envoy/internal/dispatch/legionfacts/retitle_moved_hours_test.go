@@ -38,7 +38,7 @@ func TestARetitleMovesPartOfAClosedRootsWorkToTheClosedChildItNames(t *testing.T
 		spec legiontest.Spec
 	}{
 		{"the rig's history, two of three trees unobserved", legiontest.Spec{Project: "LEGION", Trees: 3, Unobserved: 2, Now: now}},
-		{"queued roots, parks, merges and filings, half of the trees unobserved", legiontest.Spec{Project: "LEGK", Trees: 4, Now: now, Spacing: 6 * time.Hour, Unobserved: 2, Queued: true, Parked: true, Merged: true, Filings: true}},
+		{"queued roots, backlog and icebox time, merges and filings, half of the trees unobserved", legiontest.Spec{Project: "LEGK", Trees: 4, Now: now, Spacing: 6 * time.Hour, Unobserved: 2, Queued: true, InBacklogOrIcebox: true, Merged: true, Filings: true}},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			database := storetest.Open(t)

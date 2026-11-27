@@ -1,5 +1,5 @@
 kind: Changed
-body: '`legion-testpg` starts PostgreSQL with `max_connections` 491, up from 487, because a Dispatch server now opens up to 117 connections, one more for the per-issue Legion facts.'
+body: '`legion-testpg` starts PostgreSQL with `max_connections` 975, up from 967, because a Dispatch server now opens up to 119 connections, one more for the per-issue Legion facts.'
 time: 2026-11-24T08:52:28Z
 custom:
     Issue: INFRA-5577

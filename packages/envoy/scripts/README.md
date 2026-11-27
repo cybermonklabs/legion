@@ -138,14 +138,18 @@ runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
 second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
-services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
-and the certificate authority they are signed by), which is a second such process:
-`dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
-at, and this script points nothing at that one. It then writes a profiles file
-(`BROKER_PROFILES_FILE`, each secret a profile of its own name with a proxy block,
-and `AIRLOCK_PLAIN_GITHUB`, the `github-app` secret's profile with none) and a
-fake Secrets Manager naming each other, starts **two** broker processes on a
-database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
+services S and T, the GitHub, Google and Microsoft endpoints and the AWS service, the `ca` stand,
+the stand-in of Certificate Authority Service, and the anthropic kind's Admin API at
+`api.anthropic.com` with the IAM `generateIdToken` and Anthropic token exchange the broker mints
+its tokens at), which is a second such process: `dev-broker.sh` starts one too, for the GitHub its
+own `github-app` secrets mint at, and this script points nothing at that one. It then writes a
+profiles file (`BROKER_PROFILES_FILE`, in the kinds form: a `kinds` list of a test kind for each
+stand-in and the `anthropic` kind as the deployment writes it, the `github-app` secret's profile,
+`AIRLOCK_PLAIN_GITHUB` of an untagged copy of that App, and the narrowed anthropic secret's
+profile) and a fake Secrets Manager whose secrets each name their kind in a `proxy` tag, gives the
+`ca` stand the profiles file's hosts as its policy, starts **two** broker processes on a database
+of their own with the whole `BROKER_AIRLOCK_*` block and the proxy chain's settings, puts one TCP
+front
 over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
@@ -157,6 +161,18 @@ token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
 of it with it, so without the renewer a check that holds a grant for longer would
 have its calls refused 407 midway.
 
+Each broker takes its proxy's intermediate from the `ca` stand (`BROKER_PROXY_CA_POOL`,
+`BROKER_PROXY_TEST_CA_URL`), as a production pod takes it from its pool, and the script
+waits for each broker's `proxy intermediate` line: every call a check makes through the
+proxy verifies a chain of test root, test intermediate and leaf. `AIRLOCK_CA_CERT_FILE`
+is a file of the stack's two roots, that test root and the stands' own authority, which
+a client of the stack trusts; `PROXY_ROOT_FILE` is the test root alone. The brokers and
+the `ca` stand date their certificates by one clock file, `PROXY_CLOCK_OFFSET_FILE`
+(`BROKER_PROXY_TEST_CLOCK_OFFSET_FILE`), which holds `0s` until a check writes another Go
+duration into it. `PROXY_CA_URL` and `PROXY_CA_POOL` name the stand and the pool,
+`PROXY_STANDS_CA_CERT_FILE` and `PROXY_STANDS_CA_KEY_FILE` the stands' own authority, which
+a check can mount as a broker's self-signed pair.
+
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
 ```
@@ -167,8 +183,14 @@ directory now does. Each bound host (`s.airlock.test` and the rest) listens on p
 `Host` header is not its CONNECT target and a client writes the port into that
 header for every port but 443. The airlock's secrets are owned by the service the
 enrolled pod runs as, so its requests for them are granted at once; the
-`azure-login` secret is human tier, and the exports name the approver and the
-sign-in URL a check approves it with.
+`azure-login` secret and the two `anthropic-federation` secrets
+(`AIRLOCK_ANTHROPIC_NARROWED`, `proxy-narrowed=true` with one profile of the kind's three
+`allow` rows, and `AIRLOCK_ANTHROPIC_KIND`, with none) are human tier, and the exports
+name the approver and the sign-in URL a check approves them with. `api.anthropic.com`
+resolves to the Admin API stand on 127.0.0.6 (`BROKER_AIRLOCK_TEST_RESOLVE`), and the
+broker mints at the IAM and token exchange stands (`BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL`,
+`BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL`); a POST of `{"expires_in": <seconds>}` to
+`AIRLOCK_ANTHROPIC_ANSWER_URL` changes the lifetime the exchange answers.
 
 Options: `--keep-values` and `--no-kind`, the two negative controls
 (`BROKER_AIRLOCK_TEST_KEEP_VALUES` and `BROKER_AIRLOCK_TEST_NO_KIND`),
@@ -177,9 +199,12 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
-database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the session's renewer, the usage error,
-and the cleanup stopping everything it started — with no real Postgres, no network
+database, each taking its intermediate from the `ca` stand on the one clock file, the stand's
+policy given before the brokers start, the file of both roots, the profiles file in the kinds form
+with every secret but the plain App behind a kind of it by its `proxy` tag, the `anthropic` kind as
+the spec writes it and its two secrets tagged and bound, one front over each pair of ports, the
+options reaching the brokers, the enrolment written beside the session key, the session's renewer,
+the usage error, and the cleanup stopping everything it started — with no real Postgres, no network
 and no Go build; CI runs it in the `envoy-go-checks` job
 (`.github/workflows/ci-job-envoy-go-checks.yaml`).
 
@@ -194,6 +219,57 @@ needs what `dev-airlock.sh` needs, takes the stack's start plus about five minut
 and is not part of CI. Without the renewer, the second call is refused 407 "grant is
 expired, revoked, or its session ended".
 
+## proxy-chain-check.sh
+
+Runs the checks of the proxy's chain on the local stack (`dev-airlock.sh --one-broker`)
+and prints, for each property, what it expected beside what it got, in the same result
+block as `judge-check.sh`. It moves the stack's clock by writing `PROXY_CLOCK_OFFSET_FILE`,
+so it drives days of a broker's life without a restart, and makes each call at a moved
+clock with `openssl s_client` under `agent-secrets`, through the grant's own proxy URL,
+verifying the chain the broker presented against the test root alone at that moment
+(`-attime`). A step that needs another broker starts one beside the stack's, with the stack
+broker's environment (`lib/exec-env.sh`), and points the two fronts at it. The stack's start, its
+banner reading and the extra-broker launch are `lib/check-stack.sh`, which `judge-check.sh`
+sources too; `judge-check.test.sh` tests that file, with no stack, and that `judge-check.sh`'s
+report of a run that evaluated no property says `UNKNOWN` and fails.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/proxy-chain-check.sh [k27|k21|compat]
+```
+
+- `k27`, the default: the first call's leaf chains through an intermediate to the test root
+  and lasts at most 25 hours; at 5 days and 1 minute the broker logs a new intermediate and
+  the call succeeds; with the `ca` stand failing from day 4, the leaf at 6 days and 12 hours
+  ends no later than the old intermediate; when the stand answers again the broker logs a
+  new intermediate; a second process is not ready while the stand fails; a broker rolled onto
+  a profiles file with a new host before the stand's policy names it is not ready, and after
+  the policy is applied the call to the new host succeeds. Its negative control is a broker
+  with `BROKER_PROXY_TEST_RENEWAL_MARGIN=0s`, which at 5 days and 1 minute still signs with its
+  first intermediate and logs no renewal.
+- `k21`: a broker whose mounted `BROKER_AIRLOCK_CA_CERT_FILE` and `BROKER_AIRLOCK_CA_KEY_FILE`
+  are an intermediate and its chain to its root starts, ready, and signs a leaf a client
+  verifies against the root alone; its control, the same intermediate with no chain, is
+  refused at start.
+- `compat`: `agent-secrets` built from a release before the chain (`--old-client-ref`, the
+  newest `legion-envoy-v*` tag by default), given a release that carries two roots
+  (`BROKER_PROXY_RELEASE_ROOTS_FILE`), writes both into its bundle and reaches S through a broker
+  signing under either; its control, a release carrying one root, cannot verify a broker
+  signing under the other.
+
+It ends `check <part>: passed`, `check <part>: failed (<n> of <m>)`, or `check <part>: UNKNOWN`
+when it evaluated no property, and exits 0 only when every property passed. It needs what
+`dev-airlock.sh` needs and openssl 3; `compat` also builds the old client from git. Each bound
+host listens on port 443 of a loopback address, so run it where this user may bind 443 and no
+other stack holds it (a container's network namespace does). `--keep-stack` leaves the stack
+and the run's work directory up.
+
+`proxy-chain-check.test.sh` proves, with no stack, the parts its verdicts rest on: its usage
+errors, `call`'s reading of a transcript shaped like `openssl s_client -showcerts` output, holding
+a chain made there (the client's exit, the HTTP status, the certificates presented, the leaf's
+start and end and the signer's serial), the reading of a broker's `proxy intermediate` lines, the
+clock file, and a report
+that evaluated nothing saying UNKNOWN. CI runs it in the `envoy-go-checks` job.
+
 ## airlock-check.sh
 
 Runs one `before_merge` check of the airlock's verification document
@@ -204,18 +280,49 @@ options that check's negative control asks for), runs the check's steps, runs th
 negative control, stops the stack, and prints a result block to paste into `dispatch
 result` — what the check expected, what this run observed and what the control did —
 then one `PASS:` or `FAIL:` line for each property the check's outcome sentence
-names and one for its control, and last `check <id>: passed` or `check <id>: failed
-(<n> of <m>)`.
+names and one for its control, an `UNKNOWN:` or `DEFERRED:` line for a property this
+head does not build (no pass), and last `check <id>: passed`, `check <id>: failed
+(<n> of <m>)`, or `check <id>: not every property judged (...)`, which exits 3.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k3
 ```
 
-`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8a`, `k9` or `k15`.
+`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8`, `k9`, `k15` or `k47`.
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
 with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run — ten
-minutes of connections and two stacks, about twenty-five minutes in all; every other
-check takes a few minutes.
+minutes of connections and two stacks, about twenty-five minutes in all; `k47` builds
+two control brokers and takes about ten; every other check takes a few minutes.
+
+`k8` runs `envoy-broker profiles check <copy> --against <the head's file> --secrets-json
+<store list>` on ten copies of the stack's profiles file, the store list being the fake
+store's tags in `gcloud secrets list`'s form, since a profile with no `proxy` string takes
+its kind from its source's tag and the check answers 3 without them: a kind with no host,
+a kind's new host, header and variable, a kind's changed `fields` (an `UNKNOWN:` line: the
+named-fields slice builds them), a new row of a kind's `allow`, a new row of a profile's
+`allow` inside its kind's, a kind removed, a kind naming a secret, and a file that is no
+JSON. The removed kind is run twice: against the store as it is, where a secret still
+tagged with that kind is refused and the copy with it, and against the store with that
+kind's secrets untagged, where the copy passes and lists the kind removed. It starts a
+local broker on each failing copy and reads its refusal, then gives a test key a judge
+tag of 1800 seconds and reads the policy load's refusal; the head's file against itself
+and the same key at 900 seconds are its control. The pull request half of k8 is the
+deployment's.
+
+`k47` is the `anthropic` kind's check: it prints the kind, and for each anthropic
+secret approves its grant as the stack's person and sends, with the placeholder as a
+Bearer token, the three requests the kind allows and three it refuses, then reads the
+Admin API stand's, the IAM stand's and the exchange's records, the broker's call and
+mint lines, the command's environment and the release answer. It runs a parent whose
+`NO_PROXY` names `api.anthropic.com` (its control, a grant of another kind, keeps the
+entry), a new grant whose first call meets an exchange that answers an `expires_in` of
+3601, and the rules test on a copy whose kind allows `GET` alone, with
+`--secrets-json` built from the fake store's tags. Its two code controls are brokers
+built from a copy of this module with one defect put in, the kind's `allow` out of the
+decision and the minter's lifetime bound out, started beside the stack's with its
+fronts pointed at them. The `ANTHROPIC_ADMIN_TOKEN` variable is the variables slice's
+and prints as `DEFERRED:`. Every call names the stand's loopback address with curl's
+`--resolve`, so no call reaches Anthropic.
 
 No line it prints is a credential: a value is compared by its SHA-256 (the first 16
 hex digits) and its length, and every line that compares one says so, which is a rule
@@ -226,12 +333,18 @@ Four checks need more than the stack. `k1` scans the command's memory, and
 command may read its `/proc/<pid>/mem`: the scan is a small Python program
 (`scripts/airlock/memscan.py`) that starts `agent-secrets` itself and scans the
 descendant it started. `k6` and `k7` drive real clients and the real consumers:
-`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`, and the
-consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
-`scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
-`sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
-model with `lake`, prints its theorem statements and their axioms, runs the comparison
-fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
+`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`. `k6` signs
+`az` in as an admin `az` command does under its grant (`az login --service-principal`
+with the grant's federated token, in a throwaway `AZURE_CONFIG_DIR`). `k7` runs its
+GitHub admin and Google Workspace calls under `agent-secrets` itself, and `gcloud`
+with the operator's login as its access token file in a throwaway `CLOUDSDK_CONFIG`;
+these are the check's own steps. `k7` fetches `shims/gh`, the two scripts it runs and
+`gws/accounts.json`, whose read tier it reports, from `sjawhar/dotfiles` at main with
+`gh api`. `k15` needs no stack: it builds the Lean model with `lake`, prints its
+theorem statements and their axioms, runs the comparison fuzz test for ten minutes,
+and runs exactly ten mutants through `airlock-mutants.sh`: verification k15's five Go
+mutants and two model mutants, and the kinds slice's `lean-no-widen`, `go-no-widen` and
+`go-override-kind-allow-only`. Each must be caught and no other may run.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
 error (exit 2), reported before setup starts, and so is a broker name that is not
@@ -239,7 +352,7 @@ uppercase letters, digits and single underscores starting with a letter, the one
 the broker reads:
 
 - `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
-  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+  `gcloud` step reads, for example `GCLOUD_OPERATOR`.
 - `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
   read login, for example `GWS_OPERATOR_READ_OAUTH`.
 - `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
@@ -251,10 +364,13 @@ The check uses fake login values in its local store, each stored under the name 
 broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
 identify the consumer's existing broker names and account; they do not rename the
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
-fixture and Google consumer boundary directly under fakes. It checks required inputs,
-fake broker rules, store names and consumer results without starting a stack, k8a's
-broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
-looks az up on PATH again must reach the real az, not the wrapper).
+fixture, GitHub admin and Google consumer boundary directly under fakes. It checks
+required inputs, fake broker rules, store names, the name and reason each nested
+`agent-secrets` call asks with, and consumer results without starting a stack, k8's
+broker start on its own, k6's login steps (the login, the command's exit status and
+the removal of their directory, after a TERM too), k6's az wrapper with an az shim
+first on PATH (a shim that looks az up on PATH again must reach the real az, not the
+wrapper), `approve_record` against a `python3` stand-in of the broker's approval page: it must post back every `printed` and every `profile_digest` field of a page that prints two records, and the same helper without either is refused 403; the file's own EXIT trap, run in a shell of its own under `set -euo pipefail` with a stand-in that is still running and one that has already exited: the shell must end with its own status, 0 or 1, must have stopped the stand-in, and must remove its work directory. It also runs `k47`'s readers (the kind, the broker's lines, the Admin API stand's and the exchange's records, the token search, the `--secrets-json` list and the two control edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or none judged.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -276,7 +392,7 @@ fake Secrets Manager and makes every broker reread it. A control that needs othe
 profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
-it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
+it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8`
 expects to refuse to start — takes its environment from the running stack broker
 (`/proc/<pid>/environ`) with the few variables it must change put in their place, so
 none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
@@ -289,18 +405,20 @@ stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
 `k6` approves its own human-tier grant the way a person does: a pod session has no
 operator, so the run signs in at the stack's issuer, which signs the approver in with
 no page to fill, reads the request's page and posts the decision back with an `Origin`
-header. `k9` runs each broker with `GOMAXPROCS=1` by exporting it into the environment
-it starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
+header and each profile fingerprint the page printed, without which the broker refuses
+the approval as one whose profile changed. `k9` runs each broker with `GOMAXPROCS=1`
+by exporting it into the environment it starts the stack with, since `dev-airlock.sh`
+has no option for it, and reads each
 broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak memory
 from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports as
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
-need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
+`gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
 `agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
-script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
-from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k7`'s consumer files come from
+`sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -320,9 +438,10 @@ one passed, so a reader tells a complete run from a cut-off one.
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-profile-check.sh
 ```
 
-It starts `dev-broker.sh`, whose profiles file names its three `github-app` secrets and
-the two proxied profiles of `DEMO_GITHUB_APP` (`DEMO_GITHUB_READ` and
-`DEMO_GITHUB_ADMIN_READ`), with `DEV_BROKER_GITHUB_PERMISSIONS`, so the App's
+It starts `dev-broker.sh`, whose profiles file declares the kind `github` and names three of
+its `github-app` secrets, and the two proxied profiles (`DEMO_GITHUB_READ` and
+`DEMO_GITHUB_ADMIN_READ`) whose source is `DEMO_GITHUB_APP_PROXIED`, a copy of
+`DEMO_GITHUB_APP` tagged `proxy=github`, with `DEV_BROKER_GITHUB_PERMISSIONS`, so the App's
 installations hold less than the profiles ask for, and `DEV_BROKER_PROXIED_GITHUB_IP`,
 so the stand-in GitHub is served over TLS on port 443 of a loopback address
 (`GITHUB_PROFILE_CHECK_GITHUB_IP`, 127.0.0.9 unless set), where the broker's proxy
@@ -336,8 +455,8 @@ request the stand-in recorded, the broker's left-out lines and the values answer
 `github_left_out`, drives an empty cut (`PROFILE_MINT_REFUSED`, no token request) and a
 token wider than asked (`MINT_FAILED`, given back). `p3` runs a child under each proxied
 profile: its value, sent straight to the stand-in, is refused; its read through the
-proxy reaches the stand-in with a minted token; a `POST`, which the proxy blocks allow
-no profile, is refused by the proxy and reaches nothing; and the stand-in's deploy-key,
+proxy reaches the stand-in with a minted token; a `POST`, which the `github` kind's
+`allow` does not hold, is refused by the proxy and reaches nothing; and the stand-in's deploy-key,
 organization-installations and commit-status routes answer by what the cut left in
 each token. `p4` posts a `github_app` body with `curl` to `POST /v1/requests` and
 `POST /v1/grants/{id}/values`.
@@ -367,7 +486,7 @@ stack.
 Shows on the local stack that a private Dispatch project's secret goes only to a
 credential that names the project (R11 of dispatch://INFRA-3862). It starts one
 `dev-stack.sh --project-access` run, makes `PRIV` private (owner carol, access list
-bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier) and
+bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier, and `proxy=priv`, the kind the stack's profiles file declares) and
 `PUB_KEY` (untagged), and drives six callers. For each it runs `agent-secrets request`
 of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts`,
 which prints the token's `project_scope` and `projects` from the broker's
@@ -394,7 +513,7 @@ Their sessions read no sign-in, so `agent-secrets register --exec` sends them to
 box's helper, which enrolls them under the person's sign-in with the projects the
 session listed.
 
-The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
+The negative control writes `PRIV_KEY` with no project tag; its `proxy` tag stays. Every caller then gets it,
 and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
 it should have been refused: <caller>` (on the right stack, carol's session naming
 nothing):
@@ -513,7 +632,7 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m '-run=^(TestA|TestB)$' ./internal/dispatch/api/
 packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
@@ -530,11 +649,20 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--module-except PATTERN` adds to that one go test every other
-package of the module that `go list ./... | grep -Ev PATTERN` keeps; their skips are not
-counted and they are not held to showing a run, but a failure of theirs fails go test and so the
-count. `--report` reads a `go test -json` report instead and runs nothing, and refuses the five
-options that shape a run.
+run nor counted as a skip. `--count-table` runs every `PACKAGE` and counts the skips of the
+default table's packages among them alone; the others' skips are not counted and they are not
+held to showing a run, but a failure of theirs fails go test and so the count. A run whose
+packages hold none of the table's prints `database_skips=NONE`, not a zero, and passes or fails
+on go test's result. `-run=PATTERN` adds go test's `-run`, in the one shape `.github/scripts/go_legs.py`
+prints for a leg that runs a group of a package's tests, `^(Name|Name|…)$`, each alternative a
+whole test name: `Test`, `Fuzz` or `Example`, then no whitespace and no regex metacharacter, the
+rule `go_legs.py`'s `TEST_NAME` lists tests by. An `EXPECTED_SKIPS` line whose test the package
+still has (`go test -list .` under the run's flags) and the pattern leaves out is another leg's
+and is not held; a line whose test the package no longer has is held, and reads UNKNOWN, in every
+leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a usage error
+before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
+refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
+`--count-table`, `-run`).
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -554,24 +682,36 @@ under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary'
 dump and a data race report among them), the build output and, for a run of its own, go test's
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
-`ci.yaml`'s `envoy-go` job runs the module through it as "Unit test envoy Go package", with
-`--timeout 20m`, `--skip` of the web display fixture's two tests and of the five the job's
-"Count the store-form rows on each backend" runs (`backend-count.sh`, above), `--module-except`
-of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
-time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
-of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
-that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
-package spelled other than canonically is counted;
+`ci.yaml`'s `envoy-go` job runs its unit legs through it as "Unit test envoy Go package", each
+over the packages `.github/go-legs.yaml` lists for that leg, with `--timeout 20m`, `--skip` of
+the web display fixture's two tests, which `envoy-go-build` runs, of the five that
+`envoy-go-skips`' "Count the store-form rows on each backend" runs (`backend-count.sh`, above),
+and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runner nothing else
+loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
+limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
+broker's packages share its `-p` slots with the rest of the leg.
+`envoy-go-race-api` runs the Dispatch API through it in three legs, each piping its group's
+`-run=^(…)$` and `./internal/dispatch/api/` into the second line above's options.
+`database-skips.test.sh` holds it to eight controls, which `envoy-go-skips` runs as "Test the
+database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
+`./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
+UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
+none) is UNKNOWN, a failed test fails, a race report filed under a passed subtest is printed, and
+a skip in a package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and a skip
-planted in a package `--module-except` adds is not counted, where a failure planted there fails
-the count. It needs a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and
-`DISPATCH_TEST_DATABASE_URL`.
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; with
+`--count-table` a skip planted in a package outside the table is not counted, one planted in the
+table's package among them is, a failure planted outside the table fails the count, and a run
+with no package of the table prints `database_skips=NONE`; and with `-run`, a run that leaves most
+expected tests out passes, a line for a test the package does not have reads UNKNOWN and is the
+one named, a name with a non-ASCII letter is taken, and three shapes that are no list of whole
+names are refused, as is `-run` beside `--report`. The eighth holds the test's own output: a
+control that passes prints no line that a reader or a grep of the CI log takes for a test failure
+(`--- FAIL:`, a `FAIL` or `UNFINISHED` line, a panic, a race report), since its planted tests'
+output is printed only beside a control that failed; and each test the script plants is named
+`TestPlanted…`, which it checks against every failed or unfinished test its controls' runs
+printed, so a grep tells a planted failure from a real one. It needs a scratch Postgres named by
+both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 
@@ -592,7 +732,8 @@ packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hoo
 It copies nats-server's module at the version it runs out of the module cache, applies
 `internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
 `testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
-`zz_measure_write.go` (its consumer state writer). It then runs
+`zz_measure_write.go` (its consumer state writer, and on 2.15.1 the duplicate-window hooks, which
+read that version's own fields). It then runs
 `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
@@ -601,7 +742,11 @@ or that holds a replace, is refused, and so is a module whose `go.mod` replaces 
 the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
-place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply`,
+`stream.apply`, and `dedupe.reset` and `dedupe.purged` (2.15.1 alone: a stream update past its
+re-arm of the purge of remembered duplicate ids and before it stores the new window, and a purge
+that has done its work with the dedupe lock held; 2.10.29's purge takes the lock its update holds
+across both steps, so no purge runs between them there);
 `hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
 before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
 hook releases every hold on that server at the first and parks none of its goroutines until the
@@ -624,8 +769,11 @@ line).
 those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
 an empty `-C`, a module that replaces nats-server), with the fixture package
 `internal/testnats/hooktest/skiponly`.
-`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
+forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
+alone, since the listener row would skip there and leave a package whose every forced-order test
+skipped. Its
 `daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
@@ -710,22 +858,41 @@ from that wheel's own requirements.
 
 ## airlock-mutants.sh
 
-Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
-defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
-directory under `$TMPDIR`, applies that one patch there, and requires the copy to
-fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
-a `lean-*.patch` under `lake build` or, when it still builds, that same comparison
-against the mutated model. A mutant nothing catches fails the run.
+Proves that the airlock's differential fuzz test, the Lean proofs, the proxy's own tests and
+the policy's and the request state machine's tests catch a defect. Each file of
+`internal/cipher/proxyrules/testdata/mutants`, `internal/cipher/proxy/testdata/mutants`,
+`internal/cipher/policy/testdata/mutants` and `internal/cipher/requests/testdata/mutants` is one
+defect as a unified diff; for each, the script copies `packages/envoy` to a fresh directory under
+`$TMPDIR`, applies that one patch there, and requires the copy to fail — a `go-*.patch` under the
+comparison fuzz test over the committed seed corpus, a `lean-*.patch` under `lake build` or, when
+it still builds, that same comparison against the mutated model, and a `proxy-*.patch`,
+`policy-*.patch` or `requests-*.patch` under every test its own `# must fail: <Test>` lines name,
+in that package. A `requests-*.patch` needs the Postgres `BROKER_TEST_DATABASE_URL` names. Without
+one it is not run: it prints `UNKNOWN:`, the summary names it, and the run exits 3, so a check that
+reads the exit never takes a mutant nobody ran for a caught one. `--skip-database-mutants` leaves
+those mutants out on purpose: each prints `SKIPPED:`, the summary lists them, and they alone do not
+make the run exit 3. Each `proxy-*`, `policy-*` and `requests-*` mutant's named tests run first on
+an unpatched copy and must pass there: one that fails there (a database that refuses connections,
+a test broken on the head) is reported `UNKNOWN:` and not run, since its failure would read as a
+catch. A run in which no mutant ran exits 3. A mutant nothing catches fails the run.
 
 ```bash
-AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.sh [<name>...]
+AIRLOCK_MODEL=<the built airlock-model> BROKER_TEST_DATABASE_URL=<a Postgres server> \
+  packages/envoy/scripts/airlock-mutants.sh [--skip-database-mutants] [<name>...]
 ```
 
 With no name it runs every mutant; a name is a patch's file name with or without
-`.patch`. It prints one `PASS:` or `FAIL:` line per mutant and exits non-zero when
-any was not caught, 2 when the model mutants need `lake` and it is not installed.
-No patch ever touches this repository.
+`.patch`. It prints one `PASS:`, `FAIL:`, `UNKNOWN:` or `SKIPPED:` line per mutant. It
+exits 1 when any was not caught, else 3 when any was not run or none ran, else 0, and 2 when the
+model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes it
+`BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`. No patch ever touches this
+repository.
+
+`bash packages/envoy/scripts/airlock-mutants-apply.test.sh` checks that every mutant patch of
+those four directories still applies to the tree (`git apply --check -p1`, which writes
+nothing), so a change to the code a patch mutates cannot leave the patch stale unseen. It needs
+no database, model or Lean, and envoy-go-checks runs it. It exits 0 when every patch applies, 1
+naming each one that does not, and 3 when it found no patch.
 
 ## listener-deploy-probe.sh
 
@@ -1490,7 +1657,8 @@ reason names one other issue that covers it: `Duplicate of`, `Duplicate:`, `Fold
 The close reason is the issue's last top-level message posted at or before its close, the message
 `dispatch issue-update --status done --reason` posts just before the close; the `issue.closed`
 event carries no reason. A reason naming only a pull request, several issues or the issue itself
-is not a pair. Two closes naming the same two issues make one pair, by the first close.
+is not a pair. A reason its author deleted since has no words left and is counted as deleted,
+never as no reason. Two closes naming the same two issues make one pair, by the first close.
 
 Each pair's query is its later-filed issue as filed: its first title and first spec version. That
 is the closed issue when the issue its reason names came first (forward), and the named issue
@@ -1498,9 +1666,10 @@ when that came later (reversed). The target, the issue the check should list, is
 its title and spec as of the query's filing. Pairs naming another project's issue, or one that
 does not exist, are counted and left out. It reads with the caller's own token, sends only
 `GET`s, one at a time, and prints counts only: done issues read, close reasons with a wording,
-those that are not a pair by what they name (`no_reference` is a wording followed by no issue or
-pull request), pairs found and kept per wording with forward and reversed, pairs left out by
-reason, chains (a pair's named issue itself closed into another), and issues copied.
+close reasons deleted since, those that are not a pair by what they name (`no_reference` is a
+wording followed by no issue or pull request), pairs found and kept per wording with forward and
+reversed, pairs left out by reason, chains (a pair's named issue itself closed into another), and
+issues copied.
 
 ```bash
 DISPATCH_URL=<server> DISPATCH_TOKEN_FILE=<token file> \
@@ -1558,9 +1727,11 @@ which has no statement pair: it times one whole pass of the release before this 
 pass of this build with no change, and eleven rounds each preceded by a hundred item writes
 outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
 database it measures and leaves them there, so run it after the statement timings.
+Its verdict is the wall time of those passes, which a loaded machine moves as much as the code
+does, so it also needs `DISPATCH_BENCH_TIMING` set, and it skips without it.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> DISPATCH_BENCH_TIMING=1 \
   go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
 ```
 

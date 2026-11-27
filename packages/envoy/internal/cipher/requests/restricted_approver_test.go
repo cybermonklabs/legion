@@ -91,6 +91,26 @@ func requireGrantApprover(t *testing.T, m *Machine, grantID, approver string) {
 	}
 }
 
+// requireMemberKindUnchecked fails t unless grant grantID has exactly one grant.revoked audit row,
+// and that row carries member_kind_unchecked: true where unchecked (the grant's named approver
+// ended it while Dispatch did not answer what kind of member they are), and no such key otherwise.
+func requireMemberKindUnchecked(t *testing.T, m *Machine, grantID string, unchecked bool) {
+	t.Helper()
+	var rows int
+	var got string
+	if err := m.Store.Pool.QueryRow(t.Context(), `select count(*), coalesce(string_agg(coalesce(detail->>'member_kind_unchecked', 'absent'), ','), '')
+		from audit where kind='grant.revoked' and grant_id=$1`, grantID).Scan(&rows, &got); err != nil {
+		t.Fatalf("read grant %s's grant.revoked audit rows: %v", grantID, err)
+	}
+	want := "absent"
+	if unchecked {
+		want = "true"
+	}
+	if rows != 1 || got != want {
+		t.Fatalf("grant %s's grant.revoked audit rows = %d, member_kind_unchecked %q; want one row, %q", grantID, rows, got, want)
+	}
+}
+
 // pendingRecord fails t unless req is pending on a record, and answers that record.
 func pendingRecord(t *testing.T, what string, req Request) string {
 	t.Helper()
@@ -138,7 +158,7 @@ func groupApproverRows(t *testing.T) approverRows {
 func ownerApproverRows(t *testing.T, owner string) approverRows {
 	t.Helper()
 	m, enr, key := newJudgeFixture(t)
-	retag(t, m, policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"))
+	retag(t, m, policytest.Judged(policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"), 900, ""))
 	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
 	pending := newSecretRequest(t, m, "box-pending")
 	rows.pending = *pending.RecordID
@@ -419,6 +439,7 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 			t.Fatalf("RevokeByApprover of their own session's grant by %s while Dispatch is down = %v; want it ended", secondMember, err)
 		}
 		requireRevokedBy(t, m, *own.GrantID, secondMember)
+		requireMemberKindUnchecked(t, m, *own.GrantID, false)
 	})
 	t.Run("while Dispatch cannot say, a member's revoke of the group's grant is refused", func(t *testing.T) {
 		capture := &logtest.Recorder{}
@@ -778,28 +799,30 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // only while Dispatch does not answer, a failure that clears by itself, and only for the person the
 // grant names as its approver. Dispatch not answering is the read's own bound passing, a transport
 // failure before Dispatch's whole answer arrived (a connection it hangs up, an answer cut short, a
-// name server that does not answer in time), a 502, 503 or 504 that names no code of Dispatch's, a
-// gateway's page in front of it, or one of the codes Dispatch answers for its own outage
-// (DATABASE_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE), and a 500 that names no code or Dispatch's
-// INTERNAL, which is how Dispatch answers a read its database failed. The grant's named approver's
-// revoke then ends the grant, and writes one RevokeUncheckedMessage line naming them. Every other
-// failure is an answer that lasts until somebody fixes it, and refuses the revoke as it refuses
-// every other read of a person's member kind: Dispatch answering a member kind this broker does not
-// know, refusing the broker's own account, answering 400, a 500 naming any other code of
-// Dispatch's (IDENTITY_ERROR), a 404 that is no member kind, a 502, 503 or 504 naming any other
-// code of Dispatch's (MEMBER_KIND_UNKNOWN, FEATURE_OFF, GITHUB_APP_UNCONFIGURED), or an answer that
-// does not decode; a certificate that does not verify; and a name that does not resolve. The
-// grant's named approver is then refused *projectaccess.MemberKindUncheckable naming them, in words
-// that end by saying Dispatch answered what the broker cannot read, the grant stays live, and no
-// line is written. So is a revoke whose caller hung up while it read: that says nothing of
-// Dispatch. A revoke through a group or as anyone does not go ahead while Dispatch's person route
-// does not answer, whether the grant's session acts for a person, who ends it as its operator
-// asking nothing, or for nobody, a service's pod: a full member's and a restricted member's alike
-// are refused, in words that say the broker could not ask Dispatch. Once Dispatch answers, a full
-// member ends a service pod's grant through its group or as anyone, as before. A failure an
-// earlier read kept is no answer for the revoke either: it asks Dispatch itself, so a restricted
-// member whose grant list failed to read their kind a moment before is refused once Dispatch
-// answers.
+// name server that does not answer in time), a 408 or a 429 whatever its body names (a proxy that
+// did not take the read in time, Dispatch asking the broker to come back later), a 502, 503 or 504
+// that names no code of Dispatch's, a gateway's page in front of it, or one of the codes Dispatch
+// answers for its own outage (DATABASE_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE), and a 500 that names
+// no code or Dispatch's INTERNAL, which is how Dispatch answers a read its database failed. The
+// grant's named approver's revoke then ends the grant, writes one RevokeUncheckedMessage line
+// naming them, and marks its grant.revoked audit row member_kind_unchecked; the same revoke while
+// Dispatch answers marks nothing. Every other failure is an answer that lasts until somebody fixes
+// it, and refuses the revoke as it refuses every other read of a person's member kind: Dispatch
+// answering a member kind this broker does not know, refusing the broker's own account, answering
+// 400, a 500 naming any other code of Dispatch's (IDENTITY_ERROR), a 404 that is no member kind, a
+// 502, 503 or 504 naming any other code of Dispatch's (MEMBER_KIND_UNKNOWN, FEATURE_OFF,
+// GITHUB_APP_UNCONFIGURED), or an answer that does not decode; a certificate that does not verify;
+// and a name that does not resolve. The grant's named approver is then refused
+// *projectaccess.MemberKindUncheckable naming them, in words that end by saying Dispatch answered
+// what the broker cannot read, the grant stays live, and no line is written. So is a revoke whose
+// caller hung up while it read: that says nothing of Dispatch. A revoke through a group or as
+// anyone does not go ahead while Dispatch's person route does not answer, whether the grant's
+// session acts for a person, who ends it as its operator asking nothing, or for nobody, a service's
+// pod: a full member's and a restricted member's alike are refused, in words that say the broker
+// could not ask Dispatch. Once Dispatch answers, a full member ends a service pod's grant through
+// its group or as anyone, as before, and its audit row marks nothing. A failure an earlier read
+// kept is no answer for the revoke either: it asks Dispatch itself, so a restricted member whose
+// grant list failed to read their kind a moment before is refused once Dispatch answers.
 func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) {
 	answers := func(status int, body string) func(*testing.T, approverRows) {
 		return func(_ *testing.T, r approverRows) { r.dispatch.SetAnswer(status, body); r.asks() }
@@ -820,6 +843,7 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 			t.Fatalf("RevokeByApprover by %s = %v; want it ended", person, err)
 		}
 		requireRevokedBy(t, rows.m, rows.grant, person)
+		requireMemberKindUnchecked(t, rows.m, rows.grant, true)
 		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 1 || lines[0]["person"] != person || lines[0]["level"] != "WARN" {
 			t.Fatalf("the log holds %v of %q; want one WARN line naming %s", lines, RevokeUncheckedMessage, person)
 		}
@@ -836,6 +860,8 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		{"Dispatch answers after the read's bound", func(_ *testing.T, r approverRows) { r.dispatch.SetStall(dispatchRelayWait); r.asks() }},
 		{"Dispatch answers 500 INTERNAL", answers(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal server error"}`)},
 		{"Dispatch answers 500 naming no code", answers(http.StatusInternalServerError, `<html>internal server error</html>`)},
+		{"a proxy in front of Dispatch answers 408", answers(http.StatusRequestTimeout, `<html>408 Request Timeout</html>`)},
+		{"Dispatch answers 429", answers(http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"too many requests; try again in 1s"}`)},
 		{"Dispatch hangs up before it answers", reads(hangingUp)},
 		{"Dispatch's answer is cut short", reads(func(t *testing.T) string {
 			return projectaccesstest.NewRefusing(t, http.StatusOK, projectaccesstest.RefusalCutShort)
@@ -960,6 +986,12 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		{"answers 500 INTERNAL", func(s *projectaccesstest.Server) {
 			s.SetAnswer(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal server error"}`)
 		}},
+		{"answers 408", func(s *projectaccesstest.Server) {
+			s.SetAnswer(http.StatusRequestTimeout, `<html>408 Request Timeout</html>`)
+		}},
+		{"answers 429", func(s *projectaccesstest.Server) {
+			s.SetAnswer(http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"too many requests; try again in 1s"}`)
+		}},
 	} {
 		t.Run("while Dispatch's person route "+outage.name+", the named approver's revoke goes ahead", func(t *testing.T) {
 			rows := ownerApproverRows(t, secondMember)
@@ -982,6 +1014,27 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 			}
 		}
 	}
+	t.Run("while Dispatch answers, the named approver's revoke ends the grant with their member kind read", func(t *testing.T) {
+		rows := ownerApproverRows(t, secondMember)
+		kinds := projectaccesstest.NewServer(t, nil, approverKinds())
+		rows.m.Projects = kindsAskedOf{
+			projects: projectaccess.New(rows.dispatch.URL, rows.dispatch.Account, nil),
+			kinds:    projectaccess.New(kinds.URL, kinds.Account, nil),
+		}
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
+		if err := rows.m.RevokeByApprover(t.Context(), rows.grant, secondMember, record.HumanActor(secondMember)); err != nil {
+			t.Fatalf("RevokeByApprover by %s while Dispatch answers = %v; want it ended", secondMember, err)
+		}
+		requireRevokedBy(t, rows.m, rows.grant, secondMember)
+		requireMemberKindUnchecked(t, rows.m, rows.grant, false)
+		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
+			t.Fatalf("the log holds %v of %q; want none: Dispatch answered", lines, RevokeUncheckedMessage)
+		}
+		if kinds.Calls() == 0 {
+			t.Fatal("Dispatch's person route was never asked: the row is blind")
+		}
+	})
 	for _, arm := range servicePodArms {
 		t.Run("while Dispatch answers, a full member's revoke of "+arm.name+" ends it", func(t *testing.T) {
 			rows := arm.build(t)
@@ -991,6 +1044,7 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 				t.Fatalf("RevokeByApprover by %s while Dispatch answers = %v; want it ended", secondMember, err)
 			}
 			requireRevokedBy(t, rows.m, rows.grant, secondMember)
+			requireMemberKindUnchecked(t, rows.m, rows.grant, false)
 			if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
 				t.Fatalf("the log holds %v of %q; want none: Dispatch answered", lines, RevokeUncheckedMessage)
 			}

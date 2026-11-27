@@ -146,13 +146,13 @@ func TestTheLegionFoldsAnswerTheBaseHeadsReports(t *testing.T) {
 	for _, differ := range check.differ {
 		t.Error(differ)
 	}
-	if check.issues < 200 {
-		t.Errorf("the windows counted %d finished issues, want the at least 200 the check is stated over", check.issues)
+	if len(check.finished) < 200 {
+		t.Errorf("the windows compared %d distinct finished issues, want the at least 200 the check is stated over", len(check.finished))
 	}
 	t.Logf("history %s, %d trees, as of %s (recorded at %s): %d issues closed with facts, %d filings",
 		fixture.Project, spec.Trees, spec.Now.Format(time.RFC3339), windows[0].Head, len(built.facts), len(built.filed))
-	t.Logf("%d windows x %d cuts: %d numbers of the folds and %d of the issue tables compared, %d finished issues counted, %d differ",
-		len(windows), len(windows[0].Scopes), check.folded, check.listed, check.issues, len(check.differ))
+	t.Logf("%d windows x %d cuts: %d numbers of the folds and %d of the issue tables compared, %d distinct finished issues, %d differ",
+		len(windows), len(windows[0].Scopes), check.folded, check.listed, len(check.finished), len(check.differ))
 
 	// The negative control: one day's parts gone, the same comparison must see numbers move.
 	control := time.Date(2026, time.September, 28, 0, 0, 0, 0, time.UTC)
@@ -197,13 +197,14 @@ func goldenFirstOf(lines []string) string {
 }
 
 // goldenCheck is one comparison of the folds with the golden reports: how many numbers of the
-// folds and of the issue tables it compared, how many finished issues the reports counted, and
-// each number that differed.
+// folds and of the issue tables it compared, the distinct issues that closed with facts in the
+// windows it compared in the all cut, and each number that differed.
 type goldenCheck struct {
-	folded, listed, issues int
-	differ                 []string
-	where                  string
-	tables                 bool
+	folded, listed int
+	finished       map[string]struct{}
+	differ         []string
+	where          string
+	tables         bool
 }
 
 func (c *goldenCheck) count() {
@@ -283,7 +284,7 @@ func goldenPartsOf(built window, from, to time.Time, removed *time.Time) goldenP
 // and the facts and filings of the window, with the window's reports. With removed set, the parts
 // of that day are left out of every window, and the facts and filings of the window stay whole.
 func compareGoldenWindows(built window, windows []goldenReports, removed *time.Time) *goldenCheck {
-	check := &goldenCheck{}
+	check := &goldenCheck{finished: map[string]struct{}{}}
 	for _, window := range windows {
 		parts := goldenPartsOf(built, window.Window.From, window.Window.To, removed)
 		var closed []string
@@ -305,7 +306,11 @@ func compareGoldenWindows(built window, windows []goldenReports, removed *time.T
 				continue
 			}
 			check.where = fmt.Sprintf("%s to %s, %s", window.Window.From.Format(time.DateOnly), window.Window.To.Format(time.DateOnly), cut)
-			check.issues += report.Finished
+			if cut == ScopeAll {
+				for _, key := range closed {
+					check.finished[key] = struct{}{}
+				}
+			}
 			check.tables = false
 			compareGoldenFolds(check, parts, cut, report)
 			check.tables = true
@@ -384,7 +389,7 @@ func compareGoldenFolds(check *goldenCheck, parts goldenParts, cut Scope, report
 	// The base head's report counted splitting by the UTC week, the week metric 4 has always
 	// counted by, where the folds answer it by the day: each of the report's weeks is the fold of
 	// the window's parts of that week's days.
-	weeks := goldenSplittingWeeks(parts.splitting, cut)
+	weeks := splittingWeeks(parts.splitting, cut)
 	check.exact("weeks", len(weeks), len(report.Splitting.Weeks))
 	for index, week := range report.Splitting.Weeks {
 		if index >= len(weeks) {
@@ -423,40 +428,6 @@ func compareGoldenFolds(check *goldenCheck, parts goldenParts, cut Scope, report
 		check.exact("the roots cut's finished roots", goldenRoots(split.Roots).FinishedRoots, all.Roots.FinishedRoots)
 		check.exact("the roots cut's children", goldenRoots(split.Roots).Children, all.Roots.Children)
 	}
-}
-
-// goldenWeek is splitting over one UTC week of a window: the Monday the week begins on, and the
-// fold of the parts of its days.
-type goldenWeek struct {
-	start time.Time
-	fold  SplittingFold
-}
-
-// goldenSplittingWeeks is splitting over parts in cut week by week: parts grouped by the UTC
-// Monday their day's week begins on, each group folded (FoldSplitting), oldest first, a week kept
-// where it holds a filing or a finished issue.
-func goldenSplittingWeeks(parts []measures.DayPart, cut Scope) []goldenWeek {
-	byWeek := map[time.Time][]measures.DayPart{}
-	for _, part := range parts {
-		day := part.Day.UTC().Truncate(24 * time.Hour)
-		monday := day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
-		byWeek[monday] = append(byWeek[monday], part)
-	}
-	var weeks []goldenWeek
-	for _, start := range slices.SortedFunc(maps.Keys(byWeek), time.Time.Compare) {
-		fold := FoldSplitting(byWeek[start], cut)
-		if fold == nil {
-			continue
-		}
-		counted := fold.Finished
-		for _, filed := range fold.Filed {
-			counted += filed
-		}
-		if counted > 0 {
-			weeks = append(weeks, goldenWeek{start: start, fold: *fold})
-		}
-	}
-	return weeks
 }
 
 func goldenSamples(fold *SampleFold) *SampleFold {

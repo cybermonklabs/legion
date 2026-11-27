@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -51,6 +52,8 @@ const (
 )
 
 func TestAClosedIssuesOwedSettlementCompletes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in its subtests
+	// settleAfterItsStoreWriteIsRefused and settleAfterTheRoomsPersistenceIsRefused).
 	t.Run("AppendInsideTheCloseMargin", settleAnAppendInsideTheCloseMargin)
 	t.Run("RoomLoad", settleOnARoomLoad)
 	t.Run("Resumption", settleOnTheResumption)
@@ -102,13 +105,13 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Settle:      time.Hour,
 		TestHooks:   true,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
-	t.Cleanup(held.let)
+	testcleanup.Add(t, held.let)
 	server := newTestServer(t, service)
 	createOwedDocument(t, database, service, "CORE-1", artifactID, "spec", closedSettlementText, closedSettlementVersionOne)
 	return closedSettlementFixture{database: database, service: service, server: server, held: held, artifactID: artifactID}
@@ -499,7 +502,7 @@ func (f closedSettlementFixture) watchRefusals(t *testing.T) *refusalWatch {
 			<-watch.release
 		}
 	}
-	t.Cleanup(watch.let)
+	testcleanup.Add(t, watch.let)
 	return watch
 }
 

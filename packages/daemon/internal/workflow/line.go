@@ -69,7 +69,21 @@ func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line
 // rule for the task a run is on), or a step whose role runs as no phase, is an error: no plan
 // this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	return readWalk(ctx, e.store, tx, issue)
+}
+
+// LineOf is the line of phases issue's run walks (Walk.Line), as store holds it in tx: the one
+// order a reader outside the engine names the task's steps in, such as the news of an approved
+// design, whose answer for an issue in accepting names the phases a move back reaches
+// (acceptingAnswer).
+func LineOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]phase.Phase, error) {
+	w, err := readWalk(ctx, store, tx, issue)
+	return w.Line, err
+}
+
+// readWalk is the walk of issue's run as store holds it in tx (walk).
+func readWalk(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (Walk, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return todaysWalk(), err
 	}
@@ -130,8 +144,7 @@ func (w Walk) steps() []phase.Phase {
 // steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
 // which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
-	back := slices.Index(w.Line, to)
-	return back >= 0 && back < slices.Index(w.Line, from)
+	return phase.MovesBackOn(w.Line, from, to)
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
@@ -201,7 +214,10 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 // waits on a person
 // before its first step stands in awaiting_person over the admitted of a task at no act. That root
 // stands there itself: no hold is from awaiting_person, which the issues table refuses
-// (issues_held_from_check), so a hold that names it is refused here too. It reads
+// (issues_held_from_check), so a hold that names it is refused here too. A parent that waits on its
+// open Dispatch children stands in awaiting_children over the phase of the start it holds
+// (record.ChildrenWait.Start), where its task stands (awaitChildren), as a hold overlays the phase
+// it is from: no hold is from awaiting_children either (issues_children_wait_shape). It reads
 // the walk in the caller's transaction, after any move of the task (moveTask), so a write that
 // names its phase itself is checked against the store and not against the caller's copy: one read
 // of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
@@ -222,11 +238,15 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
 		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
+		stands := string(at)
+		switch {
+		case issue.Phase == phase.AwaitingChildren && issue.ChildrenWait != nil:
+			at = issue.ChildrenWait.Start
+			stands = "awaiting_children, holding the start of " + string(at)
+		case at != issue.Phase:
+			stands = "held from " + stands
+		}
 		if at != task && (issue.Phase != phase.AwaitingPerson || task != phase.Admitted) {
-			stands := string(at)
-			if at != issue.Phase {
-				stands = "held from " + stands
-			}
 			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
 				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
 		}

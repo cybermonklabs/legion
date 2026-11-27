@@ -7,11 +7,12 @@ import (
 )
 
 // grow.go holds how an issue's facts grow after the moment they are closed at (ClosedFacts): the
-// one computation a reader of a stored row makes (legionfacts' Row.At), which adds each fact's
-// growth over the time from that moment to the reader's clock, and the rates of it a Legion board
-// entry carries (Rates). Measuring the growth is the computation's (closed.go); this file is the
-// half every reader shares, the names a growth is keyed by, the arithmetic that applies it and
-// the board's reading of those names.
+// one computation a reader of a stored row makes (IssueFacts.Grown, which the reader of the rows
+// a later slice stores calls, dispatch://INFRA-5577), which adds each fact's growth over the time
+// from that moment to the reader's clock, and the rates of it a Legion board entry carries
+// (Rates). Measuring the growth is the computation's (closed.go); this file is the half every
+// reader shares, the names a growth is keyed by, the arithmetic that applies it and the board's
+// reading of those names.
 
 // Growth is how fast each of an issue's facts grows after the moment its facts are closed at, in
 // hours an hour, by the fact's name: its IssueFacts field's name in snake case, and for an entry
@@ -46,11 +47,11 @@ const (
 )
 
 // GrowthRates is how fast the facts a Legion board entry carries grow after the moment they are
-// closed at (api's legionBoardGrowth is this type with JSON names, converted from it, so the two
-// keep one field list): each column's hours, the work time and the slot hours in hours an hour,
-// and how fast the last moment of measured work moves with the clock, 1 while a bar is still open
-// and 0 where it stands. HoursByPhase holds a column only where its hours grow, and is nil where
-// no column's do.
+// closed at (the board of a later slice, dispatch://INFRA-5577, answers this type with JSON
+// names, converted from it, so the two keep one field list): each column's hours, the work time
+// and the slot hours in hours an hour, and how fast the last moment of measured work moves with
+// the clock, 1 while a bar is still open and 0 where it stands. HoursByPhase holds a column only
+// where its hours grow, and is nil where no column's do.
 type GrowthRates struct {
 	HoursByPhase map[string]float64
 	WorkHours    float64

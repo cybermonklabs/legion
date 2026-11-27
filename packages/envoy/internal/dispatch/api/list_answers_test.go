@@ -237,6 +237,8 @@ func TestANewDeliveryAttemptChangesTheCommentListsETagWithNoEventAppended(t *tes
 // come out: the display parser version is hashed into each, so no ETag the build before it gave is
 // matched by this one.
 func TestADeployOfANewDisplayParserVersionChangesBothListETags(t *testing.T) {
+	// Not parallel: it moves the process's display parser version
+	// (pmdoc.SetDisplayTreeVersionForTest).
 	handler := newTestHandler(t)
 	_, comments, feed := listTargets(t, handler, "PRSRL", 2)
 	for _, list := range []struct{ name, target string }{
@@ -453,10 +455,12 @@ func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 }
 
 // A key a new issue takes from an old one is never answered either of the old issue's lists.
-// Both validators stand on counters that start again with the new issue: the feed's on
-// issues.last_seq, a counter of the issue row, and the comment list's on that and on the list's
-// watermark. So two issues of one key, each with one comment, stand at one sequence and one count
-// and would otherwise be given one ETag: the second issue's reader would be answered 304, or
+// Both validators stand on counters a new issue of the key can reach again: the feed's on
+// issues.last_seq, a counter of the issue row that starts again with it, and the comment list's
+// on that and on the list's watermark, which a new issue with no comment keeps at the old count
+// and a database restored under a running server starts again. So two issues of one key, each
+// with one comment over a watermark that started again, stand at one sequence and one count and
+// would otherwise be given one ETag: the second issue's reader would be answered 304, or
 // written the bytes this server kept for the first. The issue's created_at is hashed in beside
 // the counters so neither can happen, which is what the browser harness needs of it - it empties
 // `issues` and restarts each project's numbering between scenarios, under a server process that

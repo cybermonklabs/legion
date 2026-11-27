@@ -12,9 +12,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -103,7 +105,7 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 			cfg.Projects = map[string]config.Project{cfg.Project: config.Project{Memory: tc.memory}}
-			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, cfg.Project, "", lookup(nil), quietLogger())
+			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, cfg.Project, sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
 			}
@@ -301,7 +303,7 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *controller.yml*memory.yml*)\n" +
 		"  echo \"error: Failed to parse config overlay $PI_CONFIG_FILES: SyntaxError\" >&2; exit 1;; esac\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	controller, memory := filepath.Join(dir, "controller.yml"), filepath.Join(dir, "memory.yml")

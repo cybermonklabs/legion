@@ -503,9 +503,9 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 // ReadLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
 // when no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
 // deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
-// deploy reaches back to (ReadDeploys reads a window's shipped sets from it; the day-row refresher
-// asks it whether a deploy can have been the first of its repository to complete, evals'
-// shippedNeighbours).
+// deploy reaches back to (ReadDeploys reads a window's shipped sets from it, and the day rows of
+// cybermonklabs/legion#3976 ask it whether a deploy can have been the first of its repository to
+// complete).
 func ReadLatestShipBefore(ctx context.Context, q Querier, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
 	err := q.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
@@ -602,7 +602,7 @@ func listPullRequests(ctx context.Context, pool *store.Pool, query string, args 
 }
 
 // RunColumns is the delivery_runs select list ScanRun reads, in scan order.
-const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event`
+const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt`
 
 // runCreatedAt is when GitHub created the delivery_runs row r: DeliveryRun.Created in SQL, whose
 // comment says why a row without created_at reads started_at. delivery_runs_kind_created
@@ -621,10 +621,11 @@ func scanRun(row pgx.Row, extra ...any) (DeliveryRun, error) {
 	var run DeliveryRun
 	var kind string
 	var conclusion *string
-	dest := []any{
+	dest := make([]any, 0, 14+len(extra))
+	dest = append(dest,
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
-		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
-	}
+		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event, &run.RunAttempt,
+	)
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryRun{}, err
 	}
@@ -648,8 +649,8 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 		conclusion = &c
 	}
 	_, err := pool.Exec(ctx, `
-		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (repo, run_id) do update set
 			kind = excluded.kind,
 			pr_number = excluded.pr_number,
@@ -661,8 +662,9 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 			conclusion = excluded.conclusion,
 			url = excluded.url,
 			head_branch = excluded.head_branch,
-			event = excluded.event
-	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event)
+			event = excluded.event,
+			run_attempt = excluded.run_attempt
+	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event, run.RunAttempt)
 	return err
 }
 
@@ -943,7 +945,7 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
-// $3, through delivery_run_jobs_failed (migration 20261123235431), the partial index of the failed
+// $3, through delivery_run_jobs_failed (migration 20261126203311), the partial index of the failed
 // jobs alone, keyed by the run. `name <> all($3)` leaves a named job that failed to the read by
 // name (runJobsNamedForRunsQuery), so the two answer no job in common. The failure is written
 // into the statement, not bound, so the planner proves the index's predicate from the statement
@@ -1239,6 +1241,15 @@ func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	return runs, rows.Err()
 }
 
+// runIDsOf is the ids of runs, in order.
+func runIDsOf(runs []DeliveryRun) []int64 {
+	ids := make([]int64, len(runs))
+	for i, run := range runs {
+		ids[i] = run.RunID
+	}
+	return ids
+}
+
 // RunsWithJobs is a list of runs and the jobs read of each, keyed by run id.
 type RunsWithJobs struct {
 	Runs []DeliveryRun
@@ -1270,11 +1281,7 @@ func runsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind Del
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
-	runIDs := make([]int64, len(runs))
-	for i, run := range runs {
-		runIDs[i] = run.RunID
-	}
-	byRun, err := jobs(runIDs)
+	byRun, err := jobs(runIDsOf(runs))
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
@@ -1302,6 +1309,25 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
 	`, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+// listRepoPullRequestsInWindow lists every population pull request of repo merged in [from, to),
+// in ListPullRequestsInWindow's order, up to maxPullRequestsPerWindow: deploysOf's read of
+// Deploys.Earlier, which Containment restricts to the deploy repository so pull requests of other
+// repositories neither enter Earlier nor consume its row limit before a repository's first deploy.
+func listRepoPullRequestsInWindow(ctx context.Context, q Querier, repo string, from, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := q.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where repo = $1 and merged_at >= $2 and merged_at < $3
+		order by merged_at, (repo || '#' || number) collate "C"
+		limit $4
+	`, repo, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+func scanPullRequests(rows pgx.Rows, err error) ([]DeliveryPullRequest, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -1317,10 +1343,10 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 	return prs, rows.Err()
 }
 
-// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate (migration
-// 20261117100010), so the planner proves the index from them and reads the whole of that index,
+// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
+// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
 // which holds the open P0 issues alone, rather than scanning every issue of every project.
-const openP0KeysQuery = `select key from issues where priority = 0 and status <> 'done'`
+const openP0KeysQuery = `select key from issues where ` + openP0Predicate
 
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
 // the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start

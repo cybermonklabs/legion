@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A restart loses the compaction queue, and nothing reopens the documents it held: the sweep of the
@@ -22,11 +23,12 @@ import (
 // than the tail fold into the fold point and the young row stays as written, byte for byte, and the
 // document reads as it did.
 func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	before := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = before.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = before.Shutdown(context.Background()) })
 	foldPoint := writeRoomRows(t, before, artifactID)
 	// The rows are young as the service stops, so its rooms' close compactions leave them; they
 	// come of age while no service runs.
@@ -38,7 +40,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	reading := storedReading(t, NewPgVersioned(database), artifactID)
 
 	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = restarted.Shutdown(context.Background()) })
 	restarted.compactionSweepTick(ctx, excerptLeases(t, database))
 
 	requireCompactedFrom(t, database, artifactID, rows, foldPoint, cursor)
@@ -51,6 +53,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -58,9 +61,9 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = first.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = first.Shutdown(context.Background()) })
 	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = other.Shutdown(context.Background()) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
 	first.compactionSweepTick(ctx, excerptLeases(t, database))
@@ -95,10 +98,11 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 // past the tail, so a compaction would fold them, and fewer than compactMinRows - is left as stored
 // for the queue of whichever process writes or reads it next.
 func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	old := storeAgedRows(t, database, 3, 20*time.Minute)
 	young := storeAgedRows(t, database, 3, 5*time.Minute)
 	oldRows, youngRows := storedRows(t, database, old), storedRows(t, database, young)
@@ -115,6 +119,7 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 // its first, and no other: a document of one row, or of none, has nothing a compaction could fold,
 // and the append of a document's first row names nothing.
 func TestTheCompactionSweepListsADocumentOnceAnAppendGivesItASecondRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	one := storeAgedRows(t, database, 1, time.Hour)
@@ -146,6 +151,7 @@ func TestTheCompactionSweepListsADocumentOnceAnAppendGivesItASecondRow(t *testin
 // point: one that folds every row, all of them old, takes it off, and one that leaves a row younger
 // than the tail above the fold point keeps it there until a later compaction folds that row too.
 func TestACompactionTakesItsDocumentOffTheSweepsListOnceNoRowStaysAboveTheFoldPoint(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	whole := storeAgedRows(t, database, 3, time.Hour)
@@ -173,6 +179,7 @@ func TestACompactionTakesItsDocumentOffTheSweepsListOnceNoRowStaysAboveTheFoldPo
 // A document's deletion and its rebuild, which leaves it one row, each take it off the sweep's
 // list in their own transaction; the rebuilt document's next append names it again.
 func TestDeleteAndRebuildTakeTheDocumentOffTheSweepsList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
@@ -217,10 +224,11 @@ func TestDeleteAndRebuildTakeTheDocumentOffTheSweepsList(t *testing.T) {
 // single row, one whose rows went with its artifact - and keeps a document whose rows after its
 // first are too young to be due, which it leaves as stored.
 func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	pruned := storeAgedRows(t, database, 3, time.Hour)
 	if err := NewPgVersioned(database).PruneAfter(ctx, pruned, 1, nil); err != nil {
 		t.Fatalf("prune to version 1: %v", err)
@@ -271,10 +279,11 @@ func requireOwed(t *testing.T, database *store.Store, what string, want ...strin
 // lists its candidates by reading every document's rows (a scan of doc_updates, by its heap or its
 // primary key) reads at least one row per document, every hour, on a table of production's size.
 func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	const notDue = 2000
 	createDocuments(t, database, notDue)
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -347,10 +356,11 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 // compaction queue, not waited for: the pass goes on and compacts the next document, and the queue
 // compacts the busy one once its lock is free.
 func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 20*time.Millisecond)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -394,5 +404,5 @@ func waitOutTheSweepHour(t *testing.T, database *store.Store) {
 // compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
 // the pass, when this process takes the lease and no process has swept this hour.
 func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+	duty.Exclusive(ctx, nil, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
 }

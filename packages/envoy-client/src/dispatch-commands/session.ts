@@ -5,7 +5,7 @@ import type {
   WhoamiResponse,
 } from "@legion/contracts";
 import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
@@ -49,7 +49,9 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
 
 /**
  * `dispatch whoami`: the identity Dispatch records this session's writes as. It names no owner,
- * so it runs on the session's context alone.
+ * so it runs on the session's context alone. A read-only credential, which Dispatch names by
+ * `read` among its scopes, is told it may only read, with its cut where it has one, in place of
+ * the sentences about the issues it would create.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { input, newClient: dispatchClient } = context;
@@ -64,35 +66,84 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A broker-issued token's project scope; every other credential carries none, and a Dispatch
+  // older than the field leaves it out.
+  const projectScope = identity.kind === "agent" ? (identity.project_scope ?? null) : null;
+  // A Dispatch that predates read-only tokens names no `read` and no cut, and has no read-only
+  // credential to name.
+  const readOnly = identity.scopes?.includes("read") === true;
+  const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
     "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
-  // A broker token is the one credential that proves a session of its own, so a caller that
-  // names a service and proves a session is the kind Dispatch refuses every write with
-  // SIGN_IN_REQUIRED. whoami is where a person asks what their credential may do, so it says
-  // that here rather than describing the issue creation the server would refuse, and it names
-  // the command that gets them a write. A verified service-account token names a service and
-  // proves no session; it writes as before, and keeps the sentence it had.
-  const signInNeeded = owner === null && service !== null && proved !== null;
-  const acting =
+  // Whether Dispatch refuses every write this credential makes until a person signs in on its
+  // machine (SIGN_IN_REQUIRED). Dispatch answers it as sign_in_required, from the same decision
+  // its write check makes, so a job's token and an exchange entry's token that names its account
+  // and no person, whose writes Dispatch records under their service, are not told they may not
+  // write. whoami is where a person asks what their credential may do, so for a caller that is
+  // refused it says so rather than describing the issue creation the server would refuse, and
+  // names the command that gets them a write. A Dispatch that predates the field omits it, and
+  // then the rule that Dispatch kept is read from the shape: a broker token is the one credential
+  // that proves a session of its own, so a caller that names a service and proves a session is
+  // the machine nobody signed in on, which that Dispatch refuses every write. A verified
+  // service-account token names a service and proves no session; it writes as before, and keeps
+  // the sentence it had. A read-only credential is told that it reads only before this is read:
+  // Dispatch answers it false, and no sign-in would let it write.
+  const brokerService = owner === null && service !== null && proved !== null;
+  const answered = identity.kind === "agent" ? identity.sign_in_required : undefined;
+  const signInNeeded = answered ?? brokerService;
+  const writesAsService = brokerService && !signInNeeded;
+  // Who the session is, as each sentence names it: the person it acts for, else the service it
+  // runs as. The text names the identity the way every other surface does; details keeps the
+  // subject whole, because that is the persisted value.
+  const who =
     owner !== null
-      ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
+      ? `acts for ${owner}`
       : service !== null
-        ? // The text names the identity the way every other surface does; details
-          // keeps the subject whole, because that is the persisted value.
-          signInNeeded
-          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
-          : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
-        : `Session ${session} runs under the shared token: ${unowned}`;
-  const elsewhere =
+        ? `runs as service ${serviceSubjectLabel(service)}`
+        : "runs";
+  // The session the credential proved, where it is not this host's.
+  const named =
     proved !== null && proved !== sessionId
-      ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
+      ? ` Your credential names session ${proved}, which is not this host session (${sessionId})`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  let acting: string;
+  let elsewhere =
+    named === "" ? "" : `${named}: Dispatch records every write you make as ${proved}.`;
+  if (readOnly) {
+    // Dispatch refuses every write of a read-only credential with READ_ONLY_TOKEN, before any
+    // other check, so neither the issues it would create nor a sign-in it would need are its
+    // sentence, and it records no write as any session.
+    acting = `Session ${session} ${who} with a read-only credential: it may read, and Dispatch refuses every write it makes.${cut === null ? "" : ` Its cut is ${cut}, the past time it reads Dispatch at.`}`;
+    elsewhere = named === "" ? "" : `${named}.`;
+  } else if (owner !== null) {
+    acting = `Session ${session} ${who}: issues you create without an assignee are assigned to ${owner}.`;
+  } else if (signInNeeded) {
+    acting = `Session ${session} ${who} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else if (writesAsService) {
+    acting = `Session ${session} ${who} and no person, and writes as that service with ${unowned}`;
+  } else if (service !== null) {
+    acting = `Session ${session} ${who}: ${unowned}`;
+  } else {
+    acting = `Session ${session} runs under the shared token: ${unowned}`;
+  }
+  // A token that names a project also writes other projects' objects, as a credential that
+  // names none does, except in a private project it does not name. So the line names the
+  // project and claims no limit on what the token writes. A job's public token and an exchange
+  // entry's token naming its account name no one project, and Dispatch holds them to none: a
+  // job entry's list of private projects limits none of its writes at this release. A read-only
+  // credential's line names none, as it names no write.
+  const projectSentence = readOnly
+    ? ""
+    : project !== null
+      ? ` Its token names project ${project}.`
+      : writesAsService
+        ? " It names no one project, so it may write wherever a token that names no project may."
+        : "";
   return {
-    text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    text: acting + elsewhere + projectSentence,
+    details: { session, owner, service, project, project_scope: projectScope },
   };
 }
 
@@ -198,12 +249,20 @@ function inboxReplyAge(at: string, now: number): string {
 }
 
 /** One unread thread: who owns it, what kind of thread it is, the head of its subject, who wrote
- *  the newest reply and how long ago, and where to read it. */
+ *  the newest reply and how long ago, and where to read it. A thread whose root its author
+ *  deleted has no subject left, and the deleted line every read prints for one (`deletedMark`)
+ *  stands in its place. A thread whose root its author edited carries the mark every line prints
+ *  for one (`editedMark`) after its subject, which is the head of the root's words as they stand. */
 function inboxThreadLine(row: MyReplyRow, now: number): string {
   return [
     `- ${inboxThreadLabel(row)}`,
     row.kind,
-    textHead(row.subject, INBOX_QUESTION_HEAD),
+    ...(row.deleted_at == null
+      ? [
+          textHead(row.subject, INBOX_QUESTION_HEAD),
+          ...(row.edited_at == null ? [] : [editedMark(row.edited_at)]),
+        ]
+      : [deletedMark(row.deleted_at, row.deleted_by)]),
     actorText(row.reply.author),
     inboxReplyAge(row.reply.created_at, now),
     row.ref,
@@ -280,10 +339,11 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * construction because the list is read as `?approver=me`. Its asks are the band's own rows and
  * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
- * page's default view does; counting the rows it prints is therefore the page's rule, and it is
- * the one count that cannot disagree with the lines under it. An expired credential request
+ * page's default view does. The count is the page's rule: those rows plus the pending credential
+ * requests, which are listed under `Credential requests` and not under this heading, so the
+ * count is higher than the rows under it by that number. An expired credential request
  * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
  * though `Credential requests` lists and counts it until somebody dismisses it.
  *

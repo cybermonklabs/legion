@@ -8,7 +8,7 @@
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server, with NATS off.
-// The daemon is the whole daemon (run, through startDaemonWithin) with dispatch_url at that
+// The daemon is the whole daemon (run, through startDaemonLogging) with dispatch_url at that
 // server, so each plan and each rating it writes goes through its outbox and its Dispatch client to
 // the real routes. The issues walk as the package's whole-daemon tests walk them (stepRecordsRig,
 // step_records_test.go, and walkThreeRated, plan_ratings_test.go). The reader is the real
@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -44,6 +45,7 @@ type planRatingsLive struct {
 // its retro, whose completion is refused until it rates the plan. The fourth goes no further than
 // merging, so the read by project lists the three alone.
 func TestPlanRatingsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := &planRatingsLive{newStepRecordsLive(t, "scripts/e2e/plan-ratings.sh", 4, "plans-reader")}
 	keys := make([]string, 0, len(l.issues))
 	for _, issue := range l.issues {
@@ -164,7 +166,7 @@ func (l *planRatingsLive) readScript(issue string) (string, int) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
 	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},

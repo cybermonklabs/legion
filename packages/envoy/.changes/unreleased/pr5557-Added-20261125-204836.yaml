@@ -1,0 +1,30 @@
+kind: Added
+body: |-
+  The secrets broker records the Google account behind each credential a person makes: a sign-in
+  on a machine records the issuer and `sub` of the person's own Google identity token, a machine
+  login records the account that approved it (`approver_issuer` and `approver_subject` in the
+  approve), and an approval-page session records the account that signed in (migration
+  `0047_person_subjects`). A recorded account never changes (`0048_recorded_accounts_unchanged`),
+  and the guards that hold these tables run under a `search_path` of their own, set by the same two
+  migrations. Introspection answers `account_issuer`, `account_subject` and `credential_created_at`
+  beside a token whose credential records them. `POST
+  /v1/person-subjects/revoke` takes an address, the account another account replaced there and the
+  replacement's session generation: it ends every sign-in, machine login and approval-page session
+  that account made under the address, with the tokens each holds, and every one that records no
+  account, and from then on refuses that account's sign-in trade `invalid_grant`, its approval
+  `403 APPROVER_REPLACED` and its approval-page sign-in `403`. `GET /v1/settings` answers
+  `approver_fields: true`. Dispatch does not call the revoke yet.
+
+  A deploy effect: a sign-in on a machine made before this release records no account. Where
+  `BROKER_PROJECT_ACCESS_URL` is set, its next trade ends it, with its launcher credential, every
+  session enrolled under it, their grants and their pending requests, and writes a sign-in of its
+  own recording the trading account (`store.RecordPersonSignIn`, `enroll.RecordPersonSignIn`): the
+  old row cannot show which account made those sessions, and a revoke of that account must still
+  end them. So on the first deploy with the setting, each box signed in with `agent-secrets login`
+  ends its sessions at its next trade, within one access token's life, and enrols again, and each
+  secret only a person approves waits for that person once more. Where the setting is unset, such
+  a sign-in goes on as before, recording no account and ending nothing, and a revoke at its address
+  still ends it.
+time: 2026-11-25T20:48:36Z
+custom:
+    Issue: pr5557

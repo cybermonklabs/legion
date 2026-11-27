@@ -90,12 +90,7 @@ func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dis
 	}
 	hub.server, hub.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
 	dispatchSeed := hub.seeds[dispatch]
-	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return dispatchSeed, true
-		}
-		return "", false
-	}))
+	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(testnats.SeedOnly(dispatchSeed)))
 	if err != nil {
 		t.Fatalf("Dispatch's user creates the stream: %v", err)
 	}
@@ -325,6 +320,7 @@ func nextRelayFrame(t *testing.T, sub *natsgo.Subscription, within time.Duration
 // in its grant the start ends, naming the prefix, since every reply the listener asks for comes
 // under it.
 func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
+	t.Parallel()
 	t.Run("under its grant", func(t *testing.T) {
 		rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 		edge := rig.startEdge(t)
@@ -351,7 +347,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = probe.Flush()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for {
 			logged := rig.violations(t)
 			if slices.ContainsFunc(logged, func(v []string) bool { return v[1] == provoked }) {
@@ -363,7 +359,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server logged no violation naming %s within 10s, so its log was not read", provoked)
+				t.Fatalf("the server logged no violation naming %s in time, so its log was not read", provoked)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -422,6 +418,7 @@ func edgeRoleEnvelope(topic, summary string) contracts.Envelope {
 // spentProofRetention as its age. The edge then starts, and registers its session under a broker
 // token, which records the token's proof in that bucket.
 func TestASharedListenerMakesTheSpentProofBucketAnEdgeListenerStartsAgainst(t *testing.T) {
+	t.Parallel()
 	buckets := slices.DeleteFunc(bus.ListenerBuckets(), func(bucket string) bool { return bucket == bus.DPoPProofBucket })
 	rig := newEdgeLiveRigWithBuckets(t, edgeLiveGrant(t), buckets)
 	shared := rig.startShared(t)
@@ -449,6 +446,7 @@ func TestASharedListenerMakesTheSpentProofBucketAnEdgeListenerStartsAgainst(t *t
 // session. So the first frame the session is relayed is that second message: had the edge taken
 // the first, the first frame would be the first message.
 func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
@@ -491,6 +489,7 @@ func edgeRoleClaim(session string) string {
 // write would be refused by the server, and the claim answered 503 with nothing written
 // (errTakeoverUnrecorded).
 func TestAnEdgeSessionTakesARoleAnotherSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
@@ -516,6 +515,7 @@ func TestAnEdgeSessionTakesARoleAnotherSessionHolds(t *testing.T) {
 // held the role (TestARoleHeldAtTheEdgeIsReachedThroughASharedListener), on the subject and with
 // the role topic that forward carries.
 func TestAnEdgeSessionIsRelayedARoleMessageWhoseRoleAnotherSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)

@@ -121,13 +121,12 @@ func factsAt(population *Population, wanted map[string]bool) map[string]IssueFac
 	return facts
 }
 
-// window is what the Legion evals answer of a population's window in one cut, built the way the
-// refresher builds the day rows and the eval routes fold them (evals/legion_days.go): the facts of
-// every issue that finished in the window (factsAt's entries that closed in [From, To)) and
-// every filing the population read (ProjectFilings), turned into each eval's day parts by the
-// issue's close day and the filing's day, and folded in the cut. finished and filed are the
-// issues and the filings the cut keeps, in the population's order, which the eval items route
-// lists beside the numbers.
+// window is what the Legion evals answer of a population's window in one cut, built the way a
+// later slice of cybermonklabs/legion#3976 builds its stored day rows and folds them: the facts of
+// every issue that finished in the window (factsAt's entries that closed in [From, To)) and every
+// filing the population read (ProjectFilings), turned into each eval's day parts by the issue's
+// close day and the filing's day, and folded in the cut. finished and filed are the issues and
+// the filings the cut keeps, in the population's order.
 type window struct {
 	cut      Scope
 	finished []string
@@ -170,7 +169,7 @@ func windowOf(population *Population, cut Scope) window {
 	slices.SortFunc(days, func(a, b time.Time) int { return a.Compare(b) })
 	for _, day := range days {
 		// Five of the evals have input on a day with a closed issue, and legion-splitting on a
-		// day with a closed issue or a filing, as LegionDay.build writes them.
+		// day with a closed issue or a filing.
 		if finished := closedOn[day]; len(finished) > 0 {
 			w.workTimeParts = append(w.workTimeParts, WorkTimeDay(day, finished)...)
 			w.phaseTimeParts = append(w.phaseTimeParts, PhaseTimeDay(day, finished)...)
@@ -265,18 +264,23 @@ type splitWeek struct {
 	fold  SplittingFold
 }
 
-// weeks is legion-splitting over the window in its cut week by week, the UTC weeks metric 4 has
-// always counted by: the window's parts grouped by the UTC Monday their day's week begins on
-// (mondayOf), each group folded (FoldSplitting), oldest first, a week kept where it holds a
-// filing or a finished issue.
+// weeks is legion-splitting over the window in its cut week by week (splittingWeeks).
 func (w window) weeks() []splitWeek {
+	return splittingWeeks(w.splittingParts, w.cut)
+}
+
+// splittingWeeks is legion-splitting over parts in cut week by week, the UTC weeks metric 4 has
+// always counted by: the parts grouped by the UTC Monday their day's week begins on (mondayOf),
+// each group folded (FoldSplitting), oldest first, a week kept where it holds a filing or a
+// finished issue.
+func splittingWeeks(parts []measures.DayPart, cut Scope) []splitWeek {
 	byWeek := map[time.Time][]measures.DayPart{}
-	for _, part := range w.splittingParts {
+	for _, part := range parts {
 		byWeek[mondayOf(part.Day)] = append(byWeek[mondayOf(part.Day)], part)
 	}
 	var weeks []splitWeek
 	for _, start := range slices.SortedFunc(maps.Keys(byWeek), time.Time.Compare) {
-		fold := FoldSplitting(byWeek[start], w.cut)
+		fold := FoldSplitting(byWeek[start], cut)
 		if fold == nil {
 			continue
 		}

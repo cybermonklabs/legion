@@ -145,11 +145,14 @@ func (a *Admission) Place(key string) (place, length int, ok bool) {
 // not decode as one. The board and one issue's read both take the project's `admission` row
 // through it (api/legion_board.go's observeProject, ReadIssue), so both read a value of another
 // shape as no block: the daemon owns the wire shape, and a reader of one names what it expects
-// rather than trusting it. It is the one decode of the block (ParseAdmission), which the stored
+// rather than trusting it. It is the one decode of the block, which the metrics and the stored
 // per-issue facts read it by too.
 func AdmissionOf(value []byte) *Admission {
-	admission, _ := ParseAdmission(value)
-	return admission
+	var admission Admission
+	if err := json.Unmarshal(value, &admission); err != nil {
+		return nil
+	}
+	return &admission
 }
 
 // Blockers is the issues `admission.blocked` names as holding each issue, by that issue, each list

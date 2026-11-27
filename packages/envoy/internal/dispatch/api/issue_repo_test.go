@@ -266,22 +266,34 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	// The walk's cost is its steps, the rows its recursive term makes (repo_chain): one for each
+	// issue and one per link above it up to the cap, so the issue n links below the root costs
+	// min(n, parentDepthCap)+1 of them. A walk that climbed every chain to its root would make
+	// 2,001,000 here rather than the 65,472 a capped one makes.
+	var steps int
+	if err := database.Pool.QueryRow(ctx, `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		`+refs.IssueRepoTerms+`
+		select count(*) from repo_chain`).Scan(&steps); err != nil {
+		t.Fatalf("count the steps of the walk of %d issues: %v", length, err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '10s'`); err != nil {
-		t.Fatalf("set statement_timeout: %v", err)
+	want := 0
+	for below := range length {
+		want += min(below, parentDepthCap) + 1
+	}
+	if steps != want {
+		t.Fatalf("the walk of a %d-issue chain took %d steps, want %d: one per issue and one per link within %d links above it",
+			length, steps, want, parentDepthCap)
 	}
 	started := time.Now()
-	rows, err := tx.Query(ctx, `
+	rows, err := database.Pool.Query(ctx, `
 		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
 		`+refs.IssueRepoTerms+`
 		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}
+	defer rows.Close()
 	resolved, refused := 0, 0
 	for rows.Next() {
 		var key string
@@ -301,7 +313,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("walk %d issues in a %d-link chain within 10s: %v", length, length-1, err)
+		t.Fatalf("walk %d issues in a %d-link chain: %v", length, length-1, err)
 	}
 	t.Logf("walked %d issues of a %d-link chain in %s", length, length-1, time.Since(started))
 	if resolved != parentDepthCap+1 || refused != length-parentDepthCap-1 {

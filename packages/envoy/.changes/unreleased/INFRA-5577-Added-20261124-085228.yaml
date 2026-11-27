@@ -32,7 +32,7 @@ body: |-
   the project, the issue and the issue's close before and after the write, which wakes the open
   Legion boards of its project and no other view; a filings write logs `issue_filings`, which
   wakes no view. Each server process opens one more connection to Postgres for the consumer's
-  lease: 117.
+  lease: 119.
 time: 2026-11-24T08:52:28Z
 custom:
     Issue: INFRA-5577

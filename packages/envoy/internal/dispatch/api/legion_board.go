@@ -23,11 +23,15 @@
 //     a field a daemon does not send is a field the board has no observation of. Nothing takes a
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
-//   - The columns are the spec's, in one ordered list (legionBoardColumnOrder), and a phase maps
-//     to exactly one of them (legion.PhaseColumns), so the view and metric 2's "no role" bar
-//     agree on where `awaiting_person` and `held` go (the plan's D11). The ids and that table are
-//     the legion package's, since the per-issue facts read them with no card to hand; the labels
-//     here are the view's.
+//   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
+//     added, in one ordered list (legion.Columns), and a phase maps to exactly one of them. The
+//     board and the Legion facts both read legion.Columns: the board draws the columns in its
+//     order and places a card through the waiting line's column rule (legion.WaitingLine,
+//     legion.ColumnOf), which reads legion.PhaseColumns, itself read off it. The ids and that
+//     table are the legion package's, since the per-issue facts read them with no card to hand;
+//     the labels here are the view's. `awaiting_children`, `awaiting_person` and
+//     `held` each have a column of their own here, and metric 2's "no role" bar holds those same
+//     three phases (legion/metrics' bars, which list them themselves; the plan's D11).
 package api
 
 import (
@@ -47,21 +51,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// legionBoardColumnOrder is every column of the board, left to right, with the label the view
-// shows. Every answer carries all of them, empty where nothing is in them, so a page draws the
-// board from the body alone.
-var legionBoardColumnOrder = []struct{ id, label string }{
-	{legion.ColumnQueue, "Queue"},
-	{legion.ColumnDesign, "Design"},
-	{legion.ColumnPlanning, "Planning"},
-	{legion.ColumnImplementing, "Implementing"},
-	{legion.ColumnTesting, "Testing"},
-	{legion.ColumnReviewing, "Reviewing"},
-	{legion.ColumnAccepting, "Accepting"},
-	{legion.ColumnRetro, "Retro"},
-	{legion.ColumnMerging, "Merging"},
-	{legion.ColumnAwaiting, "Waiting on a person"},
-	{legion.ColumnHeld, "Held"},
+// legionBoardColumnLabels is the label the view shows over each column of the board, by the
+// column's id. The board draws every column of legion.Columns, left to right, in every answer,
+// empty where nothing is in it, so a page draws the board from the body alone.
+var legionBoardColumnLabels = map[string]string{
+	legion.ColumnQueue:            "Queue",
+	legion.ColumnDesign:           "Design",
+	legion.ColumnPlanning:         "Planning",
+	legion.ColumnImplementing:     "Implementing",
+	legion.ColumnTesting:          "Testing",
+	legion.ColumnReviewing:        "Reviewing",
+	legion.ColumnAccepting:        "Accepting",
+	legion.ColumnRetro:            "Retro",
+	legion.ColumnMerging:          "Merging",
+	legion.ColumnAwaitingChildren: "Waiting on children",
+	legion.ColumnAwaiting:         "Waiting on a person",
+	legion.ColumnHeld:             "Held",
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -177,12 +182,19 @@ func legionBoardGrowthOf(row legionfacts.Row) (*time.Time, *legionBoardGrowth) {
 	return legionFactTime(&row.AsOf), &growth
 }
 
-// legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
-// trees, the queue's length, the last read of the daemon — when it was made, whether it
-// succeeded and why it did not — and how fresh the stored facts are. SlotCap is null until a
-// read records the daemon's admission block, Trees is 0 until a daemon that reports its live
-// trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
+// legionBoardHeader is what the view's header shows: the slots in use against the cap, the P0
+// holders, the live trees, the queue's length, the last read of the daemon — when it was made,
+// whether it succeeded and why it did not — and how fresh the stored facts are. SlotCap is null
+// until a read records the daemon's admission block, Trees is 0 until a daemon that reports its
+// live trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
 // answered at all, which shows the board with empty columns.
+//
+// P0Holders is the daemon's own number of P0 holders, copied from the newest admission block a
+// read recorded (dispatch://INFRA-5636): a P0 issue holds its slot outside the cap, so this is
+// what tells a reader why SlotsInUse can be more than SlotCap. The board counts none itself. It
+// is null, never 0, where that block gives no number (a daemon before that change sends none)
+// and where no read has recorded a block: 0 would say no P0 issue holds a slot, which nothing
+// read says.
 //
 // The two facts fields are read apart, the first of this project's own rows and the second of the
 // deployment's one consumer, so a reader can tell a project with no Legion work (rows: none,
@@ -190,6 +202,7 @@ func legionBoardGrowthOf(row legionfacts.Row) (*time.Time, *legionBoardGrowth) {
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
+	P0Holders   *int       `json:"p0_holders"`
 	Trees       int        `json:"trees"`
 	QueueLength int        `json:"queue_length"`
 	ReadAt      *time.Time `json:"read_at"`
@@ -209,10 +222,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
-// them; the enum is what makes the generated type carry that set rather than a bare string.
+// the view draws them. ID is one of the twelve columns, in the order legion.Columns lists them;
+// the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
@@ -221,10 +234,11 @@ type legionBoardColumn struct {
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
 // three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
 // PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
-// its tree that its tree has not started, which are on no card of their own. The card carries no
-// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
-// read wrote before then is read by nothing.
+// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
+// links. Children counts the issues of its tree that its tree has not started, which are on no
+// card of their own. The card carries no CI verdict: the daemon's state has none since
+// cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
 	Key        string     `json:"key"`
 	Title      string     `json:"title"`
@@ -640,15 +654,20 @@ func (p *legionBoardPopulation) lineIssue(key string) (legion.LineIssue, bool) {
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
 // column — of both lists only the issues that have not started work, since an issue that has
-// started keeps the column of its phase and carries its place in the line on its card; and
-// otherwise the column its phase falls in. An issue the daemon reports in `admitted` that holds
-// no slot and that neither list names is a child its tree has not started: it is on no card, and
-// the nearest card above it in its tree counts it. Where no issue above it carries a card — its
-// tree climbs through issues the daemon reports nothing of, or through issues whose phase is on
-// no column — it is a card of its own, since a count on an issue the board shows nothing of is a
-// count no reader can see. Where no read has recorded an admission block the waiting line is the
-// same rule read for a reader that knows no line (legion.QueuedUnread), over Dispatch's rank
-// order, which is the order the daemon's own line follows once a root's wait is answered.
+// started keeps the column of its phase and carries its place in the line on its card, and no
+// parent in `awaiting_children`; and otherwise the column its phase falls in. The daemon lists
+// such a parent as blocked on its open children while one is open (dispatch://INFRA-3320, R11),
+// but it waits on them and not on a slot: its card is in Waiting on children for the whole wait,
+// naming its open children while the daemon lists them, and stays there after its last child
+// closes until the pass that returns it (legion.ColumnOf). An issue the daemon reports in
+// `admitted` that holds no slot and that neither list names is a child its tree has not started:
+// it is on no card, and the nearest card above it in its tree counts it. Where no issue above it
+// carries a card — its tree climbs through issues the daemon reports nothing of, or through
+// issues whose phase is on no column — it is a card of its own, since a count on an issue the
+// board shows nothing of is a count no reader can see. Where no read has recorded an admission
+// block the waiting line is the same rule read for a reader that knows no line
+// (legion.QueuedUnread), over Dispatch's rank order, which is the order the daemon's own line
+// follows once a root's wait is answered.
 //
 // Every one of those answers is the waiting line's (legion.WaitingLine), which the stored
 // per-issue facts read as well: the card and the stored row of one issue cannot disagree about
@@ -734,13 +753,13 @@ func (p *legionBoardPopulation) placeCards() map[string][]legionBoardCard {
 // the order the board draws its columns.
 func (p *legionBoardPopulation) shown() (keys, roots []string) {
 	cards := 0
-	for _, column := range legionBoardColumnOrder {
-		cards += len(p.cards[column.id])
+	for _, column := range legion.Columns {
+		cards += len(p.cards[column.ID])
 	}
 	keys, roots = make([]string, 0, cards), make([]string, 0, cards)
 	tree := make(map[string]bool, cards)
-	for _, column := range legionBoardColumnOrder {
-		for _, card := range p.cards[column.id] {
+	for _, column := range legion.Columns {
+		for _, card := range p.cards[column.ID] {
 			keys = append(keys, card.Key)
 			if !tree[card.Tree] {
 				tree[card.Tree] = true
@@ -758,13 +777,13 @@ func (p *legionBoardPopulation) shown() (keys, roots []string) {
 // the board shows, turned into the wire shape and nothing more.
 func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResponse {
 	cards := p.cards
-	columns := make([]legionBoardColumn, 0, len(legionBoardColumnOrder))
-	for _, column := range legionBoardColumnOrder {
-		made := cards[column.id]
+	columns := make([]legionBoardColumn, 0, len(legion.Columns))
+	for _, column := range legion.Columns {
+		made := cards[column.ID]
 		if made == nil {
 			made = []legionBoardCard{}
 		}
-		columns = append(columns, legionBoardColumn{ID: column.id, Label: column.label, Cards: made})
+		columns = append(columns, legionBoardColumn{ID: column.ID, Label: legionBoardColumnLabels[column.ID], Cards: made})
 	}
 
 	header := legionBoardHeader{QueueLength: len(cards[legion.ColumnQueue])}
@@ -784,6 +803,9 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 	if p.admission != nil {
 		header.SlotCap = p.admission.Cap
+		// The daemon's own count, copied as it sent it: nil, and so null, where its block gives
+		// none, never a 0 the board made up.
+		header.P0Holders = p.admission.P0Holders
 		// Trees is the live trees' roots, which only a daemon on dispatch://INFRA-980 reports; it
 		// is 0 for an older one, where the view shows no tree count rather than a wrong one.
 		header.Trees = len(p.admission.Trees)

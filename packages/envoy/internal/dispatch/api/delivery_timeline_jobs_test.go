@@ -32,9 +32,10 @@ type timelineJobsRun struct {
 // deliverytest history, beside which deploy runs are added whose failed jobs are two with a guard
 // among them, the production job and another, guards alone, and one in a run that succeeded, the
 // body deliveryTimelineCompute computes from the population the timeline reads is, for each
-// window, the body it computes from that population with each deploy run's every job
-// (delivery.ListRunJobs) in place of the jobs read, and GET /api/v1/delivery/timeline answers it.
-// The jobs read are fewer than every job, so the read is not every job under another name.
+// window, the body it computes from that population with each apply run's and each window deploy
+// run's every job (delivery.ListRunJobs) in place of the jobs read, and
+// GET /api/v1/delivery/timeline answers it. The jobs read are fewer than every job for both lists,
+// so neither read is every job under another name.
 func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -94,6 +95,18 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 
 	s := directServer(deps)
+	allByRun := map[int64][]delivery.DeliveryRunJob{}
+	loadJobs := func(run delivery.DeliveryRun) []delivery.DeliveryRunJob {
+		if jobs, ok := allByRun[run.RunID]; ok {
+			return jobs
+		}
+		jobs, err := delivery.ListRunJobs(ctx, pool, run.Repo, run.RunID)
+		if err != nil {
+			t.Fatalf("ListRunJobs %d: %v", run.RunID, err)
+		}
+		allByRun[run.RunID] = jobs
+		return jobs
+	}
 	for _, days := range []int{84, 28, 7} {
 		from, to := fixture.To.AddDate(0, 0, -days), fixture.To
 		pop, err := s.readDeliveryPopulation(ctx, fixture.Settings, from, to, url.Values{}, true)
@@ -102,17 +115,24 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 		}
 		every := pop
 		every.jobsByRun = make(map[int64][]delivery.DeliveryRunJob, len(pop.applyRuns))
+		every.windowJobs = make(map[int64][]delivery.DeliveryRunJob, len(pop.windowRuns))
 		read, held := 0, 0
 		for _, run := range pop.applyRuns {
-			jobs, err := delivery.ListRunJobs(ctx, pool, run.Repo, run.RunID)
-			if err != nil {
-				t.Fatalf("%d days: ListRunJobs %d: %v", days, run.RunID, err)
-			}
+			jobs := loadJobs(run)
 			every.jobsByRun[run.RunID] = jobs
 			read, held = read+len(pop.jobsByRun[run.RunID]), held+len(jobs)
 		}
 		if read >= held {
-			t.Errorf("%d days: the timeline read %d jobs of its %d deploy runs, which hold %d: want the production and the failed ones alone, fewer than every job", days, read, len(pop.applyRuns), held)
+			t.Errorf("%d days: the timeline read %d jobs of its %d apply runs, which hold %d: want the production and the failed ones alone, fewer than every job", days, read, len(pop.applyRuns), held)
+		}
+		windowRead, windowHeld := 0, 0
+		for _, run := range pop.windowRuns {
+			jobs := loadJobs(run)
+			every.windowJobs[run.RunID] = jobs
+			windowRead, windowHeld = windowRead+len(pop.windowJobs[run.RunID]), windowHeld+len(jobs)
+		}
+		if windowRead >= windowHeld {
+			t.Errorf("%d days: the timeline's measures read %d jobs of its %d window deploy runs, which hold %d: want the judged production jobs alone, fewer than every job", days, windowRead, len(pop.windowRuns), windowHeld)
 		}
 
 		got := deliveryTimelineCompute(fixture.Settings, pop, from, to, to)

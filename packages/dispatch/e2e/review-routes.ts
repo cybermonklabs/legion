@@ -6,11 +6,13 @@
  *  through `e2e/two-builds-routes.ts`: a page the router adds is reviewed or excluded with a
  *  reason, never silently unreviewed.
  *
- *  This module holds data, locators and the one wait built from them. The visual review runs in
- *  a container that carries no `psql` binary, so nothing here may reach `./psql`, `./seed` or
- *  `./delivery-seed`: its only imports are `@playwright/test` - its types and `expect`, which
- *  `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths, and that
- *  module imports nothing at all. */
+ *  This module holds data, locators, the one wait built from them, and the two sources that wait
+ *  reads requests in flight from: `listedRequests`, Playwright's own list, and
+ *  `trackDocumentRequests`, which opens a CDP session on the test's own page. The visual review
+ *  runs in a container that carries no `psql` binary, so nothing here may reach `./psql`,
+ *  `./seed` or `./delivery-seed`: its only imports are `@playwright/test` - its types and
+ *  `expect`, which `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths,
+ *  and that module imports nothing at all. */
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
@@ -27,9 +29,9 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
-  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
-   *  carries work in flight under it and work parked under it, so both pages draw rows rather
-   *  than the sentence a deployment that has written no priority draws. */
+  /** The priority `/priorities/:id` is opened on: the first of the thirteen `e2e/review-seed.ts`
+   *  writes, which carries work in flight under it and work in backlog under it, so both pages
+   *  draw rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
@@ -117,8 +119,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
-    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`), so the phone row, whose
-    // Inbox is the list of cards alone, has nothing there to wait for.
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`): below it the Inbox lists
+    // short rows and opens none by itself, so the phone row has nothing there to wait for.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
       const wideEnoughForPane = wideLayout(page);
@@ -308,50 +310,74 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-artifact",
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
-    // The document's connection dot, as the issue-spec row reads it and for the same reason:
-    // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    // Two facts. The document's connection dot, as the issue-spec row reads it and for the same
+    // reason: `artifact-header` is drawn while the editor still says "Connecting to the
+    // document…", and `ArtifactHeader.tsx` draws the dot inside that header. And the header with
+    // its arrival ring gone: `ArtifactRoutePanel.tsx` opens every document of this route
+    // highlighted, and the ring (`highlightRing`) stays for 2 s after the header mounts, so a page
+    // that connected inside those 2 s was shot with the ring and one that connected later
+    // without it (CI run 44032912332, dark: the header's border drawn as the ring's sky blue).
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
+    ],
   },
+  // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
+  // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The
+  // page's own heading is on the screen while the priorities read is still out, over `Loading
+  // priorities`, and a fault's tab stands over its table while that fault list's own issue
+  // listing is still out, so each entry waits for a row the seed wrote: the first priority of
+  // the order, the issue active under no priority, and the issue in backlog that advances one.
+  // Each fault list is the Issues table, named by the label the page passes it with " table"
+  // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
+  // change to that corpus fails these entries rather than a baseline.
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
-    // Three facts, because the page draws three tables and a heading proves none of them: the
-    // page's own heading is on the screen while the priorities read is still out, over `Loading
-    // priorities`, and both fault headings stand over their tables while each fault list's own
-    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
-    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
-    // priorities table and both fault lists have their rows rather than their empty words. Each
-    // fault list is the Issues table, named by the label the page passes it with " table"
-    // after it (`features/project/IssuesTable.tsx`). The three issues are
-    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
     ready: (page) => [
-      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^#1 / }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-in-flight",
+    path: () => "/priorities?tab=none",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Active under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-backlog",
+    path: () => "/priorities?tab=backlog",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Priority work in backlog or icebox table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priority",
     path: (seed) => `/priorities/${seed.priority}`,
     pattern: "/priorities/:id",
-    // The title field, which is drawn with the priority itself and not with the skeleton; the
-    // margin's first act, which arrives with the history read beside it rather than with the
-    // page; and the work table's row for the in-flight issue the seed places under this
-    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
-    // alone would be a page whose margin and whose work are both still empty boxes.
+    // The title's heading in the page's header, which is drawn with the priority itself and not
+    // with the skeleton; the margin's first act, which arrives with the history read beside it
+    // rather than with the page; and the work table's row for the in-flight issue the seed places
+    // under this priority, which is a second read again (`advancesIssuesQuery`). A page read on
+    // the title alone would be a page whose margin and whose work are both still empty boxes.
     ready: (page) => [
-      page.getByRole("textbox", { name: "Title" }),
+      page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
       page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
       page
         .getByRole("table", { name: "Priority issues table" })
@@ -401,7 +427,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "settings",
     path: () => "/settings",
     pattern: "/settings",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Settings" })],
+    // The mint form's Set P0 box, which Settings draws only once `GET /api/v1/whoami` has
+    // answered that the person holds `p0` (`web/src/features/settings/AgentTokensSection.tsx`).
+    // The page's heading is drawn while that read is still out, so without this a run can shoot
+    // the page before the box and another after it, against the same baseline.
+    ready: (page) => [
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+      page.getByRole("checkbox", { name: "Set P0 (new token)" }),
+    ],
   },
   {
     kind: "reviewed",
@@ -557,8 +590,14 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
- *  no reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
- *  beside the document.
+ *  no reading pane beside it, the Spec's margin becomes a bottom sheet rather than a column
+ *  beside the document, and every page of the priorities draws its table for a phone. The
+ *  Priorities tab's toolbar stacks its search box over its controls, each at the 44 px a phone's
+ *  target takes, and its table draws each priority as its place beside one cell, which names
+ *  the owner, the three counts and the newest event under the title; each fault tab's table
+ *  keeps the key and the title pinned, the title's filter under its words and the title whole,
+ *  and scrolls its other columns sideways under them; and a priority's own page stands its work
+ *  table, drawn the same way, under its description, with the margin's entries below it.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
  *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last
@@ -603,14 +642,22 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  against it. The accessibility one would otherwise scan that same state: a scan of a
  *  half-resolved page reports findings about a page no reader sees - the contrast of a
  *  skeleton, the name of a chip that is about to be replaced - and misses the findings of the
- *  page a reader does read. */
-export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Promise<void> {
+ *  page a reader does read.
+ *
+ *  `inFlight` is where the Inbox half reads the requests still waiting for their answer: a page
+ *  answered by a real server reads `listedRequests`, and one answered from routes reads
+ *  `trackDocumentRequests`, which says why. */
+export async function waitForRouteSettled(
+  page: Page,
+  route: Pick<ReviewedRoute, "ready">,
+  inFlight: InFlightRequests
+): Promise<void> {
   for (const locator of route.ready(page)) {
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
   await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
-  await waitForInboxCountSettled(page);
+  await waitForInboxCountSettled(page, inFlight);
 }
 
 /** How long the Inbox number has to hold one value, with nothing it is read from in flight, before
@@ -620,21 +667,80 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
  *  longer than that gap, which is tens of milliseconds over a local socket. */
 const INBOX_COUNT_QUIET_MS = 500;
 
-/** Whether `request` feeds the shell's one Inbox number (`web/src/features/inbox/useInboxCount.ts`)
- *  or moves it. The reads are the asks (`GET /api/v1/inbox`) counted for the viewer
- *  `/auth/whoami` names, the pending credential requests, and the unread total of
- *  `GET /api/v1/me/replies`. The writes are the viewer's own read state under `/api/v1/me/`: the
- *  broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`, `useMarkShownRepliesRead`
- *  in `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the
- *  number too. */
-function feedsInboxCount(request: Request): boolean {
-  const { pathname } = new URL(request.url());
+/** Whether a request to `url` feeds the shell's one Inbox number
+ *  (`web/src/features/inbox/useInboxCount.ts`) or moves it. The reads are the asks
+ *  (`GET /api/v1/inbox`) counted for the viewer `/auth/whoami` names, the pending credential
+ *  requests, and the unread total of `GET /api/v1/me/replies`. The writes are the viewer's own read
+ *  state under `/api/v1/me/`: the broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`,
+ *  `useMarkShownRepliesRead` in `web/src/features/agents/unread.ts`) is one, and the reads under
+ *  that prefix answer the number too. */
+function feedsInboxCount(url: string): boolean {
+  const { pathname } = new URL(url);
   return (
     pathname === "/api/v1/inbox" ||
     pathname === "/api/v1/credential-requests" ||
     pathname === "/auth/whoami" ||
     pathname.startsWith("/api/v1/me/")
   );
+}
+
+/** The URLs of the requests a page has in flight that feed the Inbox number. A source may leave
+ *  out a request `feedsInboxCount` rejects, since the wait reads no other. */
+export type InFlightRequests = () => Promise<readonly string[]>;
+
+/** The requests of `page.requests()` - the page's latest hundred, which holds every request
+ *  recent enough to still be waiting - that can still answer: the ones the page's current
+ *  document sent (`requestsOfThisDocument`), each until Playwright has heard that it ended
+ *  (`stillAnswering`). The source of a page a real server answers.
+ *
+ *  `stillAnswering` asks Playwright's server about a request it has not heard the end of, so only
+ *  the requests the wait reads are asked: a page draws a hundred of them and reads the Inbox
+ *  number through four. */
+export function listedRequests(page: Page): InFlightRequests {
+  return async () => {
+    const waiting: string[] = [];
+    // Every request is asked, not only those up to the first still in flight, so the next poll
+    // has heard of each one that has already ended.
+    for (const request of await requestsOfThisDocument(page)) {
+      if (feedsInboxCount(request.url()) && stillAnswering(request)) waiting.push(request.url());
+    }
+    return waiting;
+  };
+}
+
+/** Starts reading `page`'s requests by the document that sent them, and answers the requests in
+ *  flight that the document the page shows now sent. Call it before the page's first load: a
+ *  request sent before it is not seen. Chromium only: it opens a CDP session on the page.
+ *
+ *  A page whose answers come from routes needs it (the layout rows, `e2e/layout-check.ts`). Such
+ *  a page can replace its document on its own after the load - the app reloads when a lazy chunk
+ *  fails to download (`features/shell/DeploymentResilience.tsx`), which a network change on a
+ *  busy host provokes - and a request a route held when its document went stays in
+ *  `page.requests()` for ever, with neither an answer nor a failure, so a wait that read
+ *  `listedRequests` never settled. Traced in dispatch://INFRA-5200's reproduction (the
+ *  issue-spec-outline row repeated 80 times while the host's addresses changed every 150 ms): 10
+ *  rows failed in the wait, each with a replaced document's Inbox reads listed as in flight 15 s
+ *  after the page had loaded again, some of them sent after the next document's own navigation
+ *  request had gone out. The document that sent a request (its `loaderId`) is what tells them
+ *  apart, and only Chromium's own events carry it. */
+export async function trackDocumentRequests(page: Page): Promise<InFlightRequests> {
+  const cdp = await page.context().newCDPSession(page);
+  const inFlight = new Map<string, { readonly document: string; readonly url: string }>();
+  let shown = "";
+  cdp.on("Network.requestWillBeSent", (event) => {
+    inFlight.set(event.requestId, { document: event.loaderId, url: event.request.url });
+  });
+  cdp.on("Network.loadingFinished", (event) => inFlight.delete(event.requestId));
+  cdp.on("Network.loadingFailed", (event) => inFlight.delete(event.requestId));
+  cdp.on("Page.frameNavigated", (event) => {
+    if (event.frame.parentId === undefined) shown = event.frame.loaderId;
+  });
+  await cdp.send("Network.enable");
+  await cdp.send("Page.enable");
+  shown = (await cdp.send("Page.getFrameTree")).frameTree.frame.loaderId;
+  const shownInFlight: InFlightRequests = async () =>
+    [...inFlight.values()].filter((sent) => sent.document === shown).map((sent) => sent.url);
+  return shownInFlight;
 }
 
 /** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
@@ -673,21 +779,15 @@ export function topBarInboxBadge(page: Page): Locator {
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
- *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting. */
-async function waitForInboxCountSettled(page: Page): Promise<void> {
+ *  and the window restarts whenever either fails. The requests in flight come from `inFlight`. */
+async function waitForInboxCountSettled(page: Page, inFlight: InFlightRequests): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
     .poll(
       async () => {
-        const waiting = (await page.requests()).some(
-          (request) =>
-            feedsInboxCount(request) &&
-            request.existingResponse() === null &&
-            request.failure() === null
-        );
+        const waiting = (await inFlight()).some(feedsInboxCount);
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;
@@ -701,4 +801,60 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
       }
     )
     .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);
+}
+
+/** The requests of `page.requests()`'s list, in the order they were sent, that the document
+ *  `page` shows now sent: those after the last navigation request of its main frame. A request
+ *  sent before that belongs to a document that is gone, so it can no longer answer, and nothing
+ *  may say so: Chromium can cancel a request of a document being replaced with neither
+ *  `requestfinished` nor `requestfailed` (e2e/two-builds.multiprocess.e2e.ts met it), and a
+ *  request no one reports ended would hold `stillAnswering`, and this wait, for ever. The app's
+ *  own history navigations send no navigation request and keep their document, so the requests
+ *  sent around them stay this document's. */
+async function requestsOfThisDocument(page: Page): Promise<readonly Request[]> {
+  const requests = await page.requests();
+  const mainFrame = page.mainFrame();
+  let first = 0;
+  for (const [index, request] of requests.entries()) {
+    if (request.isNavigationRequest() && request.frame() === mainFrame) first = index + 1;
+  }
+  return requests.slice(first);
+}
+
+/** Each request `stillAnswering` has asked Playwright's server about: false until the server
+ *  has reported its end, and true after. */
+const endedOnServer = new WeakMap<Request, boolean>();
+
+/** Whether `request` can still answer: neither its response nor its failure has come.
+ *
+ *  Its own `existingResponse()` and `failure()` do not say so on their own. Measured in
+ *  Playwright 1.64.1, a `Request` records its failure only if the test already held that object,
+ *  or something listened for `requestfailed`, when it failed: Playwright's server sends the
+ *  failure of no other request, and `page.requests()` hands a request over with the response it
+ *  has but never with its failure. So a read the page aborted before this wait first listed it
+ *  read as neither answered nor failed for as long as it stayed among the page's latest hundred,
+ *  and the wait never saw its quiet window: 20 of 20 aborted `/api/v1/inbox` reads read back with
+ *  neither, and on `/answers` one read aborted in the page failed this wait after 15,131 ms where
+ *  a `requestfailed` listener let it settle in 935 ms. (A read cut off by a navigation away, which
+ *  `openWithFloats` (e2e/foot-floats.ts) makes two of per route, belongs to a document that is
+ *  gone: `requestsOfThisDocument` leaves it out, and it never reaches this function.) The server
+ *  does hold the end: `request.response()` answers at once with the response of an answered
+ *  request and with null for a failed one. So each request that shows neither is asked once, and
+ *  it counts as in flight until that answer comes. The wait asks every such request of a poll in
+ *  that poll, so however many of them have already ended, they cost it one poll. Asking needs no
+ *  listener installed before the page opens, so every layer that waits here is covered as it
+ *  stands. */
+function stillAnswering(request: Request): boolean {
+  if (request.existingResponse() !== null || request.failure() !== null) return false;
+  const ended = endedOnServer.get(request);
+  if (ended === true) return false;
+  if (ended === undefined) {
+    endedOnServer.set(request, false);
+    const end = () => {
+      endedOnServer.set(request, true);
+    };
+    // Rejected only once the page has closed, which ends the request too.
+    void request.response().then(end, end);
+  }
+  return true;
 }

@@ -33,9 +33,9 @@ type PR struct {
 }
 
 // PROf is pr as the day builders read it, shipped by apply, the production apply that first ships
-// it (delivery.ContainingRun), nil where none does yet: what the delivery and CI day rows and the
-// eval items route build of one stored pull request. pr carries its opening and its merge; a
-// partial row has no lead time to count, and its caller leaves it out.
+// it (delivery.ContainingRun), nil where none does yet: one stored pull request as the day rows
+// and the eval items route of cybermonklabs/legion#3976 build it. pr carries its opening and its
+// merge; a partial row has no lead time to count, and its caller leaves it out.
 func PROf(pr delivery.DeliveryPullRequest, apply *delivery.Apply) PR {
 	measured := PR{
 		ID: pr.Repo + "#" + strconv.Itoa(pr.Number), CreatedAt: *pr.CreatedAt, MergedAt: *pr.MergedAt,
@@ -247,10 +247,10 @@ func windowDays(window Window) []time.Time {
 // The delivery measures' day builders. Each turns one UTC day's rows into its eval's parts of that
 // day: the population pull requests merged that day, the deploy runs on main started that day, and
 // the failed-change flags that count on that day (JudgedFlag.Day). Two kinds of row are not
-// settled when their day is first built, and the day is built again (by the eval_days refresher,
-// for the stored parts) when the run that settles them lands: a pull request with no deploy yet
-// adds nothing to the lead times that end in production, and a deploy run still running neither
-// reached production nor concluded, and the pull requests it will ship count on no run
+// settled when their day is first built, and a store of the parts builds the day again when the
+// run that settles them lands (cybermonklabs/legion#3976's stored day rows): a pull request with no
+// deploy yet adds nothing to the lead times that end in production, and a deploy run still running
+// neither reached production nor concluded, and the pull requests it will ship count on no run
 // (Run.ShippedPRs) until it does.
 
 // DeployFrequencyDay is deploy-frequency's part of one UTC day, from the deploy runs started that
@@ -370,9 +370,17 @@ type JudgedFlag struct {
 	Fix    *PR
 }
 
-// Day is the UTC day a flag counts on: the day its broken PR deployed, so every flag of one deploy
-// counts on one day and the deploy counts once however many flags name it, or, while it has not
-// deployed, the day it merged.
+// Day is the UTC day a flag counts on: the day its broken PR deployed (the deploy's completion), so
+// every flag of one deploy counts on one day and the deploy counts once however many flags name
+// it, or, while it has not deployed, the day it merged.
+//
+// It is the day of the numerator only. ChangeFailureRateDay divides by deploys counted on the day
+// they started and by pull requests counted on the day they merged (deliveryDays), so a deploy
+// that starts before UTC midnight and completes after it counts in a numerator a day after its
+// denominator, and one day's share can pass 1 where the fold of the days that hold both cannot. No
+// failure source exists in this slice (Compute is given no flag), so no part reads this day yet;
+// the failure source that lands settles which day each of the three series counts a flag on, which
+// one Day cannot do for deploys and pull requests at once.
 func (f JudgedFlag) Day() time.Time {
 	if f.Broken.DeployedAt != nil {
 		return Midnight(*f.Broken.DeployedAt)

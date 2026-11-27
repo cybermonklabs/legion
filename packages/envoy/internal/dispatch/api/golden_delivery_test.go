@@ -140,12 +140,14 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
 				// The change failure rate is compared with every other field below; this counts
-				// the values of it that comparison reads.
+				// the values of it that comparison reads, where the recorded answer holds one.
 				failure := func(tree any) any {
 					return tree.(map[string]any)["measures"].(map[string]any)["change_failure_rate"]
 				}
-				read, _ := compareDeliveryOracleTrees(".measures.change_failure_rate", failure(got), failure(want))
-				failureValues += read
+				if rate, held := failure(want).(map[string]any); held && len(rate) > 0 {
+					read, _ := compareDeliveryOracleTrees(".measures.change_failure_rate", failure(got), rate)
+					failureValues += read
+				}
 			}
 			if pipeline {
 				var cells int

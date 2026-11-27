@@ -245,6 +245,9 @@ func speedCorpusReadings(t *testing.T) speedReadings {
 // The page is the heaviest the corpus holds: the chain as deep as the parent-depth cap, the
 // issue that states every priority the store holds, and the issues below both.
 func TestAdvancesListingSpeed(t *testing.T) {
+	// Not parallel: it counts allocations with testing.AllocsPerRun, which counts every goroutine of
+	// the process, and reads the memo measuredSpeedReadings, which speedCorpusReadings writes with no
+	// lock.
 	readings := speedCorpusReadings(t)
 	reference, custom, generic := readings.advancesUnread, readings.advancesCustom, readings.advancesGeneric
 	t.Log(reference.String())
@@ -310,6 +313,9 @@ func TestAdvancesListingSpeed(t *testing.T) {
 // temporary files reads and writes local blocks no count here reads; the timed bound took those
 // in, and no bound holds them now.
 func TestPrioritiesReadSpeed(t *testing.T) {
+	// Not parallel: it counts allocations with testing.AllocsPerRun, which counts every goroutine of
+	// the process, and reads the memo measuredSpeedReadings, which speedCorpusReadings writes with no
+	// lock.
 	readings := speedCorpusReadings(t)
 	paged := readings.pagedIssues
 	for _, read := range []speedRequestWork{paged, readings.prioritiesFull, readings.prioritiesLite} {
@@ -500,7 +506,7 @@ var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", s
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, "", "", limit, offset,
 	}
 }
 

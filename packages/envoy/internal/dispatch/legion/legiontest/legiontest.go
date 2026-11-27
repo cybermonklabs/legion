@@ -3,7 +3,8 @@
 // at once, and a check of them can count nothing until a history that size exists. It is an
 // ordinary package rather than a _test.go file, as store/storetest is, so every package whose
 // tests need such a history can import it (Go cannot share test-only code across packages), and
-// a command can write the same history through Write (evals/evalfixture/cmd).
+// a command can write the same history through Write, as cybermonklabs/legion#3976's loader of
+// its eval checks does.
 //
 // Write stores the rows a running Legion leaves behind: the project and its issues, an event of
 // each role's session, the handoffs, and the observations of the phase, the slot, each role's
@@ -108,13 +109,14 @@ type Spec struct {
 	// IssueOffset is how many of the project's issue numbers another history took already: the
 	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
 	IssueOffset int
-	// Parked has a finished child of every tree sit parked partway through its work, each park
-	// both a Dispatch status and what the daemon observes: in an even tree the implemented child
-	// sits in `icebox` for the two hours between its implementer's handoff and its tester, put
-	// there by a person, and in an odd tree the reviewed child is parked in `backlog` for three
-	// hours of its implementing by its tree's architect, as the daemon's parkChild moves a child.
-	// The sampler records phase `held` over each park, and the phase it returns to after it.
-	Parked bool
+	// InBacklogOrIcebox has one finished child of every tree spend part of its work in `icebox`
+	// or `backlog`, each move both a Dispatch status and what the daemon observes. In an even
+	// tree a person puts the implemented child in `icebox` for the two hours between its
+	// implementer's handoff and its tester. In an odd tree the root's architect moves the reviewed
+	// child to `backlog` for three hours of its implementing, then back. The sampler records phase
+	// `held` over each, then the phase the child goes to next: testing for the implemented child,
+	// implementing again for the reviewed one.
+	InBacklogOrIcebox bool
 	// Merged gives each issue the merger closes (each root and its implemented and reviewed
 	// children) a merged pull request naming it, merged an hour before its close, so the facts
 	// read its merge (metrics' Issue.MergedAt) and store it.
@@ -126,6 +128,12 @@ type Spec struct {
 	// (by_the_controller). A person closes each an hour after it is filed, and no Legion role works
 	// it. They are numbered after every tree's issues, so the trees keep their numbers.
 	Filings bool
+	// AwaitingChildren has each observed root spend hours 40 to 48 of its history in
+	// `awaiting_children` before returning to `accepting` at hour 48. Its open child is still in
+	// `testing` from hour 40 to 44 (attributed to the working child) and sits `held` from hour 44
+	// on with every other child closed, so hours 44 to 48 stand as nonzero `awaiting_children`
+	// hours on the root. Off by default so the golden files keep their recorded rows.
+	AwaitingChildren bool
 }
 
 // spacing is how long before the tree after it each tree opens.
@@ -140,8 +148,10 @@ func (s Spec) spacing() time.Duration {
 type Fixture struct {
 	// Project is the project every issue below belongs to.
 	Project string
-	// Keys is every issue of the history, in the order Write wrote them: each tree's root, then
-	// that tree's children.
+	// Keys is every issue of the history, in the order Write wrote them, tree by tree: each
+	// tree's root, then its five children, then, under Spec.Filings, the three issues Filings
+	// writes for that tree (its implementer's, its reviewer's and the controller's). Those three
+	// are numbered after every tree's issues, so under Filings the keys need not be in number order.
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
@@ -289,7 +299,7 @@ type rows struct {
 // Dispatch learns the session by. Every reader of the phase-work rule resolves a session's newest
 // title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
 // (migration 20261117100015's trigger, which fires for this package's bare inserts too), so the
-// title belongs on the actor of each event it writes; evalbench's load writes its sessions so.
+// title belongs on the actor of each event it writes.
 func SessionActor(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
 		role, issue, "Legion "+role+" · "+issue)
@@ -303,7 +313,9 @@ type phaseMark struct {
 }
 
 // tree writes one root and its five children: one Legion tree from the architect's first comment
-// to the merger's close, with every phase the daemon reports recorded somewhere in it.
+// to the merger's close, with every phase the daemon reports recorded somewhere in it. Under
+// Spec.Filings it also writes the three issues its sessions file, numbered after every tree's
+// issues, two of them with no parent and in no tree.
 //
 // The five children are the five shapes a reader of the facts must handle. The first is
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is
@@ -351,15 +363,23 @@ func (s *seeding) tree(index int) {
 	}
 	s.claim(root, "architect", at(1), at(6))
 	s.claim(root, "planner", at(6), at(8))
-	s.phases(root, at, []phaseMark{
+	rootPhases := []phaseMark{
 		{admitted, legion.PhaseAdmitted},
 		{6, legion.PhasePlanning},
 		{20, legion.PhaseAccepting},
 		{30, legion.PhaseAwaitingPerson},
 		{34, legion.PhaseAccepting},
-		{50, legion.PhaseAwaitingMerge},
-		{56, legion.PhaseDone},
-	})
+	}
+	if s.spec.AwaitingChildren {
+		rootPhases = append(rootPhases,
+			phaseMark{40, legion.PhaseAwaitingChildren},
+			phaseMark{48, legion.PhaseAccepting},
+		)
+	}
+	s.phases(root, at, append(rootPhases,
+		phaseMark{50, legion.PhaseAwaitingMerge},
+		phaseMark{56, legion.PhaseDone},
+	))
 	s.waiting(root, "gate", at(30), at(34))
 
 	// The child the architect filed first: implemented, tested, sent back once and reviewed
@@ -370,9 +390,9 @@ func (s *seeding) tree(index int) {
 	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
-	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
-	// handoff to its tester, a person's park.
-	icebox := s.spec.Parked && index%2 == 0
+	// Under Spec.InBacklogOrIcebox a person puts an even tree's implemented child in `icebox`
+	// between its implementer's handoff and its tester.
+	icebox := s.spec.InBacklogOrIcebox && index%2 == 0
 	if icebox {
 		s.event(implemented, "issue.updated", person, `{"status":"icebox"}`, at(12))
 		s.event(implemented, "issue.updated", person, `{"status":"in_progress"}`, at(14))
@@ -404,9 +424,9 @@ func (s *seeding) tree(index int) {
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
-	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
-	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
-	backlog := s.spec.Parked && index%2 == 1
+	// Under Spec.InBacklogOrIcebox the root's architect moves an odd tree's reviewed child to
+	// `backlog` for three hours of its implementing, then back to `in_progress`.
+	backlog := s.spec.InBacklogOrIcebox && index%2 == 1
 	if backlog {
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
@@ -595,7 +615,7 @@ func (s *seeding) eventPayload(issue, kind string, seq int32, fields string) str
 // CommentID is the id of the comment that the comment event at seq of issue writes. It is a uuid
 // derived from the issue's key and seq under commentNamespace, so it is this rig's own, every
 // seeding of one history writes the same one, and a reader that casts a comment's id to uuid can
-// read it. evalbench's load names its comments by it too.
+// read it.
 func CommentID(issue string, seq int32) string {
 	return uuid.NewSHA1(commentNamespace, fmt.Appendf(nil, "%s/%d", issue, seq)).String()
 }
@@ -759,15 +779,15 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n would
 // refuse the next write the API makes to it.
 //
-// The events are dated in the history's past. A keyword fill serving the database, as a kit's
-// server does when evalfixture loads into it, may have stored a reach above those dates, which
-// says that every event up to it has its keyword rows. Its batches would then log each of these
-// events as a breach of that reach. So where the database has the fill's cursor table (this
-// head's schema; the base head's lacks it), the events statement also nulls the stored reach. The
-// table's migration (20261120021308) names only a reset of the event log as lowering the reach; a
-// seed of events dated in the past is a second case. The reach is nulled in the same statement as
-// the insert, and so in the same transaction, so no fill batch can store a reach between the two.
-// The fill computes the reach again once the events are committed.
+// The events are dated in the history's past. A keyword fill serving the database, as a server
+// does when a command loads this history into it through Write, may have stored a reach above
+// those dates, which says that every event up to it has its keyword rows. Its batches would then
+// log each of these events as a breach of that reach. So where the database has the fill's cursor
+// table (this head's schema; the base head's lacks it), the events statement also nulls the
+// stored reach. The table's migration (20261120021308) names only a reset of the event log as
+// lowering the reach; a seed of events dated in the past is a second case. The reach is nulled in
+// the same statement as the insert, and so in the same transaction, so no fill batch can store a
+// reach between the two. The fill computes the reach again once the events are committed.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {

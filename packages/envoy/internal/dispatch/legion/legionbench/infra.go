@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -110,6 +110,31 @@ func lasting(rng *rand.Rand, median time.Duration, sigma float64) time.Duration 
 // its own.
 func helperActor(n int) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-helper-%02d","origin":{"session_title":"Dispatch helper %02d"}}`, n, n)
+}
+
+// sessionActor is the actor JSON of a Legion role's session working issue, carrying the title
+// Dispatch learns the session by: every reader of the phase-work rule resolves a session's newest
+// title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
+// (migration 20261117100015's trigger), so the title belongs on the actor of each event. It is
+// the shape legiontest.SessionActor writes, held here because a file of this package that is not a
+// test imports no seeder of the test rigs (internal/textcheck's
+// TestOnlyTestFilesImportTheDeliveryAndLegionSeeders).
+func sessionActor(role, issue string) string {
+	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
+		role, issue, "Legion "+role+" · "+issue)
+}
+
+// commentNamespace is the uuid namespace every comment id this history writes is derived under
+// (commentID). It is the value legiontest's rig derives its comment ids under, so a load writes the
+// ids it wrote while this package read them from there.
+var commentNamespace = uuid.MustParse("cd835789-4cf8-41e1-9b33-90c563970371")
+
+// commentID is the id of the comment that the comment event at seq of issue writes: a uuid
+// derived from the issue's key and seq under commentNamespace, so every load of one history
+// writes the same one, and a reader that casts a comment's id to uuid, as the keyword fill does,
+// can read it.
+func commentID(issue string, seq int32) string {
+	return uuid.NewSHA1(commentNamespace, fmt.Appendf(nil, "%s/%d", issue, seq)).String()
 }
 
 // words is the text every body is cut from.
@@ -405,7 +430,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) err
 			route = new("session:s-" + current + "-" + issue.key)
 		}
 		if issue.claimed {
-			claimedBy = new(legiontest.SessionActor(current, issue.key))
+			claimedBy = new(sessionActor(current, issue.key))
 			claimedAt = &issue.stretch[issue.reached-1]
 		}
 		updated := issue.end()
@@ -444,7 +469,7 @@ func (s *eventSource) Values() ([]any, error) {
 		if event.filing {
 			owner = s.history.issues[issue.parent].key
 		}
-		actorJSON = legiontest.SessionActor(roles[event.role], owner)
+		actorJSON = sessionActor(roles[event.role], owner)
 	}
 	at := time.Unix(0, event.at).UTC()
 	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, s.payload(event, issue), false, at, at)
@@ -455,7 +480,7 @@ func (s *eventSource) Values() ([]any, error) {
 // (an issue event's status and a filing's tree, and a comment's body) and the fields that
 // Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
 // versionRules): an issue event's key and the issue's title, the one copyIssues writes, as api's
-// newIssueEventPayload writes them; and a comment's id (legiontest.CommentID) and issue_key. The
+// newIssueEventPayload writes them; and a comment's id (commentID) and issue_key. The
 // fill stops at the first event that lacks a field it needs, an issue event's title or a comment's
 // id or body, and tries that event again, at most a minute apart. It needs no key nor issue_key:
 // where the payload lacks one, issueKeyOf and postVersion read the event's own (events.issue_key).
@@ -480,7 +505,7 @@ func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
 		fields = `"status":"done"`
 	default:
 		key := fmt.Sprintf("%s/%d", issue.key, event.seq)
-		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, legiontest.CommentID(issue.key, event.seq), issue.key,
+		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, commentID(issue.key, event.seq), issue.key,
 			text(key, 120+int(event.seq*37%360)))
 	}
 	return fmt.Sprintf(`{"key":%q,"title":%q,%s}`, issue.key, issue.title(), fields)
@@ -505,7 +530,7 @@ func copyHandoffs(ctx context.Context, pool *store.Pool, history infraHistory) e
 				continue
 			}
 			at := issue.stretch[r+1].Add(-time.Minute)
-			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), legiontest.SessionActor(roles[r], issue.key), at})
+			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), sessionActor(roles[r], issue.key), at})
 		}
 	}
 	slices.SortStableFunc(rows, func(a, b []any) int { return a[5].(time.Time).Compare(b[5].(time.Time)) })

@@ -158,11 +158,11 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	timelineFrame, boardFrame := presetView(deliveryLiveTimeline, 7, ""), legionView("INFRA")
 	timeline := newFakeLiveConn()
 	rig.hub.Subscribe(timeline, subscribeFrame("d", timelineFrame))
-	timeline.snapshot(t, 5*time.Second, "d")
+	timeline.snapshot(t, "d")
 	board := newFakeLiveConn()
 	rig.hub.Subscribe(board, subscribeFrame("b", boardFrame))
-	board.snapshot(t, 5*time.Second, "b")
-	board.freshness(t, 5*time.Second, "the verdict after the board's first snapshot")
+	board.snapshot(t, "b")
+	board.freshness(t, "the verdict after the board's first snapshot")
 	rig.settle(t)
 
 	// INFRA-4 is on the board's cards, and INFRA-99 on none and with no row before its write: a
@@ -177,8 +177,8 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 		shown := rig.mark()
 		writeIssueFacts(t, rig.database, "INFRA", issue, "INFRA-3", workedAt, workedAt.Add(time.Hour), write.closed)
 		rig.hub.catchUpNow()
-		rig.waitFor(t, shown, 5*time.Second, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
-		delta := board.delta(t, 5*time.Second, "b")
+		rig.waitFor(t, shown, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
+		delta := board.delta(t, "b")
 		if _, sent := delta.Maps["issues"][issue]; !sent {
 			t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
 		}
@@ -194,7 +194,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	unshown := rig.mark()
 	writeIssueFacts(t, rig.database, "INFRA", "INFRA-98", "INFRA-98", workedAt, workedAt.Add(time.Hour), new(workedAt.Add(2*time.Hour)))
 	rig.hub.catchUpNow()
-	rig.waitFor(t, unshown, 5*time.Second, "a recompute of the board of INFRA-98's project", recomputeOfView(t, boardFrame))
+	rig.waitFor(t, unshown, "a recompute of the board of INFRA-98's project", recomputeOfView(t, boardFrame))
 	board.none(t, viewMaxWait, "the facts write of INFRA-98, of a tree the board does not show")
 	if n := rig.count(unshown, recomputeOfView(t, boardFrame)); n != 1 {
 		t.Errorf("the facts write of INFRA-98 recomputed the board %d times, want once", n)
@@ -245,7 +245,7 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	var answered struct {
 		Issues map[string]json.RawMessage `json:"issues"`
 	}
-	if err := json.Unmarshal(board.snapshot(t, 5*time.Second, "b").Body, &answered); err != nil {
+	if err := json.Unmarshal(board.snapshot(t, "b").Body, &answered); err != nil {
 		t.Fatalf("read the board's first answer: %v", err)
 	}
 	if _, carried := answered.Issues[issue]; !carried {
@@ -268,8 +268,8 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	written := rig.mark()
 	writeIssueFacts(t, rig.database, "INFRA", issue, issue, workedAt, workedAt.Add(2*time.Hour), nil)
 	rig.hub.catchUpNow()
-	rig.waitFor(t, written, 5*time.Second, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
-	delta := board.delta(t, 5*time.Second, "b")
+	rig.waitFor(t, written, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
+	delta := board.delta(t, "b")
 	if _, sent := delta.Maps["issues"][issue]; !sent {
 		t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
 	}
@@ -340,7 +340,7 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
-	snapshot := conn.snapshot(t, 10*time.Second, "b")
+	snapshot := conn.snapshot(t, "b")
 	var answered struct {
 		Issues map[string]json.RawMessage `json:"issues"`
 	}
@@ -370,7 +370,7 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 
 	started := time.Now()
 	clock.Advance(viewQuiet)
-	delta := conn.delta(t, 30*time.Second, "b")
+	delta := conn.delta(t, "b")
 	took := time.Since(started)
 	conn.none(t, viewMaxWait, "the batch's one delta")
 	recomputes := rig.count(start, recomputeBegin(deliveryCauseChange))
@@ -491,7 +491,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
-	snapshot := conn.snapshot(t, 5*time.Second, "b")
+	snapshot := conn.snapshot(t, "b")
 	var snapped legionBoardResponse
 	if err := json.Unmarshal(snapshot.Body, &snapped); err != nil {
 		t.Fatalf("read the snapshot's body: %v", err)
@@ -525,7 +525,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 	clock.Advance(time.Minute)
 	seedLegionRead(t, rig.database, "INFRA", clock.Now(), "")
 	notifyChannel(t, rig.database, legion.StateChannel, "INFRA")
-	read := conn.delta(t, 5*time.Second, "b")
+	read := conn.delta(t, "b")
 	if entries := read.Maps["issues"]; len(entries) != 0 {
 		t.Fatalf("a recompute a minute later that moved no stored row sent the issues entries %v, want none: an open entry's grown values are no change of its row",
 			slices.Sorted(maps.Keys(entries)))
@@ -552,7 +552,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 		t.Fatalf("write INFRA-3's moved row: %v", err)
 	}
 	rig.hub.catchUpNow()
-	write := conn.delta(t, 5*time.Second, "b")
+	write := conn.delta(t, "b")
 	if sent := slices.Sorted(maps.Keys(write.Maps["issues"])); !slices.Equal(sent, []string{"INFRA-3"}) {
 		t.Fatalf("the write of INFRA-3's row sent the issues entries %v, want INFRA-3's alone", sent)
 	}

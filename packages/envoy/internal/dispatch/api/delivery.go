@@ -383,7 +383,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
 	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
 	//
-	// A timeline request therefore holds up to eight of the shared pool's connections
+	// A timeline request therefore holds up to seven of the shared pool's connections
 	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
 	// window's pull requests beside its runs, and its runs' two reads of jobs, run side by side
 	// within their own read). That is fine because none of them holds a lock or opens a

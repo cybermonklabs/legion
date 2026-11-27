@@ -6,11 +6,15 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -19,9 +23,10 @@ import (
 type bootReads struct {
 	project, operatorToken, dispatchToken string
 	secrets                               map[string]string
-	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
-	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
-	instructions                          []byte         // nil when the configuration names none
+	paneNatsUser                          string             // the pane seed's user's public key, "" with no pane seed
+	nats                                  natsConnection     // the user the daemon's own NATS connection authenticates as
+	privateNameRules                      *leakguard.RuleSet // compiled from the launch secret leakguard.RulesSecret; nil when the deployment names no rule file
+	instructions                          []byte             // nil when the configuration names none
 	variantInstructions                   []variantInstructions
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
@@ -43,15 +48,20 @@ type variantInstructions struct {
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, and the runtime's own reads (readTmux, readSandbox).
+// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the deployment's private-name
+// rule file among them, which it compiles (compilePrivateNameRules), the daemon's own NATS nkey
+// seed (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file,
+// the file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch
+// bearer's file, or under dispatch_token_broker the transition token's file where the
+// configuration names one, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
-// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
-// refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copies and the Dispatch token file, read
-// provider keys from secretsd, and run the plugin gate or the image probe.
+// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
+// whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
+// the identity variables boot trades with and its first trade at the secrets broker are boot's
+// alone (dispatchCredential), so a check reads the file and needs no identity
+// (dispatch://INFRA-4425 R1). What boot does after it is not a check's to do: create the state
+// directory, write the instructions copies and the Dispatch token file, read provider keys from
+// secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
@@ -69,6 +79,13 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if r.secrets, err = readLaunchSecrets(cfg, lookup); err != nil {
 		return bootReads{}, err
+	}
+	// The rule file is compiled from the bytes every launch carries, read once (launchSecrets), so
+	// the rules the daemon's branch create runs and the rules each role runs are one file.
+	if content, named := r.secrets[leakguard.RulesSecret]; named {
+		if r.privateNameRules, err = compilePrivateNameRules(cfg.PrivateNameRulesNamedBy, cfg.PrivateNameRulesFile, content); err != nil {
+			return bootReads{}, err
+		}
 	}
 	paneSeed := r.secrets[natsauth.SeedVariable]
 	if paneSeed != "" {
@@ -122,16 +139,28 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
-	if cfg.DispatchURL != "" {
+	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
+	// beside the broker, so the broker reads no bearer file. A launch's Dispatch credential is the
+	// bearer, or under the broker the role's own trade and the shared token
+	// dispatch_token_transition_file holds ("" with no such file), which a launch into a pod built
+	// before the setting carries and the daemon's own calls never present.
+	credential := sandbox.DispatchCredential{Broker: cfg.DispatchTokenBroker}
+	switch {
+	case cfg.DispatchTokenBroker && cfg.DispatchTokenTransitionFile != "":
+		if credential.Transition, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
+			return bootReads{}, err
+		}
+	case cfg.DispatchURL != "" && !cfg.DispatchTokenBroker:
 		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return bootReads{}, err
 		}
+		credential.Bearer = r.dispatchToken
 	}
 	switch cfg.Runtime.Name {
 	case "tmux":
 		r.tmux, err = readTmux(cfg, lookup, getenv, hostOMP)
 	case "kubernetes":
-		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.paneNatsUser, lookup, log)
+		r.sandbox, err = readSandbox(cfg, r.project, credential, r.paneNatsUser, lookup, log)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}
@@ -255,18 +284,18 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
 // cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
 // fills what the DSN leaves unset from the process's own PG* environment variables, whatever
-// lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
-// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
-// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
-// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
-// the URL rule).
+// lookup holds, as it does at boot. Each such refusal is pgdsn.ConnectError, as store.Open wraps
+// it: a DSN pgx cannot parse is named by its setting alone, with none of pgx's text, since that
+// text quotes the DSN (a keyword DSN's password among it, which pgx masks only when written
+// `password=<value>`); any other refusal names the DSN's address and the driver's detail, never
+// the DSN's password.
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", store.ConnectError(cfg.PostgresDSN, err)
+		return "", "", pgdsn.ConnectError(store.DSNSetting, cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user

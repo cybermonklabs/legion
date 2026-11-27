@@ -1,4 +1,13 @@
-import { beforeEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  beforeAll,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -25,9 +34,16 @@ import type {
   IssueCoverage,
   IssueDetails,
   Project,
+  StatusChangeAnswer,
   UserIssueState,
 } from "../../api/types";
 import { subsetRanges } from "../../fonts/inter/subset-script";
+import {
+  answerStatusChanges,
+  fixtureAnswer,
+  fixtureRefusal,
+} from "../issue/parent-status/status-change-fixtures";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -38,6 +54,12 @@ import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each
@@ -431,6 +453,7 @@ test("the header draws a gated root issue's steps where the header's one chip sa
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -473,6 +496,7 @@ test("the header draws the steps of a root whose parent is in another project", 
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -512,6 +536,7 @@ test("the header keeps the primary document's chip when no gated step reviews it
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -2830,6 +2855,128 @@ test("the actions group closes once a focus moved by code goes to a control outs
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// The rule's question on the new page's header (INFRA-4731): the header draws what the dry run of a
+// status write answers, so a write the rule would refuse never leaves the status pending with
+// nothing on the screen and every later pick refused as one too many.
+
+/** The issue under a parent, so the rule judges each write of its status. */
+const issueUnderAParent: IssueDetails = { ...issue, parent: "CORE-9" };
+
+test("a status pick the rule would refuse asks the question, and Keep as it is puts the status back for the next pick", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) => {
+    // Each choice's own dry run is held: the question is about to be closed unanswered.
+    if (input.include_children === true || input.unlink_children === true) {
+      return new Promise<StatusChangeAnswer>(() => {});
+    }
+    if (input.status === "in_progress") throw fixtureRefusal("conflict");
+    return fixtureAnswer("dry-run");
+  });
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issueUnderAParent,
+    status: "backlog",
+  });
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+    expect(status).toHaveValue("in_progress");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.click(within(question).getByRole("button", { name: "Keep as it is" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // The next pick is taken: its dry run asks nothing, and its PATCH goes.
+    await user.selectOptions(status, "backlog");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
+    );
+    expect(statusChanges).toHaveBeenCalledWith(
+      "CORE-1",
+      { dry_run: true, status: "backlog" },
+      expect.anything()
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a status pick whose dry run is refused for another reason says why, and the status goes back", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const refusal = fixtureRefusal("stale");
+  answerStatusChanges().mockRejectedValue(refusal);
+  const patchIssue = answerIssuePatches();
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    expect(
+      await screen.findByText(`Couldn't change the status of CORE-1 — ${refusal.message}`)
+    ).toHaveAttribute("role", "alert");
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The page takes a pick while an earlier one is out (its select is never disabled), and writes
+// each in the order they came. A pick of an issue under a parent sends the rule's dry run first:
+// a second pick made while that dry run is out shows at once and goes once the first has made its
+// write, as a pick made while a write is out waits behind it in the issue's line.
+test("a second status pick while the first one's dry run is out shows at once, and both are written in order", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const firstCheck = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) =>
+    input.status === "testing" ? firstCheck.promise : fixtureAnswer("dry-run")
+  );
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => ({
+    ...issueUnderAParent,
+    status: input.status ?? issueUnderAParent.status,
+  }));
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "testing");
+    expect(status).toHaveValue("testing");
+    await user.selectOptions(status, "needs_review");
+    expect(status).toHaveValue("needs_review");
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      firstCheck.resolve(fixtureAnswer("dry-run"));
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue.mock.calls.map(([, input]) => input)).toEqual([
+      { status: "testing" },
+      { status: "needs_review" },
+    ]);
+    expect(statusChanges.mock.calls.map(([, input]) => input.status)).toEqual([
+      "testing",
+      "needs_review",
+    ]);
+    await waitFor(() => expect(status).toHaveValue("needs_review"));
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -75,7 +76,9 @@ func newControllerStartCommand(stderr, attempts io.Writer) *cobra.Command {
 		}
 		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr, attempts)
 		if err != nil {
-			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
+			// Through the URL rule (printRefusal): a refusal that names the daemon names daemon_url
+			// as written, and a *url.Error masks only its password.
+			printRefusal(stderr, "legion controller start", err)
 			return 1
 		}
 		return code
@@ -208,8 +211,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	// the daemon's own NATS seed, which an operator shell that also runs a daemon may export, is
 	// dropped by value and by pointer; its pane seed pointer is the controller's set's. A pane's boot
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
-	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
-	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
+	// controller carrying one for a controller the daemon launched (`controller: daemon`). So is the
+	// table of every role's identity such a start inherits (runtime.RoleIdentitiesVariable): a
+	// controller pushes nothing, and its process has no table, as the daemon's controller has none.
+	// So are the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
 	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
 	// told: this controller resumes no recorded session, and an inherited value would stop it where
@@ -234,6 +239,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	delete(env, natsauth.DaemonSeedFileVariable)
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
+	delete(env, runtime.RoleIdentitiesVariable)
 	delete(env, "LEGION_SLACK_CHANNELS")
 	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
@@ -256,10 +262,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		return 0, err
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
-		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
+		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
+		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)
@@ -337,7 +343,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	defer func() { _ = os.Remove(promptFile) }()
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
-	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)
+	// daemon_url without its userinfo (redact.URL, which reads it as a URL, so a "'" in a password
+	// does not end it early): the line is the operator's terminal's, and the scrollback outlives
+	// the run.
+	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, redact.URL(cfg.DaemonURL), stateDir)
 	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
 	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to
 	// handle, while this process, whose signals main has already caught, waits for its exit.
@@ -501,14 +510,14 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {
-		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
-		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", daemonURL, status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", redact.URL(daemonURL), status, strings.TrimSpace(string(body)))
 	}
 	var state struct {
 		Repositories *api.RepositoriesView `json:"repositories"`
@@ -567,7 +576,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	const route = "/legion/v1/controller/secret"
 	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
 		var refused legionclaim.Refusal

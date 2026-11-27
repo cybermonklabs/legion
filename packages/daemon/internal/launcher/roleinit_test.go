@@ -23,6 +23,7 @@ import (
 	"unsafe"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
 )
 
@@ -82,6 +83,7 @@ type agentPlan struct {
 // TestRoleNamespaceProbeHelper is the probe itself: cloned into a role's namespaces, it does the
 // first thing role-init does there. A machine may allow the namespaces and refuse the mounts.
 func TestRoleNamespaceProbeHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	dir := os.Getenv(roleProbeEnv)
 	if dir == "" {
 		return
@@ -109,6 +111,7 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 // its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
 // nothing of the role is left, not even a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -329,6 +332,7 @@ func reported(output string) map[string]string {
 // carry, starts a process outside the role's namespaces, runs role-init over that layout, and
 // reports what the container can see once the role is gone.
 func TestRoleInitStageHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitStageEnv)
 	if encoded == "" {
 		return
@@ -1192,6 +1196,7 @@ func procStat(pid string) (string, string, error) {
 // role's namespaces, which reports what the role can reach and leaves a detached process behind.
 // Every line it prints carries its generation's label, so the stage's two runs read apart.
 func TestRoleInitAgentHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitAgentEnv)
 	if encoded == "" {
 		return
@@ -1487,6 +1492,13 @@ exit 0`
 	return remount, strings.TrimSpace(swap), oneLine(after)
 }
 
+// oneLine is a report as one line of the test's output carries it: its lines, each trimmed and
+// the empty ones dropped, joined with "; " (workspace.OutputLines), however many lines the file or
+// the command it came from wrote.
+func oneLine(report string) string {
+	return strings.Join(workspace.OutputLines(report), "; ")
+}
+
 // fileKind is what Lstat finds at path, never following a link: `regular` for a regular file, the
 // file's type otherwise, and the error's text where there is nothing to read.
 func fileKind(path string) string {
@@ -1506,8 +1518,13 @@ func fileKind(path string) string {
 // answers `uncovered`, read in the namespace where the unmount happened. A probe that read the
 // sibling from its caller's namespace, where the cover never left, answered `refused` here.
 func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
+	t.Parallel()
 	if dir := os.Getenv(uncoverControlEnv); dir != "" {
 		if err := privateMounts(); err != nil {
+			fmt.Println("control error:", err)
+			os.Exit(1)
+		}
+		if err := stageOwnProc(); err != nil {
 			fmt.Println("control error:", err)
 			os.Exit(1)
 		}
@@ -1531,12 +1548,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 	}
 	control := exec.Command(self, reentry(t, "TestTheUncoverProbeReportsAnUnlockedCoverRemoved")...)
 	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir())
-	control.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	control.SysProcAttr = roleStageAttr()
 	output, err := control.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the control: %v\n%s", err, output)
@@ -1701,8 +1713,12 @@ const roleCheckEnv = "LEGION_ROLE_INIT_TEST_CHECK"
 // pod's sits on a volume of its own: role-init covers the roles directory after it has given the
 // role its own /tmp.
 func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
+	t.Parallel()
 	if dir := os.Getenv(roleCheckEnv); dir != "" {
 		err := privateMounts()
+		if err == nil {
+			err = stageOwnProc()
+		}
 		if err == nil {
 			err = mountTmpfs(dir, "size=16m")
 		}
@@ -1728,12 +1744,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	}
 	check := exec.Command(self, reentry(t, "TestTheRoleNamespaceCheckRunsARoleGeneration")...)
 	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t))
-	check.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	check.SysProcAttr = roleStageAttr()
 	output, err := check.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the check's helper: %v\n%s", err, output)
@@ -1760,6 +1771,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 // a file's. A file already at a file's mount point is left as it is. An entry in the way that is
 // neither a directory nor a link is refused, and so is a target outside the root.
 func TestAMountPointsPlaceFollowsNoLinkARoleLeft(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, elsewhere := filepath.Join(dir, "home"), filepath.Join(dir, "roles", RoleHomesDir, "b")
 	for _, path := range []string{root, elsewhere} {
@@ -1825,6 +1837,8 @@ func TestAMountPointsPlaceFollowsNoLinkARoleLeft(t *testing.T) {
 // directory where a file's mount point goes. No walk here, refused or not, leaves a descriptor
 // behind.
 func TestAMountPointsPlaceRereadsAnEntryThatChangedUnderTheWalk(t *testing.T) {
+	// Not parallel: it reads every descriptor of the whole process (descriptorsKept), so a parallel
+	// test's open file would read as a descriptor the walk left behind.
 	dir := t.TempDir()
 	root, elsewhere := filepath.Join(dir, "home"), filepath.Join(dir, "elsewhere")
 	for _, path := range []string{root, elsewhere} {
@@ -1926,14 +1940,15 @@ func openDescriptors(t *testing.T) map[int]string {
 // descriptorsKept reports what the call between the two snapshots left open, as a set and never
 // as a count: a descriptor open after it, on a target that was not open on that number before
 // it, is one the call opened and did not close. It reads the whole process, so it holds only
-// while nothing else opens a descriptor in the window: no test of this package runs in parallel,
-// and every goroutine a test starts ends with that test. That is why it checks this direction
-// alone: a descriptor vanishing between the snapshots is no finding, because the finaliser of a
-// file an earlier test left unreferenced closes it at whatever garbage collection lands in the
-// window (measured, with the two snapshots around a runtime.GC()), and a finaliser closes where
-// it never opens.
+// while nothing else opens a descriptor in the window: its caller must run beside no other test,
+// which requireRunsAlone checks first, and every goroutine a test starts ends with that test.
+// That is why it checks this direction alone: a descriptor vanishing between the snapshots is no
+// finding, because the finaliser of a file an earlier test left unreferenced closes it at whatever
+// garbage collection lands in the window (measured, with the two snapshots around a runtime.GC()),
+// and a finaliser closes where it never opens.
 func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
 	t.Helper()
+	requireRunsAlone(t, "descriptorsKept")
 	for number, target := range after {
 		if held, ok := before[number]; !ok || held != target {
 			t.Errorf("%s left descriptor %d open on %s, want every handle it opened closed", label, number, target)
@@ -1947,6 +1962,7 @@ func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
 // again from the pod's shared one, and so is a link at its path, which is removed without touching
 // what it named. A finished copy is the role's own from then on: what the role wrote there stays.
 func TestAnOwnConfigHomeWithoutItsMarkerIsMadeAgain(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	shared, own, elsewhere := filepath.Join(dir, "shared"), filepath.Join(dir, "own"), filepath.Join(dir, "elsewhere")
 	for path, body := range map[string]string{
@@ -2003,6 +2019,7 @@ func TestAnOwnConfigHomeWithoutItsMarkerIsMadeAgain(t *testing.T) {
 // Never prove the option by running TestARoleRunsInNamespacesOfItsOwn against a head without it:
 // under gVisor that ends the pod's sandbox rather than failing a test.
 func TestARoleHomeLayerIsMountedWithUserxattr(t *testing.T) {
+	t.Parallel()
 	homes := filepath.Join("/roles", RoleHomesDir, "a")
 	home, upper, work := Home, filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
 	options := homeOverlayOptions(home, upper, work)
@@ -2022,6 +2039,7 @@ func TestARoleHomeLayerIsMountedWithUserxattr(t *testing.T) {
 // Nothing is mounted and no directory is renamed. The case reads the refusal's text alone, and
 // fails when the error is nil.
 func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	homes, home := filepath.Join(dir, "homes"), filepath.Join(dir, "home")
 	upper, work := filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
@@ -2060,6 +2078,7 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 // inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
 // that stage rather than of this function.
 func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -2151,6 +2170,7 @@ const roleDrainStaysBound = 30 * time.Second
 // polls or the descendant's trap changes no case's verdict; the stage's one deadline is a hang
 // guard (roleDrainReport).
 func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
+	t.Parallel()
 	if encoded := os.Getenv(roleDrainEnv); encoded != "" {
 		var plan roleDrainPlan
 		if err := json.Unmarshal([]byte(encoded), &plan); err != nil {
@@ -2221,12 +2241,13 @@ func roleDrainEnd(output string) (string, time.Duration) {
 	return "", 0
 }
 
-// roleDrainReport runs that row's stage in a user and mount namespace of its own, as the role
-// namespace check's helper runs, and answers every `drain <key>=<value>` line it printed, with
-// its whole output for a failure to print. It waits for the stage to end with no bound of its own
-// (reentry): the stage's own -test.timeout ends it, and its role-init's ends role-init before
-// that, so a stage or a role-init that never ends fails here with its own alarm and goroutine
-// dump, rather than as the binary's panic, and nothing of it outlives the test.
+// roleDrainReport runs that row's stage in user, mount and PID namespaces of its own
+// (roleStageAttr), as the role namespace check's helper runs, and answers every `drain
+// <key>=<value>` line it printed, with its whole output for a failure to print. It waits for the
+// stage to end with no bound of its own (reentry): the stage's own -test.timeout ends it, and its
+// role-init's ends role-init before that, so a stage or a role-init that never ends fails here with
+// its own alarm and goroutine dump, rather than as the binary's panic, and nothing of it outlives
+// the test: the stage is the init of its PID namespace, so its end ends every process it started.
 func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -2242,12 +2263,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	// role's that still held the pipe would otherwise hold this wait.
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
-	stage.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	stage.SysProcAttr = roleStageAttr()
 	output, err := stage.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the stage: %v\n%s", err, output)
@@ -2273,6 +2289,9 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 // stage's output through its stderr.
 func runRoleDrain(t *testing.T, plan roleDrainPlan) error {
 	if err := privateMounts(); err != nil {
+		return err
+	}
+	if err := stageOwnProc(); err != nil {
 		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {

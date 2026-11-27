@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 
 import * as textReferences from "../refs/text-references";
+import { chipWords } from "./node-row-chip";
 import {
   citedReferences,
   knownIssueKeys,
@@ -9,13 +10,17 @@ import {
   rowReferenceWords,
 } from "./row-references";
 
-// A row draws every reference in its words as a link named from the page's one batched read,
-// and asks the server nothing for it.
+// A row draws every reference in its words named by the one rule every plain line names one by:
+// from the page's one batched read, and a party from its own read, and asks the server nothing
+// for a reference the page reads.
 
 const NAMES = new Map([
   ["dispatch://CORE-7", "The header draws the approval of each step"],
   ["dispatch://CORE-1/ask/ask-1", "At which width does the\nidentity block condense?"],
 ]);
+
+/** The issue the rows belong to. */
+const ISSUE = "CORE-1";
 
 test("what a text cites is every whole address and every bare key, each once", () => {
   expect(
@@ -46,7 +51,9 @@ test("an address that writes its id short is asked for as written, and named fro
   const [link] = rowReferences(`see ${short}`, []);
   if (link === undefined) throw new Error("the text holds one reference");
   expect(link.reference).toBe(short);
-  expect(rowReferenceWords(link, new Map([[short, "The comment its short id names"]]))).toEqual({
+  expect(
+    rowReferenceWords(link, new Map([[short, "The comment its short id names"]]), ISSUE)
+  ).toEqual({
     key: undefined,
     words: "The comment its short id names",
   });
@@ -64,6 +71,67 @@ test("a bare key links only where the batched read answered that its issue exist
   ]);
 });
 
+// The graph holds no node for a party, so the batched read refuses a request that names one,
+// which would leave every row of the tree unnamed. A row asks for none.
+test("a party is never asked for", () => {
+  const parties =
+    "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and " +
+    "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce about dispatch://CORE-7.";
+  expect(citedReferences(parties)).toEqual(["dispatch://CORE-7"]);
+});
+
+/** The links a pass over `text` makes, each as its href and its words, with `names` the names
+ *  each reference has. */
+function partyLinks(text: string, names: ReadonlyMap<string, string> = NAMES): (string | null)[][] {
+  const root = document.createElement("div");
+  root.innerHTML = `<p>${text}</p>`;
+  linkRowReferences(root, names, knownIssueKeys(names), ISSUE);
+  // A second pass, as a page makes once names arrive, keeps each party's words.
+  linkRowReferences(root, names, knownIssueKeys(names), ISSUE);
+  return [...root.querySelectorAll("a")].map((link) => [
+    link.getAttribute("href"),
+    link.textContent,
+  ]);
+}
+
+// A row links a party from its address alone, as every other sink of a reference does
+// (`referenceHref`). The batched read brings no name for one: its own read does, and until it
+// has the link keeps its writer's words (R8, issue page decision 350).
+test("an agent's session links to its live view, in the words its writer wrote", () => {
+  const agent = "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce";
+  expect(partyLinks(`Ask ${agent}.`)).toEqual([
+    ["/agents/01a1bb84-93b2-74d6-9d65-fb75e08653ce/live", agent],
+  ]);
+});
+
+// R5: a role reads as its token once its own read knows it, and links to its agents list.
+test("a role links to the agents list that role filters, and reads as its token once named", () => {
+  const role = "dispatch://role/reviewer";
+  expect(partyLinks(`Ask ${role}.`)).toEqual([["/agents?role=reviewer", role]]);
+  expect(partyLinks(`Ask ${role}.`, new Map([[role, "reviewer"]]))).toEqual([
+    ["/agents?role=reviewer", "reviewer"],
+  ]);
+});
+
+// No page shows a person (R5), so a person's address links nothing: it reads as the words its
+// writer wrote until its own read knows the login, and as the login once it does.
+test("a person links to nothing, and reads as their login once named", () => {
+  const person = "dispatch://person/alice@example.com";
+  const text = `Ask ${person} about dispatch://CORE-7.`;
+  expect(partyLinks(text)).toEqual([
+    ["/issues/CORE-7", "CORE-7 The header draws the approval of each step"],
+  ]);
+  expect(rowReferences(text, []).map((one) => [one.reference, one.path])).toEqual([
+    [person, undefined],
+    ["dispatch://CORE-7", "/issues/CORE-7"],
+  ]);
+  const root = document.createElement("div");
+  root.innerHTML = `<p>${text}</p>`;
+  linkRowReferences(root, new Map([[person, "alice@example.com"]]), [], ISSUE);
+  expect(root.textContent).toBe("Ask alice@example.com about dispatch://CORE-7.");
+  expect(root.querySelector(`[data-row-reference="${person}"]`)?.localName).toBe("span");
+});
+
 test("an issue reads as its key and title, and anything else as its target's own words", () => {
   const [issue, unnamed, ask] = rowReferences(
     "dispatch://CORE-7 dispatch://CORE-9 dispatch://CORE-1/ask/ask-1",
@@ -72,18 +140,27 @@ test("an issue reads as its key and title, and anything else as its target's own
   if (issue === undefined || unnamed === undefined || ask === undefined) {
     throw new Error("the text holds three references");
   }
-  expect(rowReferenceWords(issue, NAMES)).toEqual({
+  expect(rowReferenceWords(issue, NAMES, ISSUE)).toEqual({
     key: "CORE-7",
     words: "The header draws the approval of each step",
   });
-  // An issue the read has not named yet is its key alone, never an empty gap.
-  expect(rowReferenceWords(unnamed, NAMES)).toEqual({ key: "CORE-9", words: "" });
-  expect(rowReferenceWords(ask, NAMES)).toEqual({
+  // An issue the read has not named yet reads as the words its writer wrote, and so does any
+  // other target, as a link of any body does until its title resolves (R8, issue page decision
+  // 350, which replaces decision 95's short form).
+  expect(rowReferenceWords(unnamed, NAMES, ISSUE)).toEqual({
     key: undefined,
-    words: "At which width does the identity block condense?",
+    words: "dispatch://CORE-9",
   });
-  // A target the read has not named reads as its short form, as a link of any body does.
-  expect(rowReferenceWords(ask, new Map())).toEqual({ key: undefined, words: "CORE-1 ask" });
+  // The page publishes a name as a link to its target reads it (R8), and a target the row draws
+  // as a chip in place is cut again as a tie's chip cuts it (`chipName`).
+  expect(rowReferenceWords(ask, NAMES, ISSUE)).toEqual({
+    key: undefined,
+    words: "At which width does the…",
+  });
+  expect(rowReferenceWords(ask, new Map(), ISSUE)).toEqual({
+    key: undefined,
+    words: "dispatch://CORE-1/ask/ask-1",
+  });
 });
 
 test("the pass links what painted words cite, and names it again when the names arrive", () => {
@@ -91,25 +168,25 @@ test("the pass links what painted words cite, and names it again when the names 
   root.innerHTML =
     "<p>From: dispatch://CORE-7, and <code>dispatch://CORE-7</code> in UTF-16.</p>" +
     '<p><a href="https://example.com">dispatch://CORE-7</a></p>';
-  linkRowReferences(root, new Map());
+  linkRowReferences(root, new Map(), [], ISSUE);
   const links = () => [...root.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")];
   expect(
     links().map((link) => [link.getAttribute("href"), link.textContent, link.tabIndex])
-  ).toEqual([["/issues/CORE-7", "CORE-7", -1]]);
+  ).toEqual([["/issues/CORE-7", "dispatch://CORE-7", -1]]);
   // The words around it stand, and a reference inside code or inside a link is left as written.
   expect(root.firstElementChild?.textContent).toBe(
-    "From: CORE-7, and dispatch://CORE-7 in UTF-16."
+    "From: dispatch://CORE-7, and dispatch://CORE-7 in UTF-16."
   );
   expect(root.querySelector("code")?.textContent).toBe("dispatch://CORE-7");
   expect(root.querySelector('a[href="https://example.com"]')?.textContent).toBe(
     "dispatch://CORE-7"
   );
-  linkRowReferences(root, NAMES);
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(links().map((link) => link.textContent)).toEqual([
     "CORE-7 The header draws the approval of each step",
   ]);
   // A second pass over the same words makes no second link.
-  linkRowReferences(root, NAMES);
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(links()).toHaveLength(1);
 });
 
@@ -139,22 +216,54 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
     );
   const root = document.createElement("div");
   root.innerHTML = painted;
-  linkRowReferences(root, NAMES, new Set([AMBIGUOUS]));
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(root)).toEqual(["dispatch://CORE-7"]);
   expect(root.textContent).toBe(drawn);
 
   // A pass before the read answered linked it, and the pass after puts the words back.
   const earlier = document.createElement("div");
   earlier.innerHTML = painted;
-  linkRowReferences(earlier, NAMES);
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(linked(earlier)).toEqual([AMBIGUOUS, "dispatch://CORE-7"]);
-  linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
   // A second pass over the same words finds nothing to do.
-  linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
+// ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
+// the edited references beside them, and a row cuts the words to its 60 characters before it
+// marks what the cut left: a mark written at the end of the name was cut off a name longer than
+// that, and a long edited post read as one nobody edited.
+const EDITED = "dispatch://CORE-1/comment/comment-9";
+const LONG_WORDS = "Hold the deploy until the plan lands and the reviewer has signed off on it";
+const LONG_HEAD = chipWords(LONG_WORDS);
+
+test("an edited post whose words are longer than the cut keeps ` · edited` after the cut", () => {
+  expect(LONG_HEAD.length).toBeLessThan(LONG_WORDS.length);
+  const [link] = rowReferences(`see ${EDITED}`, []);
+  if (link === undefined) throw new Error("the text holds one reference");
+  const names = new Map([[EDITED, LONG_WORDS]]);
+  expect(rowReferenceWords(link, names, undefined, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: `${LONG_HEAD} · edited`,
+  });
+  // A post nobody edited is cut the same way and takes no mark.
+  expect(rowReferenceWords(link, names, undefined)).toEqual({ key: undefined, words: LONG_HEAD });
+  // A target the read has not named reads as the words its writer wrote, unmarked (R8).
+  expect(rowReferenceWords(link, new Map(), undefined, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: EDITED,
+  });
+  // The pass draws the same words.
+  const root = document.createElement("div");
+  root.innerHTML = `<p>See ${EDITED} today</p>`;
+  linkRowReferences(root, names, [], undefined, undefined, new Set([EDITED]));
+  expect(root.textContent).toBe(`See ${LONG_HEAD} · edited today`);
 });
 
 // Each row's words were read again on every draw. A text is read once for each list

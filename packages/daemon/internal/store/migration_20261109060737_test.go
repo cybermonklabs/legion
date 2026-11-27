@@ -22,6 +22,7 @@ const dropSlotNoticeVersion = 20261109060737
 // the check refused before the migration — the awaiting columns left standing on a row whose
 // phase is no longer awaiting_person — is refused after it, by the same constraint.
 func TestTheNoticeMarkIsGoneAfter20261109060737(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, dropSlotNoticeVersion-1)

@@ -1223,9 +1223,9 @@ no_change_close() {
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
-  jq -e '(map(select(.type == "message.created" and (.payload.body | contains("Closed by its architect before its first phase:")))) | first | .seq) as $message
-    | (map(select(.type == "issue.closed")) | first | .seq) as $closed
-    | $message != null and $closed != null and $message < $closed' "$evidence/nochange-events.json" >/dev/null ||
+  # lib/stage3-no-change-close.jq: the reason is on the issue before its close, and a message its
+  # author deleted counts as not posted.
+  jq -e -f "$root/scripts/e2e/lib/stage3-no-change-close.jq" "$evidence/nochange-events.json" >/dev/null ||
     fail "the architect's reason was not posted on $nochange_issue before its close; see $evidence/nochange-events.json"
   jq -e --arg daemon "legion-daemon:$project" '[.[] | select(.type | IN("issue.updated", "issue.closed")) | select(.payload.status | IN("in_progress", "done"))]
     | (map(.payload.status) | unique) == ["done", "in_progress"] and all(.actor.id == $daemon)' "$evidence/nochange-events.json" >/dev/null ||

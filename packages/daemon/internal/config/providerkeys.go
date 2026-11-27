@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -43,8 +44,8 @@ func ProviderEnvDir(stateDir string) string {
 // Every key is resolved before any file is written, so a boot that refuses writes nothing. Each
 // file is written atomically (a temporary file renamed into place), the directory is 0700 and
 // each file 0600, and a file for a variable no longer configured is removed: the directory holds
-// exactly the configured variables. Every refusal names the entry — the variable and its secretsd
-// key or file — and never the value.
+// exactly the configured variables. Every refusal names the entry by its variable, and its file for
+// a file: entry, never its secretsd key's name (keyNameShown) or its value.
 func MaterializeProviderKeys(keys []ProviderKey, stateDir string, environ []string, log *slog.Logger) (string, error) {
 	dir := ProviderEnvDir(stateDir)
 	if len(keys) == 0 {
@@ -105,11 +106,20 @@ type secretsStatus struct {
 
 // readProviderKeyFile is one entry's value from the file it names, read by
 // ReadPrivateSecretPointer's rules, as every other secret file the daemon reads: refused, naming the
-// file and never its contents, when it cannot be read, is not a regular file, holds nothing, or is
-// readable by its group or others.
+// entry's variable, and the file where it was opened, never its contents, when it cannot be read,
+// is not a regular file, holds nothing, or is readable by its group or others.
 func readProviderKeyFile(key ProviderKey, _ []string, _ *slog.Logger) (string, error) {
 	return ReadPrivateSecretPointer("provider_keys."+key.Env, key.File)
 }
+
+// keyNameShown stands for an entry's secretsd key name in every refusal and log line: a provider's
+// key made only of letters, digits and underscores passes the name rule, so the name can be the key
+// itself, pasted where its name goes. The entry is named by its variable (key.Env) alone.
+const keyNameShown = "[the key name]"
+
+// shownCommand is `secrets get <key.Secret> <flag>` as a refusal prints it, keyNameShown in place
+// of the name.
+func shownCommand(flag string) string { return "secrets get " + keyNameShown + " " + flag }
 
 // resolveProviderKey is one entry's value: its secretsd key's tier checked, then the value read.
 func resolveProviderKey(key ProviderKey, env []string, log *slog.Logger) (string, error) {
@@ -117,7 +127,7 @@ func resolveProviderKey(key ProviderKey, env []string, log *slog.Logger) (string
 	if err != nil {
 		return "", err
 	}
-	unparsable := fmt.Errorf(`provider_keys.%s: secrets get %s --no-request printed an unparsable status (expected {"key","tier"})`, key.Env, key.Secret)
+	unparsable := fmt.Errorf(`provider_keys.%s: %s printed an unparsable status (expected {"key","tier"})`, key.Env, shownCommand("--no-request"))
 	var status secretsStatus
 	if err := json.Unmarshal(bytes.TrimSpace(statusText), &status); err != nil || status.Key == "" || status.Tier == "" {
 		return "", unparsable
@@ -129,9 +139,9 @@ func resolveProviderKey(key ProviderKey, env []string, log *slog.Logger) (string
 	switch status.Tier {
 	case "agent":
 	case "human":
-		log.Warn(fmt.Sprintf("requesting %s from secretsd (human tier; a YubiKey tap may be needed)", key.Secret))
+		log.Warn(fmt.Sprintf("requesting the secretsd key provider_keys.%s names (human tier; a YubiKey tap may be needed)", key.Env))
 	default:
-		return "", fmt.Errorf("provider_keys.%s: secrets get %s --no-request reported tier %q, which is neither agent nor human", key.Env, key.Secret, status.Tier)
+		return "", fmt.Errorf("provider_keys.%s: %s reported tier %q, which is neither agent nor human", key.Env, shownCommand("--no-request"), status.Tier)
 	}
 	value, err := runSecretsGet(key, "--value", env)
 	if err != nil {
@@ -139,19 +149,20 @@ func resolveProviderKey(key ProviderKey, env []string, log *slog.Logger) (string
 	}
 	trimmed := strings.TrimSpace(string(value))
 	if trimmed == "" {
-		return "", fmt.Errorf("provider_keys.%s: secrets get %s --value printed no value", key.Env, key.Secret)
+		return "", fmt.Errorf("provider_keys.%s: %s printed no value", key.Env, shownCommand("--value"))
 	}
 	return trimmed, nil
 }
 
 // runSecretsGet runs `secrets get <key.Secret> <flag>` — found on env's PATH — with the daemon's
-// stdin and env, returning its stdout. A failure carries the exit status and the child's stderr,
-// never its stdout.
+// stdin and env, returning its stdout. A failure carries the exit status and the child's stderr
+// as stderrShown prints it, never its stdout, with keyNameShown in place of the key's name in the
+// command.
 func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	args := []string{"get", key.Secret, flag}
 	binary, ok := lookpath.On(pathValue(env), "secrets")
 	if !ok {
-		return nil, fmt.Errorf("provider_keys.%s: the secrets command is not on PATH, so %s cannot be read", key.Env, key.Secret)
+		return nil, fmt.Errorf("provider_keys.%s: the secrets command is not on PATH, so the secretsd key it names cannot be read", key.Env)
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Env = runtime.WithoutNATSSeeds(env)
@@ -161,15 +172,27 @@ func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		end := procgroup.Ended(err)
 		if !end.Ran() {
-			return nil, fmt.Errorf("provider_keys.%s: could not run secrets %s: %w", key.Env, strings.Join(args, " "), err)
+			return nil, fmt.Errorf("provider_keys.%s: could not run %s: %w", key.Env, shownCommand(flag), err)
 		}
-		detail := ""
-		if text := strings.TrimSpace(stderr.String()); text != "" {
-			detail = ": " + text
-		}
-		return nil, fmt.Errorf("provider_keys.%s: secrets %s failed (%s)%s", key.Env, strings.Join(args, " "), end, detail)
+		return nil, fmt.Errorf("provider_keys.%s: %s failed (%s)%s", key.Env, shownCommand(flag), end, stderrShown(stderr.String(), key.Secret))
 	}
 	return stdout.Bytes(), nil
+}
+
+// stderrShown is the `secrets` child's stderr as a refusal prints it, by redact.Withheld's rule:
+// keyNameShown in place of each copy of name, and dropped, its length printed instead, when what
+// is left still holds redact.HeldRun characters in a row of name, compared without case. The CLI
+// is not this repository's, so it can quote the name folded, wrapped, escaped or cut short.
+func stderrShown(stderr, name string) string {
+	text := strings.TrimSpace(stderr)
+	if text == "" {
+		return ""
+	}
+	shown, ok := redact.Withheld(text, []redact.Word{{Text: name, Shown: keyNameShown}})
+	if !ok {
+		return fmt.Sprintf(": its stderr (%d bytes) holds part of the key name, so it is not printed", len(text))
+	}
+	return ": " + shown
 }
 
 // pathValue is PATH's value in env, the last assignment winning, and "" when env holds none.

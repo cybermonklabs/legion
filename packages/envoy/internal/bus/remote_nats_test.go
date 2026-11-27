@@ -78,6 +78,7 @@ func TestConnectOwningStreamRefusesANATSServerThatIsNotThisMachines(t *testing.T
 // process on the same bus, and a viewer's relay dialling production by accident is the thing
 // being stopped.
 func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 
@@ -102,6 +103,7 @@ func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
 // the override, and it is read off the URL: nothing dials while the run has not said it means
 // another machine's NATS.
 func TestConnectRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 
@@ -259,10 +261,11 @@ func remoteLookingURL(t *testing.T, uri string) string {
 	return ""
 }
 
-// checkRefusal fails t unless err, a connect's refusal of remote, names the server and the
-// override and carries none of remote's credential. The refusal is logged, so it names the server
-// without its userinfo: nats.go authenticates with a URL's userinfo, a user name alone as a token
-// and user:password as a password, so either part is a secret.
+// checkRefusal fails t unless err, a connect's refusal of remote, the one URL of its list, names
+// the URL by its position and the override, and carries none of remote: the refusal is logged, so
+// it names no part of the URL. nats.go authenticates with a URL's userinfo, a user name alone as a
+// token and user:password as a password, so either part is a secret, and a URL's host can be a
+// piece of a credential a comma split (refuseRemoteNATS).
 func checkRefusal(t *testing.T, err error, remote string) {
 	t.Helper()
 	parsed, parseErr := url.Parse(remote)
@@ -270,14 +273,12 @@ func checkRefusal(t *testing.T, err error, remote string) {
 		t.Fatalf("read the refused URL %q: %v", remote, parseErr)
 	}
 	userinfo := parsed.User
-	parsed.User = nil
-	server := parsed.String()
 	refusal := err.Error()
-	if !strings.Contains(refusal, server) || !strings.Contains(refusal, bus.AllowRemoteEnvVar) {
-		t.Errorf("refusal %q does not name both the server %s and the override %s", refusal, server, bus.AllowRemoteEnvVar)
+	if !strings.Contains(refusal, "NATS server URL 1 of 1 names another machine") || !strings.Contains(refusal, bus.AllowRemoteEnvVar) {
+		t.Errorf("refusal %q does not name both the server's position and the override %s", refusal, bus.AllowRemoteEnvVar)
 	}
-	if strings.Contains(refusal, "@") {
-		t.Errorf("refusal %q carries an @, which only a URL's userinfo puts there", refusal)
+	if strings.Contains(refusal, parsed.Host) || strings.Contains(refusal, "@") {
+		t.Errorf("refusal %q carries the server %s, or an @, which only a URL's userinfo puts there", refusal, parsed.Host)
 	}
 	if userinfo == nil {
 		return

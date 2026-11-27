@@ -509,16 +509,10 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 // the project's block from before, the value of the admission row before it (each nil for no row
 // and for a `null` one): whether the two build another waiting line (legion.SameLine, which holds
 // the fields legion.NewWaitingLine reads). A value is read as the facts read it (metrics'
-// readReported, through legion.ParseAdmission), and a value of another shape is no block.
+// readReported, through legion.AdmissionOf), and a value of another shape, or no value, is no
+// block.
 func blockMoved(before, after []byte) bool {
-	read := func(value []byte) *legion.Admission {
-		if value == nil {
-			return nil
-		}
-		block, _ := legion.ParseAdmission(value)
-		return block
-	}
-	return !legion.SameLine(read(before), read(after))
+	return !legion.SameLine(legion.AdmissionOf(before), legion.AdmissionOf(after))
 }
 
 // readChangePage is the page of delivery changes after the cursor (delivery.ChangesSince, whose

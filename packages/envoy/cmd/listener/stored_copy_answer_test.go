@@ -43,7 +43,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 		serve(recorder)
 		answered <- recorder
 	}()
-	waitFor(t, 3*time.Second, "the publish to go out on the frozen connection", func() bool {
+	waitFor(t, "the publish to go out on the frozen connection", func() bool {
 		return closing.Stats().OutMsgs > before
 	})
 	closing.Close()
@@ -51,7 +51,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 	select {
 	case recorder := <-answered:
 		return recorder
-	case <-time.After(15 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the publish whose connection closed under it did not answer")
 		return nil
 	}
@@ -81,6 +81,7 @@ type ownCopyAnswer struct {
 // whole answered envelope with the copy the stream holds, so an answer that names the copy's
 // event_id over another body fails too.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
 	key := publishDedupePrefix + uuid.NewString()
@@ -193,6 +194,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 // no sequence or a copy that cannot be read, as the send and topic routes' does after a resend.
 // The controls are the same two verdicts on a send's first forward, which carry no code.
 func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
+	t.Parallel()
 	requireUnread := func(t *testing.T, what string, status int, retryAfter string, raw string, outcome any) {
 		t.Helper()
 		if status != http.StatusServiceUnavailable || retryAfter != "1" {

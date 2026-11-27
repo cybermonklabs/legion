@@ -48,6 +48,17 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const suppressed = new Set<string>();
   /** Selectors this session can use no model for. */
   const unresolvable = new Set<string>();
+  /** Every model below a selector in this deployment's chain, in order, where a case names more
+   * than the one `chain` holds. */
+  const chainList = new Map<string, string[]>();
+  /** The family the host's catalog gives each selector; a selector absent here names none. */
+  const families = new Map<string, string>();
+  const hostModel = (selector: string): HostModel => {
+    const family = families.get(selector);
+    return family === undefined
+      ? model(selector)
+      : { ...model(selector), identity: { class: family } };
+  };
   const live = {
     now: 1_000_000_000,
     current: startOn,
@@ -97,8 +108,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     hasPendingMessages: () => live.pending,
     models: {
       list: () => [],
-      current: () => model(live.current),
-      resolve: (spec) => (unresolvable.has(spec) ? undefined : model(spec)),
+      current: () => hostModel(live.current),
+      resolve: (spec) => (unresolvable.has(spec) ? undefined : hostModel(spec)),
     },
     modelRegistry: {
       // The chain walk itself is the `nextModel` dep here, so the lookup is never consulted; it
@@ -116,7 +127,7 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
       await live.setModelHeld;
       if (!live.setModelAnswers) return false;
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
-      // (`session/model-controls.ts:322-325` at the pinned tag), never a fallback claim.
+      // (`session/model-controls.ts:327-331` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
       return true;
     },
@@ -126,6 +137,11 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     nextModel: async (_chain, current) => {
       const next = chain.get(`${current.provider}/${current.id}`);
       return next === undefined ? undefined : model(next);
+    },
+    fallbackModels: async (_chain, current) => {
+      const selector = `${current.provider}/${current.id}`;
+      const below = chainList.get(selector) ?? [chain.get(selector)].flatMap((next) => next ?? []);
+      return below.filter((next) => !unresolvable.has(next)).map(hostModel);
     },
     log: { warn: (message) => void warnings.push(message) },
     // The host's timer, which a test runs when it chooses (`fireTimers`), with no clock involved:
@@ -150,6 +166,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     saved,
     warnings,
     chain,
+    chainList,
+    families,
     suppressed,
     unresolvable,
     live,
@@ -1104,5 +1122,64 @@ describe("a session this runner finds already on a fallback", () => {
     await pane.runner.maybeRestore(switched.ctx);
     expect(switched.setModelCalls).toEqual([]);
     expect(pane.setModelCalls).toEqual([]);
+  });
+});
+
+describe("the cyber_policy ladder's weaker model of the same family", () => {
+  const WEAKER_GPT = "openai/gpt-5.4-mini";
+
+  test("is the first model below in the chain whose family is the session model's own", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "openai");
+    pane.families.set(SONNET, "anthropic");
+    pane.families.set(WEAKER_GPT, "openai");
+    pane.chainList.set(GPT, [SONNET, WEAKER_GPT]);
+
+    // Sonnet is first in the chain and of another family: passed over.
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toMatchObject(model(WEAKER_GPT));
+  });
+
+  test("is none when the chain holds only models of another family", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "openai");
+    pane.families.set(SONNET, "anthropic");
+    pane.chainList.set(GPT, [SONNET]);
+
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toBeUndefined();
+  });
+
+  test("is none, with a warning, for a model whose family the catalog cannot tell", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "unknown");
+    pane.families.set(WEAKER_GPT, "unknown");
+    pane.chainList.set(GPT, [WEAKER_GPT]);
+
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toBeUndefined();
+    expect(pane.warnings).toEqual([
+      "legion: the session's model names no family the catalog knows, so no weaker model of its family is chosen",
+    ]);
+  });
+
+  test("a step to it sets the model and arms the return to the model the walk left", async () => {
+    const pane = fixture(GPT);
+    pane.modelChange(GPT);
+
+    expect(await pane.runner.stepDownTo(pane.ctx, model(WEAKER_GPT))).toBe(true);
+
+    expect(pane.setModelCalls).toEqual([WEAKER_GPT]);
+    expect(pane.last()?.arming).toMatchObject({
+      restoreTo: GPT,
+      cause: "refusal",
+      dueAt: pane.live.now + HOUR,
+    });
+  });
+
+  test("a step the host refuses leaves the model and arms nothing", async () => {
+    const pane = fixture(GPT);
+    pane.modelChange(GPT);
+    pane.live.setModelAnswers = false;
+
+    expect(await pane.runner.stepDownTo(pane.ctx, model(WEAKER_GPT))).toBe(false);
+    expect(pane.saved).toEqual([]);
   });
 });

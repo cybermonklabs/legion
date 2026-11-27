@@ -72,7 +72,7 @@ func run(project, database, from, to string) error {
 	if err != nil {
 		return err
 	}
-	report, err := json.MarshalIndent(reading.Report(), "", "  ")
+	report, err := json.MarshalIndent(reading, "", "  ")
 	if err != nil {
 		return fmt.Errorf("write the report: %w", err)
 	}

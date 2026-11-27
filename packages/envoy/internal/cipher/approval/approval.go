@@ -31,9 +31,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -98,10 +100,13 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision),
-	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
-	// of a group approver and so sees the buttons (record.MayDecide).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
+	// ApplyPageDecision), and its group reader (requests.Machine.Groups) says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.
@@ -354,6 +359,9 @@ const (
 	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
+	// A verified sign-in by a Google account that no longer holds the person's address, which
+	// Dispatch named replaced when another account took it (store.ErrSubjectReplaced).
+	codeSignInAccountReplaced = "SIGN_IN_ACCOUNT_REPLACED"
 )
 
 // writeMessage writes m as the page's answer with status, noting code on the answer's record
@@ -403,9 +411,10 @@ func ServeStylesheet(w http.ResponseWriter, _ *http.Request) {
 }
 
 // writeSignInUnavailable answers a sign-in whose provider could not be reached, the one failure
-// of a sign-in that is the broker's dependency rather than the person's credential.
+// of a sign-in that is the broker's dependency rather than the person's credential. The page, which
+// any browser that starts a sign-in reads, and the log line name the issuer through redact.URL.
 func (p *Page) writeSignInUnavailable(w http.ResponseWriter, err error) {
-	slog.Error("approval sign-in: reach the provider", "issuer", p.cfg.SignIn.Issuer, "error", err)
+	slog.Error("approval sign-in: reach the provider", "issuer", redact.URL(p.cfg.SignIn.Issuer), "error", err)
 	writeMessage(w, http.StatusServiceUnavailable, "", say("Sign-in unavailable",
-		"The secrets broker could not reach its sign-in provider, "+p.cfg.SignIn.Issuer+". Try again shortly."))
+		"The secrets broker could not reach its sign-in provider, "+redact.URL(p.cfg.SignIn.Issuer)+". Try again shortly."))
 }

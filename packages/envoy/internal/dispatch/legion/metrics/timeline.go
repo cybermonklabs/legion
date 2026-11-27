@@ -37,12 +37,16 @@ const (
 )
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on its children (segment 4). `done` is none of them: a child in `done` before
-// its close is out of the workflow, whose hours are outside its own work time too (the spec's "Out
-// of the workflow before the close", outOfWorkflowSpans), so its root waits on it through none.
+// of them is waiting on its children (segment 4). `awaiting_children`, which
+// dispatch://INFRA-3320 added, is one of them too: a child enters it from one of planning through
+// accepting, and waits there on children of its own, which are still at work, so its root waits
+// on it. `done` is none of them: a child in `done` before its close is out of the workflow, whose
+// hours are outside its own work time too (the spec's "Out of the workflow before the close",
+// outOfWorkflowSpans), so its root waits on it through none.
 var childWorkingPhases = []string{
 	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
+	legion.PhaseAwaitingChildren,
 }
 
 // parkedStatuses are the statuses whose time the work time subtracts: the daemon writes `backlog`
@@ -97,8 +101,8 @@ var stepPhase = map[string]string{
 
 // phaseLine is the order of the phases a fallback timeline names at the moment at: design, then
 // the phase of each step of the task the issue's plan names, in the task's order, then retro and
-// merging. The plan is the one of the newest run whose node was made at or before at, or the
-// first run's where at falls before every plan, since a run's design comes before its plan is
+// merging. The plan is the newest version written at or before at, of any run of the issue, or
+// the oldest where at falls before every version, since a run's design comes before its plan is
 // written. An issue with no plan, or a plan whose steps this reading cannot place, reads the
 // default steps' order (phaseOrder). Two rules read it: which phase a handoff starts
 // (handoffStart) and the rank that keeps a role's first event from starting a phase the issue
@@ -267,7 +271,11 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 // neither.
 func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 	end := p.issueEnd(issue)
-	var timeline []PhaseSpan
+	var (
+		timeline  []PhaseSpan
+		slots     []Span
+		readSlots bool
+	)
 	for stretch := range p.phaseStretches(issue) {
 		if stretch.Span.Duration() == 0 {
 			continue
@@ -276,7 +284,11 @@ func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 			timeline = append(timeline, stretch)
 			continue
 		}
-		held := intersect([]Span{stretch.Span}, p.slotSpans(issue, end))
+		if !readSlots {
+			slots = p.slotSpans(issue, end)
+			readSlots = true
+		}
+		held := intersect([]Span{stretch.Span}, slots)
 		for _, holding := range held {
 			timeline = append(timeline, PhaseSpan{Phase: phaseDesign, Span: holding})
 		}
@@ -406,7 +418,7 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
 // sendBack is statusPhase's own decision that a status change sends the issue back to
 // implementing; a role's first event and a handoff never do. rank is the phase's place on the
-// issue's line at that moment (Issue.phaseLine, phaseRank).
+// issue's line at that moment (Issue.phaseLine), -1 for a phase the line does not hold.
 type phaseMark struct {
 	at       time.Time
 	source   markSource
@@ -436,8 +448,8 @@ const (
 // starts the next phase, and no hour between phases is left over ... After a send-back, the
 // Dispatch status sets the phase". The three sources are therefore one list of marks and the
 // timeline is the step function they draw, with no gap between one phase and the next — which is
-// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds
-// `awaiting_person` and `held` alone.
+// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds the
+// phases no role works alone: `awaiting_person`, `awaiting_children` and `held`.
 func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) []PhaseSpan {
 	for index, step := range steps {
 		span := Span{From: step.at, To: until}
@@ -457,12 +469,12 @@ func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) [
 func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 	architect, hasArchitect := issue.FirstRoleEvent["architect"]
 	var marks []phaseMark
-	add := func(source markSource, at time.Time, phase string, sendBack bool) {
-		marks = append(marks, phaseMark{at: at, source: source, phase: phase, sendBack: sendBack, rank: phaseRank(issue.phaseLine(at), phase)})
+	add := func(source markSource, at time.Time, line []string, phase string, sendBack bool) {
+		marks = append(marks, phaseMark{at: at, source: source, phase: phase, sendBack: sendBack, rank: slices.Index(line, phase)})
 	}
 	for role, at := range issue.FirstRoleEvent {
 		if phase, works := rolePhase[role]; works && role != "architect" {
-			add(sourceRole, at, phase, false)
+			add(sourceRole, at, issue.phaseLine(at), phase, false)
 		}
 	}
 	// "An issue has a design phase when a session titled `Legion architect · <its own key>` wrote
@@ -474,11 +486,12 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if slots := p.slotSpans(issue, p.issueEnd(issue)); len(slots) > 0 && slots[0].From.Before(architect) {
 			architect = slots[0].From
 		}
-		add(sourceRole, architect, phaseDesign, false)
+		add(sourceRole, architect, issue.phaseLine(architect), phaseDesign, false)
 	}
 	for _, handoff := range issue.Handoffs {
-		if phase, starts := handoffStart(issue.phaseLine(handoff.At), handoff.Phase); starts {
-			add(sourceHandoff, handoff.At, phase, false)
+		line := issue.phaseLine(handoff.At)
+		if phase, starts := handoffStart(line, handoff.Phase); starts {
+			add(sourceHandoff, handoff.At, line, phase, false)
 		}
 	}
 	previous := ""
@@ -486,8 +499,9 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if mark.Value == previous {
 			continue
 		}
-		if phase, sendBack, named := statusPhase(previous, mark.Value, issue.phaseLine(mark.At)); named {
-			add(sourceStatus, mark.At, phase, sendBack)
+		line := issue.phaseLine(mark.At)
+		if phase, sendBack, named := statusPhase(previous, mark.Value, line); named {
+			add(sourceStatus, mark.At, line, phase, sendBack)
 		}
 		previous = mark.Value
 	}
@@ -544,11 +558,6 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 		steps = append(steps, mark)
 	}
 	return steps
-}
-
-// phaseRank is a phase's place on line (Issue.phaseLine), and -1 for one the line does not hold.
-func phaseRank(line []string, phase string) int {
-	return slices.Index(line, phase)
 }
 
 // statusPhase is the phase a status change sets before observations exist, on the issue's line

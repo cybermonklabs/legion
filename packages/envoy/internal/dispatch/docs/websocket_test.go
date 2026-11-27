@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -22,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectPeer connects login's browser to artifactID's room through the document server at
@@ -33,30 +36,91 @@ func connectPeer(t *testing.T, serverURL, artifactID, login string) *docstest.Pe
 	return docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
 }
 
+// socketDeadline is the deadline a test's socket read takes: what the test binary's own deadline
+// leaves after the margin a failing test needs to report (testwait.Left), and never a span of
+// its own, so a frame that is merely late on a loaded machine is not read as one that never
+// came. A gorilla connection is corrupt after a read timeout, so this deadline ends the read
+// rather than polling it. It is safe on a goroutine other than the test's: a deadline already
+// used up is reported with t.Error, and the read then fails at once, as every wait of testwait
+// does. Under -timeout 0 testwait answers a span no read reaches.
+func socketDeadline(t *testing.T) time.Time {
+	t.Helper()
+	left, err := testwait.Left(t, socketDeadlineMargin)
+	if err != nil {
+		t.Error(err.Error())
+		return time.Now()
+	}
+	return time.Now().Add(left)
+}
+
+// socketDeadlineMargin is what socketDeadline leaves of the test binary's deadline for the
+// failing test to report in and run its cleanups, the margin testwait's own waits leave.
+const socketDeadlineMargin = 30 * time.Second
+
+// documentDialer is the dialer a test opens a document socket with: gorilla's DefaultDialer, but
+// with its handshake bounded by what the test binary's own deadline leaves after
+// socketDeadlineMargin (testwait.Left), and not by DefaultDialer's fixed 45 s. The server's whole
+// admission of the socket runs inside that handshake - the issue read, the document's admission,
+// the room's load and the browser's registration (Service.authorize) all come before its 101 - and
+// takes as long as the store and the machine take, so a dial that is merely slow on a loaded
+// machine is not read as one that failed. It is safe on a goroutine other than the test's: a
+// deadline already used up is reported with t.Error, and the dial then fails at once.
+func documentDialer(t *testing.T) *gws.Dialer {
+	t.Helper()
+	dialer := *gws.DefaultDialer
+	left, err := testwait.Left(t, socketDeadlineMargin)
+	if err != nil {
+		t.Error(err.Error())
+		// Zero would mean no bound at all; the smallest one fails the dial at once.
+		left = time.Nanosecond
+	}
+	dialer.HandshakeTimeout = left
+	return &dialer
+}
+
+// awaitServerClose reads connection, discarding every frame, until the server ends the socket,
+// and fails the test, naming what, when the read ended on socketDeadline instead. The two ends
+// are different facts, and a read loop that stops at the first error cannot tell them apart: a
+// server that never closed the socket would end the loop at the deadline as surely as one that
+// closed it at once. The server's end is any error that is not a timeout - a close frame
+// (*websocket.CloseError), or the connection closed under the read - and the error it ended on is
+// returned for a row that wants a particular one.
+func awaitServerClose(t *testing.T, connection *gws.Conn, what string) error {
+	t.Helper()
+	connection.SetReadDeadline(socketDeadline(t))
+	for {
+		_, _, err := connection.ReadMessage()
+		if err == nil {
+			continue
+		}
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			t.Fatalf("%s: the socket was still open at the read deadline (%v); the server never closed it", what, err)
+		}
+		return err
+	}
+}
+
 func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	awaitServerClose(t, connection, "the issue's close closing the browser's socket")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("server write after issue close = %v, want ErrIssueClosed", err)
 	}
@@ -70,6 +134,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 // load after the reopen committed makes holds the default flag, open, while a browser on it was
 // admitted read-only.
 func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// recreated gives the room's state the flag a recreated state starts with.
@@ -82,7 +147,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			service, artifactID := newTestService(t)
 			seedServiceText(t, service, artifactID, "before")
 			httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(httpServer.Close)
+			testcleanup.Add(t, httpServer.Close)
 			setIssueClosed := func(closed bool) {
 				t.Helper()
 				if _, err := service.store.Pool.Exec(context.Background(),
@@ -153,7 +218,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 func admittedRequest(t *testing.T, service *Service, request *http.Request) *http.Request {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(request.Context())
-	t.Cleanup(func() { cancel(nil) })
+	testcleanup.Add(t, func() { cancel(nil) })
 	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"))
 	if err != nil {
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
@@ -163,6 +228,7 @@ func admittedRequest(t *testing.T, service *Service, request *http.Request) *htt
 }
 
 func TestClosedColdRoomAuthorizesReadOnly(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
@@ -178,6 +244,7 @@ func TestClosedColdRoomAuthorizesReadOnly(t *testing.T) {
 }
 
 func TestSchemaVersionAdmissionAuthorizesMismatchAndVersionlessClientsReadOnly(t *testing.T) {
+	t.Parallel()
 	for _, schemaVersion := range []string{"0", ""} {
 		t.Run(schemaVersion, func(t *testing.T) {
 			service, artifactID := newTestService(t)
@@ -207,6 +274,7 @@ func TestSchemaVersionAdmissionAuthorizesMismatchAndVersionlessClientsReadOnly(t
 // in its Hocuspocus token as the version alone. A page of this build that does so is writable on
 // an open issue, both when the socket is accepted and when the provider authenticates.
 func TestSchemaAdmissionAuthorizesAPagePresentingItsCreatableVersionReadWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	version := strconv.Itoa(pmdoc.SchemaVersion())
 	request := httptest.NewRequest(
@@ -231,17 +299,18 @@ func TestSchemaAdmissionAuthorizesAPagePresentingItsCreatableVersionReadWrite(t 
 }
 
 func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 
 	auth := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarString(artifactID)
@@ -253,7 +322,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 		t.Fatalf("send schema authentication: %v", err)
 	}
 
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(socketDeadline(t))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -286,6 +355,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 }
 
 func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -294,13 +364,13 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -315,6 +385,7 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 // A history that does not decode refuses the socket before any upgrade, and a read of it is the
 // state a rebuild repairs (ErrDocumentUnloadable) rather than any failed room's ErrServiceUnavailable.
 func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -323,13 +394,13 @@ func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -365,6 +436,7 @@ func refusedForTheItemCap(t *testing.T, what string, err error, items uint64) {
 // room is left failed for the next access to reload, and the record goes because no instance will
 // ever take it (beginRoomLoad, keepInstance).
 func TestTheStoreJudgesAnUpdateByItsHeader(t *testing.T) {
+	t.Parallel()
 	overTheCap := encoding.NewEncoder()
 	overTheCap.WriteVarUint(1)
 	overTheCap.WriteVarUint(maxUpdateItems + 1)
@@ -422,7 +494,7 @@ func TestTheStoreJudgesAnUpdateByItsHeader(t *testing.T) {
 				Identity:    headerIdentity(database),
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 			// The failed room's eviction is held, so the failure it carries is still the room's
 			// to read below: the eviction releases the room's state as it goes.
 			hold := make(chan struct{})
@@ -485,6 +557,7 @@ func (s *panickingRoomLoadStore) Load(ctx context.Context, room string) (persist
 // drops its own record, and the load that begins after it is left alone: it keeps its own record
 // and finds a room it can build.
 func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// callerGone ends the caller's context inside the read that panics.
@@ -504,7 +577,7 @@ func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
 				Identity:    headerIdentity(database),
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 			// The failed room's eviction is held, so the failure the load leaves is still the
 			// room's to read below: the eviction releases the room's state as it goes.
 			evicting := make(chan struct{})
@@ -552,6 +625,7 @@ func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
 // one. An update appended in between raises the head, and the load reads the store again rather
 // than open the room without that update.
 func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	var mu sync.Mutex
@@ -625,6 +699,7 @@ func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
 // close with documentSchemaCloseCode before any sync, a code a browser can read, and neither loads
 // nor fails the room.
 func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		corrupt func(*testing.T, *Service, string)
@@ -641,15 +716,15 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 			seedServiceText(t, service, artifactID, "before")
 			test.corrupt(t, service, artifactID)
 			httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(httpServer.Close)
+			testcleanup.Add(t, httpServer.Close)
 			headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-			connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, response, err := documentDialer(t).Dial(wsURL, headers)
 			if err != nil {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
-			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			testcleanup.Add(t, func() { _ = connection.Close() })
+			connection.SetReadDeadline(socketDeadline(t))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -663,38 +738,38 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 }
 
 func TestShutdownClosesDocumentPeers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
 		Store: database, Events: events.NewBroker(),
 		Identity: headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	// The server counts the browser in the socket's authorization (Service.authorize), which ygo
+	// runs before the upgrade, so the count stands before the dial above returns and the read finds
+	// it at once. The read is bounded by the test binary's deadline alone, and its failure prints
+	// the last count.
+	testwait.Until(t, "the document's room to count the browser's connection", func() (string, bool) {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		return len(state.connected) == 1
+		return fmt.Sprintf("%d connections", len(state.connected)), len(state.connected) == 1
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
-	if err := <-shutdown; err != nil {
+	awaitServerClose(t, connection, "Shutdown closing the browser's socket")
+	if err := testwait.Receive(t, "Shutdown to answer once it closed the browser's socket", shutdown); err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
@@ -705,6 +780,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 // Shutdown returns at its caller's deadline while an editor is connected and a durable append waits
 // on a lock, and the append still reaches the store once the lock is released.
 func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -712,13 +788,13 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 		Identity: headerIdentity(database),
 		Settle:   time.Hour,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -761,6 +837,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 }
 
 func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -770,25 +847,20 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 		Identity:    headerIdentity(database),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	awaitServerClose(t, connection, "the failed append closing the browser's socket")
 	_ = connection.Close()
 	waitForNoLiveDocument(t, service, artifactID)
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
@@ -797,6 +869,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 }
 
 func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -805,21 +878,21 @@ func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("first failed-room access: response=%#v err=%v, want HTTP 503", response, err)
 	}
-	connection, response, err = gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err = documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("reloaded room access: response=%#v err=%v", response, err)
 	}
@@ -827,11 +900,12 @@ func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
 }
 
 func TestWebsocketRejectsUnauthenticatedConnection(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/room"
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, nil)
+	connection, response, err := documentDialer(t).Dial(wsURL, nil)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -844,6 +918,7 @@ func TestWebsocketRejectsUnauthenticatedConnection(t *testing.T) {
 }
 
 func TestUnauthenticatedDocumentRequestsDoNotAllocateRooms(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 
 	for number := range 1000 {

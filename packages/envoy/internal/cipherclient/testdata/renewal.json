@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "about": [
+    "When a broker token is traded again, as both clients of the secrets broker work it out: the Go client of packages/envoy/internal/cipherclient (renewalAt) and the TypeScript client of packages/cipher-client (renewalAt in src/token-client.ts). Each suite reads this one file and replays every row through its own rule, so neither client's renewal drifts from the other's.",
+    "The rule: a token is traded again renew_before_seconds ahead of its expiry, and never before half of what it had left when it landed; a token already past its expiry is traded again at once. So a token of at least twice the window renews the window ahead of its expiry, and a shorter one at its half life.",
+    "life_seconds is what the token has left when it lands, and renews_after_seconds is how long after it lands the rule trades again. Times are seconds, and a half second is written as one."
+  ],
+  "rows": [
+    {
+      "name": "an hour's token renews the window ahead of its expiry",
+      "life_seconds": 3600,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 3300
+    },
+    {
+      "name": "the broker's default life renews the window ahead of its expiry",
+      "life_seconds": 900,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 600
+    },
+    {
+      "name": "twice the window: the window ahead of its expiry is its half life",
+      "life_seconds": 600,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 300
+    },
+    {
+      "name": "between one and two windows renews at its half life, not the window ahead of its expiry",
+      "life_seconds": 450,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 225
+    },
+    {
+      "name": "two seconds over the window renews at its half life, not two seconds after it lands",
+      "life_seconds": 302,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 151
+    },
+    {
+      "name": "a second over the window renews at its half life",
+      "life_seconds": 301,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 150.5
+    },
+    {
+      "name": "exactly the window renews at its half life",
+      "life_seconds": 300,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 150
+    },
+    {
+      "name": "half the window and a second renews at its half life",
+      "life_seconds": 151,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 75.5
+    },
+    {
+      "name": "half the window renews at its half life",
+      "life_seconds": 150,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 75
+    },
+    {
+      "name": "two minutes renews at its half life",
+      "life_seconds": 120,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 60
+    },
+    {
+      "name": "a minute renews at its half life",
+      "life_seconds": 60,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 30
+    },
+    {
+      "name": "half a minute renews at its half life",
+      "life_seconds": 30,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 15
+    },
+    {
+      "name": "two seconds renews at its half life",
+      "life_seconds": 2,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 1
+    },
+    {
+      "name": "the broker's shortest life, a second, renews at its half life",
+      "life_seconds": 1,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 0.5
+    },
+    {
+      "name": "a token that lapses as it lands is traded again at once",
+      "life_seconds": 0,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 0
+    },
+    {
+      "name": "a token already past its expiry is traded again at once",
+      "life_seconds": -1,
+      "renew_before_seconds": 300,
+      "renews_after_seconds": 0
+    },
+    {
+      "name": "a shorter window: ten minutes renews the window ahead of its expiry",
+      "life_seconds": 600,
+      "renew_before_seconds": 60,
+      "renews_after_seconds": 540
+    },
+    {
+      "name": "a shorter window: between one and two windows renews at its half life",
+      "life_seconds": 90,
+      "renew_before_seconds": 60,
+      "renews_after_seconds": 45
+    },
+    {
+      "name": "a shorter window: under the window renews at its half life",
+      "life_seconds": 30,
+      "renew_before_seconds": 60,
+      "renews_after_seconds": 15
+    }
+  ]
+}
