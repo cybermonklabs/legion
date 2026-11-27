@@ -69,18 +69,6 @@ function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
   return args["check_opened_at"] !== undefined;
 }
 
-/** The input gate effect of a successful call. A look's report leaves phase input open, and so
- * does `report_defect`, which moves no phase: the role goes on with its step. */
-export function phaseInputAfter(
-  op: string,
-  args: { readonly check_opened_at?: unknown }
-): "phase-closed" | "update-answered" | undefined {
-  if (op === "ready_for_update") return "update-answered";
-  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
-    return "phase-closed";
-  return undefined;
-}
-
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
