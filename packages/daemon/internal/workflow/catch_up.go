@@ -293,7 +293,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, *issue, role)
+	run, err := e.store.RoleRun(ctx, tx, token, issue, role)
 	if err != nil {
 		return err
 	}
