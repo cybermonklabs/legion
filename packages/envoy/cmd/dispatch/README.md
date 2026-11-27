@@ -2068,9 +2068,9 @@ The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and 
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
 
-**A column that holds a credential, or a hash of one, is named before its release reaches a deployment's production.**
-A migration that adds such a column names it, in its pull request, to whoever keeps the list of columns that the deployment's read-only database login does not read.
-That login reads each table a later migration adds from the moment the table exists, so a column nobody listed is readable through it from the first deploy of the release that adds it.
+**A column that holds a credential, or a hash of one, is on the list of columns that the deployment's read-only database login does not read before the release that adds it reaches that deployment's production.**
+A migration that adds such a column names it, in its pull request, to whoever keeps that list, so that it is on the list by then.
+That login reads each table a later migration adds from the moment the table exists, so a column that is not on the list is readable through it from the first deploy of the release that adds it.
 
 A migration added from now on is named `<UTC timestamp>_<name>.up.sql`, the timestamp the moment its author created it, `YYYYMMDDHHMMSS` (`date -u +%Y%m%d%H%M%S`), with its census as `<same timestamp>_<name>.census.sql`.
 The numbered versions are the sequence the set grew up with;
