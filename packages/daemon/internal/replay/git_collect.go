@@ -36,6 +36,11 @@ const (
 	gitMergeBatch = 200
 )
 
+// gitMergeObjects is the directory, in the clone beside its objects, that each merge-tree writes
+// its merged trees and blobs into, and that collect-git removes as the merge-tree ends
+// (gitClone.merge): a name git gives nothing of its own in a repository's directory.
+const gitMergeObjects = "merge-objects"
+
 // GitConfig is one collection of git's reading of a repository's pull requests into a window
 // (CollectGit).
 type GitConfig struct {
@@ -137,9 +142,12 @@ type GitCollected struct {
 // It writes, for each commit of cfg.Branch the merges file holds and each base commit a read names,
 // the paths it changes, and for each head its tip, merge base, paths and verdicts (GitHead), each
 // read once in the run however many pull requests hold the head, its verdicts from one git
-// merge-tree --stdin of up to gitMergeBatch base commits (readVerdicts). Every git command runs
-// alone under the memory guard (gitGuard, cfg.MemoryCap) and its time; a command git fails, or the
-// guard kills, is a missing input, and the run goes on.
+// merge-tree --stdin of up to gitMergeBatch base commits (readVerdicts). A merge-tree writes its
+// merged trees and blobs into a directory of its own that the run removes, so the clone does not
+// grow with the merges (gitClone.merge). Every git command runs alone under the memory guard
+// (gitGuard, cfg.MemoryCap) and its time, a merge-tree --stdin's that of one merge, counted from
+// the last record it wrote; a command git fails, or the guard kills, is a missing input, and the
+// run goes on.
 //
 // A run on a window whose git file of cfg.Repo exists asks for nothing the file holds. The GitHub
 // phase keeps each pull request the file holds a pull line of and no missing input of GitHub's.
@@ -846,7 +854,8 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 // the run's verdicts: up to gitMergeBatch of them at a time from one git merge-tree --stdin, a line
 // of its stdin for each (gitVerdicts). From the first base that command gives no verdict at, as
 // where git cannot merge it or the guard kills git, it merges each alone (gitVerdict), up to the
-// first git does not give, whose missing input it is.
+// first git does not give, whose missing input it is. Each merge-tree leaves nothing in the clone
+// (gitClone.merge).
 func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int, head string, bases []string) []GitMissing {
 	for len(bases) > 0 {
 		batch := bases[:min(gitMergeBatch, len(bases))]
@@ -854,7 +863,7 @@ func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int
 		for _, base := range batch {
 			stdin = fmt.Appendf(stdin, "%s %s\n", base, head)
 		}
-		run := clone.git(ctx, gitMergeTime, stdin, true, "merge-tree", "--stdin", "--write-tree", "--no-messages", "--name-only", "-z")
+		run := clone.merge(ctx, stdin, "--stdin", "--write-tree", "--no-messages", "--name-only", "-z")
 		given := gitVerdicts(run.stdout, batch)
 		for _, verdict := range given {
 			c.verdicts[commitPair{head, verdict.Base}] = verdict
@@ -865,7 +874,7 @@ func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int
 		}
 	}
 	for _, base := range bases {
-		run := clone.git(ctx, gitMergeTime, nil, true, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", base, head)
+		run := clone.merge(ctx, nil, "--write-tree", "--no-messages", "--name-only", "-z", base, head)
 		verdict, given := gitVerdict(run, base)
 		if !given {
 			return []GitMissing{c.missingOf(gitFailure{run, gitMergeTime, "git merge-tree of the base and the head"}, pr, head, base, GitError)}
@@ -1061,8 +1070,8 @@ func (c *gitCollector) collected() GitCollected {
 	return out
 }
 
-// gitClone is the bare clone of a repository the git phase reads, in dir, each command run under
-// guard and told to onGit first.
+// gitClone is the bare clone of a repository the git phase reads, in dir, an absolute path, each
+// command run under guard and told to onGit first.
 type gitClone struct {
 	dir   string
 	guard *gitGuard
@@ -1074,7 +1083,12 @@ type gitClone struct {
 // into a temporary directory renamed into place once the clone is whole, so a clone the guard or
 // the pod's release killed is never taken for one. A clone that fails fails the run.
 func (c *gitCollector) openClone(ctx context.Context, clones string) (*gitClone, error) {
-	dir := filepath.Join(clones, c.owner+"__"+c.name)
+	// The merges name the clone's object directories to git by their paths (gitClone.merge), so its
+	// directory is absolute.
+	dir, err := filepath.Abs(filepath.Join(clones, c.owner+"__"+c.name))
+	if err != nil {
+		return nil, fmt.Errorf("replay: collect-git: %w", err)
+	}
 	clone := &gitClone{dir: dir, guard: c.guard, onGit: c.cfg.onGit}
 	switch _, err := os.Stat(dir); {
 	case err == nil:
@@ -1110,9 +1124,16 @@ func (r *gitClone) git(ctx context.Context, timeout time.Duration, stdin []byte,
 	return r.run(ctx, r.dir, timeout, stdin, noLazy, args...)
 }
 
-// run runs git args in dir ("" for none) as git describes: never asking for a credential on a
-// terminal, never collecting garbage or running maintenance on its own, and in the C locale.
+// run runs git args in dir ("" for none), as command makes them, under the guard and its time
+// timeout of the whole run.
 func (r *gitClone) run(ctx context.Context, dir string, timeout time.Duration, stdin []byte, noLazy bool, args ...string) guardedRun {
+	return r.guard.run(ctx, r.command(dir, stdin, noLazy, args...), timeout, false)
+}
+
+// command is git args in dir ("" for none), told to onGit first, as git describes: never asking for
+// a credential on a terminal, never collecting garbage or running maintenance on its own, and in
+// the C locale; with stdin where it is not nil, and lazy fetching off where noLazy.
+func (r *gitClone) command(dir string, stdin []byte, noLazy bool, args ...string) *exec.Cmd {
 	if r.onGit != nil {
 		r.onGit(slices.Clone(args))
 	}
@@ -1128,7 +1149,33 @@ func (r *gitClone) run(ctx context.Context, dir string, timeout time.Duration, s
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	return r.guard.run(ctx, cmd, timeout)
+	return cmd
+}
+
+// merge runs git merge-tree args in the clone, with stdin where it is not nil and lazy fetching
+// off, and leaves nothing of it in the clone: GIT_OBJECT_DIRECTORY names the directory of the
+// clone's gitMergeObjects, which git writes the merged trees and blobs into, and
+// GIT_ALTERNATE_OBJECT_DIRECTORIES the clone's objects, which it reads the commits from. That
+// directory is made empty before the command, whatever a stopped run left there, and removed once
+// the command ends, however it ended; an error of either is the run's (guardedRun.err), as one of
+// starting git is. No other command gets the two variables. The guard's time is gitMergeTime, that
+// of one merge: a merge-tree --stdin, whose stdin is not nil, writes the record of each merge as
+// it makes it, so its time is counted from the last output (gitGuard.run's sinceOutput).
+func (r *gitClone) merge(ctx context.Context, stdin []byte, args ...string) guardedRun {
+	objects := filepath.Join(r.dir, gitMergeObjects)
+	if err := os.RemoveAll(objects); err != nil {
+		return guardedRun{code: -1, err: err}
+	}
+	if err := os.Mkdir(objects, 0o755); err != nil {
+		return guardedRun{code: -1, err: err}
+	}
+	cmd := r.command(r.dir, stdin, true, append([]string{"merge-tree"}, args...)...)
+	cmd.Env = append(cmd.Env, "GIT_OBJECT_DIRECTORY="+objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+filepath.Join(r.dir, "objects"))
+	run := r.guard.run(ctx, cmd, gitMergeTime, stdin != nil)
+	if err := os.RemoveAll(objects); err != nil && run.err == nil {
+		run.err = err
+	}
+	return run
 }
 
 // ensure has the clone hold each commit of shas, fetching each it lacks (present): first the head

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -568,6 +569,77 @@ func callsOf(calls [][]string, subcommand string) [][]string {
 // names.
 var batchMergeTree = []string{"merge-tree", "--stdin", "--write-tree", "--no-messages", "--name-only", "-z"}
 
+// clonePicture is what a test reads of a clone: each file under its objects directory, as its path
+// there and its size, and each entry of the clone's own directory, each sorted.
+type clonePicture struct{ objects, entries []string }
+
+// pictureClone is the clone in dir as it stands.
+func pictureClone(t *testing.T, dir string) clonePicture {
+	t.Helper()
+	var picture clonePicture
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Errorf("read the clone in %s: %v", dir, err)
+		return picture
+	}
+	for _, entry := range entries {
+		picture.entries = append(picture.entries, entry.Name())
+	}
+	objects := filepath.Join(dir, "objects")
+	err = filepath.WalkDir(objects, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		name, err := filepath.Rel(objects, path)
+		picture.objects = append(picture.objects, fmt.Sprintf("%s %d", filepath.ToSlash(name), info.Size()))
+		return err
+	})
+	if err != nil {
+		t.Errorf("read the objects of the clone in %s: %v", dir, err)
+	}
+	return picture
+}
+
+// pictureBeforeMerges is an onGit that tells calls of each git command, and pictures the clone in
+// dir into before as collect-git's first merge-tree is about to run.
+func pictureBeforeMerges(t *testing.T, dir string, calls *gitCalls, before *clonePicture) func([]string) {
+	return func(args []string) {
+		calls.add(args)
+		if args[0] == "merge-tree" && before.entries == nil {
+			*before = pictureClone(t, dir)
+		}
+	}
+}
+
+// checkMergesWroteNothing fails t where the clone in dir, once collect-git has run, is not as
+// before pictured it as its first merge-tree was about to run: where its objects directory gained
+// or lost a file, or the clone holds another entry than it held then, such as a directory of the
+// merges' own objects (gitMergeObjects), which collect-git removes before each merge-tree and after
+// it.
+func checkMergesWroteNothing(t *testing.T, dir string, before clonePicture) {
+	t.Helper()
+	if before.entries == nil {
+		t.Fatal("collect-git ran no merge-tree, so the test pictured the clone before none")
+	}
+	after := pictureClone(t, dir)
+	notIn := func(a, b []string) []string {
+		return slices.DeleteFunc(slices.Clone(a), func(s string) bool { return slices.Contains(b, s) })
+	}
+	if gained, lost := notIn(after.objects, before.objects), notIn(before.objects, after.objects); len(gained) > 0 || len(lost) > 0 {
+		t.Errorf("the merges changed the clone's objects directory: it gained %d files%s\nand lost %d%s", len(gained), describeLines(gained), len(lost),
+			describeLines(lost))
+	}
+	want := slices.DeleteFunc(slices.Clone(before.entries), func(name string) bool { return name == gitMergeObjects })
+	if !slices.Equal(after.entries, want) {
+		t.Errorf("the clone holds after the run the entries %q, want %q: those it held before the first merge-tree, but no directory %s of the merges' objects",
+			after.entries, want, gitMergeObjects)
+	}
+}
+
 // lackedObjects is each object a ref of the repository in dir reaches that it does not hold, asked
 // with lazy fetching off (git rev-list --objects --missing=print --all).
 func lackedObjects(t *testing.T, dir string) []string {
@@ -775,12 +847,16 @@ func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
 
 // collect-git merges a head with each base commit it reads a verdict at in one git merge-tree
 // --stdin (batchMergeTree), a line of its stdin for each pair, rather than in a merge-tree for each
-// pair. Here the git file alone gives #13, which did not merge, the one head q, off c1, which changes
-// f.txt's fifth line as p1 does and other.txt, so q reads against m6, and each of m1 to m6 changes
-// one of its paths. git runs one merge-tree, and q's verdicts are those git gives each pair merged
-// alone: clean at m1, a conflict in other.txt at m2, in f.txt and other.txt at m3 and m4, and in
-// other.txt alone at m5 and m6, which change f.txt's fifth line as q does. It fails where git runs a
-// merge-tree for each pair, or where a verdict is not the one of its pair merged alone.
+// pair, and the merge writes nothing into the clone. Here the git file alone gives #13, which did
+// not merge, the one head q, off c1, which changes f.txt's fifth line as p1 does and other.txt, so q
+// reads against m6, and each of m1 to m6 changes one of its paths. git runs one merge-tree, and q's
+// verdicts are those git gives each pair merged alone: clean at m1, a conflict in other.txt at m2,
+// in f.txt and other.txt at m3 and m4, and in other.txt alone at m5 and m6, which change f.txt's
+// fifth line as q does. The clone's objects directory holds after the run the files it held as the
+// merge-tree was about to run, and the clone no directory of the merges' objects
+// (checkMergesWroteNothing). It fails where git runs a merge-tree for each pair, where a verdict is
+// not the one of its pair merged alone, or where the merge-tree wrote its trees and blobs into the
+// clone or left its object directory there.
 func TestCollectGitMergesAHeadWithItsBasesInOneMergeTree(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -789,9 +865,12 @@ func TestCollectGitMergesAHeadWithItsBasesInOneMergeTree(t *testing.T) {
 	c.remote.git("checkout", "--quiet", "main")
 	heads := []GitHead{{SHA: q, At: c.window.From, From: GitHeadCommit}}
 	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
-	dir := c.windowDir(t)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
 	calls := &gitCalls{}
-	if _, err := CollectGit(context.Background(), c.gitOnly(dir, filepath.Join(t.TempDir(), "clones"), calls)); err != nil {
+	var before clonePicture
+	config := c.gitOnly(dir, clones, calls)
+	config.onGit = pictureBeforeMerges(t, filepath.Join(clones, "acme__widgets"), calls, &before)
+	if _, err := CollectGit(context.Background(), config); err != nil {
 		t.Fatalf("CollectGit --git-only: %v", err)
 	}
 	if got, want := callsOf(calls.take(), "merge-tree"), [][]string{batchMergeTree}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
@@ -822,6 +901,7 @@ func TestCollectGitMergesAHeadWithItsBasesInOneMergeTree(t *testing.T) {
 		t.Errorf("the git file holds q as %s, want it read against m6 from c1, its paths f.txt and other.txt, and the verdicts %s", describeReading(h),
 			describeReading(alone))
 	}
+	checkMergesWroteNothing(t, filepath.Join(clones, "acme__widgets"), before)
 }
 
 // mergeFailed is the start of the detail of the missing input of a verdict git's merge-tree of the
@@ -835,9 +915,12 @@ const mergeFailed = "git merge-tree of the base and the head: git exits 128: "
 // git file alone gives #13 the one head p1, which reads against y. Of p1's bases m1, m3, m4, m5, m6,
 // x and y, the merge-tree --stdin gives m1 to m6 and dies at x, which git cannot read; collect-git
 // keeps those five, merges x alone, which fails too, and writes the five, a git-error missing input
-// at x whose detail is that of x's merge-tree alone, and no verdict at y, which rests on x. It fails
-// where a verdict the batch gave is merged again, where y is merged, or where the missing input is
-// not x's.
+// at x whose detail is that of x's merge-tree alone, and no verdict at y, which rests on x. The
+// clone also holds the directory of the merges' objects (gitMergeObjects) a stopped run left, an
+// object in it; after the run the clone holds neither that directory nor an object the two
+// merge-trees wrote (checkMergesWroteNothing). It fails where a verdict the batch gave is merged
+// again, where y is merged, where the missing input is not x's, or where a merge-tree wrote into
+// the clone or a directory of the merges' objects is left there.
 func TestCollectGitMergesAloneWhatItsMergeTreeStdinDidNotGive(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -855,13 +938,23 @@ func TestCollectGitMergesAloneWhatItsMergeTreeStdinDidNotGive(t *testing.T) {
 	tree := c.remote.gitInput(strings.Join(entries, "\n")+"\n", "-C", clone, "mktree", "--missing")
 	x := c.remote.git("-C", clone, "commit-tree", "-p", c.m6, "-m", "x", tree)
 	y := c.remote.git("-C", clone, "commit-tree", "-p", x, "-m", "y", c.m6+"^{tree}")
+	leftover := filepath.Join(clone, gitMergeObjects, "ab")
+	if err := os.MkdirAll(leftover, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, strings.Repeat("c", 38)), []byte("left by a stopped run\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
 	c.window.Merges["acme/widgets"] = append(c.window.Merges["acme/widgets"],
 		Merge{SHA: x, At: capturedTime(t, "2001-03-05T10:45:00Z"), Branch: "main"}, Merge{SHA: y, At: capturedTime(t, "2001-03-05T10:50:00Z"), Branch: "main"})
 	heads := []GitHead{{SHA: c.p1, At: c.window.From, From: GitHeadCommit}}
 	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
 	dir := c.windowDir(t)
 	calls := &gitCalls{}
-	if _, err := CollectGit(context.Background(), c.gitOnly(dir, clones, calls)); err != nil {
+	var before clonePicture
+	config := c.gitOnly(dir, clones, calls)
+	config.onGit = pictureBeforeMerges(t, clone, calls, &before)
+	if _, err := CollectGit(context.Background(), config); err != nil {
 		t.Fatalf("CollectGit --git-only: %v", err)
 	}
 	alone := []string{"merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", x, c.p1}
@@ -896,6 +989,7 @@ func TestCollectGitMergesAloneWhatItsMergeTreeStdinDidNotGive(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(dir, "git", "acme__widgets.jsonl")); err != nil || !bytes.Contains(data, []byte(gone)) {
 		t.Errorf("the git file (%v) names no blob %s, which x's merge-tree alone cannot read:\n%s", err, gone, data)
 	}
+	checkMergesWroteNothing(t, clone, before)
 }
 
 // The GitHub phase alone writes each pull request's pull line and its heads with their commit,

@@ -360,9 +360,12 @@ commit it needs that the clone lacks, its blobs with it, so no merge fetches. It
 each commit of the base branch changes, and for each head the paths it changes since its merge
 base and git's verdict of merging it with the base as it stands at each later commit of the base
 that changes one of those paths, up to the pull request's own merge (git merge-tree --stdin, up to
-200 merges to a command). Each git command runs alone, its process group killed once its memory
-passes --memory-cap or it runs past its time; a kill, and anything git cannot give, is a missing
-input of the file, never a clean verdict, and the run goes on.
+200 merges to a command). Each merge-tree writes the objects it merges into a directory of its
+own in the clone, merge-objects, which collect-git removes as the command ends, so the clone does
+not grow with the merges. Each git command runs alone, its process group killed once its memory
+passes --memory-cap or it runs past its time, a merge-tree --stdin's time that of one merge,
+counted from the last verdict it wrote; a kill, and anything git cannot give, is a missing input
+of the file, never a clean verdict, and the run goes on.
 
 --github-only runs the GitHub phase alone, where a GitHub token is and no git credential need be;
 --git-only runs the git phase alone, from the file the GitHub phase wrote, and takes no token: a

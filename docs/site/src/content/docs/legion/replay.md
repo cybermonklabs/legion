@@ -489,10 +489,14 @@ Since the clone holds every blob that it reads, each command that reads it runs 
 Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
 Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
 It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
+Each merge-tree writes the trees and blobs that it merges into an object directory of its own, `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
+The collector makes that directory empty before each merge-tree, whatever a stopped run left there, and removes it once the command ends, however it ended, so the clone does not grow with the merges.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
 
 Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
 The guard also kills a command past its time: 15 minutes for the clone, 180 seconds for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
+A `merge-tree --stdin` writes each verdict as it makes it, so its 120 seconds are those of one merge, counted from the last verdict that it wrote, or from its start before the first.
+So a batch that goes on giving verdicts finishes, and a merge that hangs is killed, while the collector keeps the verdicts that its batch gave before it.
 A kill is a `memory-cap` or a `timeout` missing input, any other failure of git a `git-error` one, and the run goes on.
 The guard reads Linux's `/proc`, so the git phase runs on Linux.
 

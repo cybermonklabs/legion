@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -22,7 +23,8 @@ const gitPoll = 200 * time.Millisecond
 
 // The guard's time of each git command collect-git runs: the clone of the base branch, a fetch of a
 // batch of commits, a fetch of one commit, a merge-tree, and any other command. A command past its
-// time is killed, as one past the memory cap is.
+// time is killed, as one past the memory cap is. A merge-tree's time is that of one merge: a
+// merge-tree --stdin's is counted from the last record it wrote (gitClone.merge).
 const (
 	gitCloneTime  = 15 * time.Minute
 	gitBranchTime = 180 * time.Second
@@ -34,8 +36,8 @@ const (
 // gitGuard runs one command at a time under a memory cap and a time, as the feasibility reading's
 // guard did: the command runs as the leader of a process group of its own, the summed resident
 // memory of that group is read as it starts and every gitPoll after (rss, groupRSS where nil), and
-// the whole group is killed once that memory passes limit or the command outlives its time. Peak is
-// the most memory it read of any command it ran. Linux alone holds the /proc it reads.
+// the whole group is killed once that memory passes limit or the command outlives its time (run).
+// Peak is the most memory it read of any command it ran. Linux alone holds the /proc it reads.
 type gitGuard struct {
 	limit int64
 	rss   func(pgid int) int64
@@ -54,10 +56,18 @@ type guardedRun struct {
 	err            error
 }
 
-// run runs cmd under g, its time timeout. It sets cmd's stdout, stderr and process group.
-func (g *gitGuard) run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) guardedRun {
+// run runs cmd under g, its time timeout: counted from its start, or, where sinceOutput, from the
+// last time it wrote on stdout, so a command that goes on writing is killed only once it has
+// written nothing for timeout. It sets cmd's stdout, stderr and process group.
+func (g *gitGuard) run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, sinceOutput bool) guardedRun {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// Each write on stdout is noted on wrote and moves the deadline; a nil wrote is never ready.
+	var wrote chan struct{}
+	if sinceOutput {
+		wrote = make(chan struct{}, 1)
+		cmd.Stdout = notedWriter{&stdout, wrote}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// A process that left the group yet holds the output open does not hold the run past this.
 	cmd.WaitDelay = 5 * time.Second
@@ -99,6 +109,8 @@ func (g *gitGuard) run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration
 			exited = true
 		case <-tick.C:
 			measure()
+		case <-wrote:
+			deadline.Reset(timeout)
 		case <-deadline.C:
 			kill(GitTimeout)
 		case <-ctx.Done():
@@ -116,6 +128,22 @@ func (g *gitGuard) run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration
 		run.err = waited
 	}
 	return run
+}
+
+// notedWriter writes into w and notes each write on wrote, where the note before has been taken,
+// so a write never waits on the guard, which needs to know only that one came.
+type notedWriter struct {
+	w     io.Writer
+	wrote chan<- struct{}
+}
+
+func (n notedWriter) Write(p []byte) (int, error) {
+	written, err := n.w.Write(p)
+	select {
+	case n.wrote <- struct{}{}:
+	default:
+	}
+	return written, err
 }
 
 // groupRSS is the summed resident memory of the processes of the process group pgid, in bytes, as
