@@ -620,15 +620,16 @@ func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, 
 	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
 		repo = new(settings.DeployRepo)
 	}
-	return saveSettings(ctx, pool, delivery.ProjectSettingsInput{
+	return SaveSettings(ctx, pool, delivery.ProjectSettingsInput{
 		Project: project, Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(settings, repo)},
 		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
 	}, by)
 }
 
-// saveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the
-// settings route does, and drains the change rows it logged after the commit.
-func saveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, by model.Actor) (delivery.ProjectSettings, error) {
+// SaveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the
+// settings route does, and drains the change rows it logged after the commit. The fixture's modes
+// and evalbench's k14 projects save their settings through it.
+func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, by model.Actor) (delivery.ProjectSettings, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("begin the delivery settings of %s: %w", input.Project, err)

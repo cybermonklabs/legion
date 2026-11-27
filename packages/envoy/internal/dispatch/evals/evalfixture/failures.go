@@ -305,7 +305,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 	} {
 		input.Delivery, input.PopulationAuthors, input.ExcludedRepos = true, []string{failuresAuthor}, []string{}
 		input.FailureSources, input.FailuresMeasuredSince = result.FailureSources[input.Project], &day
-		saved, err := saveSettings(ctx, pool, input, actor)
+		saved, err := SaveSettings(ctx, pool, input, actor)
 		if err != nil {
 			return FailuresResult{}, err
 		}

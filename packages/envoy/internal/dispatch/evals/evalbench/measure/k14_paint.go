@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalbench"
@@ -25,8 +23,8 @@ import (
 //   - it read the stored figures, both statements of evals.ReadStoredFiguresIn (storedFiguresReads,
 //     the rule checkStoredFiguresReads holds the head's paint to), and the range figures read
 //     served the project's deploy-frequency, which is keyed by the deploy repository: the fold of
-//     the union cut of all the project's deploy repositories (T19 path 2), where the code before it
-//     folded the day rows of a project with two deploy sources on each read;
+//     the union cut of all the project's deploy repositories, where the code before it folded the
+//     day rows of a project with two deploy sources on each read;
 //   - its items are, item for item, the ones the warm server answered the same read before the
 //     restart (`measure k14`'s -expect-file), and its deploy-frequency holds a value over the
 //     window: a first paint that answered other numbers than the page had, or none, measured
@@ -67,8 +65,7 @@ func judgeK14Paint(r *report, o options, measured []measuredCase) error {
 	}
 	record := k14PaintRecord{Project: o.project, Run: o.run}
 	deployFrequency := evals.EvalID(o.project, evals.SlugDeployFrequency)
-	stamp := fmt.Sprintf("at=%s rate=%s scale=%s node=%s", time.Now().UTC().Format(time.RFC3339Nano), map[bool]string{false: "stated", true: "ten-times"}[r.tenTimes],
-		cmp.Or(o.scale, "unnamed"), cmp.Or(o.node, "unnamed"))
+	stamp := k14Stamp(r, o)
 	for index, one := range measured {
 		problems := k14PaintProblems(one, expected, o.project, deployFrequency)
 		for _, problem := range problems {
@@ -89,19 +86,7 @@ func judgeK14Paint(r *report, o options, measured []measuredCase) error {
 	if o.runsFile == "" {
 		return nil
 	}
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(o.runsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(append(encoded, '\n')); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
+	return recordRun(o.runsFile, record)
 }
 
 // servedEvals matches the range figures read's condition on the evals it serves
@@ -138,19 +123,7 @@ func k14PaintProblems(one measuredCase, expected []k14Expected, project, deployF
 	case at < 0:
 		problems = append(problems, "the warm reads hold none of it, so its answer was compared with nothing")
 	default:
-		var differing []string
-		for id, value := range items {
-			if expected[at].Items[id] != value {
-				differing = append(differing, id)
-			}
-		}
-		for id := range expected[at].Items {
-			if _, held := items[id]; !held {
-				differing = append(differing, id)
-			}
-		}
-		if len(differing) > 0 {
-			slices.Sort(differing)
+		if differing := differingItems(expected[at].Items, items); len(differing) > 0 {
 			problems = append(problems, fmt.Sprintf("its items differ from the warm read's before the restart: %s", strings.Join(differing, ", ")))
 		}
 	}

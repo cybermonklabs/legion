@@ -81,9 +81,10 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
-// RowQueryer is what GetSettings needs of its connection: the pool, or a transaction a reader
-// holds open so the setting answers the moment its other reads of what the sampler writes answer
-// (api/legion_issue.go's readLegionIssue, whose `configured` and state are one moment's).
+// RowQueryer is what GetSettings and ControllerSession need of their connection: the pool, or a
+// transaction a reader holds open so the setting answers the moment its other reads of what the
+// sampler writes answer (api/legion_issue.go's readLegionIssue, whose `configured` and state are
+// one moment's).
 type RowQueryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -335,22 +336,16 @@ func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, erro
 // newest good read (FieldController), and false where the daemon names none or Dispatch has read
 // no state of it. The reject of a production event proves the project's controller by it
 // (dispatch://INFRA-978, R8): a caller whose own session a credential proved and equals it.
-func ControllerSession(ctx context.Context, db Queryer, project string) (string, bool, error) {
-	rows, err := db.Query(ctx, `
+func ControllerSession(ctx context.Context, db RowQueryer, project string) (string, bool, error) {
+	var session string
+	err := db.QueryRow(ctx, `
 		select value #>> '{}' from legion_current
 		where project = $1 and issue_key = $2 and field = $3 and jsonb_typeof(value) = 'string'
-	`, project, AdmissionKey, FieldController)
+	`, project, AdmissionKey, FieldController).Scan(&session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
 	if err != nil {
-		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
-	}
-	defer rows.Close()
-	session := ""
-	for rows.Next() {
-		if err := rows.Scan(&session); err != nil {
-			return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
-		}
-	}
-	if err := rows.Err(); err != nil {
 		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
 	}
 	return session, session != "", nil

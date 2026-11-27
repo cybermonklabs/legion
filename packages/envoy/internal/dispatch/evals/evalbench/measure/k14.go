@@ -109,19 +109,20 @@ type k14Run struct {
 	pages  map[string][]*livePage
 }
 
-// rate is the run rate the fixture is loaded at, as each RESULT line names it.
-func (k *k14Run) rate() string {
-	if k.r.tenTimes {
-		return "ten-times"
+// k14Stamp is what every measured RESULT line of k14 and of its first paints (judgeK14Paint) ends
+// with: the clock, the rate the fixture is loaded at, the scale and the node.
+func k14Stamp(r *report, o options) string {
+	rate := "stated"
+	if r.tenTimes {
+		rate = "ten-times"
 	}
-	return "stated"
+	return fmt.Sprintf("at=%s rate=%s scale=%s node=%s", time.Now().UTC().Format(time.RFC3339Nano), rate, cmp.Or(o.scale, "unnamed"),
+		cmp.Or(o.node, "unnamed"))
 }
 
-// stamp is what every measured RESULT line of k14 ends with: the clock, the rate, the scale and
-// the node.
+// stamp is k14Stamp of the run's report and flags.
 func (k *k14Run) stamp() string {
-	return fmt.Sprintf("at=%s rate=%s scale=%s node=%s", time.Now().UTC().Format(time.RFC3339Nano), k.rate(), cmp.Or(k.o.scale, "unnamed"),
-		cmp.Or(k.o.node, "unnamed"))
+	return k14Stamp(k.r, k.o)
 }
 
 // k14 is `measure k14` (the comment above).
@@ -234,7 +235,7 @@ type k14Settings struct {
 	FailuresMeasuredSince *string     `json:"failures_measured_since"`
 }
 
-// k14Actor is the actor k14's writes name, as k16's move does.
+// k14Actor is the actor k14's writes and k16's move (moveDefault) name.
 var k14Actor = map[string]string{"kind": "session", "id": "evalbench"}
 
 // readSettings reads project's delivery settings through the route.

@@ -205,9 +205,9 @@ func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
 	// The three fields every issue carries and one claim each, and the project's three.
 	observations := make([]Observation, 0, len(keys)*4+3)
-	var controller *string
-	if s.ControllerLocator != nil && s.ControllerLocator.SessionID != "" {
-		controller = &s.ControllerLocator.SessionID
+	var controller any
+	if s.ControllerLocator != nil {
+		controller = optional(s.ControllerLocator.SessionID)
 	}
 	for _, project := range []struct {
 		field string

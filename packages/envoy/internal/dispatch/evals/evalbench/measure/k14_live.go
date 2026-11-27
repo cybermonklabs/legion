@@ -268,17 +268,26 @@ func reachOf(page *livePage, id string, sent time.Time, want string, freshItems 
 	for at := len(changes) - 1; at >= 0 && changes[at].value == want; at-- {
 		reach.reached = &changes[at].at
 	}
-	shown := page.shown()
-	for _, key := range slices.Sorted(maps.Keys(freshItems)) {
-		if shown[key] != freshItems[key] {
-			reach.differing = append(reach.differing, key)
-		}
-	}
-	for key := range shown {
-		if _, held := freshItems[key]; !held {
-			reach.differing = append(reach.differing, key)
-		}
-	}
-	slices.Sort(reach.differing)
+	reach.differing = differingItems(freshItems, page.shown())
 	return reach
+}
+
+// differingItems is the ids, sorted, where got differs from want: each of want's items got holds
+// with another value or not at all, and each of got's want does not hold. Every value is an item's
+// canonical JSON (keyed), never "", so an item missing and an item held with another value are
+// both told by the value.
+func differingItems(want, got map[string]string) []string {
+	var differing []string
+	for id, value := range want {
+		if got[id] != value {
+			differing = append(differing, id)
+		}
+	}
+	for id := range got {
+		if _, held := want[id]; !held {
+			differing = append(differing, id)
+		}
+	}
+	slices.Sort(differing)
+	return differing
 }

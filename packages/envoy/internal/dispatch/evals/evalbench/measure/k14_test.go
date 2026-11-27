@@ -158,7 +158,7 @@ func jsonLine(ms int, pid int, app, kind, text string, duration float64, detail 
 		fmt.Sprintf("duration: %.3f ms  %s: %s", duration, kind, text), detail)
 }
 
-// logOf parses raw jsonlog lines as readLogLines reads them.
+// logOf parses raw jsonlog lines as scanTransactions reads them (parseLogLine).
 func logOf(t *testing.T, raw ...string) []logLine {
 	t.Helper()
 	var lines []logLine
@@ -170,6 +170,16 @@ func logOf(t *testing.T, raw ...string) []logLine {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// transactionsOf is the transactions of lines (transactionReader), as scanTransactions reads
+// them from the log file.
+func transactionsOf(lines []logLine, mark func(logLine) string) []transaction {
+	reader := newTransactionReader(mark)
+	for _, line := range lines {
+		reader.add(line)
+	}
+	return reader.transactions()
 }
 
 // TestK14TheStatementLogGivesTheWriteItsCommitAndEachTransactionItsSpan: transactionsOf reads each

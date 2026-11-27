@@ -148,8 +148,7 @@ func headCases(project string, today time.Time, run int) []paintCase {
 		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 		{name: "list-28d-repo", path: evalListPath(project, w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 	}
-	first := (max(run, 1) - 1) % len(lists)
-	cases := slices.Concat(lists[first:], lists[:first])
+	cases := rotated(lists, run)
 	cases = append(cases, paintCase{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true,
 		view: evalsView(project, w84, &c84)})
 	return append(cases, timelineCases("", today)...)
@@ -177,8 +176,8 @@ func evalListPath(project string, w window, compare *window, repo string) string
 // k14Cases are k14's first paint of a k14 project (evalbench.K14Projects) in run run of its runs
 // (0 read as 1): the Evals tab's list read at 84 days with an 84-day compare range and at 28 days
 // with none, each with no repository, which the stored figures of the project's own cut answer,
-// the fold of all its deploy repositories' rows (R14, T19 path 2), under the first paint's server
-// budget and its database budgets, which R14 binds at both rates (strict). Run n starts with the
+// the fold of all its deploy repositories' rows (R14), under the first paint's server budget and
+// its database budgets, which R14 binds at both rates (strict). Run n starts with the
 // ((n-1) mod 2)th of them, so over two runs each is the first read after a restart once.
 func k14Cases(project string, today time.Time, run int) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
@@ -186,6 +185,12 @@ func k14Cases(project string, today time.Time, run int) []paintCase {
 		{name: "list-84d-compare", path: evalListPath(project, w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
 		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
 	}
+	return rotated(lists, run)
+}
+
+// rotated is lists in run run of a paint's runs (0 read as 1): from the ((run-1) mod len(lists))th
+// on in order, then the ones before it, so over len(lists) runs each is the first read once.
+func rotated(lists []paintCase, run int) []paintCase {
 	first := (max(run, 1) - 1) % len(lists)
 	return slices.Concat(lists[first:], lists[:first])
 }

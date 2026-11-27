@@ -49,7 +49,9 @@ const deliveryTargetOff = "off"
 // ReconciledThrough: null for an events source, a source of a project with delivery off, and a
 // repository whose first import has not finished), and the targets read back from the project's
 // eval rows (evals_current): each slug of deliverySettingsTargetSlugs the project holds an eval of,
-// a number or "off". failures_measured_since is a UTC day, YYYY-MM-DD.
+// a number or "off", an object in every answer (`{}` where the project holds none of them), which
+// its `required:"true"` tells the emitter, since it leaves a field rawFieldSchemas names out of
+// `required` otherwise. failures_measured_since is a UTC day, YYYY-MM-DD.
 type projectDeliverySettings struct {
 	Project               string                `json:"project"`
 	Delivery              bool                  `json:"delivery"`
@@ -59,7 +61,7 @@ type projectDeliverySettings struct {
 	ExcludedRepos         []string              `json:"excluded_repos"`
 	FailureSources        []string              `json:"failure_sources"`
 	FailuresMeasuredSince *string               `json:"failures_measured_since"`
-	Targets               json.RawMessage       `json:"targets"`
+	Targets               json.RawMessage       `json:"targets" required:"true"`
 	UpdatedBy             model.Actor           `json:"updated_by"`
 	UpdatedAt             time.Time             `json:"updated_at"`
 }

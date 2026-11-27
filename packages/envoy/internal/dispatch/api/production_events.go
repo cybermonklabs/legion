@@ -110,7 +110,7 @@ type productionEventInput struct {
 	Commits []string `json:"commits"`
 	// PullRequests are the pull requests a deploy shipped or a failure blames, owner/repo#n.
 	PullRequests []string `json:"pull_requests"`
-	// DeployID names a failure's deploy by its row's id.
+	// DeployID names a failure's deploy by its row's id: the uuid of a deploy row, of any project.
 	DeployID *string `json:"deploy_id"`
 	// CommitSHA names a failure's deploy by a commit: the first deploy of any project that
 	// shipped it.

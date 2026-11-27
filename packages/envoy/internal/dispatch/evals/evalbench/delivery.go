@@ -448,8 +448,9 @@ func (s *jobSource) Err() error { return nil }
 
 // writeDelivery writes the project's delivery settings (INFRA's through
 // evalfixture.PutDeliverySettings: one source reading its default repository, the first of Repos,
-// under Settings' rule; another project's its fixture's sources, saveSettings), its pull requests,
-// and the runs and their jobs of each of its deploy repositories, and answers the pull requests.
+// under Settings' rule; another project's its fixture's sources, evalfixture.SaveSettings), its
+// pull requests, and the runs and their jobs of each of its deploy repositories, and answers the
+// pull requests.
 //
 // The three tables' triggers log each row into delivery_changes, the 24-hour feed of what changed
 // that the refresher and the live views read from their cursors. The history is no change any
@@ -463,7 +464,7 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history pro
 		if _, err := evalfixture.PutDeliverySettings(ctx, pool, fixture.key, Settings(), actor); err != nil {
 			return nil, fmt.Errorf("write the delivery settings: %w", err)
 		}
-	} else if err := saveSettings(ctx, pool, fixture.sources(spec)); err != nil {
+	} else if _, err := evalfixture.SaveSettings(ctx, pool, fixture.sources(spec), actor); err != nil {
 		return nil, err
 	}
 	prs := planPullRequests(spec, history)

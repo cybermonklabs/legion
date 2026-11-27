@@ -19,9 +19,9 @@
 // the paints' runs; github is the loopback stand-in for GitHub the server's App calls in that mode
 // (github.go).
 //
-// -mode is head, base, failure-day or base-failure-day: failure-day is this head over the fixture
-// with a failure day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's
-// alone; base is the base, main at the commit this head merges (git merge-base <head>
+// -mode is head, base, failure-day, base-failure-day or k14 (above): failure-day is this head over
+// the fixture with a failure day added to it (evalbench.AddFailureDay), whose paint is the Delivery
+// timeline's alone; base is the base, main at the commit this head merges (git merge-base <head>
 // origin/main), and base-failure-day the base over the same history with the failure day added.
 //
 // wait polls the database until the server's consumers have caught up with the fixture: the

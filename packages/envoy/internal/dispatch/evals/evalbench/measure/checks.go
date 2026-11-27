@@ -292,11 +292,7 @@ func (c *headChecks) k16() {
 // routeValue is one statistic of one series of one eval as the list read answers it over w, the
 // rows of repo where it names one.
 func (c *headChecks) routeValue(ctx context.Context, w window, repo, slug, series, stat string) (*float64, error) {
-	query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
-	if repo != "" {
-		query.Set("repo", repo)
-	}
-	status, body, err := getBody(ctx, c.client, c.o.url+"/api/v1/projects/"+c.o.project+"/evals?"+query.Encode(), c.o.token)
+	status, body, err := getBody(ctx, c.client, c.o.url+evalListPath(c.o.project, w, nil, repo), c.o.token)
 	if err != nil {
 		return nil, err
 	}
@@ -995,7 +991,7 @@ func (c *headChecks) move() {
 // moveDefault moves the project's default repository from was to now and prints the move's line
 // (move), answering whether it came to the end of its refold.
 func (c *headChecks) moveDefault(ctx context.Context, was, now string) bool {
-	body, err := json.Marshal(map[string]any{"repo": now, "actor": map[string]string{"kind": "session", "id": "evalbench"}})
+	body, err := json.Marshal(map[string]any{"repo": now, "actor": k14Actor})
 	if err != nil {
 		c.r.fail("k16 move from=%s to=%s: %v", was, now, err)
 		return false

@@ -253,7 +253,8 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	}},
 	// The delivery settings' targets (project_settings_delivery.go): each named eval's target, a
 	// number or "off". A save's leaves a target it does not name as it is (parseDeliveryTargets),
-	// and the answer names each eval the project holds.
+	// and the answer names each eval the project holds. The answer always carries the field, which
+	// its `required:"true"` says.
 	{reflect.TypeOf(projectDeliverySettingsInput{}), "targets"}: rawField{Fragment: openAPIDeliveryTargets},
 	{reflect.TypeOf(projectDeliverySettings{}), "targets"}:      rawField{Fragment: openAPIDeliveryTargets},
 	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits

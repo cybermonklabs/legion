@@ -713,10 +713,11 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
 }
 
-// The five routes added for delivery settings and the production-event record return settings
-// and facts, not figures of the three failure measures. A new route under either path must get
-// its own row here. The settings' eval targets are goals, not observed values.
-func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
+// TestTheSettingsAndProductionEventRoutesAnswerNoFailureMeasure: the five routes under a project's
+// delivery settings and its production-event record answer settings and facts, never a figure of
+// the three failure measures. A new route under either path must get its own row here. The
+// settings' eval targets are goals, not observed values.
+func TestTheSettingsAndProductionEventRoutesAnswerNoFailureMeasure(t *testing.T) {
 	t.Parallel()
 	const settings = "/api/v1/projects/{key}/settings/delivery"
 	const events = "/api/v1/projects/{key}/production-events"

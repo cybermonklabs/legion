@@ -51,12 +51,16 @@ func infraDigest(spec Spec) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-// TestK14LeavesINFRAsHistoryAsItWas: the generator draws each project's history from streams of
-// its own, and INFRA's from the unprefixed pre-k14 streams (infraFixture.rand), so turning K14 on
-// and planning the k14 projects leaves INFRA's issues, events, pull requests, runs and jobs
-// identical field for field at both rates. (math.Exp differs by up to 1 ULP between amd64 and
-// arm64, so no hardcoded architecture-specific digest is compared.)
-func TestK14LeavesINFRAsHistoryAsItWas(t *testing.T) {
+// TestTheK14PlannersShareNoStateThatMovesINFRAsHistory: the generator draws each project's history
+// from streams of its own, and INFRA's from the unprefixed pre-k14 streams (infraFixture.rand), so
+// planning the k14 projects' issues, pull requests and runs between two plans of INFRA's leaves
+// INFRA's issues, events, pull requests, runs and jobs identical field for field at both rates: no
+// state the k14 planners share with INFRA's (a random stream, a package variable) moves INFRA's
+// history. No planner reads Spec.K14, so the flag itself digests alike on both sides; the test holds
+// the k14 planners apart from INFRA's, and INFRA's fixture to its pre-k14 streams and run ids.
+// (math.Exp differs by up to 1 ULP between amd64 and arm64, so no hardcoded architecture-specific
+// digest is compared.)
+func TestTheK14PlannersShareNoStateThatMovesINFRAsHistory(t *testing.T) {
 	t.Parallel()
 	for _, tenTimes := range []bool{false, true} {
 		base := Spec{Now: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC), Seed: 2916, Scale: 0.01, TenTimes: tenTimes}

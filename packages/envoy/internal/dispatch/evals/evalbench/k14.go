@@ -126,24 +126,6 @@ func k14Settings(spec Spec, project, failure string, sources ...delivery.SourceI
 	}
 }
 
-// saveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the
-// settings route and evalfixture do, and drains the change rows it logged once it has committed.
-func saveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the delivery settings of %s: %w", input.Project, err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := delivery.PutProjectSettings(ctx, tx, input, actor); err != nil {
-		return fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the delivery settings of %s: %w", input.Project, err)
-	}
-	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of the k14 projects' delivery settings")
-	return nil
-}
-
 // writeK14 writes the two k14 projects (the comment above), logging each as it ends.
 func writeK14(ctx context.Context, pool *store.Pool, spec Spec, step func(string)) error {
 	for _, fixture := range k14Fixtures {
@@ -220,7 +202,7 @@ func writePosted(ctx context.Context, pool *store.Pool, spec Spec, fixture proje
 			}
 			id := uuidOf(rng)
 			ref := fmt.Sprintf("evalbench-deploy-%d", len(deploys)+1)
-			deploys = append(deploys, []any{id, fixture.key, prodevents.KindDeploy, "succeeded", prodevents.SourceAPI, ref,
+			deploys = append(deploys, []any{id, fixture.key, prodevents.KindDeploy, prodevents.StatusSucceeded, prodevents.SourceAPI, ref,
 				finished.Add(-between(rng, 5*time.Minute, 30*time.Minute)), finished, "", []string{sha(rng)}, []string{}, "", posted})
 			if rng.Float64() >= failedShare {
 				continue

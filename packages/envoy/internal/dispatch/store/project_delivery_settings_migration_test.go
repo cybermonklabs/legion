@@ -124,10 +124,11 @@ func TestCensusCountsASingletonNoOneProjectDeploys(t *testing.T) {
 
 // The tables' checks refuse what no reader could read: a github_workflow source with no
 // workflow, an empty production job list, an events source holding a repository, a kind that is
-// neither, a malformed repository, two sources reading one repository (two naming none among
-// them), a second events source, a failure source that is not one of the four, and a failure
-// source with no first day; a full github_workflow source, a second one naming another repository
-// and one events source are accepted.
+// neither, a repository that is not in lower case (the column checks `repo = lower(repo)`, and
+// the row here has capitals), two sources reading one repository (two naming none among them), a
+// second events source, a failure source that is not one of the four, and a failure source with
+// no first day; a full github_workflow source, a second one naming another repository and one
+// events source are accepted.
 func TestTheProjectSettingsTablesRefuseARowNoReaderCouldRead(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)

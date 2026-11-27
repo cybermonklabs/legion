@@ -5636,7 +5636,7 @@ Each item below names a path with its method and identity, then its purpose.
   `note` is what the writer says of the event, kept as sent, at most 4,096 bytes (`productionEventNoteBytes`); a longer one is `400 PRODUCTION_EVENT_INPUT`.
   A deploy (`kind: deploy`) needs `finished_at`, the moment it reached production, and is a system's: an agent or service token, any credential that holds no `person` scope; one that holds it is `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
   A deploy's own run is its `source_ref` and `url`, so a deploy naming `deploy_id`, `commit_sha`, `cicd.pipeline.run.id` or `detected_at` is `400 PRODUCTION_EVENT_INPUT`.
-  A failure (`kind: failure`) names the deploy it blames, a deploy row of any project, one way: `deploy_id`, `cicd.pipeline.run.id` with `repo` (the deploy row the GitHub adapter wrote for that run), or `commit_sha` (the first deploy, of any project, that shipped it); a deploy no row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`.
+  A failure (`kind: failure`) names the deploy it blames, a deploy row of any project, one way: `deploy_id` (that row's uuid), `cicd.pipeline.run.id` with `repo` (the deploy row the GitHub adapter wrote for that run), or `commit_sha` (the first deploy, of any project, that shipped it); a deploy no row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`.
   The failure counts for every project that deploy counts for whose failure sources count its signal, whichever project's route it was posted to.
   Its `detected_at` is the server's time where the body names none.
   A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).

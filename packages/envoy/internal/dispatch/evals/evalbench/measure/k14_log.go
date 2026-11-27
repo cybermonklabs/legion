@@ -198,15 +198,6 @@ func (t *transactionReader) transactions() []transaction {
 	return done
 }
 
-// transactionsOf is the transactions of lines (transactionReader).
-func transactionsOf(lines []logLine, mark func(logLine) string) []transaction {
-	reader := newTransactionReader(mark)
-	for _, line := range lines {
-		reader.add(line)
-	}
-	return reader.transactions()
-}
-
 // scanTransactions is the transactions the jsonlog file at path holds after offset
 // (transactionReader).
 func scanTransactions(path string, offset int64, mark func(logLine) string) ([]transaction, error) {

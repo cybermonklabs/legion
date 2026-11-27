@@ -295,7 +295,8 @@ type evalItemsQuery struct {
 }
 
 // productionEventsQuery is GET /api/v1/projects/{key}/production-events's query: the window, one
-// kind, one state and the page (parseProductionEventsQuery).
+// kind, one state, the failures of one deploy (deploy_id, a deploy row's uuid) and the page
+// (parseProductionEventsQuery).
 type productionEventsQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To. A deploy is in the
 	// window by its finished_at, a failure by its detected_at.

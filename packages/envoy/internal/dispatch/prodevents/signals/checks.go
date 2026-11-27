@@ -52,10 +52,10 @@ type checkResult struct {
 	bound string
 }
 
-// checkResultColumns is checkResult's read: the result, its issue's project, the When of the event
-// it was recorded by (the event's own seq on the check's issue, check_results.event_seq), whether
-// a retraction stands against it, and its binding.
-const checkResultColumns = `
+// checkResultSelect is checkResult's read, a whole select a caller adds its where clause to: the
+// result, its issue's project, the When of the event it was recorded by (the event's own seq on the
+// check's issue, check_results.event_seq), whether a retraction stands against it, and its binding.
+const checkResultSelect = `
 	select r.id::text, r.issue_key, i.project_key, r.check_artifact_id::text, r.check_block_id, r.commit_sha,
 		r.verdict, coalesce(e.payload ->> 'when', ''), r.actor, r.created_at,
 		exists (select from check_result_retractions x where x.result_id = r.id),
@@ -79,7 +79,7 @@ func scanCheckResult(row pgx.Row) (checkResult, error) {
 
 // readCheckResult reads the result id, and false where no row holds it.
 func readCheckResult(ctx context.Context, q delivery.Querier, id string) (checkResult, bool, error) {
-	result, err := scanCheckResult(q.QueryRow(ctx, checkResultColumns+` where r.id = $1::uuid`, id))
+	result, err := scanCheckResult(q.QueryRow(ctx, checkResultSelect+` where r.id = $1::uuid`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return checkResult{}, false, nil
 	}
@@ -287,7 +287,7 @@ func standsBehind(ctx context.Context, q delivery.Querier, other checkResult, ro
 // standingFailsOf is every other result of result's check that is a check_fail signal still
 // (checkResult.counts).
 func standingFailsOf(ctx context.Context, q delivery.Querier, result checkResult) ([]checkResult, error) {
-	rows, err := q.Query(ctx, checkResultColumns+`
+	rows, err := q.Query(ctx, checkResultSelect+`
 		where r.check_artifact_id = $1::uuid and r.check_block_id = $2 and r.id <> $3::uuid and r.verdict = $4`,
 		result.artifactID, result.blockID, result.id, verdictFail)
 	if err != nil {

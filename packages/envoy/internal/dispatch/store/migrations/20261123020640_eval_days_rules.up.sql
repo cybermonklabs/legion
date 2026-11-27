@@ -20,16 +20,18 @@
 --              were recorded for, the old one whole or the new one whole.
 --   production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name
 --              the four fields of its rule a day row reads (evals.settingsMoves says which evals
---              each moves). A pass that reads another rule for the repository rewrites that
---              repository's days the difference moves, and no other repository's, in one
---              transaction that records the new row (evals.rewriteSettings); one that reads
---              another project alone records it with its cursors and rewrites no day row.
+--              each moves). A pass that reads another rule for the repository stages that
+--              repository's days the difference moves, and no other repository's, aside from the
+--              rows that serve, in short transactions of their own, then publishes them in one
+--              transaction that records the new row (evals.rewriteSettings, evals.ruleStaging);
+--              one that reads another project alone records it with its cursors and rewrites no
+--              day row.
 --   kept_since the start of the repository's history the rows stand built from (the UTC day of its
 --              first deploy or PR-checks run, evals.keptRepo), null while it holds no delivery
 --              run and so no row. A page that finds a repository's first runs under its first
---              rule, its runs gone or its start moved builds or deletes its days in the
---              transaction of its cursors (evals.syncKept, span.go); one whose source leaves it
---              keeps them.
+--              rule, its runs gone or its start moved stages its days the same way and publishes
+--              them in the transaction of its cursors (evals.syncKept, span.go's stageKept); one
+--              whose source leaves it keeps them.
 --   updated_at when the row was last recorded.
 --
 -- eval_days_settings stays as it is: the release before this one reads and writes it, and the
