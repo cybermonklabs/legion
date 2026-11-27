@@ -218,9 +218,12 @@ func newBatchRig(t *testing.T, pool *store.Pool, answer func(query int32, asked 
 // ladderClock is the ladders' clock a test holds (workflowRuntime.mergeStateClock and
 // mergeStateTimer). Its time moves only when a ladder begins a wait the clock lets end, and then
 // by that wait as the ladder set it, so a read falls due, and is read, by the clock's time and not
-// by how long the machine took to get there. A wait of held or longer does not end until the test
-// lets it (release), and one of stop or longer never ends; such a wait leaves the time as it was.
-// holding closes when the first held wait begins.
+// by how long the machine took to get there. A wait shorter than held ends as it begins; one of
+// held or longer ends only on a release the test gave, one wait for each, and otherwise holds until
+// a wake, a request or the ladder's context ends it, leaving the time as it was. A ladder that
+// GitHub keeps answering `unknown` reads at a wait of mergeStateFollowWaits units for as long as
+// it is owed, so a clock that let every wait end would run it as fast as the machine reads; the
+// held waits are what end it. holding closes when the first held wait begins.
 //
 // The ladder gives its clock the wait as its place set it (mergeStateAfter), not what is left of
 // it, so a wait a wake cut short and the ladder then began again moves the time past that read's
@@ -231,16 +234,14 @@ type ladderClock struct {
 	mu       sync.Mutex
 	at       time.Time
 	held     time.Duration
-	stop     time.Duration
-	released bool
+	releases int
 	holding  chan struct{}
 	began    sync.Once
 }
 
-// holdTheLadders puts w's ladders on a ladderClock that holds each wait of held or longer until
-// the test releases it and never ends one of stop or longer.
-func holdTheLadders(w *workflowRuntime, held, stop time.Duration) *ladderClock {
-	clock := &ladderClock{at: time.Now().UTC(), held: held, stop: stop, holding: make(chan struct{})}
+// holdTheLadders puts w's ladders on a ladderClock that holds each wait of held or longer.
+func holdTheLadders(w *workflowRuntime, held time.Duration) *ladderClock {
+	clock := &ladderClock{at: time.Now().UTC(), held: held, holding: make(chan struct{})}
 	w.mergeStateClock = clock.now
 	w.mergeStateTimer = clock.after
 	return clock
@@ -258,12 +259,12 @@ func (c *ladderClock) now() time.Time {
 func (c *ladderClock) after(wait time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if wait >= c.stop {
-		return nil
-	}
-	if wait >= c.held && !c.released {
-		c.began.Do(func() { close(c.holding) })
-		return nil
+	if wait >= c.held {
+		if c.releases == 0 {
+			c.began.Do(func() { close(c.holding) })
+			return nil
+		}
+		c.releases--
 	}
 	c.at = c.at.Add(wait)
 	ended := make(chan time.Time, 1)
@@ -271,11 +272,12 @@ func (c *ladderClock) after(wait time.Duration) <-chan time.Time {
 	return ended
 }
 
-// release lets the held waits end from the next one a ladder begins on.
+// release lets the next held wait a ladder begins end as it begins. A wait already held goes on
+// holding until a wake has its ladder begin it again.
 func (c *ladderClock) release() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.released = true
+	c.releases++
 }
 
 // askedOf is every query's numbers, in the order the queries came.
@@ -733,7 +735,8 @@ func TestARetargetedPullRequestDoesNotBounceBetweenBases(t *testing.T) {
 // test handed 87 over only once it saw that third read, so a test or a reader late by about ten of
 // those units under load put 87's second read in the same query as 86's fourth ([86 87], CI's
 // race Job legion5230-r19b). Here 86's fourth wait is held until 87 is handed over, 87's waits end
-// as they begin, and 86's fourth read comes after them, however long the machine takes.
+// as they begin, 86's fourth read comes after them, however long the machine takes, and its fifth
+// wait holds to the test's end.
 func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 	t.Parallel()
 	const unit = 25 * time.Millisecond
@@ -756,7 +759,7 @@ func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 		return http.StatusOK, batchAnswer(t, asked, nodes...)
 	})
 	rig.w.mergeStateRetry = unit
-	clock := holdTheLadders(rig.w, 16*unit, 32*unit)
+	clock := holdTheLadders(rig.w, 16*unit)
 	repo := ghrepo.MustParse("acme/widgets")
 	followsOf := func(issue string) []map[string]any {
 		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
