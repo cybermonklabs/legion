@@ -536,9 +536,10 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // a commit that a basis of the check already is, too: GitHub can name a second pull request at
 // the same head, whose own event never arrived (R6 of the results lookup). A read-only caller's
 // read stores no pull request head: it keeps the writes a writer's read-through would have made
-// (answerCommitPulls, answers), and every read after it reads the rows as they would stand had it
-// made them, so the same heads are its bases too. So every check of one answer is answered on the
-// heads as they stand after this read's read-throughs, both callers alike (plan D32).
+// (delivery.Attributor.AnswerCommitsPulls, answers), and every read after it reads the rows as
+// they would stand had it made them, so the same heads are its bases too. So every check of one
+// answer is answered on the heads as they stand after this read's read-throughs, both callers
+// alike (plan D32).
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
@@ -561,20 +562,25 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // learn (comparedWith, notKnownOf), so each holds every row that this read's read-throughs wrote,
 // and the same answer names a pull request it learned (review 18, note 3).
 //
-// It asks GitHub once for each repository, not once for each commit: the commits of one read that
-// no stored head names are read through together (delivery.ReadThroughCommitsPulls, and
-// AnswerCommitsPulls for a read-only caller), so an issue whose results stand at scores of such
-// commits costs one question rather than one for each. Before the bound this read spent one GitHub
+// It asks GitHub one question for each delivery.CommitPullsBatch commits of a repository, not one
+// for each commit: every result commit of the repository that this read has not read through
+// yet, and that no claim or settle holds off, a commit a stored head names among them
+// (readThroughHeads), is read through together (delivery.Attributor.ReadThroughCommitsPulls, and
+// AnswerCommitsPulls for a read-only caller), so an issue whose results stand at scores of commits
+// costs one question rather than one for each. Before the batched read this read spent one GitHub
 // round trip per commit in turn, and a production read of an issue with many such results took
 // longer than two minutes, where the same read with ?at=, which reads nothing through, took 8.3 s.
 // A bound on how many commits one read may learn was built for that and dropped: a read that
 // stopped short answered a check's pass_stands `no` where a read that reached the pass answered
 // `yes` (A/results_read_through_bound_test.go), which is a false verdict and not a slower one.
 //
-// Each commit is claimed before the question and settled after it exactly as the read of one
-// commit claims and settles (readThroughHead): a commit another process or an earlier read of
-// this process claimed is left out of the question, a commit whose answer named a pull request
-// headed elsewhere is settled, and a read that stored nothing gives its claims back.
+// Each commit is claimed before the question and settled after it (readThroughHeads): a commit
+// another process or an earlier read of this process claimed is left out of the question, and a
+// commit whose answer named a pull request headed elsewhere is settled. A commit whose answer was
+// not stored gives its claim back, and so does a commit no question of the read named, since the
+// read stops at the first failure and asks nothing after it: no answer of GitHub's is behind
+// either claim, so the next read asks again at once. A commit a question named that GitHub failed
+// keeps its claim, as the read of one commit GitHub failed keeps it.
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
@@ -618,7 +624,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // Where the check named bases and none is this commit, a `before_merge` result turns on
 // whether the repository the commit is taken to be of can be read at all, and a branch check
 // walks the branches of that repository (onNamedBranch). Those two, beside learn's read-through
-// of a `before_merge` result's pull requests (readThroughHead), are the only places here the
+// of a `before_merge` result's pull requests (readThroughHeads), are the only places here the
 // repository a result's row takes its commit to be of is read, each through the one resolver
 // (commitRepositoryOf): a check that named no basis of its own leaves such a result where its
 // reason leaves every other, as passStandsOf leaves the check. An `other_commit` or `unknown`
@@ -630,7 +636,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // unknown with model.ReasonRepositoryUnreadable where the App cannot read it, and another commit
 // otherwise, since a read-through of that repository would have taught Dispatch a pull request
 // headed at the commit (commitRepository.readable, the answer readThroughRepository reads for
-// readThroughHead too). The issue's own repository has nothing to say about a commit of another
+// readThroughHeads too). The issue's own repository has nothing to say about a commit of another
 // repository: read through it, a result there would stand unknown for good wherever the App
 // cannot read the issue's own.
 //

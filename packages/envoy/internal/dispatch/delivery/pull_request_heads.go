@@ -1285,7 +1285,7 @@ func RepositoryUnreadable(err error) bool {
 // It answers how many rows it wrote and whether any pull request it saw has sha as its head
 // (atHead). A repository the App cannot read writes nothing and comes back as the App's own
 // error, which each caller logs at Info and carries on from (api/results.go's
-// readThroughPullRequests, api/results_comparison.go's readThroughHead): the answer about that
+// readThroughPullRequests, api/results_read_through.go's readThroughHeads): the answer about that
 // result stands as its stored rows leave it.
 //
 // It reads a commit that a pull request Dispatch holds already heads, and writes every pull
@@ -1345,26 +1345,14 @@ func RepositoryUnreadable(err error) bool {
 // as a read that stored nothing.
 //
 // A writer's read calls this. A read-only caller's read of an issue's results stores nothing, and
-// calls AnswerCommitPulls, which is this read with its writes kept for the request.
+// reads its commits through AnswerCommitsPulls, whose read of one commit too large for its query is
+// this read with its writes kept for the request (readThroughCommitPulls through the request's
+// facts).
 func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
 	return a.readThroughCommitPulls(ctx, facts{pool: pool}, client, repoFull, sha, now)
-}
-
-// AnswerCommitPulls is ReadThroughCommitPulls for a read-only caller's results read, which stores
-// nothing and keeps nothing after its request (plan D32): it asks GitHub what
-// ReadThroughCommitPulls asks at that moment and answers what it answers, and makes each of its
-// statements in a transaction of pool that first makes the writes answers holds and is rolled
-// back, keeping each write it makes in answers (facts, HeadAnswers). So every later read of the
-// request that passes answers reads the rows the writer's read-through would have stored. It takes
-// no place in the order of reads (peekRead).
-func (a *Attributor) AnswerCommitPulls(
-	ctx context.Context, pool *store.Pool, client *githubapp.Client, answers *HeadAnswers,
-	repoFull, sha string, now time.Time,
-) (written int, atHead bool, err error) {
-	return a.readThroughCommitPulls(ctx, facts{pool: pool, answers: answers}, client, repoFull, sha, now)
 }
 
 // readThroughCommitPulls is ReadThroughCommitPulls through f (facts): its reads of GitHub, and

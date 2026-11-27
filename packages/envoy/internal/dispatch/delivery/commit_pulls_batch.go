@@ -30,21 +30,23 @@ import (
 // costs about a second, so a server's saving is smaller than the ratio of those times; what the
 // measurement shows is that one question answers what eighteen answered.
 //
-// Everything the answers mean is the REST read's: the rows written, which pull requests get one,
-// the settles, and what a commit no pull request heads leaves open (ReadThroughCommitPulls's doc
-// comment says it in full). Only the question changes.
+// What the answers mean is the REST read's: the rows written, which pull requests get one, the
+// settles, and what a commit no pull request heads leaves open (ReadThroughCommitPulls's doc
+// comment says it in full). The query reads the first CommitPullsPerCommit pull requests GitHub
+// names for a commit, oldest first, and their count; a commit GitHub names more for is read over
+// REST, as an answer too large for one query is.
 
 // CommitPullsBatch is the most commits one query asks about. GitHub prices a query by its
 // connections and refuses an answer above the client's limit, which a batch of this size has
-// room under: each commit answers at most CommitPullsPerCommit pull requests, each with its first
-// page of commit messages, as the facts query answers at most FactsBatchSize pull requests the
-// same way. A read of more commits sends a query for each batch of this many.
+// room under: each commit answers at most CommitPullsPerCommit pull requests, each with the
+// fields of its head row and its texts (commitPullsFields) and no commit message. A read of more
+// commits sends a query for each batch of this many.
 const CommitPullsBatch = 20
 
 // CommitPullsPerCommit is the most pull requests the query reads of one commit. GitHub names
 // every open and merged pull request whose head or history holds the commit; a result's commit
-// is behind a handful at most, and the rows this read writes are the heads a check compares
-// with, which no reader reads scores of.
+// is behind a handful at most. GitHub lists them oldest first, so a commit it names more for is
+// read over REST rather than read short of its newest pull requests (commitPulls.more).
 const CommitPullsPerCommit = 10
 
 // CommitPullsRead is what one commit of a batched read-through learned: how many rows were
@@ -56,84 +58,105 @@ type CommitPullsRead struct {
 	AtHead  bool
 }
 
+// CommitsPullsAnswer is what one batched read-through answers. Reads is what each commit learned,
+// by commit, and holds only a commit whose answer was stored in full. Asked is each commit that a
+// question the read sent to GitHub named, whatever GitHub answered it: a query GitHub failed
+// asked about each of its commits, a query whose answer was too large asked about none until its
+// halves are asked, and a commit read over REST was asked about by that read. A commit Asked does
+// not hold was asked nothing, so no answer of GitHub's stands behind a claim of it.
+type CommitsPullsAnswer struct {
+	Reads map[string]CommitPullsRead
+	Asked map[string]bool
+}
+
 // ReadThroughCommitsPulls teaches Dispatch the pull requests GitHub names for each of shas, in
 // repoFull, and stores each one's facts, as ReadThroughCommitPulls does for one commit: it
-// answers what each commit learned, by commit. Only a commit whose answer was stored in full is
-// in the answer. A commit the read did not reach is absent, and so is the commit whose answer it
-// could not store in full, whatever rows it wrote for it first, as ReadThroughCommitPulls answers
-// that commit with its error. The error says why, and only ErrReadThroughNotStored gives an absent
-// commit's claim back: a failure of GitHub's, its rate limit on a pull request's commit messages
-// among them, keeps it.
+// answers what each commit learned, by commit (CommitsPullsAnswer.Reads). Only a commit whose
+// answer was stored in full is in Reads. A commit the read did not reach is absent, and so is the
+// commit whose answer it could not store in full, whatever rows it wrote for it first, as
+// ReadThroughCommitPulls answers that commit with its error. For a commit absent from Reads that a
+// sent question named (Asked), the error says why, and only ErrReadThroughNotStored gives its
+// claim back: a failure of GitHub's, its rate limit on a pull request's commit messages among
+// them, keeps it, as it keeps the claim of the read of one commit GitHub failed. A commit no sent
+// question named gives its claim back whatever the error, since GitHub was asked nothing about it.
 //
 // The commits are asked in batches of CommitPullsBatch, each one query. A batch GitHub's answer
 // is too large for is split in two and asked again, and one commit whose answer alone is too
 // large is read over REST (readThroughCommitPulls), as the facts query falls back to a REST read
-// of one pull request. The first failure ends the read, with what the commits before it learned.
+// of one pull request. The first failure ends the read, with what the commits before it learned:
+// a failure of GitHub's is most often one the next batch meets too (a rate limit, an outage), and
+// the commits after it are given back to the next read rather than asked into the same failure.
 //
 // A writer's read calls this. A read-only caller's read of an issue's results stores nothing and
 // calls AnswerCommitsPulls, which is this read with its writes kept for the request.
 func (a *Attributor) ReadThroughCommitsPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull string, shas []string, now time.Time,
-) (map[string]CommitPullsRead, error) {
+) (CommitsPullsAnswer, error) {
 	return a.readThroughCommitsPulls(ctx, facts{pool: pool}, client, repoFull, shas, now)
 }
 
 // AnswerCommitsPulls is ReadThroughCommitsPulls for a read-only caller's results read, which
 // stores nothing and keeps nothing after its request (plan D32): each of its statements runs in a
 // transaction of pool that first makes the writes answers holds and is rolled back, and each
-// write it makes is kept in answers (facts, HeadAnswers), as AnswerCommitPulls does for one
-// commit.
+// write it makes is kept in answers (facts, HeadAnswers), as readThroughCommitPulls keeps a
+// read-only caller's writes for one commit.
 func (a *Attributor) AnswerCommitsPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, answers *HeadAnswers,
 	repoFull string, shas []string, now time.Time,
-) (map[string]CommitPullsRead, error) {
+) (CommitsPullsAnswer, error) {
 	return a.readThroughCommitsPulls(ctx, facts{pool: pool, answers: answers}, client, repoFull, shas, now)
 }
 
 // readThroughCommitsPulls is the two above through f (facts): one read of the repository's token
 // and of the reads owed in it, then a query for each batch of commits.
 //
-// The read runs on a context its caller's end cannot cancel, bounded by ReadThroughTimeout for
-// each batch, as the REST read-through is bounded for its one commit: a client that hangs up must
-// not cut a write short and leave a claim standing with nothing stored.
+// The whole read runs on a context its caller's end cannot cancel, as the REST read-through of
+// one commit does: a client that hangs up must not cut a read or a write short and leave its
+// claims standing with nothing asked or stored. The read of the token and of the owed reads, and
+// each batch, are each bounded by ReadThroughTimeout instead.
 func (a *Attributor) readThroughCommitsPulls(
 	ctx context.Context, f facts, client *githubapp.Client, repoFull string, shas []string, now time.Time,
-) (map[string]CommitPullsRead, error) {
-	reads := map[string]CommitPullsRead{}
+) (CommitsPullsAnswer, error) {
+	answer := CommitsPullsAnswer{Reads: map[string]CommitPullsRead{}, Asked: map[string]bool{}}
 	if len(shas) == 0 {
-		return reads, nil
+		return answer, nil
 	}
+	ctx = context.WithoutCancel(ctx)
 	canonical := a.canonical(repoFull)
-	owner, repo, token, err := repositoryRead(ctx, client, canonical)
+	bounded, cancel := context.WithTimeout(ctx, ReadThroughTimeout)
+	owner, repo, token, err := repositoryRead(bounded, client, canonical)
 	if err != nil {
-		return reads, err
+		cancel()
+		return answer, err
 	}
 	var owed map[int][]owedRead
-	if err := f.read(ctx, func(q refs.Pool) error {
-		owed = a.owedReadsIn(ctx, q, canonical)
+	err = f.read(bounded, func(q refs.Pool) error {
+		owed = a.owedReadsIn(bounded, q, canonical)
 		return nil
-	}); err != nil {
-		return reads, readThroughNotStored(err)
+	})
+	cancel()
+	if err != nil {
+		return answer, readThroughNotStored(err)
 	}
 	batch := commitPullsRead{
 		attributor: a, client: client, token: token,
 		canonical: canonical, storedUnder: repoFull, owner: owner, repo: repo,
-		owed: owed, now: now, reads: reads,
+		owed: owed, now: now, answer: answer,
 	}
 	for _, chunk := range slices.Collect(slices.Chunk(shas, CommitPullsBatch)) {
-		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReadThroughTimeout)
+		bounded, cancel := context.WithTimeout(ctx, ReadThroughTimeout)
 		err := batch.query(bounded, f, chunk)
 		cancel()
 		if err != nil {
-			return reads, err
+			return answer, err
 		}
 	}
-	return reads, nil
+	return answer, nil
 }
 
 // commitPullsRead is one call of readThroughCommitsPulls: what each of its queries needs, and the
-// answers it collects. The request's own writes are no part of it: each read and write is made
+// answer it collects. The request's own writes are no part of it: each read and write is made
 // through the facts its caller hands down, which no type of this package holds past its request
 // (plan D32, read_only_fold_test.go's inventory).
 type commitPullsRead struct {
@@ -145,11 +168,13 @@ type commitPullsRead struct {
 	owner, repo string
 	owed        map[int][]owedRead
 	now         time.Time
-	reads       map[string]CommitPullsRead
+	answer      CommitsPullsAnswer
 }
 
 // query asks GitHub about shas in one request and stores what it answers through f, splitting the
-// batch where the answer is above the client's limit.
+// batch where the answer is above the client's limit. Every commit of a query GitHub answered,
+// or failed, is asked (CommitsPullsAnswer.Asked); a query whose answer was too large asks about
+// its commits only through its halves.
 func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) error {
 	if len(shas) == 0 {
 		return nil
@@ -161,15 +186,20 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 	}
 	body, status, _, err := c.client.GraphQL(ctx, c.token, text, variables)
 	var tooLarge *githubapp.ResponseTooLargeError
-	switch {
-	case errors.As(err, &tooLarge) && len(shas) == 1:
-		return c.overREST(ctx, f, shas[0])
-	case errors.As(err, &tooLarge):
+	if errors.As(err, &tooLarge) {
+		if len(shas) == 1 {
+			return c.overREST(ctx, f, shas[0])
+		}
 		half := len(shas) / 2
 		if err := c.query(ctx, f, shas[:half]); err != nil {
 			return err
 		}
 		return c.query(ctx, f, shas[half:])
+	}
+	for _, sha := range shas {
+		c.answer.Asked[sha] = true
+	}
+	switch {
 	case err != nil:
 		return fmt.Errorf("query the pull requests of %d commits of %s: %w", len(shas), c.canonical, err)
 	case status != http.StatusOK:
@@ -182,30 +212,41 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 	}
 	for _, sha := range shas {
 		pulls, found := answered[sha]
-		if !found {
+		switch {
+		case !found:
 			// GitHub answered the repository null, or named this commit nothing at all: no
 			// answer about it, so the commit keeps whatever the stored rows say.
 			continue
+		case pulls.more:
+			// GitHub names more pull requests for the commit than the query reads of it, oldest
+			// first, so the ones it left out are the newest: the commit is read over REST, which
+			// reads them as the read of one commit does.
+			if err := c.overREST(ctx, f, sha); err != nil {
+				return err
+			}
+			continue
 		}
-		read, err := c.store(ctx, f, sha, pulls, began)
+		read, err := c.store(ctx, f, sha, pulls.pulls, began)
 		if err != nil {
 			// sha's answer is not stored in full, so sha is no commit this read learned: it stays
 			// out of the answer, and its caller reads the error for it.
 			return err
 		}
-		c.reads[sha] = read
+		c.answer.Reads[sha] = read
 	}
 	return nil
 }
 
-// overREST reads one commit whose answer alone is above the client's limit through the REST
-// read-through, which asks for that commit's pull requests alone and stores them the same way.
+// overREST reads one commit over the REST read-through, which asks for that commit's pull requests
+// alone and stores them the same way: a commit whose answer alone is above the client's limit, and
+// one GitHub names more pull requests for than the query reads (CommitPullsPerCommit).
 func (c *commitPullsRead) overREST(ctx context.Context, f facts, sha string) error {
+	c.answer.Asked[sha] = true
 	written, atHead, err := c.attributor.readThroughCommitPulls(ctx, f, c.client, c.storedUnder, sha, c.now)
 	if err != nil {
-		return fmt.Errorf("read the pull requests of %s@%s, whose answer is above the limit of one query: %w", c.canonical, sha, err)
+		return fmt.Errorf("read the pull requests of %s@%s over REST: %w", c.canonical, sha, err)
 	}
-	c.reads[sha] = CommitPullsRead{Written: written, AtHead: atHead}
+	c.answer.Reads[sha] = CommitPullsRead{Written: written, AtHead: atHead}
 	return nil
 }
 
@@ -254,9 +295,10 @@ func (c *commitPullsRead) store(ctx context.Context, f facts, sha string, pulls 
 }
 
 // commitPullsQuery is the text and the variables of the query of shas in one repository: one
-// alias c<i> for each commit, in the order given, each answering the pull requests GitHub names
-// for it with the fields every reader of a pull request reads (pullRequestFacts). The owner and
-// the name go in variables; each commit goes in the text, since an alias cannot take one.
+// alias c<i> for each commit, in the order given, each answering how many pull requests GitHub
+// names for it and the first CommitPullsPerCommit of them with the fields of commitPullsFields.
+// The owner and the name go in variables; each commit goes in the text, since an alias cannot take
+// one.
 //
 // A commit the repository does not hold answers null for its alias, which is no answer about it,
 // as the REST read's own empty answer for such a commit is none.
@@ -264,12 +306,19 @@ func commitPullsQuery(owner, repo string, shas []string) (string, map[string]any
 	var text strings.Builder
 	text.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
 	for index, sha := range shas {
-		fmt.Fprintf(&text, "    c%d: object(oid: %q) { ... on Commit { associatedPullRequests(first: %d) { nodes { ...pullRequestFacts } } } }\n",
+		fmt.Fprintf(&text, "    c%d: object(oid: %q) { ... on Commit { associatedPullRequests(first: %d) { totalCount nodes { ...pullRequestFacts } } } }\n",
 			index, sha, CommitPullsPerCommit)
 	}
 	text.WriteString("  }\n}\n")
-	text.WriteString(factsFields)
+	text.WriteString(commitPullsFields)
 	return text.String(), map[string]any{"owner": owner, "name": repo}
+}
+
+// commitPulls is one commit of decodeCommitPulls' answer: the pull requests GitHub named for it,
+// and more where it names more of them than the query read (totalCount above the nodes).
+type commitPulls struct {
+	pulls []pullRequestPayload
+	more  bool
 }
 
 // decodeCommitPulls reads GitHub's answer to one query of shas: the pull requests of each commit
@@ -277,7 +326,7 @@ func commitPullsQuery(owner, repo string, shas []string) (string, map[string]any
 // (pullRequestPayload). A commit whose alias is null, and one whose alias is no commit, is absent
 // from the answer: GitHub said nothing about it, which is not the same as naming no pull request
 // for it.
-func decodeCommitPulls(body []byte, shas []string) (map[string][]pullRequestPayload, error) {
+func decodeCommitPulls(body []byte, shas []string) (map[string]commitPulls, error) {
 	var answer struct {
 		Data struct {
 			Repository map[string]json.RawMessage `json:"repository"`
@@ -290,25 +339,32 @@ func decodeCommitPulls(body []byte, shas []string) (map[string][]pullRequestPayl
 		return nil, fmt.Errorf("GitHub answered the query of %d commits' pull requests with no repository: %s",
 			len(shas), githubapp.ShownBody(body))
 	}
-	answered := make(map[string][]pullRequestPayload, len(shas))
+	answered := make(map[string]commitPulls, len(shas))
 	for index, sha := range shas {
 		raw := answer.Data.Repository["c"+strconv.Itoa(index)]
 		if isJSONNull(raw) {
 			continue
 		}
 		var commit struct {
-			AssociatedPullRequests struct {
-				Nodes []factsNode `json:"nodes"`
+			// AssociatedPullRequests is nil where the object is no commit: `... on Commit` then
+			// selects nothing, and GitHub answers the alias `{}`.
+			AssociatedPullRequests *struct {
+				TotalCount int         `json:"totalCount"`
+				Nodes      []factsNode `json:"nodes"`
 			} `json:"associatedPullRequests"`
 		}
 		if err := json.Unmarshal(raw, &commit); err != nil {
 			return nil, fmt.Errorf("decode the pull requests of %s: %w", sha, err)
 		}
-		pulls := make([]pullRequestPayload, 0, len(commit.AssociatedPullRequests.Nodes))
-		for _, node := range commit.AssociatedPullRequests.Nodes {
+		if commit.AssociatedPullRequests == nil {
+			continue
+		}
+		nodes := commit.AssociatedPullRequests.Nodes
+		pulls := make([]pullRequestPayload, 0, len(nodes))
+		for _, node := range nodes {
 			pulls = append(pulls, node.payload())
 		}
-		answered[sha] = pulls
+		answered[sha] = commitPulls{pulls: pulls, more: commit.AssociatedPullRequests.TotalCount > len(nodes)}
 	}
 	return answered, nil
 }

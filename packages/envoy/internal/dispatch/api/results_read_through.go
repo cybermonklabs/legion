@@ -60,7 +60,7 @@ import (
 // no read-through at all: a GitHub call that did not land is no evidence either way.
 //
 // A read-only caller's read makes the same read and stores nothing, takes no claim and settles
-// nothing (answerCommitPulls).
+// nothing (delivery.Attributor.AnswerCommitsPulls).
 func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, results []model.CheckResult) {
 	if c.server.deps.GitHub == nil {
 		return
@@ -105,35 +105,41 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 	if len(asking) == 0 {
 		return
 	}
-	var reads map[string]delivery.CommitPullsRead
+	var read delivery.CommitsPullsAnswer
 	var err error
 	if c.readOnly {
-		reads, err = c.server.deps.Attributor.AnswerCommitsPulls(
+		read, err = c.server.deps.Attributor.AnswerCommitsPulls(
 			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, &c.answers, repo, asking, now)
 	} else {
-		reads, err = c.server.deps.Attributor.ReadThroughCommitsPulls(
+		read, err = c.server.deps.Attributor.ReadThroughCommitsPulls(
 			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, asking, now)
 	}
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
-			"repo", repo, "commits", len(asking), "answered", len(reads), "error", err)
+			"repo", repo, "commits", len(asking), "asked", len(read.Asked), "answered", len(read.Reads), "error", err)
 	}
+	// The claims are given back and settled on a context the caller's end cannot cancel, as the
+	// read itself runs (delivery's readThroughCommitsPulls): a caller that hangs up after the read
+	// must not leave a claim standing that no answer of GitHub's is behind.
+	settling := context.WithoutCancel(ctx)
 	for _, sha := range asking {
-		read, answered := reads[sha]
+		learned, answered := read.Reads[sha]
 		switch {
-		case !answered && errors.Is(err, delivery.ErrReadThroughNotStored):
+		case !answered && (!read.Asked[sha] || errors.Is(err, delivery.ErrReadThroughNotStored)):
 			if c.readOnly {
 				continue
 			}
-			// This commit's answer was not stored, or not in full, which is why reads leaves it
-			// out: its claim protects no GitHub answer, so give it back, and the next read asks
-			// again at once rather than CommitPullReadStaleAfter later.
-			if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
+			// No question of the read named this commit, since the read stopped at a failure
+			// before it, or its answer was not stored, or not in full: either way its claim
+			// protects no GitHub answer, so give it back, and the next read asks again at once
+			// rather than CommitPullReadStaleAfter later. A commit a query named that GitHub
+			// failed keeps its claim, as the read of one commit GitHub failed keeps it.
+			if err := c.server.commitPulls.ReleaseAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
 				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
 					"repo", repo, "commit", sha, "error", err)
 			}
-		case answered && read.Written > 0 && !read.AtHead && !c.readOnly:
-			if err := c.server.commitPulls.SettleAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
+		case answered && learned.Written > 0 && !learned.AtHead && !c.readOnly:
+			if err := c.server.commitPulls.SettleAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
 				slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so a later read asks GitHub again",
 					"repo", repo, "commit", sha, "error", err)
 			}
@@ -165,7 +171,7 @@ func (c *comparisonReader) readThroughRepository(ctx context.Context, result mod
 // of a link by hand that no result commit can reach: a pull request no event of which Dispatch
 // took, linked to an issue whose only `before_merge` check is one CI proves, takes no result from
 // any role (409 CHECK_PROVED_BY_CI), so no result write's read-through and no read-through of a
-// result commit (readThroughHead) asks GitHub about it, and the check read no head until the
+// result commit (readThroughHeads) asks GitHub about it, and the check read no head until the
 // reconcile's next pass read the owed link (no_head with the pull request open, linked and
 // green). It reads whatever checks the issue holds, and for a link written before links owed a
 // read as for one written since.

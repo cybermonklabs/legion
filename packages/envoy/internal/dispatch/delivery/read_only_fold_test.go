@@ -60,7 +60,6 @@ var answeredReads = map[string]string{
 	"Branches.ReadCommitOnBranch":         readAsked,
 	"Branches.readCommitOnBranch":         innerRead,
 	"readMerged":                          innerRead,
-	"Attributor.AnswerCommitPulls":        keptThrough,
 	"Attributor.AnswerCommitsPulls":       keptThrough,
 	"Attributor.AnswerLinkedHead":         keptThrough,
 	"Attributor.RefreshMergedPullRequest": keptThrough,

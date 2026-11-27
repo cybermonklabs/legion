@@ -15,7 +15,7 @@ import (
 
 // A read-only caller's read of an issue's results (api's comparisonReader, plan D32) asks GitHub
 // what a writer's read made at the same moment asks and answers what it answers, and stores
-// nothing. Its read-throughs (AnswerCommitPulls, AnswerLinkedHead) run the writer's own code
+// nothing. Its read-throughs (AnswerCommitsPulls, AnswerLinkedHead) run the writer's own code
 // (readThroughCommitPulls, refreshPullRequestHead, storePullRequestFacts) with a facts that keeps
 // each write for the request instead of the pool (HeadAnswers): every statement of that code runs
 // in a transaction of the pool that first makes the writes the request kept before it, in their
@@ -125,7 +125,7 @@ func (a *HeadAnswers) keep(
 }
 
 // facts is where one read of GitHub keeps what it learned: the pool, for every writer, and for a
-// read-only caller's results read the request's answers (AnswerCommitPulls, AnswerLinkedHead),
+// read-only caller's results read the request's answers (AnswerCommitsPulls, AnswerLinkedHead),
 // whose every statement runs in a transaction of the pool that is rolled back (HeadAnswers).
 type facts struct {
 	pool    *store.Pool

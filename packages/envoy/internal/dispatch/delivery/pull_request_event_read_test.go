@@ -59,6 +59,8 @@ type githubPulls struct {
 	repoReads      atomic.Int32
 	absenceQueries atomic.Int32
 	factsReads     atomic.Int32
+	// commitPullsReads counts the REST reads of a commit's pull requests (serveCommitPulls).
+	commitPullsReads atomic.Int32
 }
 
 func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls {
