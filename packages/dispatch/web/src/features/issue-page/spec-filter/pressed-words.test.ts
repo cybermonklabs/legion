@@ -472,7 +472,7 @@ test("a press around each inline kind is read by the line it is on, in the boxes
       afterWritten(MENTIONED, 363, 525),
     ],
     [
-      "a mention wrapped in two overlapping boxes, past the end of its line, at 390 px",
+      "a mention wrapped onto two lines, past the end of the line it ends, at 390 px",
       [new DOMRect(213, 462.203125, 128, 24.59375), new DOMRect(26, 487.203125, 43, 24.59375)],
       () => pressInLastMark(ENDS_IN_MENTION, "The other statement".length, [89, 500]),
       afterWritten(MENTIONED, 89, 500),
