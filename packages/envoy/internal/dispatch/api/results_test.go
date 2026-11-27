@@ -2902,6 +2902,16 @@ func (f *commitPullsFake) refusesCommitPullsOverREST(sha string, status int) {
 	f.restRefused[sha] = status
 }
 
+// answersCommitPullsAgain lifts every refusal of the list of the pull requests of sha
+// (refusesCommitPulls, refusesCommitPullsOverREST), so GitHub answers it from now on, over REST
+// and in the batched query.
+func (f *commitPullsFake) answersCommitPullsAgain(sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.refused, sha)
+	delete(f.restRefused, sha)
+}
+
 // commitsAnswer sets what GET /repos/{owner}/{repo}/pulls/{number}/commits answers from now on:
 // the status of GitHub's answer and, for a 200, its page of commits.
 func (f *commitPullsFake) commitsAnswer(answer func(repo, number string) (int, string)) {
