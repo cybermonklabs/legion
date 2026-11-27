@@ -71,7 +71,7 @@ func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fi
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enterAt(ctx, tx, issue, &w, role, at, task, false, false, fix.Check)
+	entry, sent, err := e.enterAt(ctx, tx, issue, &w, role, at, task, "", false, false, fix.Check)
 	if err != nil {
 		return err
 	}

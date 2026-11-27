@@ -1,5 +1,7 @@
 package githubtest
 
+//ci:reads packages/contracts/fixtures/checks-settlement/published.json readPublishedFixture
+
 import (
 	"bytes"
 	"encoding/json"

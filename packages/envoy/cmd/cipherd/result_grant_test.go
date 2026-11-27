@@ -30,12 +30,12 @@ const resultsProfiles = `{"profiles": [{"name": "DISPATCH_RESULTS_TOKEN", "proxy
 	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}, {"method": "POST", "pathPrefix": "/api/v1/issues/"}], "kind": "dpop"}}]}`
 
 // resultsUpstream is the private destination resultsBoundHost's requests go to, as
-// BROKER_AIRLOCK_PRIVATE_UPSTREAM names it: the broker starts with the entry DISPATCH_RESULTS_TOKEN
-// only beside the destination of its one host (config.AirlockResultRules). The URL names the bound
+// BROKER_PROXY_PRIVATE_UPSTREAM names it: the broker starts with the entry DISPATCH_RESULTS_TOKEN
+// only beside the destination of its one host (config.ProxyMintedRules). The URL names the bound
 // host itself, so a test that writes sends the destination's requests where
 // BROKER_AIRLOCK_TEST_RESOLVE puts that host (resultsDispatch.env), over TLS checked against its
 // stand-in's certificate; a test that only trades a token dials nothing.
-const resultsUpstream = "BROKER_AIRLOCK_PRIVATE_UPSTREAM=" + resultsBoundHost + "=https://" + resultsBoundHost
+const resultsUpstream = "BROKER_PROXY_PRIVATE_UPSTREAM=" + resultsBoundHost + "=https://" + resultsBoundHost
 
 // resultsExchangeEnv is exchangeEnv with the result entry of resultsWorkflow and the airlock its
 // grants need: the profiles file above, its private destination, the proxy, its certificate
@@ -50,7 +50,7 @@ func resultsExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidct
 
 // askedForThePlaceholder is form asking for the airlock placeholder.
 func askedForThePlaceholder(form url.Values) url.Values {
-	return with(form, "requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	return with(form, "requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 }
 
 // postTokenAt posts form to the broker at addr's token endpoint with a DPoP proof of a fresh key
@@ -94,7 +94,7 @@ func TestAPlaceholderExchangeNeedsNoRouteToTheBrokersOwnPublicURL(t *testing.T) 
 	broker.AwaitRecord(t, "token exchange", map[string]any{"state": "on", "github": true, "result_workflows": 1})
 	status, body := postTokenAt(t, broker.Addr, publicURL, askedForThePlaceholder(runForm(mintRunToken(t, github, githubKey, resultsWorkflow, resultsBranch, "7"), "")))
 	held, _ := body["access_token"].(string)
-	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.ResultPrefix) || body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder {
+	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || body["issued_token_type"] != oauthwire.TokenTypeProxyPlaceholder {
 		t.Fatalf("the placeholder exchange with BROKER_PUBLIC_URL=%s = %d %v, want 200 with a result placeholder", publicURL, status, body)
 	}
 }

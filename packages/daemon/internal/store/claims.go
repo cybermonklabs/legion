@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"strings"
 	"time"
@@ -50,16 +52,22 @@ var _ supervise.Store = (*Store)(nil)
 // MoveTo) are the delivery's own columns (fix, fix_from, fix_branch, move_to), so a restart sends
 // the adoption the task was queued with. A row a release before them wrote takes each column's
 // default: no fix, no branch and no move.
+//
+// The two cause columns are read beside held_for, which says whether a `provider_error` either of
+// them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
+// together (storedCause, heldFor).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
-	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
+	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.held_for, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
-	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
+	c.last_turn_start, c.last_turn_end, c.message_mark_at,
+	c.last_death_cause, c.last_death_at, c.last_death_digest,
+	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
+	c.turn_outcomes, c.abandoned_session, c.ended_work, c.session_run,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -78,6 +86,11 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. The write and any role-holder
 // publication it queues share one transaction.
+//
+// It never writes the claim's message mark (claims.message_mark_at): a machine writes the whole
+// claim it holds in memory, so a mark written here would undo one made since that machine read
+// the claim, and MarkClaimMessageTx alone writes it. The one thing this write does to the mark is
+// clear it as the claim retires, since a retired claim takes none (MarkClaimMessageTx).
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	var wrote error
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -414,6 +427,13 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
+	// The run of the claim's session since it last finished a turn, as JSON: never null, the
+	// empty run `{}` for a session that has ended no launch and finished no turn (supervise's
+	// SessionRun, dispatch://INFRA-2045 R1).
+	sessionRun, err := json.Marshal(c.SessionRun)
+	if err != nil {
+		return fmt.Errorf("put claim %s: encode its session's run: %w", c.Token, err)
+	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -427,7 +447,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err = tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -439,10 +459,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, session_run, held_for,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -470,7 +491,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
-		last_death_cause = excluded.last_death_cause, last_start_failure = excluded.last_start_failure,
+		message_mark_at = case when excluded.state = 'retired' then null else claims.message_mark_at end,
+		last_death_cause = excluded.last_death_cause, last_death_at = excluded.last_death_at,
+		last_death_digest = excluded.last_death_digest,
+		last_start_failure = excluded.last_start_failure, last_start_failure_at = excluded.last_start_failure_at,
+		last_start_failure_digest = excluded.last_start_failure_digest,
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
@@ -485,8 +510,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		failure_cause = excluded.failure_cause,
 		failed_at = excluded.failed_at,
 		pending_cause = excluded.pending_cause,
+		held_for = excluded.held_for,
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
+		session_run = excluded.session_run,
 		handshake_entry = excluded.handshake_entry,
 		handshake_generation = excluded.handshake_generation,
 		handshake_queued_at = excluded.handshake_queued_at,
@@ -528,8 +555,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
+		c.PodEnd, storedCause(c.FailureCause), instant(c.FailedAt), storedCause(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
+		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt), sessionRun,
+		heldFor(c),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -877,7 +907,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	var (
 		c                           supervise.Claim
 		token, role, state, by      string
-		cause, pendingCause         string
+		cause, pendingCause, held   string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
 		agentResumeGeneration       int64
@@ -904,10 +934,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastSendFailure             *time.Time
 		lastSendError               *string
 		turnStart, turnEnd          *time.Time
+		messageMark                 *time.Time
 		lastReady                   *time.Time
+		deathAt, startFailureAt     *time.Time
+		deathDigest, failureDigest  []byte
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
+		sessionRun                  []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept, news, carried         []byte
@@ -923,7 +957,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		kinds                       string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
-		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
+		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &held, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
@@ -931,8 +965,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
-		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
+		&turnStart, &turnEnd, &messageMark,
+		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
+		&outcomes, &abandoned, &endedWork, &sessionRun,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -955,7 +990,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.DeliveredRows = nil
 	}
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
-	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
+	c.FailureCause, c.PendingCause = supervise.DecodeCause(cause, held), supervise.DecodeCause(pendingCause, held)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
@@ -987,7 +1022,21 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
 		}
 	}
+	// The run of the session since it last finished a turn, `{}` for none (putClaim).
+	if err := json.Unmarshal(sessionRun, &c.SessionRun); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: decode its session's run: %w", token, err)
+	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
+	c.MessageMarkAt = orZero(messageMark)
+	// A cause's time is read only beside a cause whose digest is the one stored with the time
+	// (causeTime), and a start failure's time before last_ready is read as none, since this
+	// release drops the start failure with its time at every ready; the migration's header
+	// (20261124073512_claim_cause_times) says what the two rules leave after a rollback.
+	c.LastDeathAt = causeTime(c.LastDeathCause, deathAt, deathDigest)
+	c.LastStartFailureAt = causeTime(c.LastStartFailure, startFailureAt, failureDigest)
+	if c.LastStartFailureAt.Before(c.LastReady) {
+		c.LastStartFailureAt = time.Time{}
+	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
@@ -1089,4 +1138,54 @@ func orZero(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// causeTime is the time a row holds for cause, or the zero time where the cause is empty, the row
+// holds no time, or the digest stored with the time is of another text than the cause's.
+func causeTime(cause string, at *time.Time, digest []byte) time.Time {
+	if cause == "" || at == nil || !bytes.Equal(digest, causeDigest(cause, *at)) {
+		return time.Time{}
+	}
+	return *at
+}
+
+// causeDigest is the digest upsertClaim writes beside a cause's time, in the same statement: nil
+// where the time is zero, else the 64-bit FNV-1a of the cause's text as the row stores it, in 8
+// bytes. It tells the read whether the time is still the cause's, after a daemon of an earlier
+// release rewrote the cause and not the time (causeTime), and it protects nothing: the text it is
+// taken of stands in plain beside it in the same row.
+func causeDigest(cause string, at time.Time) []byte {
+	if at.IsZero() {
+		return nil
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cause))
+	return h.Sum(nil)
+}
+
+// storedCause is cause as claims.failure_cause and claims.pending_cause hold it: `provider_error`
+// for `cyber_policy`, which the release before migration 20261125223008_claim_held_for knows no
+// word for, and every other cause as it is. That release serves the two columns as they stand, and
+// every plugin from before the cyber-policy contract entry refuses the whole state body for a word
+// it does not know; `provider_error` is the word that release chose for the same refusal.
+// claims.held_for keeps what the column does not (heldFor), and supervise.DecodeCause reads the
+// two back.
+func storedCause(cause supervise.FailureCause) string {
+	if cause == supervise.CauseCyberPolicy {
+		return string(supervise.CauseProviderError)
+	}
+	return string(cause)
+}
+
+// heldFor is claims.held_for for c: `cyber_policy` where its FailureCause or its PendingCause is
+// `cyber_policy`, else "". The two causes share the one word, so a claim whose one cause is
+// `cyber_policy` and whose other is `provider_error` would read back with both `cyber_policy`
+// (supervise.DecodeCause). No path makes that pair: supervise's fail, the one writer of
+// FailureCause, clears PendingCause in the same write, and PendingCause takes only died,
+// stale_plugin and never_registered (supervise's relaunchAfterFailure).
+func heldFor(c supervise.Claim) string {
+	if c.FailureCause == supervise.CauseCyberPolicy || c.PendingCause == supervise.CauseCyberPolicy {
+		return string(supervise.CauseCyberPolicy)
+	}
+	return ""
 }

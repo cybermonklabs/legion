@@ -1,8 +1,19 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { eventDescription } from "./event-description";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** The record an ask event's question is: the ask itself, on its issue. */
+const ASK_SOURCE = { id: "ask-1", issue: "CORE-1", kind: "ask" } as const;
 
 function commentEvent(type: "comment.reopened" | "comment.edited"): DispatchEvent {
   return {
@@ -76,7 +87,76 @@ test("eventDescription labels an edited comment", () => {
 });
 
 test("eventDescription labels an edited ask with its new question", () => {
-  expect(eventDescription(editedAskEvent())).toEqual(["Ask edited: Publish?"]);
+  // The question is a part of its own, which the one reader draws (`SentenceParts`): the line
+  // never carries the question's source.
+  expect(eventDescription(editedAskEvent())).toEqual([
+    "Ask edited: ",
+    { prose: "Publish?", source: ASK_SOURCE, tree: undefined },
+  ]);
+});
+
+test("eventDescription hands an ask's question the tree its event carries", () => {
+  const tree = { content: [], type: "doc" };
+  expect(eventDescription({ ...editedAskEvent(), trees: { "payload.question": tree } })).toEqual([
+    "Ask edited: ",
+    { prose: "Publish?", source: ASK_SOURCE, tree },
+  ]);
+});
+
+// The line of a deleted post's event says who deleted it, where its body would be. The read of
+// the event takes the body out and stamps the marks in its place (`api/events.go`); this payload
+// keeps its body beside the marks, so only the line's own reading of them keeps the words off.
+// The delete's own event reads the same, and a payload that carries the time alone says the post
+// is deleted and names nobody.
+test("eventDescription reads a deleted post's events as who deleted it, with no part of its body", () => {
+  const alice = { id: "alice", kind: "user" } as const;
+  const post = (type: DispatchEvent["type"], marks: Record<string, unknown>): DispatchEvent =>
+    ({
+      actor: alice,
+      created_at: "2026-09-11T00:00:00Z",
+      id: 5,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: {
+        author: alice,
+        body: "Ship it on Friday.",
+        id: "post-1",
+        issue_key: "CORE-1",
+        ...marks,
+      },
+      seq: 5,
+      type,
+    }) as DispatchEvent;
+  const deleted = { deleted_at: "2026-09-11T01:00:00Z", deleted_by: alice };
+
+  for (const [type, kind] of [
+    ["comment.created", "Comment"],
+    ["comment.answered", "Comment"],
+    ["comment.deleted", "Comment"],
+    ["message.created", "Message"],
+    ["message.answered", "Message"],
+    ["message.deleted", "Message"],
+  ] as const) {
+    expect({ type, line: eventDescription(post(type, deleted)) }).toEqual({
+      type,
+      line: [`${kind} deleted by `, { actor: alice }],
+    });
+  }
+  expect(eventDescription(post("comment.created", { deleted_at: deleted.deleted_at }))).toEqual([
+    "Comment deleted",
+  ]);
+  expect(eventDescription(post("message.deleted", { deleted_at: deleted.deleted_at }))).toEqual([
+    "Message deleted",
+  ]);
+  // The same payload with no marks is a post that stands, and its line is its body, a part of its
+  // own that the one reader draws (`SentenceParts`).
+  expect(eventDescription(post("message.created", {}))).toEqual([
+    {
+      prose: "Ship it on Friday.",
+      source: { id: "post-1", issue: "CORE-1", kind: "message" },
+      tree: undefined,
+    },
+  ]);
 });
 
 function answeredAskEvent(
@@ -116,7 +196,8 @@ function answeredAskEvent(
 }
 
 test("eventDescription says an answer changed when it replaced an earlier one", () => {
-  expect(eventDescription(answeredAskEvent())).toEqual(["Ask answered: Publish?"]);
+  const question = { prose: "Publish?", source: ASK_SOURCE, tree: undefined };
+  expect(eventDescription(answeredAskEvent())).toEqual(["Ask answered: ", question]);
   expect(
     eventDescription(
       answeredAskEvent({
@@ -126,7 +207,7 @@ test("eventDescription says an answer changed when it replaced an earlier one", 
         user: "alice",
       })
     )
-  ).toEqual(["Answer changed: Publish?"]);
+  ).toEqual(["Answer changed: ", question]);
 });
 
 test("eventDescription labels a malformed decision", () => {
@@ -452,25 +533,32 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
 });
 
+const receipt = (
+  type: "message.delivery" | "comment.delivery",
+  state: "sent" | "queued" | "failed",
+  duplicate: boolean,
+  error?: string
+) =>
+  ({
+    actor: { id: "system", kind: "system" },
+    created_at: "2026-11-02T09:15:00Z",
+    id: 11,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      delivery: "aside",
+      duplicate,
+      state,
+      target: "session:planner",
+      ...(error === undefined ? {} : { error }),
+    },
+    seq: 11,
+    type,
+  }) as DispatchEvent;
+
 // A queued attempt waits for a session that is not running, so the line says queued even when the
 // stream already held the message: "already delivered" would say the session has it.
 test("the issue log reads a queued delivery receipt as queued, a queued repeat included", () => {
-  const receipt = (
-    type: "message.delivery" | "comment.delivery",
-    state: "sent" | "queued",
-    duplicate: boolean
-  ) =>
-    ({
-      actor: { id: "system", kind: "system" },
-      created_at: "2026-11-02T09:15:00Z",
-      id: 11,
-      issue_key: "CORE-1",
-      notify: false,
-      payload: { delivery: "aside", duplicate, state, target: "session:planner" },
-      seq: 11,
-      type,
-    }) as DispatchEvent;
-
   expect(eventDescription(receipt("message.delivery", "queued", true))).toEqual([
     "Message queued: Aside",
   ]);
@@ -546,4 +634,22 @@ test("the issue log line for a check's state at a head, and for a head's set of 
       })
     )
   ).toEqual([`Head ${checkStateHead} of #70 has no check`]);
+});
+
+// A delete appends one failed receipt per send of its post it ended, with its own words. That
+// receipt is no failed send: the line says the post's delete ended the send, as the Activity
+// tab's does, while any other failure still reads as failed.
+test("the issue log reads a receipt the post's delete appended as the delete ending the send", () => {
+  expect(
+    eventDescription(receipt("comment.delivery", "failed", false, DELETED_POST_DELIVERY_ERROR))
+  ).toEqual(["Comment send ended by the post's delete: Aside"]);
+  expect(
+    eventDescription(receipt("comment.delivery", "failed", false, "no live session planner"))
+  ).toEqual(["Comment failed: Aside"]);
+  expect(
+    eventDescription(receipt("message.delivery", "failed", false, DELETED_POST_DELIVERY_ERROR))
+  ).toEqual(["Message send ended by the post's delete: Aside"]);
+  expect(
+    eventDescription(receipt("message.delivery", "failed", false, "no live session planner"))
+  ).toEqual(["Message failed: Aside"]);
 });

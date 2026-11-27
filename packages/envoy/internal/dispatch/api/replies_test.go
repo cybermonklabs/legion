@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func getMyReplies(t *testing.T, handler http.Handler, login, query string) model.MyRepliesResponse {
@@ -106,6 +108,32 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 	}
 	if bob := getMyReplies(t, handler, "bob", ""); bob.Total != 0 || len(bob.Rows) != 0 {
 		t.Fatalf("bob's page = %#v, want none of alice's rows", bob)
+	}
+}
+
+// A Reply row's subject and its reply's first line are cut at 160 runes where no reference crosses
+// the cut (refs.FirstLine): a key or a link the bound falls inside is left out whole, rather than
+// shown as `CORE-12`, a working link to another issue, or as a link's opening drawn raw.
+func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Long lines", "A spec")
+	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
+	lead := strings.Repeat("x", 151) + " "
+	root := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": lead + "CORE-1234 decides it.\nOr wait.",
+	}, "alice")
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": lead + "[the spec](dispatch://" + issue.Key + "/spec) agrees.", "reply_to": root.ID,
+	})
+
+	row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID)
+	want := strings.Repeat("x", 151) + "…"
+	if row.Subject != want {
+		t.Fatalf("subject = %q, want %q: the key the cut falls inside left out whole", row.Subject, want)
+	}
+	if row.Reply.FirstLine != want {
+		t.Fatalf("reply's first line = %q, want %q: the link the cut falls inside left out whole", row.Reply.FirstLine, want)
 	}
 }
 
@@ -410,8 +438,9 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 // raceRounds is how many times each race below runs its two writes at once.
 const raceRounds = 50
 
-// race starts both writes together and waits for both, failing the test when either does not
-// finish within the window a deadlock would outlast.
+// race starts both writes together and waits for both. Its one bound is the test binary's
+// deadline (testwait.Receive): a deadlock never ends and fails the test by name, and two writes
+// a loaded machine runs slowly pass.
 func race(t *testing.T, round int, first, second func() *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	t.Helper()
 	start := make(chan struct{})
@@ -423,11 +452,7 @@ func race(t *testing.T, round int, first, second func() *httptest.ResponseRecord
 	close(start)
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("round %d: the two writes did not both finish within 10 s", round)
-	}
+	testwait.Receive(t, fmt.Sprintf("round %d: both writes to finish", round), done)
 	return a, b
 }
 

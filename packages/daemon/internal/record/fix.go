@@ -354,11 +354,13 @@ func (s *Postgres) TellOwnerOnce(ctx context.Context, tx pgx.Tx, issue string, g
 
 // MarkRunFixesCI marks every task of the plan of issue at generation as one whose run takes a
 // fix (PlanTask.FixesCI). A generation with no plan rows has no task to mark, and nothing is
-// written.
+// written. A row it matches is a plan's row, which admission reads (RecordsWritten).
 func (s *Postgres) MarkRunFixesCI(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
-	if _, err := tx.Exec(ctx, `update plan_tasks set fixes_ci = true where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `update plan_tasks set fixes_ci = true where issue = $1 and generation = $2`, issue, int64(generation))
+	if err != nil {
 		return fmt.Errorf("mark the run of %s at generation %d to take a fix: %w", issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

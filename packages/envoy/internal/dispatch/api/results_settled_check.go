@@ -24,22 +24,34 @@ import (
 // `when`, run, negative control, surface) and its words are read out of that text. The digest is
 // the sha256 of the block's whole markdown, its opening line and that line's attributes included
 // (refs.BlockTextSum), so a result stored against it names the job, the `when` and the words it
-// was judged under. No fact of a check comes from the live document: an edit a browser made that
-// has not settled changes nothing for a write or a read until its settlement indexes it, and a
-// check the index does not hold yet is no check of either route.
+// was judged under. One block is the exception refs.BlockIndexing.KeepRespelled makes: a block
+// whose changed version another renderer version stored, and which this build renders in another
+// spelling of the same tree, keeps that version and takes this spelling's digest, while the text
+// recorded at the version stays the other renderer's spelling; that text is read as the check,
+// since it reads as the same tree, under the row's digest (settledCheckNode). No fact of a check
+// comes from the live document: an edit a browser made that has not settled changes nothing for a
+// write or a read until its settlement indexes it, and a check the index does not hold yet is no
+// check of either route.
 
 // settledCheckText joins each document_blocks row d to the text the block index recorded of it at
-// its changed version, the text its text_sha256 is the digest of.
+// its changed version, t, the text its text_sha256 is the digest of, and to that version's row,
+// sv, whose renderer_version says which renderer spelled that text (settledCheckNode).
 const settledCheckText = `left join document_block_texts t
-		on t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.version = d.changed_version`
+		on t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.version = d.changed_version
+		left join artifact_versions sv on sv.artifact_id = d.artifact_id and sv.number = d.changed_version`
 
 // settledCheckNode is check block blockID of document artifactID as the block index holds it:
 // parsed out of stored, the text the index recorded at the block's changed version, which must be
-// the text whose digest is sum. Dispatch writes both in one transaction (refs.BlockIndexing.Queue),
-// so a text that is missing or answers another digest is a fault of Dispatch's own records, never
-// a state to read a check from.
-func settledCheckNode(artifactID, blockID string, stored *string, sum string) (*pmdoc.Node, error) {
-	if stored == nil || refs.BlockTextSum(*stored) != sum {
+// the text whose digest is sum, unless stamp, that version's renderer_version, names another
+// renderer than this build's (pmdoc.OtherRenderer). Dispatch writes the row and the text in one
+// transaction (refs.BlockIndexing.Queue), so for a version this build rendered a text that is
+// missing or answers another digest is a fault of Dispatch's own records, never a state to read a
+// check from. For a version another renderer stored, the row's digest is this build's spelling of
+// the block and the text is that renderer's spelling of the same tree, which
+// refs.BlockIndexing.KeepRespelled checked when it kept the version (pmdoc.FragmentReadsAs), so
+// the text is read as the check and sum stays the check's digest.
+func settledCheckNode(artifactID, blockID string, stored *string, sum string, stamp *int) (*pmdoc.Node, error) {
+	if stored == nil || (refs.BlockTextSum(*stored) != sum && !pmdoc.OtherRenderer(stamp)) {
 		return nil, fmt.Errorf("read check %s of document %s: the block index holds no text of it whose digest is %s", blockID, artifactID, sum)
 	}
 	tree, err := pmdoc.ParseRendering(*stored)
@@ -60,10 +72,11 @@ func settledCheckNode(artifactID, blockID string, stored *string, sum string) (*
 }
 
 // settledResolution is the reading of check block check at indexed, out of stored, the block
-// index's text of it at indexed.Version, whose digest is indexed.SHA256 (settledCheckNode): its
-// attributes and its surface, carried with that version and digest.
-func settledResolution(check checkBlockRef, indexed indexedCheck, stored *string) (checkResolution, error) {
-	node, err := settledCheckNode(check.ArtifactID, check.BlockID, stored, indexed.SHA256)
+// index's text of it at indexed.Version, whose digest is indexed.SHA256 unless stamp, that
+// version's renderer_version, names another renderer (settledCheckNode): its attributes and its
+// surface, carried with that version and digest.
+func settledResolution(check checkBlockRef, indexed indexedCheck, stored *string, stamp *int) (checkResolution, error) {
+	node, err := settledCheckNode(check.ArtifactID, check.BlockID, stored, indexed.SHA256, stamp)
 	if err != nil {
 		return checkResolution{}, err
 	}
@@ -79,7 +92,13 @@ func settledResolution(check checkBlockRef, indexed indexedCheck, stored *string
 // `check` block, or a check the index does not hold yet, which a browser wrote and its settlement
 // has not indexed — is 400 UNKNOWN_CHECK. The check's version, digest, attributes and surface are
 // one state of it (results_settled_check.go).
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -105,9 +124,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256, t.text
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256, t.text, sv.renderer_version,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		`+settledCheckText+`
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
@@ -118,26 +140,48 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
 	defer rows.Close()
-	var found []resolvedCheck
-	var texts []*string
-	var references []string
+	// matchedCheck is one check the value matches, with the block index's text of it and that
+	// version's renderer, the reference its document's slug spells, and its issue's project and
+	// whether that project is private, which the caller's own project is judged against below.
+	type matchedCheck struct {
+		check     resolvedCheck
+		settled   *string
+		stamp     *int
+		reference string
+		project   string
+		private   bool
+	}
+	var matched []matchedCheck
 	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
 		var slug string
-		var settled *string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256, &settled); err != nil {
+		if err := rows.Scan(&match.check.IssueKey, &slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.settled, &match.stamp, &match.project, &match.private); err != nil {
 			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 		}
 		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
+			Kind: "block", IssueKey: match.check.IssueKey, ID: slug, Block: blockID,
 		}); ok {
-			check.Ref = reference
-			references = append(references, reference)
+			match.check.Ref = reference
+			match.reference = reference
 		}
-		found, texts = append(found, check), append(texts, settled)
+		matched = append(matched, match)
 	}
 	if err := rows.Err(); err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		matched = seenBy(caller, matched, func(match matchedCheck) (string, bool) { return match.project, match.private })
+	}
+	found := make([]resolvedCheck, 0, len(matched))
+	texts := make([]*string, 0, len(matched))
+	stamps := make([]*int, 0, len(matched))
+	var references []string
+	for _, match := range matched {
+		found, texts, stamps = append(found, match.check), append(texts, match.settled), append(stamps, match.stamp)
+		if match.reference != "" {
+			references = append(references, match.reference)
+		}
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)
@@ -152,7 +196,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.checkResolution, err = settledResolution(check.checkBlockRef, check.indexedCheck, texts[0]); err != nil {
+	if check.checkResolution, err = settledResolution(check.checkBlockRef, check.indexedCheck, texts[0], stamps[0]); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -184,12 +228,13 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef, resolved checkResolution, named string) (checkResolution, error) {
 	var indexed indexedCheck
 	var settled *string
+	var stamp *int
 	err := q.QueryRow(ctx, `
-		select d.changed_version, d.text_sha256, t.text
+		select d.changed_version, d.text_sha256, t.text, sv.renderer_version
 		from document_blocks d
 		`+settledCheckText+`
 		where d.artifact_id = $1::uuid and d.block_id = $2 and d.type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256, &settled)
+	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256, &settled, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return checkResolution{}, unknownCheck(named)
 	}
@@ -199,7 +244,7 @@ func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef,
 	if indexed == resolved.indexedCheck {
 		return resolved, nil
 	}
-	return settledResolution(check, indexed, settled)
+	return settledResolution(check, indexed, settled, stamp)
 }
 
 // checkBlocksOf is every `check` block of one Verification document as the block index holds it:
@@ -220,7 +265,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		issueKey = *artifact.IssueKey
 	}
 	rows, err := q.Query(ctx, `
-		select d.block_id, d.changed_version, d.text_sha256, t.text
+		select d.block_id, d.changed_version, d.text_sha256, t.text, sv.renderer_version
 		from document_blocks d
 		`+settledCheckText+`
 		where d.artifact_id = $1::uuid and d.type = 'check'
@@ -235,10 +280,11 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		var blockID, sum string
 		var version int
 		var settledText *string
-		if err := rows.Scan(&blockID, &version, &sum, &settledText); err != nil {
+		var stamp *int
+		if err := rows.Scan(&blockID, &version, &sum, &settledText, &stamp); err != nil {
 			return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 		}
-		node, err := settledCheckNode(artifact.ID, blockID, settledText, sum)
+		node, err := settledCheckNode(artifact.ID, blockID, settledText, sum, stamp)
 		if err != nil {
 			return nil, err
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -257,6 +258,40 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
 
+// storedMarkdown is text as the store would hold it: the parse and the render every write of a
+// whole document runs over it (docs' SeedText and ReplaceText, pmdoc.ParseWritten over no live
+// document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
+// else of those writes is run here, since nothing else of them changes the markdown.
+//
+// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with
+// document_search.search, the vector of the markdown the seed stored, and a rendering differs from
+// the text it was parsed from wherever the renderer normalises one: an ordered list is renumbered,
+// and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact
+// copy of that spec would hold different lexemes from the row it copies.
+//
+// An empty answer is what a create seeds for a spec of spaces, tabs, carriage returns and line
+// feeds alone; the seed keeps the other characters strings.TrimSpace empties, which this answers
+// empty all the same. Markdown the parse or the render refuses is handed back as it came. The
+// write that follows refuses it with the error of its own seed, which says what is wrong with it;
+// the gate answers on the text it was given rather than failing a write the seed would have let
+// through.
+func storedMarkdown(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	tree, _, err := pmdoc.ParseWritten(text, nil)
+	if err != nil {
+		return text
+	}
+	tree = pmdoc.StripAnchorMarks(tree)
+	pmdoc.StripServerOwnedAttrs(tree)
+	stored, err := pmdoc.Render(tree)
+	if err != nil {
+		return text
+	}
+	return stored
+}
+
 // scoredDuplicate is one candidate with the near-copy score that found it. The score is the
 // gate's own reading and is not part of what a client is told, so it rides here rather than on
 // model.DuplicateCandidate.
@@ -276,6 +311,12 @@ type duplicateGateResult struct {
 	// Candidates are the project's open non-ancestor issues whose score reaches
 	// duplicateNudgeScore, best score first, at most duplicateCandidateLimit.
 	Candidates []scoredDuplicate
+	// ReadMS is how long the create waited on the read, from the gate's start until the read
+	// returned, its transaction's rollback included, and ReadStage the step the read was in when
+	// it answered or ended (nearCopyReadStage), as near_copy_checks.read_ms and read_stage record
+	// them: with NotMade, the step where a read that did not answer was waiting.
+	ReadMS    *int
+	ReadStage string
 }
 
 // answered reports whether the gate's read answered at all. Candidates is empty both when it
@@ -343,21 +384,49 @@ func (s *server) duplicateGate(
 	ctx context.Context, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
 	bound := s.duplicateGateBound()
+	// The clock starts before the bound does, so a read the bound ends records at least the bound.
+	start := time.Now()
 	gateCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
+	readMS, stage := milliseconds(time.Since(start)), nearCopyReadStage(err)
 	switch {
 	case err == nil:
-		return duplicateGateResult{Candidates: candidates}
+		return duplicateGateResult{Candidates: candidates, ReadMS: readMS, ReadStage: stage}
 	case nearCopyBoundHit(err) || errors.Is(err, context.Canceled):
 		// The read ran out of its bound, or the create's own request went away under it, which
 		// answers nobody anything.
 		slog.Warn("dispatch: the near-copy check did not answer within its bound",
-			"project", project, "bound", bound, "error", err)
-		return duplicateGateResult{NotMade: nearCopyNotMadeBound}
+			"project", project, "bound", bound, "read_ms", *readMS, "read_stage", stage, "error", err)
+		return duplicateGateResult{NotMade: nearCopyNotMadeBound, ReadMS: readMS, ReadStage: stage}
 	}
-	slog.Error("dispatch: the near-copy check failed", "project", project, "error", err)
-	return duplicateGateResult{NotMade: nearCopyNotMadeFailed}
+	slog.Error("dispatch: the near-copy check failed",
+		"project", project, "read_ms", *readMS, "read_stage", stage, "error", err)
+	return duplicateGateResult{NotMade: nearCopyNotMadeFailed, ReadMS: readMS, ReadStage: stage}
+}
+
+// nearCopyReadError is an error of the gate's read with the step the read was in when it ended,
+// so the row of a read that ran out of its bound or failed says where it was waiting.
+type nearCopyReadError struct {
+	stage string
+	err   error
+}
+
+func (e nearCopyReadError) Error() string {
+	return "near-copy read, step " + e.stage + ": " + e.err.Error()
+}
+
+func (e nearCopyReadError) Unwrap() error { return e.err }
+
+// nearCopyReadStage is the step a read that returned err ended in: the one its error names
+// (readDuplicateCandidates names one on every error it returns), and nearCopyStageScore for a
+// read that answered, since every answered read ends there.
+func nearCopyReadStage(err error) string {
+	var read nearCopyReadError
+	if errors.As(err, &read) {
+		return read.stage
+	}
+	return nearCopyStageScore
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
@@ -366,9 +435,17 @@ func (s *server) duplicateGate(
 // the two bars reads from zero, so the whole distribution is visible to it.
 func (s *server) readDuplicateCandidates(
 	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
-) ([]scoredDuplicate, error) {
+) (candidates []scoredDuplicate, err error) {
+	// Every error names the step the read was in (nearCopyReadError), set before each step starts.
+	stage := nearCopyStageConnect
+	defer func() {
+		if err != nil {
+			err = nearCopyReadError{stage: stage, err: err}
+		}
+	}()
 	// The test seam: a case holds the read here until its bound ends it (server
-	// beforeDuplicateRead). Nothing but a test sets it.
+	// beforeDuplicateRead), as a read waiting for a pool connection is held. Nothing but a test
+	// sets it.
 	if s.beforeDuplicateRead != nil {
 		if err := s.beforeDuplicateRead(ctx); err != nil {
 			return nil, err
@@ -392,14 +469,17 @@ func (s *server) readDuplicateCandidates(
 		return nil, err
 	}
 	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
+	stage = nearCopyStageTerms
 	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		return nil, err
 	}
+	stage = nearCopyStageKeys
 	keyLexemes, err := duplicateKeyLexemes(ctx, tx, project)
 	if err != nil {
 		return nil, err
 	}
+	stage = nearCopyStageScore
 	lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 	if ancestors == nil {
 		ancestors = []string{}

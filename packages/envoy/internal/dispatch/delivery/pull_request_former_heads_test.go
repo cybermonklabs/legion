@@ -19,7 +19,7 @@ import (
 // foldedFormerHeadsOf is the former heads of the pull request repo#number stands for, by commit,
 // as the check states settler reads them: once the records the writes of pull_request_heads
 // appended under any of its names are applied (pull_request_former_heads_fold, migration
-// 20261124122830), which each settle of an issue runs first for the issue's open pull requests
+// 20261126005348), which each settle of an issue runs first for the issue's open pull requests
 // (pull_request_former_heads_drain). Every name of one pull request reads its one history.
 func foldedFormerHeadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) []string {
 	t.Helper()
@@ -92,20 +92,14 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 }
 
 // refreshBehind runs the re-key of the old row while holder, a transaction of another writer, holds
-// that row's lock, and answers once the re-key's delete waits behind it. The caller commits holder
+// that row's lock, and answers once the re-key's delete waits behind it: a re-key that never queues
+// behind the writer, or answers without waiting for it, fails the wait. The caller commits holder
 // and then reads the answer.
 func (r *reKeyRig) refreshBehind(t *testing.T, holder pgx.Tx) <-chan error {
 	t.Helper()
 	answered := make(chan error, 1)
 	go func() { answered <- r.refresh() }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second); waiting < 1 {
-		select {
-		case err := <-answered:
-			t.Fatalf("the re-key of %s#%d answered %v without waiting for the writer that holds its row", gadgetsOldRepo, r.number, err)
-		default:
-			t.Fatalf("the re-key of %s#%d never queued behind the writer that holds its row", gadgetsOldRepo, r.number)
-		}
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	return answered
 }
 

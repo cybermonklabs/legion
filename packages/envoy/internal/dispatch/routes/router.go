@@ -160,6 +160,8 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -197,6 +199,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -250,6 +255,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		LegionStatusScope:      opts.LegionStatusScope,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -263,6 +269,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

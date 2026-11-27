@@ -105,9 +105,9 @@ func TestJudgeStates(t *testing.T) {
 // the notice of a move back carries every check it reads that does not pass, a state Dispatch could
 // not read among them. Reading every check, a check whose state names a CI case (k3, or k1 or k2
 // where a row puts it in CI) counts as any other; leaving those checks out, it neither holds the
-// move nor sends the work back, and a row whose outcome differs then says so in leaving. A check of
-// the set with no state holds the move either way, since only its state says whether a CI job runs
-// it.
+// move nor sends the work back, and a row whose outcome differs then says so in leaving. A check
+// of the set with no state holds the move either way, since only its state says whether a CI job
+// runs it.
 func TestTheTestingMoveStateTable(t *testing.T) {
 	k3Failed := inCI(stateOf("k3", "no", "fail", "ci"), "failure")
 	reviewing := func(r *statesRig) { assertPhase(r.t, r.pool, phase.Reviewing) }

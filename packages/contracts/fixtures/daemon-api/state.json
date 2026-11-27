@@ -6,12 +6,22 @@
     "firstBootAt": "2026-09-18T14:03:27Z",
     "startedAt": "2026-09-22T09:15:02Z"
   },
-  "contract": {
-    "daemon": 236,
-    "caller": 236
-  },
   "admission": {
     "cap": 5,
+    "p0Holders": 1,
+    "p0Bound": {
+      "bound": 3,
+      "configured": 4,
+      "live": {
+        "bound": 3,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "setAt": "2026-09-22T09:10:00Z",
+        "reason": "the P0 issues outran the gateway"
+      }
+    },
     "active": [
       "LEGION-208",
       "LEGION-210",
@@ -68,9 +78,13 @@
       "phase": "done",
       "status": "done",
       "tree": "LEGION-207",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "lingerUntil": "2026-09-22T10:10:12Z",
+      "priority": null,
+      "resolvedPriority": 2,
+      "priorityFrom": "OTHER-5",
       "workers": {
         "implementer": {
           "claim": {
@@ -101,7 +115,14 @@
           "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
           "currentVersion": 4,
           "approvedVersion": 4,
-          "status": "approved"
+          "status": "open_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 5,
+            "approver": "user:alice",
+            "approvedAt": "2026-09-20T15:02:41Z"
+          }
         }
       ],
       "check": {
@@ -127,6 +148,7 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -146,7 +168,9 @@
         "lastTurnStart": "2026-09-22T09:16:40Z",
         "lastTurnEnd": "2026-09-22T09:16:58Z",
         "lastDeathCause": "the pane's process was gone at the daemon's read",
+        "lastDeathAt": "2026-09-22T09:15:21Z",
         "lastStartFailure": "the pod was not ready within the worker boot timeout",
+        "lastStartFailureAt": "2026-09-22T09:15:50Z",
         "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",
@@ -163,6 +187,7 @@
           "dueAt": "2026-09-22T09:18:03Z"
         }
       },
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -312,6 +337,7 @@
       "status": "in_progress",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {},
       "why": {
         "state": "blocked",
@@ -348,10 +374,12 @@
       "phase": "held",
       "status": "in_progress",
       "tree": "LEGION-210",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
       "heldFrom": "implementing",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -407,12 +435,15 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "ancestry": [
         "LEGION-209",
         "LEGION-208"
       ],
+      "priority": 1,
+      "resolvedPriority": 1,
       "workers": {
         "implementer": {
           "claim": {
@@ -451,7 +482,8 @@
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "priority": 1,
+        "reason": "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "claim_stopped",
@@ -468,8 +500,10 @@
       "phase": "awaiting_person",
       "status": "in_progress",
       "tree": "LEGION-212",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": 0,
       "workers": {},
       "gatedSteps": [
         {
@@ -494,7 +528,8 @@
         "partLength": 1,
         "holdsSlot": true,
         "since": "2026-09-22T09:21:00Z",
-        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+        "priority": 0,
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
       },
       "why": {
         "state": "claim_stopped",
@@ -516,9 +551,27 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-214",
+      "treeRuns": false,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
-      "workers": {}
+      "priority": null,
+      "resolvedPriority": null,
+      "workers": {},
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+          "currentVersion": 2,
+          "approvedVersion": null,
+          "status": "pending_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 6,
+            "askId": "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"
+          }
+        }
+      ]
     },
     "LEGION-218": {
       "key": "LEGION-218",
@@ -526,8 +579,10 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-218",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -581,8 +636,10 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-219",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -612,7 +669,7 @@
         "number": 642,
         "head": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
         "state": "open",
-        "mergeState": "blocked",
+        "mergeState": "behind",
         "reviewDecision": "approved"
       },
       "gatedSteps": [
@@ -626,17 +683,23 @@
       ],
       "mergeWait": {
         "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-        "mergeState": "blocked",
+        "mergeState": "behind",
         "stateReadAt": "2026-09-22T09:16:12Z",
         "headUpdatedAt": "2026-09-20T14:05:33Z",
         "checkRuns": 2,
         "toldHead": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-        "toldState": "blocked"
+        "toldState": "behind"
       },
       "phaseEntry": 2,
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
-      "quietHours": 40.583888888888886
+      "quietHours": 40.583888888888886,
+      "podHold": {
+        "reason": "background_work",
+        "firstAt": "2026-09-21T22:04:00Z",
+        "at": "2026-09-22T09:17:00Z",
+        "detail": "async-job"
+      }
     }
   },
   "pendingStatusWrites": [],
@@ -731,6 +794,12 @@
   },
   "agentSecretsLogin": {
     "state": "issued"
+  },
+  "dispatchCredential": {
+    "session": "legion-daemon:LEGION",
+    "transitionLaunches": 2,
+    "lastTransitionLaunchAt": "2026-09-22T09:17:03Z",
+    "liveLaunchesWithDispatchToken": 3
   },
   "capabilities": [
     {
@@ -1035,6 +1104,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -1043,6 +1113,7 @@
       "GEMINI_API_KEY"
     ],
     "instructions": "/etc/legion/deployment-instructions.md",
+    "private_name_rules_file": "/etc/legion/private-names.toml",
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,
     "worker_stop_timeout_seconds": 30,
@@ -1126,6 +1197,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"
@@ -1184,5 +1257,57 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 46
+  "lowestPluginContract": 46,
+  "intakeGiveUps": {
+    "consumers": [
+      {
+        "name": "legion-go-LEGION-dispatch",
+        "open": 2,
+        "newestSeq": 6044896
+      },
+      {
+        "name": "legion-go-LEGION-github",
+        "open": 1,
+        "newestSeq": 812004
+      }
+    ],
+    "newest": [
+      {
+        "id": 43,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-214.issue.updated",
+        "streamSeq": 6044896,
+        "storedAt": "2026-09-22T08:40:12Z",
+        "eventId": null,
+        "deliveries": 1,
+        "gaveUpAt": "2026-09-22T08:40:13Z",
+        "reason": "undecodable",
+        "lastError": "decode Envoy envelope: unexpected end of JSON input"
+      },
+      {
+        "id": 42,
+        "consumer": "legion-go-LEGION-github",
+        "subject": "notifications.github.acme.widgets.pr.17.review",
+        "streamSeq": 812004,
+        "storedAt": "2026-09-22T06:02:00Z",
+        "eventId": "github-9b2c71e0",
+        "deliveries": 3,
+        "gaveUpAt": "2026-09-22T07:55:00Z",
+        "reason": "consumer moved past",
+        "lastError": "the consumer moved past it without delivering it again"
+      },
+      {
+        "id": 41,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-213.issue.updated",
+        "streamSeq": 6044801,
+        "storedAt": "2026-09-22T06:30:00Z",
+        "eventId": "dispatch-6044801",
+        "deliveries": 21,
+        "gaveUpAt": "2026-09-22T07:31:04Z",
+        "reason": "bound",
+        "lastError": "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
+      }
+    ]
+  }
 }

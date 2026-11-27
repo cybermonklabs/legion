@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,31 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
+// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
+// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
+// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
+func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
+	t.Helper()
+	runs := make([]*seedRun, len(databases))
+	failures := make([]error, len(databases))
+	var seeds sync.WaitGroup
+	for index, database := range databases {
+		seeds.Go(func() {
+			started := time.Now()
+			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
+			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), testScale,
+				time.Since(started).Round(time.Millisecond))
+		})
+	}
+	seeds.Wait()
+	for index, failure := range failures {
+		if failure != nil {
+			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), testScale, failure)
+		}
+	}
+	return runs
+}
+
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
 // whole runs fit in one test and large enough that every arm of the graph, every size band and
 // every anchor shape holds rows.
@@ -30,10 +56,12 @@ const testScale = 0.01
 
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
-// minute: a test of its own for each check would seed six databases to read one data set.
+// minute: a test of its own for each check would seed six databases to read one data set. The two
+// seeds run at once, in this process (seedAtOnce).
 func TestSeedAtASmallScale(t *testing.T) {
-	first, firstRun := seedTestDatabase(t)
-	second, _ := seedTestDatabase(t)
+	t.Parallel()
+	first, second := storetest.Open(t), storetest.Open(t)
+	firstRun := seedAtOnce(t, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -80,19 +108,6 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabase seeds a database of its own and answers it with the run that filled it.
-func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
-	t.Helper()
-	database := storetest.Open(t)
-	started := time.Now()
-	run, err := seed(context.Background(), database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	return database, run
-}
-
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
 // side seeds: a database migrated from a checkout of the release before this change, filled by
 // this tool with --no-migrate. Its search_term_totals carries no snapshot column (migration
@@ -106,19 +121,14 @@ func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
 // the step reads the catalogue for; the rest of that release's schema is older still, and the
 // step's build reads nothing of it that this head does not also have.
 func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx,
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-
-	started := time.Now()
-	run, err := seed(ctx, database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v on main's search_term_totals: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	run := seedAtOnce(t, database)[0]
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -145,6 +155,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 }
 
 func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	rollback, err := os.ReadFile("../../internal/dispatch/store/migrations/20261105014808_comments_answers.down.sql")
 	if err != nil {
@@ -153,9 +164,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	if _, err := seed(context.Background(), database, testScale, io.Discard); err != nil {
-		t.Fatalf("seed with --no-migrate on the schema before comment answers: %v", err)
-	}
+	seedAtOnce(t, database)
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -166,6 +175,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
+	t.Parallel()
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
 		parent := comment.ReplyTo
@@ -201,6 +211,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 // migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)

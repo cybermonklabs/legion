@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  `LegionHandoffCompleteRequest`'s documentation says what contract 225 takes: `verdict` is
+  `LegionHandoffCompleteRequest`'s documentation says what the contract of the daemon's entry `20261125203834` check-states takes: `verdict` is
   `pass`, `pending` or `fail` on a production check report and the empty string on every phase
   completion, which the daemon refuses `VERDICT_NOT_TAKEN` when it names one. The schema is
   unchanged.

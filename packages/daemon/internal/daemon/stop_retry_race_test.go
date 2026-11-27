@@ -3,7 +3,7 @@ package daemon
 // A stop row that reads its claim failed or retired gives up only once a decision in flight has
 // ended (claimToStop). The outbox's suspend and release rows and a pause's stop each read the
 // claim's published view first (supervise.Machine.View), and an operator's retry of a failed claim
-// (supervise.RequestOperatorRetry, api's machineRetry) leaves that view reading failed until the
+// (supervise.RequestAskedRetry, api's machineRetry) leaves that view reading failed until the
 // retry's launch is first written: a stop that gave up on that read would leave the retry to launch
 // the claim the stop was for (dispatch://INFRA-5297). The workflow's own start of a failed claim is
 // no such competitor for these rows: it runs on the issue's lifecycle lane, one row at a time with
@@ -132,17 +132,21 @@ func waitsOnADecision(header string) bool {
 }
 
 // stopRacingARetry runs the row stop makes through runner's executor while an operator's retry of
-// the failed tester (supervise.RequestOperatorRetry) waits inside its decision at held. stop is
+// the failed tester (supervise.RequestAskedRetry) waits inside its decision at held. stop is
 // called once the retry waits there, so what it does — a project's pause among it — comes after
-// the retry passed the pause's check. The retry is let go only once the row has returned or waits
-// on the retry's decision (waitsOnADecision): the row reads the claim inside the window however
-// fast the machine runs it. It answers the row's error.
+// the retry passed the pause's check. The row must wait on the retry's decision (waitsOnADecision,
+// claimToStop), and the retry is let go only once it does: the row reads the claim inside the
+// window however fast the machine runs it. A row that returns first read the tester failed and
+// gave up while the retry's decision held the machine, and fails the test there, whatever the
+// rig's clock would let the pause's gate do with the launch afterwards. It answers the row's error.
 func stopRacingARetry(t *testing.T, runner *outbox, held *heldLaunch, pair podPair, stop func() record.OutboxRow) error {
 	t.Helper()
 	ctx := context.Background()
 	held.armed.Store(true)
 	retried := make(chan error, 1)
-	go func() { retried <- pair.waiting.Handle(ctx, supervise.RequestOperatorRetry{Claim: pair.waitingToken}) }()
+	go func() {
+		retried <- pair.waiting.Handle(ctx, supervise.RequestAskedRetry{Claim: pair.waitingToken, By: supervise.SuspendedByOperator})
+	}()
 	testwait.Receive(t, "the operator's retry of the tester to pass the wake gate", held.entered)
 	if c := pair.waiting.View().Claim; c.State != supervise.StateFailed {
 		t.Fatalf("the tester is published %s while its retry waits before its first write, want %s: the window this test is for",
@@ -169,18 +173,15 @@ func stopRacingARetry(t *testing.T, runner *outbox, held *heldLaunch, pair podPa
 		}
 	})
 	if returned {
-		t.Logf("the stop row returned before the retry was let go, answering %v", stopped)
-	} else {
-		t.Log("the stop row waits on the retry's decision")
+		t.Fatalf("the stop row returned before the retry it races was let go, answering %v: it read the tester failed and gave up "+
+			"while the retry's decision held the machine, so the retry would launch the claim the row was to stop", stopped)
 	}
+	t.Log("the stop row waits on the retry's decision")
 	held.release()
 	if err := testwait.Receive(t, "the operator's retry of the tester", retried); err != nil {
 		t.Fatalf("retry the tester: %v", err)
 	}
-	if !returned {
-		stopped = testwait.Receive(t, "the stop row", done)
-	}
-	return stopped
+	return testwait.Receive(t, "the stop row", done)
 }
 
 // pauseHeldLine is the line a launch writes when the project's pause holds it at the pause's gate
@@ -193,6 +194,7 @@ const pauseHeldLine = "supervise: the project is paused; its gate holds this cla
 // in its published view, and must stop the launch the retry then makes rather than finish without
 // acting. The tester's process is never asked of the runtime.
 func TestAStopRowStopsTheClaimARetryInFlightLaunches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		row  func(t *testing.T, r *podStopRig) record.OutboxRow

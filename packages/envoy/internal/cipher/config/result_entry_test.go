@@ -21,10 +21,13 @@ func withResultsAirlock(e map[string]string) map[string]string {
 // resultsEntry is the proxy block of the profile a result entry's grants are held to,
 // DISPATCH_RESULTS_TOKEN: kind dpop, bound to Dispatch's host, carried in Authorization alone,
 // with an allow list.
-func resultsEntry() proxyrules.SecretRule {
-	return proxyrules.SecretRule{
-		Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.example"}, Headers: []string{"Authorization"},
-		Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: proxyrules.KindDPoP,
+func resultsEntry() proxyrules.Binding {
+	return proxyrules.Binding{
+		Name: "DISPATCH_RESULTS_TOKEN", Way: proxyrules.WayDPoP,
+		Inline: &proxyrules.Kind{
+			Hosts: []string{"dispatch.example"}, Headers: []string{"Authorization"},
+			Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}},
+		},
 	}
 }
 
@@ -34,15 +37,27 @@ func resultsDestination() PrivateUpstream {
 	return PrivateUpstream{Host: "dispatch.example", URL: &url.URL{Scheme: "http", Host: "dispatch.dispatch.svc.cluster.local:8766"}}
 }
 
+// resultsStart is the start check of the results capability as cmd/cipherd makes it: the results
+// profile's own rules (ResultsEntryRules), then every dpop block's (ProxyMintedRules) against the
+// private destinations given. The rules of these cases name the profile as a binding of its own,
+// never as a proxy block the broker reads as itself, so the check's readsAsBlock is false here;
+// cmd/cipherd reads it from the profiles file (LegacyProxy of the results name).
+func resultsStart(rules proxyrules.Rules, upstreams []PrivateUpstream, resultWorkflows bool) error {
+	if err := ResultsEntryRules(rules, false, resultWorkflows); err != nil {
+		return err
+	}
+	return ProxyMintedRules(rules, upstreams)
+}
+
 // TestAResultEntryNeedsTheDPoPEntryAtStart: BROKER_EXCHANGE_RESULT_WORKFLOWS with no profiles file
-// refuses the start naming BROKER_PROFILES_FILE, and AirlockResultRules, for a broker with
-// result entries, refuses profiles with no DISPATCH_RESULTS_TOKEN profile, one whose proxy block
-// binds no host, one that binds a `*.` name or more than one host (the run's token and a proof of
-// the pod's key go to every host the profile binds, so it binds Dispatch's one host and nothing
-// else), one not of kind dpop, one with no allow list or an empty one, and one carried in any
-// header but Authorization alone, each refusal naming BROKER_PROFILES_FILE and what is missing.
-// The profile whole, and the one with the default header (Authorization), are taken with the
-// private destination of its host.
+// refuses the start naming BROKER_PROFILES_FILE, and the start check (resultsStart), for a broker
+// with result entries, refuses profiles with no DISPATCH_RESULTS_TOKEN profile, one whose proxy
+// block binds no host, one that binds a `*.` name or more than one host (the run's token and a
+// proof of the pod's key go to every host the profile binds, so it binds Dispatch's one host and
+// nothing else), one not of kind dpop, one with no allow list or an empty one, and one carried in
+// any header but Authorization alone, each refusal naming BROKER_PROFILES_FILE and what is
+// missing. The profile whole, and the one with the default header (Authorization), are taken with
+// the private destination of its host.
 func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	e := withResultsAirlock(validEnv())
 	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
@@ -55,36 +70,36 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") {
 		t.Errorf("result workflows with no profiles file: err = %v, want a refusal naming BROKER_EXCHANGE_RESULT_WORKFLOWS and BROKER_PROFILES_FILE", err)
 	}
-	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{resultsEntry()}}, resultsDestination(), true); err != nil {
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{resultsEntry()}}, []PrivateUpstream{resultsDestination()}, true); err != nil {
 		t.Fatalf("the whole entry: %v", err)
 	}
 	defaultHeader := resultsEntry()
-	defaultHeader.Headers = nil
-	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, resultsDestination(), true); err != nil {
+	defaultHeader.Inline.Headers = nil
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{defaultHeader}}, []PrivateUpstream{resultsDestination()}, true); err != nil {
 		t.Fatalf("the entry with the default header: %v", err)
 	}
 	for _, c := range []struct {
 		name, says string
-		spoil      func(*proxyrules.SecretRule)
+		spoil      func(*proxyrules.Binding)
 	}{
-		{"no such profile", "holds no profile", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN"; s.Kind = "" }},
-		{"no host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = nil }},
-		{"a wildcard host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"*.example.com"} }},
-		{"a second host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"dispatch.example", "api.github.com"} }},
-		{"a second, wildcard host", "one exact host", func(s *proxyrules.SecretRule) {
-			s.Hosts = []string{"dispatch.example", "*.attacker.example"}
+		{"no such profile", "holds no profile", func(s *proxyrules.Binding) { s.Name = "OTHER_TOKEN"; s.Way = "" }},
+		{"no host", "one exact host", func(s *proxyrules.Binding) { s.Inline.Hosts = nil }},
+		{"a wildcard host", "one exact host", func(s *proxyrules.Binding) { s.Inline.Hosts = []string{"*.example.com"} }},
+		{"a second host", "one exact host", func(s *proxyrules.Binding) { s.Inline.Hosts = []string{"dispatch.example", "api.github.com"} }},
+		{"a second, wildcard host", "one exact host", func(s *proxyrules.Binding) {
+			s.Inline.Hosts = []string{"dispatch.example", "*.attacker.example"}
 		}},
-		{"no kind", "kind dpop", func(s *proxyrules.SecretRule) { s.Kind = "" }},
-		{"another kind", "kind dpop", func(s *proxyrules.SecretRule) { s.Kind = proxyrules.KindAWS }},
-		{"no allow list", "allow list", func(s *proxyrules.SecretRule) { s.Allow = nil }},
-		{"an empty allow list", "allow list", func(s *proxyrules.SecretRule) { s.Allow = []proxyrules.Allow{} }},
-		{"another header", "Authorization", func(s *proxyrules.SecretRule) { s.Headers = []string{"X-Token"} }},
-		{"a second header", "Authorization", func(s *proxyrules.SecretRule) { s.Headers = []string{"Authorization", "X-Token"} }},
-		{"no header", "Authorization", func(s *proxyrules.SecretRule) { s.Headers = []string{} }},
+		{"no kind", "kind dpop", func(s *proxyrules.Binding) { s.Way = "" }},
+		{"another kind", "kind dpop", func(s *proxyrules.Binding) { s.Way = proxyrules.WaySign }},
+		{"no allow list", "allow list", func(s *proxyrules.Binding) { s.Inline.Allow = nil }},
+		{"an empty allow list", "allow list", func(s *proxyrules.Binding) { s.Inline.Allow = []proxyrules.Allow{} }},
+		{"another header", "Authorization", func(s *proxyrules.Binding) { s.Inline.Headers = []string{"X-Token"} }},
+		{"a second header", "Authorization", func(s *proxyrules.Binding) { s.Inline.Headers = []string{"Authorization", "X-Token"} }},
+		{"no header", "Authorization", func(s *proxyrules.Binding) { s.Inline.Headers = []string{} }},
 	} {
 		entry := resultsEntry()
 		c.spoil(&entry)
-		err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}}, resultsDestination(), true)
+		err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{entry}}, []PrivateUpstream{resultsDestination()}, true)
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN") || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: err = %v, want a refusal naming DISPATCH_RESULTS_TOKEN and %q", c.name, err, c.says)
 			continue
@@ -95,54 +110,55 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	}
 }
 
-// TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries: AirlockResultRules holds the profile
-// DISPATCH_RESULTS_TOKEN on a broker with no result entries of its own as on one with them, since
-// any broker with an airlock port serves every result grant of the database it shares. Profiles
-// whose results profile binds a `*.` name, two hosts, its one host with no private destination or
-// with a destination of another host, profiles with a second proxy block of kind dpop, and profiles
-// where another proxy block, `*.` or exact, binds the results host (the refusal names that host),
-// are each refused, naming BROKER_PROFILES_FILE and the setting or the profile at fault, and never
+// TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries: the start check (resultsStart) holds
+// the profile DISPATCH_RESULTS_TOKEN on a broker with no result entries of its own as on one with
+// them, since any broker with an airlock port serves every result grant of the database it shares.
+// Profiles whose results profile binds a `*.` name, two hosts, its one host with no private
+// destination or with a destination of another host only, profiles with a second proxy block of
+// kind dpop whose host no destination names, a lone `*.` dpop block, and profiles whose file's
+// kind, `*.` or exact, binds the results host (the refusal names that host), are each
+// refused, naming BROKER_PROFILES_FILE and the setting or the profile at fault, and never
 // BROKER_EXCHANGE_RESULT_WORKFLOWS, which is unset. Control: the profile with the destination of
 // its host passes, and so do profiles with no dpop block and no destination.
 func TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries(t *testing.T) {
-	secretOnly := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "GH_TOKEN", Hosts: []string{"api.github.com"}}}}
-	if err := AirlockResultRules(secretOnly, PrivateUpstream{}, false); err != nil {
+	secretOnly := proxyrules.Rules{Kinds: []proxyrules.Kind{{Name: "github", Hosts: []string{"api.github.com"}, Ways: []string{proxyrules.WaySwap}}}}
+	if err := resultsStart(secretOnly, nil, false); err != nil {
 		t.Fatalf("control: profiles with no dpop block and no destination: %v", err)
 	}
-	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{resultsEntry(), secretOnly.Secrets[0]}}, resultsDestination(), false); err != nil {
+	if err := resultsStart(proxyrules.Rules{Kinds: secretOnly.Kinds, Names: []proxyrules.Binding{resultsEntry()}}, []PrivateUpstream{resultsDestination()}, false); err != nil {
 		t.Fatalf("control: the profile with the destination of its host: %v", err)
 	}
 	elsewhere := resultsDestination()
 	elsewhere.Host = "elsewhere.example"
 	for _, c := range []struct {
-		name, says  string
-		destination PrivateUpstream
-		spoil       func(*proxyrules.Rules)
+		name, says   string
+		destinations []PrivateUpstream
+		spoil        func(*proxyrules.Rules)
 	}{
-		{"a wildcard profile", "one exact host", resultsDestination(), func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"*.example"} }},
-		{"a two-host profile", "one exact host", resultsDestination(), func(r *proxyrules.Rules) {
-			r.Secrets[0].Hosts = []string{"dispatch.example", "evil.example"}
+		{"a wildcard profile", "one exact host", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) { r.Names[0].Inline.Hosts = []string{"*.example"} }},
+		{"a two-host profile", "one exact host", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) {
+			r.Names[0].Inline.Hosts = []string{"dispatch.example", "evil.example"}
 		}},
-		{"no private destination", "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", PrivateUpstream{}, func(*proxyrules.Rules) {}},
-		{"a destination of another host", "names the host elsewhere.example", elsewhere, func(*proxyrules.Rules) {}},
-		{"a second dpop profile", "OTHER_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
+		{"no private destination", "BROKER_PROXY_PRIVATE_UPSTREAM is unset", nil, func(*proxyrules.Rules) {}},
+		{"a destination of another host", "which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", []PrivateUpstream{elsewhere}, func(*proxyrules.Rules) {}},
+		{"a second dpop profile of a host no destination names", "OTHER_TOKEN of BROKER_PROFILES_FILE is of kind dpop and binds elsewhere.example", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) {
 			other := resultsEntry()
-			other.Name, other.Hosts = "OTHER_TOKEN", []string{"elsewhere.example"}
-			r.Secrets = append(r.Secrets, other)
+			other.Name, other.Inline.Hosts = "OTHER_TOKEN", []string{"elsewhere.example"}
+			r.Names = append(r.Names, other)
 		}},
-		{"a lone dpop profile over the destination", "LONE_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
-			r.Secrets[0].Name, r.Secrets[0].Hosts = "LONE_TOKEN", []string{"*.example"}
+		{"a lone dpop profile over the destination", "LONE_TOKEN of BROKER_PROFILES_FILE is of kind dpop", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) {
+			r.Names[0].Name, r.Names[0].Inline.Hosts = "LONE_TOKEN", []string{"*.example"}
 		}},
-		{"a wildcard secret profile over the destination", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.example", resultsDestination(), func(r *proxyrules.Rules) {
-			r.Secrets = append(r.Secrets, proxyrules.SecretRule{Name: "WILDCARD_TOKEN", Hosts: []string{"*.example"}})
+		{"a wildcard kind over the destination", "the kind wildcard of BROKER_PROFILES_FILE binds dispatch.example", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) {
+			r.Kinds = append(r.Kinds, proxyrules.Kind{Name: "wildcard", Hosts: []string{"*.example"}, Ways: []string{proxyrules.WaySwap}})
 		}},
-		{"an exact secret profile over the destination", "the profile SAME_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.example", resultsDestination(), func(r *proxyrules.Rules) {
-			r.Secrets = append(r.Secrets, proxyrules.SecretRule{Name: "SAME_TOKEN", Hosts: []string{"dispatch.example"}})
+		{"an exact kind over the destination", "the kind same of BROKER_PROFILES_FILE binds dispatch.example", []PrivateUpstream{resultsDestination()}, func(r *proxyrules.Rules) {
+			r.Kinds = append(r.Kinds, proxyrules.Kind{Name: "same", Hosts: []string{"dispatch.example"}, Ways: []string{proxyrules.WaySwap}})
 		}},
 	} {
-		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{resultsEntry()}}
+		rules := proxyrules.Rules{Names: []proxyrules.Binding{resultsEntry()}}
 		c.spoil(&rules)
-		err := AirlockResultRules(rules, c.destination, false)
+		err := resultsStart(rules, c.destinations, false)
 		if err == nil || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: err = %v, want a refusal saying %q", c.name, err, c.says)
 			continue

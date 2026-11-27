@@ -21,6 +21,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
+import { z } from "zod";
 import { linkOmpNatives } from "./omp-natives";
 
 export interface Request {
@@ -70,15 +71,20 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL. The server
- * answers behind Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
+ * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
+ * request up. Returns the recorded requests and the server's base URL. The server answers behind
+ * Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
  * `Idempotency-Key` names that key back, as Dispatch's own answers do: the client takes no 2xx
  * that names no key as its write's answer, so a stand-in of a keyed write (a delivery's accept,
  * a reply) whose answer left it out would never be accepted.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    request: globalThis.Request
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
@@ -93,7 +99,7 @@ export function serveStandin(
       const { body, refusal } = await readStandinBody(request);
       if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request);
     }),
   });
   cleanup.push(async () => {
@@ -285,6 +291,101 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   }
 }
 
+/** One page of JetStream's `$JS.API.STREAM.NAMES` answer, or its error. */
+const StreamNamesPage = z.object({
+  total: z.number().optional(),
+  streams: z.array(z.string()).nullable().optional(),
+  error: z.object({ code: z.number(), description: z.string() }).optional(),
+});
+
+/** JetStream's `$JS.API.STREAM.DELETE.<name>` answer, or its error. */
+const StreamDeleted = z.object({
+  success: z.boolean().optional(),
+  error: z
+    .object({ code: z.number(), err_code: z.number().optional(), description: z.string() })
+    .optional(),
+});
+
+/** JetStream's error code for a stream it does not hold (`JSStreamNotFoundErr`), which its
+ * answer carries with code 404 and "stream not found". */
+const STREAM_NOT_FOUND = 10059;
+
+/** The streams on the server that capture a session's relay subject, by JetStream's own match. */
+async function relayCapturingStreams(connection: RelayConnection): Promise<string[]> {
+  const subject = deliverSubject("*");
+  const names: string[] = [];
+  for (;;) {
+    let reply: { readonly data: Uint8Array };
+    try {
+      reply = await connection.request(
+        "$JS.API.STREAM.NAMES",
+        new TextEncoder().encode(JSON.stringify({ subject, offset: names.length })),
+        { timeout: 5_000 }
+      );
+    } catch (error) {
+      // nats.js names the server's no-responders status "503": a server without JetStream holds
+      // no stream, so none captures the subject.
+      if (names.length === 0 && error instanceof Error && "code" in error && error.code === "503") {
+        return names;
+      }
+      throw new Error(`list the NATS server's streams on ${subject}: ${String(error)}`);
+    }
+    const page = StreamNamesPage.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (page.error !== undefined) {
+      throw new Error(`list the NATS server's streams on ${subject}: ${page.error.description}`);
+    }
+    const streams = page.streams ?? [];
+    names.push(...streams);
+    if (streams.length === 0 || names.length >= (page.total ?? 0)) return names;
+  }
+}
+
+/**
+ * Deletes every JetStream stream on the server `connection` reaches that captures a session's
+ * relay subject (`deliverSubject`), and answers their names. Every case that sends frames with
+ * `sendRelayFrame` calls it once it holds its connection, before its first frame. The
+ * connection's `request` rejects a request nobody answers with an error whose `code` is "503", as
+ * nats.js does: a server without JetStream holds no stream, and nothing is deleted there.
+ *
+ * A stream whose subjects take a relay subject answers each frame itself, with its publish ack
+ * (`{"stream":"ENVOY_NOTIFICATIONS","seq":2}`), beside the session that holds the subject, and a
+ * request takes whichever answer comes first: that ack reads as "a word the relay protocol does
+ * not hold", and a frame to a subject nobody holds is answered where it should meet no responder.
+ * Envoy's own stream never takes one (`DeliverSubjectPrefix`, packages/envoy/internal/bus/stream.go:
+ * a relay frame travels over core NATS). The daemon's Go tests make ENVOY_NOTIFICATIONS on all of
+ * `notifications.>`, and on a server both suites share (LEGION_TEST_NATS_URL in a pod with no
+ * Docker) a stream a Go test leaves there stays for the Bun tests that run next. Deleting it is
+ * what testnats.URL does to every stream on that server for each Go test; this deletes only the
+ * streams that capture a relay subject, and fails naming any it could not.
+ *
+ * Two cases can call it at once (pi-legion's `bun test --parallel` runs files side by side), both
+ * list the same stream, and the one whose delete comes second is answered "stream not found". A
+ * stream that is gone is what that call wanted, so the answer counts as deleted; the list read
+ * again after the deletes is what proves none is left, and it fails naming any stream it finds.
+ */
+export async function deleteRelayCapturingStreams(
+  connection: RelayConnection
+): Promise<readonly string[]> {
+  const found = await relayCapturingStreams(connection);
+  for (const name of found) {
+    const reply = await connection.request(`$JS.API.STREAM.DELETE.${name}`, new Uint8Array(), {
+      timeout: 5_000,
+    });
+    const deleted = StreamDeleted.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (deleted.success === true || deleted.error?.err_code === STREAM_NOT_FOUND) continue;
+    throw new Error(
+      `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
+    );
+  }
+  const left = await relayCapturingStreams(connection);
+  if (left.length > 0) {
+    throw new Error(
+      `the NATS server still holds streams that capture a relay subject: ${left.join(", ")}`
+    );
+  }
+  return found;
+}
+
 /** One provider the stand-in serves and the models it offers under it. Every provider is the same
  * stand-in at the same base URL, so a case that needs two models tells them apart by the `model`
  * of the Messages request it is answering. */
@@ -294,6 +395,9 @@ export interface StandinProvider {
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** The models also take images, which makes snapcompact a compaction method they can run; text
+   * only by default. */
+  readonly images?: boolean;
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -334,7 +438,7 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
+      ...providers.flatMap(({ provider, models, images }) => [
         `  ${provider}:`,
         `    baseUrl: ${base}/anthropic`,
         "    auth: apiKey",
@@ -345,7 +449,7 @@ export async function writeStandinProfile(
           `      - id: ${id}`,
           `        name: Stand-in ${id}`,
           "        reasoning: false",
-          "        input: [text]",
+          `        input: ${images === true ? "[text, image]" : "[text]"}`,
           "        contextWindow: 200000",
           "        maxTokens: 8000",
           "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
@@ -388,6 +492,9 @@ export interface Rpc {
    * exited, so a case that expects it alive races it against its own clock.
    */
   readonly exited: Promise<number>;
+  /** The process id of the omp it started: the one process whose own steps a timer record a
+   *  case hands it through the environment is read for. */
+  readonly pid: number;
 }
 
 /**
@@ -456,6 +563,7 @@ export function spawnRpc(
     },
     closed,
     exited: child.exited,
+    pid: child.pid,
   };
 }
 
@@ -479,15 +587,24 @@ function ompFlags(options: {
   ];
 }
 
+/** The size of each thread pool of a test's omp: the size CI's 4-CPU runners give it. */
+const OMP_POOL_THREADS = "4";
+
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH. */
-function ompEnv(options: { readonly home: string; readonly bin?: string }): {
-  HOME: string;
-  PATH: string;
-} {
+ * on PATH, and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
+ * pool to the machine's CPU count: its natives' Tokio runtime (`TOKIO_WORKER_THREADS`), Rayon's
+ * global pool (`RAYON_NUM_THREADS`), the directory walker's workers (`PI_WALK_WORKERS`) and Bun's
+ * work pool (`UV_THREADPOOL_SIZE`). One omp on a 288-CPU machine held 1,333 threads, so a suite
+ * that runs a few at once passed a 4,096-task limit there at any worker count. With each pool
+ * fixed, the threads a test's omp starts are the same on every machine. */
+function ompEnv(options: { readonly home: string; readonly bin?: string }): Record<string, string> {
   return {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
+    TOKIO_WORKER_THREADS: OMP_POOL_THREADS,
+    RAYON_NUM_THREADS: OMP_POOL_THREADS,
+    PI_WALK_WORKERS: OMP_POOL_THREADS,
+    UV_THREADPOOL_SIZE: OMP_POOL_THREADS,
   };
 }
 
@@ -670,7 +787,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:2111-2145` and `:3538-3548`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -679,7 +796,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3240-3248` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It

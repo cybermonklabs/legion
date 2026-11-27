@@ -14,7 +14,58 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
+
+// statesMoveDecided is the daemon's line of the testing move, written where it writes the
+// tester's notice of a wait or of a move back, and the move to reviewing (workflow's
+// logTestingMove).
+const statesMoveDecided = "workflow: the testing move decided"
+
+// moveLine is the newest line of the testing move of issue whose move is move, read as
+// recordAfterRead reads; a line the daemon's log does not hold by then is UNKNOWN and fails the
+// case at assertion.
+func (r *statesProof) moveLine(issue *statesIssue, move, assertion string) *loggedRecord {
+	r.t.Helper()
+	line := r.recordAfterRead(func(l loggedRecord) bool {
+		return l.Message == statesMoveDecided && l.Attrs["issue"] == issue.key && l.Attrs["move"] == move
+	})
+	if line == nil {
+		r.fail(assertion, "UNKNOWN: the daemon's log holds no %q line of %s with move %s %s after the read, so what the move names cannot be read",
+			statesMoveDecided, issue.key, move, statesRecordWait)
+	}
+	return line
+}
+
+// attrStrings is a list attribute of a line of the daemon's log, as strings; nil where the line has
+// none or the list is empty. The driver keeps a list attribute as the text the log shows
+// (recordingLog's decodeAttr), "[k1 k2]" for the checks k1 and k2, so the list is that text's
+// words between its brackets; a check id holds no blank.
+func attrStrings(value any) []string {
+	text, _ := value.(string)
+	inner, opened := strings.CutPrefix(text, "[")
+	inner, closed := strings.CutSuffix(inner, "]")
+	if !opened || !closed {
+		return nil
+	}
+	return strings.Fields(inner)
+}
+
+// heldStates is what the daemon's store holds of issue's checks at its head (record.Store's
+// HeadStates), read in a transaction of its own.
+func (r *statesProof) heldStates(issue *statesIssue, assertion string) record.HeadStates {
+	r.t.Helper()
+	var held record.HeadStates
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		held, err = r.records.HeadStates(ctx, tx, issue.key, liveRepo, issue.head)
+		return err
+	}); err != nil {
+		r.fail(assertion, "read the states the daemon holds of %s at %s: %v", issue.key, issue.head, err)
+	}
+	return held
+}
 
 // phaseOf is issue's phase as GET /legion/v1/state shows it now. An answer that holds no such issue
 // is UNKNOWN and fails the case at assertion: the daemon's phase of it cannot be read.

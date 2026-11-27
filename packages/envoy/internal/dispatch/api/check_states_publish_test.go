@@ -5,6 +5,10 @@
 // request has left is check_states_former_heads_test.go's. The rig is check_states_test.go's.
 package api
 
+//ci:reads packages/contracts/src/** TestTheStateEventNamesTheCheckTheHeadItsPullRequestTheStateAndTheReason runs `bun -e` in packages/contracts, importing ./src/index.ts to parse a stored check.state_changed payload with CheckStateChangedEventPayloadSchema
+//ci:reads packages/contracts/package.json TestTheStateEventNamesTheCheckTheHeadItsPullRequestTheStateAndTheReason runs bun in packages/contracts, which reads the package's manifest
+//ci:reads packages/contracts/tsconfig.json TestTheStateEventNamesTheCheckTheHeadItsPullRequestTheStateAndTheReason runs bun in packages/contracts, which reads its tsconfig
+
 import (
 	"context"
 	"encoding/json"
@@ -349,7 +353,7 @@ func TestAHeadOfEachRepositoryTakesItsOwnComputedState(t *testing.T) {
 			for _, repo := range order {
 				heads = append(heads, delivery.AttributedHead{Repo: repo, Number: 70, HeadSHA: eachHeadH1, Open: true})
 			}
-			_, subjects := pullRequestBases(heads, nil, true)
+			_, subjects := pullRequestBases(heads, nil, true, true)
 			reads := map[ciHeadKey]*model.CheckCI{
 				{repo: "acme/one", commit: eachHeadH1}: {Repo: "acme/one", Commit: eachHeadH1, State: model.CIStateNoResult, Case: ciCaseNotCompleted},
 				{repo: "acme/two", commit: eachHeadH1}: {Repo: "acme/two", Commit: eachHeadH1, State: model.CIStateUnread, Case: ciCaseUnreadable},

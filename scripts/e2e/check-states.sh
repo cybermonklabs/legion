@@ -34,6 +34,13 @@
 #     phase-finished notice carrying k2, no and fail as its one failing check and the implementer's
 #     task (read from the daemon's store) carrying that notice's reason; on a second issue a pass and
 #     a fail of k1 make the failing check k1 with the reason pass_and_fail;
+#   - ci-failure-tells: the issue's k3 is a check whose ci_check names the CI job acme-unit, and the
+#     run's Dispatch reads CI through a throwaway GitHub App from a stand-in of GitHub on a loopback
+#     host, which answers acme-unit completed, failure at the issue's head. The case publishes the
+#     CI settlement of that head on the run's broker while the issue is in testing; within 10
+#     seconds the daemon queues the implementer one message whose row names the pull request, k3,
+#     the head and the case failure, as its line written from that row says, starts no implementer,
+#     and GET /legion/v1/state shows the issue still in testing;
 #   - completion-before-event: the run's own nats-server stopped with SIGSTOP by the pid this run
 #     started it with, the tester records its passes, writes its test record and completes; for 10
 #     seconds the issue stays in testing, the daemon starts no worker, and the architect is told once,

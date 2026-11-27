@@ -10,7 +10,7 @@ body: |-
     `pull_request_former_heads` keeps each head an open pull request left. Each write of
     `pull_request_heads` that can move a pull request's history appends a record of it, by a
     trigger, in the transaction of the write, whichever build wrote it
-    (`pull_request_former_heads_moves`, migration `20261124122830`, one transaction with the tables
+    (`pull_request_former_heads_moves`, migration `20261126005348`, one transaction with the tables
     and the seed), and the settler applies a pull request's records, under that pull request's lock,
     before it reads its former heads (`pull_request_former_heads_fold`), and each pass applies the
     records no settle reached, so a head is kept whether or not a settle ran while the pull request
@@ -53,7 +53,7 @@ body: |-
     stored anew or a replaced candidate applies nothing and the candidates are read again, with the
     obligation that asked for the read kept; the base revision is the commit the base branch
     was at when the pull request was last read, which every writer of `pull_request_heads` now
-    stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261122071000`,
+    stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261126005346`,
     from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`
     field of the `pull_request` envelope), since a base branch moves with no change of its name;
     a row with none, written before this release or by an envelope without the field, is not read
@@ -63,7 +63,7 @@ body: |-
     it tries each within ceil(n/200) passes that try their whole batch, each stamp acknowledged,
     whatever their reads answer, a row never tried first, and a pass a rate limit stops leaves the
     rows it did not try in their places, so the next pass takes them first
-    (`pull_request_heads.attempted_at`, migration `20261123124956`, which the reconcile stamps
+    (`pull_request_heads.attempted_at`, migration `20261126005347`, which the reconcile stamps
     just before each row's read, and orders its batch by with `checked_at`, so a row whose reads
     fail no longer holds the front of every batch; a stamp whose call times out or loses its
     connection may still commit with no read, at a moment the reconcile never learns, so the bound
@@ -104,7 +104,7 @@ body: |-
     histories applied apart before the rename was known are joined into one
     (`pull_request_former_heads_resolve`); there is no partition by name and no copying of history
     on a rename; the database names a repository by the rename rule every reader of Dispatch holds
-    (`pull_request_canonical_repo`, migration `20261122070959`, as `store.ReadRepoRenames` and
+    (`pull_request_canonical_repo`, migration `20261126005345`, as `store.ReadRepoRenames` and
     `refs.Renames.Canonical` read the pairs: both names of a `repo_projects` row in lower case, a
     row that renames nothing dropped, the greatest new name of one old name, and no pair once
     `repo_projects` is gone), so a name finds the row a writer keyed under the canonical name. The
@@ -127,10 +127,10 @@ body: |-
     the database's: Dispatch's record of each write that opens or closes a row
     (`pull_request_heads_lifecycle`, a new table two triggers append to on each insert, each update
     that closes an open row or opens a closed one, and each re-key of an open row, which no reopen,
-    re-key or delete of the row removes, which migration `20261122070959` seeds, undated, with
+    re-key or delete of the row removes, which migration `20261126005345` seeds, undated, with
     each pull request closed when it runs, by its canonical name's row, so an open pull request
     whose old name's row reads closed from before keeps its results, and which the install alone
-    reads, so migration `20261124122831` drops it, its triggers and its function after the install)
+    reads, so migration `20261126005349` drops it, its triggers and its function after the install)
     shows the period begin at the first close after the last write that opened a row of any name of
     it, or at a later close in it of a row that was open, the latest such, so a second closed row of
     the closed pull request, as the canonical-name writer writes, and a write that leaves a closed
@@ -165,12 +165,12 @@ body: |-
     appending. A former head's rows in `check_states` go once no open pull
     request is or was at it. A check CI proves is read at the former heads after the open heads, in
     a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose
-    read started longest ago first (`check_states.ci_read_at`, migration `20261122042853`); a
+    read started longest ago first (`check_states.ci_read_at`, migration `20261126005343`); a
     former head whose read had not started when that bound ended keeps its published state, with no
     `read_failed`, and the next settle, a second on, reads it first, so each of N former heads is
     read within ceil(N/8) settles however slow GitHub is for the others. A mark whose change came
     after the last read of such a head stays until each former head has been read since that
-    change (`check_states_owed.reads_from`, migration `20261122063706`), and a `test` handoff
+    change (`check_states_owed.reads_from`, migration `20261126005344`), and a `test` handoff
     waits for it as for a due mark, so the handoff records no serial over a state at a former head
     that may be from before the change, a pass of a run that has since failed among them; the
     failure backoff of a `read_failed` state follows once every head has been read, and a mark

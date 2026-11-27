@@ -1094,20 +1094,12 @@
         "since": 98
       },
       {
-        "value": "ci_at_head",
-        "since": 236
-      },
-      {
         "value": "design_gate",
         "since": 98
       },
       {
         "value": "dispatch_blocker",
         "since": 98
-      },
-      {
-        "value": "fix_running",
-        "since": 236
       },
       {
         "value": "label_off",
@@ -1144,20 +1136,38 @@
         "since": 219
       },
       {
-        "value": "ci",
-        "since": 236
-      },
-      {
         "value": "escalated",
         "since": 46
       },
       {
-        "value": "fix",
-        "since": 236
-      },
-      {
         "value": "task-stopped",
         "since": 219
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
       }
     ]
   },
@@ -1996,16 +2006,8 @@
         "since": 219
       },
       {
-        "value": "ci",
-        "since": 236
-      },
-      {
         "value": "escalated",
         "since": 46
-      },
-      {
-        "value": "fix",
-        "since": 236
       },
       {
         "value": "task-stopped",
@@ -2040,6 +2042,28 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
       }
     ]
   }

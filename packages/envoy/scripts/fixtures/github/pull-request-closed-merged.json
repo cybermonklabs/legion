@@ -19,6 +19,7 @@
     },
     "merged": true,
     "merge_commit_sha": "3333333333333333333333333333333333333333",
+    "merged_at": "2026-09-07T03:10:00Z",
     "merged_by": {
       "login": "octocat"
     },

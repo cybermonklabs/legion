@@ -20,6 +20,13 @@
 // the route's `exit` (1). A route with an `exit` and no such status is a porcelain command's own
 // answer, such as `gh pr checks` exiting 8 while a check runs: its output is filtered as any other.
 //
+// A call is read as gh reads it: a `-R`/`--repo <repo>` typed before a `pr` or `run` command (`gh
+// -R o/r pr diff 702`), which gh takes as that command's flag, is moved behind the command's two
+// words (`gh pr diff -R o/r 702`) before any route is tried, and the record's argv holds that order.
+// A route with `clone` answers `gh repo clone <repo> [<dir>] [-- <git flags>]` with a clone of the
+// run's remote ($SKILL_SCENARIO_RUN/remote.git) into <dir> (the repository's name when none is
+// named), as gh runs `git clone` with the git flags, and exits with git's status.
+//
 // Writes a later read sees, as GitHub's next read would:
 //   - a pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH through `gh api`):
 //     every route answering with an object that has a `body`, and that is that pull request's or
@@ -41,8 +48,8 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
 /** rig.sh (and heads-routes.ts, for a heads scenario) writes each route as {match, stdout?,
- * stderr?, exit?, status?, keep?, list?, lookup?, pull?, when?, moves?}. `status` is the HTTP
- * status `-i` prints (200 for a route that exits 0). */
+ * stderr?, exit?, status?, keep?, list?, lookup?, pull?, when?, moves?, clone?}. `status` is the
+ * HTTP status `-i` prints (200 for a route that exits 0). */
 const Route = z.looseObject({
   match: z.string(),
   stdout: z.unknown().optional(),
@@ -55,6 +62,7 @@ const Route = z.looseObject({
   pull: z.number().optional(),
   when: z.string().optional(),
   moves: z.string().optional(),
+  clone: z.literal(true).optional(),
 });
 /** `current` is the pull request a call that names none is about (the workspace's branch); `login`
  * the account the run's token is; `kept` how many reviews and comments the run has written;
@@ -88,7 +96,21 @@ if (!run) {
   console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
   process.exit(2);
 }
-const [as = "gh", ...args] = Bun.argv.slice(2);
+const [as = "gh", ...typed] = Bun.argv.slice(2);
+/** The commands that take a `-R`/`--repo` gh reads before them as their own. */
+const REPO_FLAG_COMMANDS: Record<string, true> = { pr: true, run: true };
+const repoFlag =
+  typed[0] === "-R" || typed[0] === "--repo"
+    ? typed.slice(0, 2)
+    : typed[0]?.startsWith("--repo=")
+      ? typed.slice(0, 1)
+      : [];
+const [group = "", command, ...rest] = typed.slice(repoFlag.length);
+/** The call as gh reads it (the header says how), which every route and reader below takes. */
+const args =
+  as === "gh" && repoFlag.length > 0 && REPO_FLAG_COMMANDS[group] === true && command !== undefined
+    ? [group, command, ...repoFlag, ...rest]
+    : typed;
 const at = new Date().toISOString();
 const fixtures = Fixtures.parse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
 const routes = fixtures.routes;
@@ -181,6 +203,34 @@ if (!route) {
   console.error(line);
   appendFileSync(`${run}/no-route.log`, `${line}\n`);
   exit(NO_ROUTE_EXIT, { no_route: true });
+}
+// `gh repo clone`, as the header says. gh's own flags before `--` (`-u`/`--upstream-remote-name
+// <name>`, `--no-upstream`) concern a fork's upstream, which the world's repository has none of.
+if (route.clone === true) {
+  const dash = args.indexOf("--");
+  const own = dash < 0 ? args.slice(2) : args.slice(2, dash);
+  const named = own.filter(
+    (arg, index) =>
+      !arg.startsWith("-") && !["-u", "--upstream-remote-name"].includes(own[index - 1] ?? "")
+  );
+  const [
+    repository = "",
+    directory = repository
+      .replace(/\.git$/, "")
+      .split("/")
+      .at(-1),
+  ] = named;
+  const cloned = Bun.spawnSync(
+    [
+      "git",
+      "clone",
+      ...(dash < 0 ? [] : args.slice(dash + 1)),
+      `file://${run}/remote.git`,
+      directory ?? "",
+    ],
+    { stdin: "ignore", stdout: "inherit", stderr: "inherit" }
+  );
+  exit(cloned.exitCode ?? 1);
 }
 
 /** The pull request number a call names: `pulls/<n>` or `issues/<n>` in a path, a `gh pr`

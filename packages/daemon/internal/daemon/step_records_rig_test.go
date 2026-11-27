@@ -789,7 +789,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -811,17 +811,45 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 }
 
 // reconnect is the pane's shim connecting to the daemon that runs now with the boot token it has
-// held since its launch, as it does after the daemon restarts.
+// held since its launch, as it does after the daemon restarts. A daemon that acknowledges no hello
+// of it fails the walk with what that daemon made of the claim (refusedHello).
 func (c *stepClaimant) reconnect() {
 	c.r.built.mu.Lock()
 	address := c.r.built.address
 	c.r.built.mu.Unlock()
-	sh := dialShimUntilAcked(c.r.t, address, c.bootToken)
+	sh, err := ackedShim(c.r.t, address, c.bootToken)
+	if err != nil {
+		c.r.t.Fatal(c.refusedHello(err))
+	}
 	c.mu.Lock()
 	c.sh = sh
 	c.mu.Unlock()
 	d := c.r.d
 	sh.serve(func() { c.serve(sh, d) })
+}
+
+// refusedHello says why the daemon that runs now acknowledged no hello of c's pane, naming what it
+// compared: the plugin contract the claim records against its own (api.DaemonAPIVersion), the
+// claim as it holds it now, and the launch of the claim this boot made. A boot relaunches at once a
+// claim of another contract that its store holds out of a turn (supervise's refreshPlugin), and
+// that launch gives the claim a boot token the pane does not hold. The worker stream closes a hello
+// of a token it does not know with no frame, which the shim reads as an EOF, so last, the shim's own
+// refusal, says none of that.
+func (c *stepClaimant) refusedHello(last error) string {
+	c.r.t.Helper()
+	held := c.r.d.claim(c.token)
+	launch := "this boot made no launch of it under another boot token, so the daemon's log says why it refused the pane's (worker-stream: rejected hello)"
+	for _, call := range slices.Backward(c.r.rt.Calls()) {
+		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == c.token {
+			if call.Spec.BootToken != c.bootToken {
+				launch = fmt.Sprintf("this boot launched it again (%s at generation %d) under a boot token of its own, so the pane's is one the daemon no longer knows",
+					call.Method, call.Spec.Generation)
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("the daemon at contract %d acknowledged no hello of %s's pane, whose claim records plugin contract %d: the daemon holds the claim %s at generation %d, and %s; the pane holds boot token %s, and the shim's last refusal was %v",
+		api.DaemonAPIVersion(), c.token, held.PluginContract, held.State, held.Generation, launch, c.bootToken, last)
 }
 
 // serve reads every frame the daemon d sends sh until the connection closes or the test ends it
@@ -980,15 +1008,22 @@ func (c *stepClaimant) ownTurn() {
 	c.waitState(supervise.StateIdle)
 }
 
-// waitState waits for the daemon to hold the claim in state.
+// waitState waits for the daemon to hold the claim in state, both as its machine publishes the
+// claim and as its store holds it. A machine publishes a claim before the write that keeps it
+// (supervise's putClaim and putClaimAndPending), and a restart's stop ends a write still in flight,
+// so a walk that went on at the published state alone could stop the daemon while its store still
+// held the claim as it was: the next boot reads only the store, and relaunches at once a claim of
+// another plugin contract that it reads out of a turn (supervise's refreshPlugin), under a boot
+// token the pane does not hold (refusedHello).
 func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	c.r.t.Helper()
-	var last string
+	var published string
+	var stored supervise.ClaimState
 	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
-		last = c.r.d.claim(c.token).State
-		return last == string(state)
+		published, stored = c.r.d.claim(c.token).State, storedClaimState(c.r.t, c.r.st.Pool(), c.token)
+		return published == string(state) && stored == state
 	}) {
-		c.r.t.Fatalf("%s is %s, want %s", c.token, last, state)
+		c.r.t.Fatalf("%s is %s, and %s in the store, want %s in both", c.token, published, stored, state)
 	}
 }
 

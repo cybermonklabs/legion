@@ -211,6 +211,9 @@ func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepW
 func (d *outboxDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return d.recordErr
 }
+func (d *outboxDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return d.recordErr
+}
 func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return d.recordErr
 }
@@ -219,20 +222,31 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, an upload answers the slug Dispatch files the name under, which for a
-// message's document is its name (record.MessageArtifact), and a read of a plan document at a
-// version finds none, since no executor of the outbox reads one. It also takes every role-holder
-// publication and every write of a step record's commits and keeps none, and answers a read of a
-// CI job with none. Every fake of the client that no test drives through a message's document, a
-// role-holder publication, a record's commits or a fix's job read embeds it.
+// artifacts answers none, a document's reviews none, a version of a document Dispatch's 404, an
+// upload answers the slug Dispatch files the name under, which for a message's document is its
+// name (record.MessageArtifact), a read of a plan document at a version finds none, since no
+// executor of the outbox reads one, and a read of an ask by its id Dispatch's 404, since it keeps
+// no ask either. It also takes every role-holder publication and every write of a step record's
+// commits and keeps none, and answers a read of a CI job with none. Every fake of the client that
+// no test drives through a message's document, an ask's read, a role-holder publication, a
+// record's commits or a fix's job read embeds it.
 type noArtifacts struct{}
 
-func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	return nil, nil
+}
+func (noArtifacts) Reviews(context.Context, string) ([]dispatch.Review, error) { return nil, nil }
+func (noArtifacts) DocumentVersion(context.Context, string, int) (string, error) {
+	return "", &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+}
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
 func (noArtifacts) PlanDocument(context.Context, string, int) (dispatch.DocumentVersion, error) {
 	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+}
+func (noArtifacts) Ask(context.Context, string) (dispatch.Ask, error) {
+	return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 func (noArtifacts) PutStepCommits(context.Context, string, string, dispatch.StepWrite, dispatch.StepCommits) error {
@@ -774,9 +788,10 @@ func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	}
 }
 
-// artifactDispatch is outboxDispatch with the issue's documents: the slugs the artifact read
-// answers (slugsErr in their place when set), each upload it took, and what an upload answers:
-// uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch would.
+// artifactDispatch is outboxDispatch with the issue's documents: the slugs of those the artifact
+// read answers (slugsErr in their place when set), each upload it took, and what an upload
+// answers: uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch
+// would.
 type artifactDispatch struct {
 	*outboxDispatch
 	slugs     []string
@@ -786,8 +801,15 @@ type artifactDispatch struct {
 	filedAs   string
 }
 
-func (d *artifactDispatch) ArtifactSlugs(context.Context, string) ([]string, error) {
-	return d.slugs, d.slugsErr
+func (d *artifactDispatch) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	if d.slugsErr != nil {
+		return nil, d.slugsErr
+	}
+	artifacts := make([]dispatch.Artifact, len(d.slugs))
+	for i, slug := range d.slugs {
+		artifacts[i] = dispatch.Artifact{Slug: slug}
+	}
+	return artifacts, nil
 }
 func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content string) (string, error) {
 	d.uploads = append(d.uploads, record.MessageArtifact{Name: name, Content: content})
@@ -2341,6 +2363,11 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// the issue, and is recorded on its row (workflow's leftItsPhase).
 			const reviewerClaim = "legion-legion-legion-208-reviewer"
 			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Claim: reviewerClaim, Entry: 1, EntryTask: "review this change"})
+			}); err != nil {
+				t.Fatal(err)
+			}
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"
@@ -2580,8 +2607,8 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate failure notices: %v", err)
 	}
-	if fmt.Sprint(notices) != "[held held (controller) worker-died]" {
-		t.Fatalf("failure notices = %v, want held to the issue and the controller and worker-died, each once", notices)
+	if fmt.Sprint(notices) != "[held worker-died]" {
+		t.Fatalf("failure notices = %v, want held and worker-died to the issue, each once, and no copy to the controller (#4065)", notices)
 	}
 }
 

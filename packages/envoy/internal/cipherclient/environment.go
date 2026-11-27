@@ -3,9 +3,15 @@
 package cipherclient
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,31 +27,37 @@ const (
 	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
 	BrokerURLVar = "AGENT_SECRETS_URL"
 	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
-	// github-actions. Unset, this machine has none and nothing trades — which is every
-	// deployment that has not turned the exchange on, and is why no program here fails for want
-	// of it.
+	// github-actions. Unset, this machine has none and nothing trades — which is every deployment
+	// that has not turned the exchange on, and is why no program here fails for want of it.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
 	// IdentityKubernetes reads and IdentityPool federates, and the file an
 	// IdentityGitHubActions job with no runner endpoint reads its run's token from.
 	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
-	// MachineAudienceVar is the audience of this machine's Google identity token: the metadata
-	// server mints it for that audience, and a pool mint names it as the minted token's own. A
-	// GitHub Actions job's runner mints its OIDC token for it too.
+	// MachineAudienceVar is the audience of this machine's identity token: the metadata server
+	// mints it for that audience, a pool mint names it as the minted token's own, and GitHub
+	// mints a GitHub Actions run's for it.
 	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
 	// PoolAudienceVar is the workload identity pool provider an external credential is traded
 	// at, the full //iam.googleapis.com/projects/… resource name.
 	PoolAudienceVar = "AGENT_SECRETS_POOL_AUDIENCE"
 	// PoolAccountVar is the managed identity generateIdToken is called on.
 	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
-	// ActionsTokenURLVar is the runner's OIDC token endpoint, which GitHub sets in a job granted
-	// id-token: write, and ActionsTokenVar the bearer that endpoint takes, which GitHub sets
-	// beside it. IdentityGitHubActions asks the one with the other.
-	ActionsTokenURLVar = "ACTIONS_ID_TOKEN_REQUEST_URL"
-	ActionsTokenVar    = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+	// ActionsIDTokenRequestURLVar and ActionsIDTokenRequestTokenVar are where a GitHub Actions
+	// job asks GitHub for its OIDC token, and the bearer it asks with, which GitHub sets in a job
+	// that holds `id-token: write` (IdentityGitHubActions).
+	ActionsIDTokenRequestURLVar   = "ACTIONS_ID_TOKEN_REQUEST_URL"
+	ActionsIDTokenRequestTokenVar = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 	// SessionVar is the session a trade writes under for a caller that acts as no session of
 	// its own, which a daemon, a command and this helper are (TradeSession).
 	SessionVar = "AGENT_SECRETS_SESSION"
+	// KeyDirVar is the directory a session's agent-secrets identity lives in: in a pod, the
+	// role's own, where `agent-secrets keygen` wrote RoleKeyFile before the role's first hello.
+	// MachineKey reads it beside IdentityVar.
+	KeyDirVar = "AGENT_SECRETS_KEY_DIR"
+	// RoleKeyFile is the key in KeyDirVar's directory: the PKCS#8 P-256 PEM `agent-secrets
+	// keygen` writes and `enroll --pod` keeps.
+	RoleKeyFile = "key.pem"
 	// ProjectsVar is the projects a session works on, project keys separated by white space,
 	// which a trade that acts as its person may ask the broker to name in its token
 	// (TradeProjects). The broker names only projects the person may see, and a restricted
@@ -187,15 +199,18 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
 	case IdentityGitHubActions:
-		requestURL := strings.TrimSpace(getenv(ActionsTokenURLVar))
+		// A job's run names its token by the runner's endpoint (ActionsIDTokenRequestURLVar); with no
+		// endpoint, a file that holds the run's token (MachineTokenFileVar) stands in for it. The
+		// refusal of neither names the endpoint's variable alone, as every refusal of a kind's first
+		// variable does (testdata/machine-identities.json).
+		requestURL := strings.TrimSpace(getenv(ActionsIDTokenRequestURLVar))
 		if requestURL == "" {
 			if path := strings.TrimSpace(getenv(MachineTokenFileVar)); path != "" {
 				return NewWorkflowRunTokenFile(path), nil
 			}
-			return nil, fmt.Errorf("%s is required by %s=%s: the runner sets it in a job granted id-token: write. Else %s names a file that holds the run's token",
-				ActionsTokenURLVar, IdentityVar, kind, MachineTokenFileVar)
+			return nil, fmt.Errorf("%s is required by %s=%s", ActionsIDTokenRequestURLVar, IdentityVar, kind)
 		}
-		requestToken, err := required(getenv, ActionsTokenVar, kind)
+		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
 		if err != nil {
 			return nil, err
 		}
@@ -203,16 +218,47 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &GitHubActionsIdentity{
-			RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient(),
-		}, nil
+		return &GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient()}, nil
 	case identityDeviceLogin:
-		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s or %s",
-			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool)
+		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s, %s or %s",
+			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	default:
 		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
 			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	}
+}
+
+// MachineKey is the key a machine trade proves. A role in a pod, where IdentityVar is
+// IdentityKubernetes and KeyDirVar names the role's own agent-secrets directory, proves the key
+// in that directory's RoleKeyFile, because the broker refuses a pod session's exchange whose DPoP
+// key is not the one its registration names, which is that key. A file there that cannot be read,
+// or is no PKCS#8 P-256 key, is an error naming its path: a fresh key in its place would be
+// refused at the broker in words that name neither the file nor the key. Every other machine
+// proves a fresh key of this process's own, as each always has. The TypeScript client keeps the
+// same rule (packages/cipher-client/src/environment.ts, brokerTokenClient).
+func MachineKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	dir := strings.TrimSpace(getenv(KeyDirVar))
+	if strings.TrimSpace(getenv(IdentityVar)) != IdentityKubernetes || dir == "" {
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
+	path := filepath.Join(dir, RoleKeyFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read this role's agent-secrets key: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("this role's agent-secrets key %s holds no PEM block", path)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("read this role's agent-secrets key %s: %w", path, err)
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("this role's agent-secrets key %s is not a P-256 key, and a DPoP proof is signed ES256", path)
+	}
+	return key, nil
 }
 
 // SignInFlow is the device-flow client a person signs in with, or nil when the deployment

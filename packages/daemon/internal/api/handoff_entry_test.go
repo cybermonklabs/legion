@@ -737,8 +737,12 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		task := ""
+		if entry > 0 {
+			task = "work this phase entry"
+		}
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
-			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
+			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryTask: task, EntryMovedBack: movedBack})
 	}); err != nil {
 		t.Fatalf("put the %s's row of %s on entry %d: %v", role, issue, entry, err)
 	}

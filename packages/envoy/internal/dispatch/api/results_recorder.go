@@ -209,7 +209,7 @@ func (s *server) refuseResultOfAnotherRecorder(ctx context.Context, q queryer, c
 // never makes a pass stand for another's (403 BRANCH_NOT_THE_ISSUES). The branch is quoted, so
 // a name holding a line break prints on one line.
 func refuseBranchOfAnotherIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) error {
-	belongs, err := delivery.BranchOfIssue(ctx, q, issueKey, branch)
+	belongs, err := delivery.BranchOfIssue(ctx, q, issueKey, branch, delivery.HeadAnswers{})
 	if err != nil {
 		return err
 	}

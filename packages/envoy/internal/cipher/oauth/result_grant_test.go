@@ -24,9 +24,10 @@ const (
 	// resultsHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds:
 	// Dispatch's public host, the one a grant's writes go to through the proxy.
 	resultsHost = "dispatch.test"
-	// airlockProxyURL and airlockCA are what the broker hands a run to reach its proxy by.
+	// airlockProxyURL and airlockRoots are what the broker hands a run to reach its proxy by: its
+	// URL, and the roots its certificates chain to, which the settings answer at each trade.
 	airlockProxyURL = "https://airlock.test:13381"
-	airlockCA       = "-----BEGIN CERTIFICATE-----\nnot-a-real-certificate\n-----END CERTIFICATE-----\n"
+	airlockRoots    = "-----BEGIN CERTIFICATE-----\nnot-a-real-certificate\n-----END CERTIFICATE-----\n"
 	// resultsEntryDigest stands for the broker's results entry (AirlockSettings.EntryDigest): 64
 	// hex digits, as cmd/cipherd computes one and as result_grants holds every one.
 	resultsEntryDigest = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -37,14 +38,19 @@ const (
 func newResultsFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixture {
 	t.Helper()
 	return newExchangeFixture(t, func(c *oauth.Config) {
-		c.Airlock = &oauth.AirlockSettings{ProxyURL: airlockProxyURL, CACertificatePEM: airlockCA, ResultHosts: []string{resultsHost}, EntryDigest: resultsEntryDigest}
+		c.Airlock = &oauth.AirlockSettings{
+			ProxyURL:    airlockProxyURL,
+			ProxyRoots:  func() string { return airlockRoots },
+			ResultHosts: []string{resultsHost},
+			EntryDigest: resultsEntryDigest,
+		}
 		adjust(c)
 	})
 }
 
 // askingForThePlaceholder is form asking for the airlock placeholder as its requested type.
 func askingForThePlaceholder(form url.Values) url.Values {
-	form.Set("requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 	return form
 }
 
@@ -87,9 +93,9 @@ func sha256Hex(text string) string {
 
 // grantOf is the live grant the placeholder held opens, read as every broker pod reads it: by
 // the placeholder's hash, through the store.
-func (f *exchangeFixture) grantOf(t *testing.T, held string) oauthstore.ResultGrant {
+func (f *exchangeFixture) grantOf(t *testing.T, held string) oauthstore.MintedGrant {
 	t.Helper()
-	grant, err := oauthstore.New(f.pool).ResultGrantByPlaceholder(context.Background(), placeholder.Hash(held))
+	grant, err := oauthstore.New(f.pool).ResultGrants().MintedByPlaceholder(context.Background(), placeholder.Hash(held))
 	if err != nil {
 		t.Fatalf("the grant of the placeholder: %v", err)
 	}
@@ -113,11 +119,11 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 	held, _ := body["access_token"].(string)
-	if !strings.HasPrefix(held, placeholder.ResultPrefix) {
-		t.Fatalf("access_token = %q, want a placeholder starting %s", held, placeholder.ResultPrefix)
+	if prefix := placeholder.MintedPrefix(oauthwire.AirlockResultsWord); !strings.HasPrefix(held, prefix) {
+		t.Fatalf("access_token = %q, want a placeholder starting %s", held, prefix)
 	}
-	if body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder || body["token_type"] != "N_A" {
-		t.Errorf("issued_token_type = %v and token_type = %v, want %s and N_A", body["issued_token_type"], body["token_type"], oauthwire.TokenTypeAirlockPlaceholder)
+	if body["issued_token_type"] != oauthwire.TokenTypeProxyPlaceholder || body["token_type"] != "N_A" {
+		t.Errorf("issued_token_type = %v and token_type = %v, want %s and N_A", body["issued_token_type"], body["token_type"], oauthwire.TokenTypeProxyPlaceholder)
 	}
 	if expires, _ := body["expires_in"].(float64); expires < 890 || expires > 900 {
 		t.Errorf("expires_in = %v, want about 900", body["expires_in"])
@@ -126,11 +132,11 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 	if !strings.HasPrefix(grantID, "result:") {
 		t.Errorf("grant_id = %q, want result:<id>", grantID)
 	}
-	airlock, _ := body[oauthwire.ExtraAirlock].(map[string]any)
+	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	names, _ := airlock["names"].(map[string]any)
 	entry, _ := names[oauthwire.AirlockResultsName].(map[string]any)
 	slots, _ := entry["slots"].(map[string]any)
-	if airlock["proxy_url"] != airlockProxyURL || airlock["ca_certificate"] != airlockCA || airlock["proxy_password"] != held ||
+	if airlock["proxy_url"] != airlockProxyURL || airlock["ca_certificate"] != airlockRoots || airlock["proxy_password"] != held ||
 		entry["value"] != held || slots["value"] != held || !reflect.DeepEqual(entry["hosts"], []any{resultsHost}) || len(names) != 1 {
 		t.Errorf("airlock = %v, want the proxy, its CA, the placeholder as the password and as %s's value and slot, bound to [%s]", airlock, oauthwire.AirlockResultsName, resultsHost)
 	}
@@ -181,7 +187,7 @@ func TestAResultEntrysRunIsMintedNoAccessToken(t *testing.T) {
 	key := newKey(t)
 	before := f.count(t, "oauth_access_tokens")
 	status, body := f.exchange(t, f.resultRunForm(t, "7"), key)
-	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.TokenTypeAirlockPlaceholder)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.TokenTypeProxyPlaceholder)
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Errorf("access tokens after the refused exchange = %d, want the %d there were", after, before)
 	}
@@ -191,8 +197,10 @@ func TestAResultEntrysRunIsMintedNoAccessToken(t *testing.T) {
 }
 
 // TestOnlyAResultEntryIsGrantedAPlaceholder: a run of an exact workflow entry and a pod of a
-// named entry, each asking for the placeholder, are refused invalid_request, and no grant is
-// written.
+// named entry, each asking for the proxy placeholder, are refused invalid_request, and no result
+// grant is written. The placeholder type is one for every capability the broker mints, so the
+// refusal is the approve capability's (grantApprove): beside a result entry's run, only a person's
+// sign-in is traded for one.
 func TestOnlyAResultEntryIsGrantedAPlaceholder(t *testing.T) {
 	f := newResultsFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -203,8 +211,8 @@ func TestOnlyAResultEntryIsGrantedAPlaceholder(t *testing.T) {
 	} {
 		status, body := f.exchange(t, askingForThePlaceholder(form), key)
 		if description, _ := body["error_description"].(string); status != http.StatusBadRequest || body["error"] != "invalid_request" ||
-			body["access_token"] != nil || !strings.Contains(description, "Only a result entry's run") {
-			t.Errorf("%s asking for the placeholder = %d %v, want 400 invalid_request saying only a result entry's run is granted one", name, status, body)
+			body["access_token"] != nil || !strings.Contains(description, "Only a person's sign-in is traded for the approve capability's proxy placeholder") {
+			t.Errorf("%s asking for the placeholder = %d %v, want 400 invalid_request saying only a person's sign-in is traded for one beside a result entry's run", name, status, body)
 		}
 	}
 	if grants := f.resultGrants(t); len(grants) != 0 {
@@ -286,7 +294,7 @@ func TestTheGrantLifetimeIsTheShorterOfFifteenMinutesAndTheAccessLifetime(t *tes
 }
 
 // TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange: the results token a broker pod mints
-// for a result grant (MintResultToken) is live, bound to the pod's key and to the grant's run, and
+// for a result grant (MintGrantToken) is live, bound to the pod's key and to the grant's run, and
 // ends with the grant; presented as the subject token of another exchange it mints nothing, since
 // the library refuses a client's own token, so the capability the airlock holds never turns into
 // a token of another session. The access lifetime is an hour, longer than the grant's fifteen
@@ -296,9 +304,9 @@ func TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 	run := newKey(t)
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), run))
 	pod := newKey(t)
-	minted, err := f.provider.MintResultToken(context.Background(), grant, thumbprint(t, pod))
+	minted, err := f.provider.MintGrantToken(context.Background(), grant, thumbprint(t, pod))
 	if err != nil {
-		t.Fatalf("MintResultToken: %v", err)
+		t.Fatalf("MintGrantToken: %v", err)
 	}
 	answer := f.introspected(t, minted)
 	if !answer.Active || answer.Scope != oauthwire.ScopeResults || answer.Thumbprint != thumbprint(t, pod) || answer.Session != grant.Session ||

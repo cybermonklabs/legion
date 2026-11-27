@@ -404,34 +404,31 @@ func (r *stepRecordsRig) rollBackFixBesideSteps() {
 }
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
-// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
-// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
+// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty.
+// the plan's tables and columns, so the roll forward creates them again empty. The way back of the
+// givers of a plan version, in the header of the migration whose name ends
+// _plan_earlier_givers.up.sql, runs too, here before it (the guide allows either order), so the
+// roll forward adds its column again to the table it creates.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
 	if err != nil {
 		r.t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var block []string
-	for _, migration := range all {
-		if !strings.HasSuffix(migration.Name, inFlightPlanMigration) {
-			continue
+	for _, suffix := range []string{"_plan_earlier_givers.up.sql", inFlightPlanMigration} {
+		at := slices.IndexFunc(all, func(migration migrations.Migration) bool { return strings.HasSuffix(migration.Name, suffix) })
+		if at < 0 {
+			r.t.Fatalf("no embedded migration ends %s", suffix)
 		}
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			statement, comment := strings.CutPrefix(line, "--")
-			if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
-				continue
-			}
-			if block = append(block, statement); statement == "commit;" {
-				r.exec(strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project))
-				return
-			}
+		block, err := migrations.WayBack(all[at].Version)
+		if err != nil {
+			r.t.Fatalf("read the way back of %s: %v", all[at].Name, err)
 		}
+		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
 	}
-	r.t.Fatalf("no embedded migration ending %s carries a way back from begin; to commit;, read %d lines of it", inFlightPlanMigration, len(block))
 }
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns

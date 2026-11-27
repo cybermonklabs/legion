@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ import (
 // accepting - is told once, and a phase no worker holds names none. Nothing else happens: no phase
 // moves, no architect hears checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -68,9 +71,9 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 			}
 			want := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+				want = append(want, settledHead("head", "build=succeeded", "unit=failed").to(roleToken(t, role)))
 			}
-			assertRoleMessages(t, pool, "LEGION-208", want)
+			assertToldRows(t, pool, "LEGION-208", want)
 		})
 	}
 }
@@ -82,6 +85,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 // each change - and moves nothing any of the three times, where the rule this replaced sent the
 // work back on the first red and could not take it back.
 func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -93,24 +97,24 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 	messages := []record.RoleMessage{}
 	for i, step := range []struct {
 		fact intake.Fact
-		// settled is the line the roles are told, "" when the settlement says nothing new.
-		settled string
+		// settled is what the roles are told, the zero value when the settlement says nothing new.
+		settled ciTold
 	}{
-		{settledAt("head", 1, "unit"), "CI settled at head: \"build\" succeeded, \"unit\" failed"},
-		{settledAt("head", 2, "unit"), ""},
-		{settledAt("head", 3), "CI settled at head: \"build\" succeeded, \"unit\" succeeded"},
-		{settledAt("head", 4, "unit"), "CI settled at head: \"build\" succeeded, \"unit\" failed"},
+		{settledAt("head", 1, "unit"), settledHead("head", "build=succeeded", "unit=failed")},
+		{settledAt("head", 2, "unit"), ciTold{}},
+		{settledAt("head", 3), settledHead("head", "build=succeeded", "unit=succeeded")},
+		{settledAt("head", 4, "unit"), settledHead("head", "build=succeeded", "unit=failed")},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
-		if step.settled != "" {
+		if step.settled.head != "" {
 			for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-				messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(step.settled)})
+				messages = append(messages, step.settled.to(roleToken(t, role)))
 			}
 		}
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
 		}
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 	}
 }
 
@@ -120,6 +124,7 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 // use up the run's bound of steps: the redelivery of a settlement whose check name holds a NUL is
 // the same settlement as the step the store kept of it, and adds none.
 func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -169,6 +174,7 @@ func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *t
 // failed; the message names it beside the checks that ran, and the worker holding the phase
 // decides what it means.
 func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -189,15 +195,16 @@ func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
 	assertOutboxCount(t, pool, "supervise", 0)
 	want := []record.RoleMessage{}
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-		want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"pr-checks-result\" failed, \"unit\" succeeded")})
+		want = append(want, settledHead("head", "pr-checks-result=failed", "unit=succeeded").to(roleToken(t, role)))
 	}
-	assertRoleMessages(t, pool, "LEGION-208", want)
+	assertToldRows(t, pool, "LEGION-208", want)
 }
 
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of the
 // tree is suspended there, so a settlement that reaches a lingering tree's issue is recorded and
 // nobody is told - a message to a role nobody holds reaches nobody, and the tree is done.
 func TestASettlementOfALingeringTreeTellsNobody(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -220,6 +227,7 @@ func TestASettlementOfALingeringTreeTellsNobody(t *testing.T) {
 // stands for no head, so there is nothing to tell: the daemon knows nothing of the head's CI, and
 // a message naming another commit's checks would be read as the head's.
 func TestASettlementThatStandsForNoHeadTellsNobody(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -240,6 +248,7 @@ func TestASettlementThatStandsForNoHeadTellsNobody(t *testing.T) {
 // on standing for the code head it names. The rule this replaced sent the work back from whatever
 // phase the move completed in.
 func TestAPushThatCompletesItsMoveMovesNothingAndTellsNobody(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// head is the pull request's recorded head before the fact, and fact the one that
@@ -287,6 +296,7 @@ func TestAPushThatCompletesItsMoveMovesNothingAndTellsNobody(t *testing.T) {
 // nothing of the reopened head's CI until one arrives. The first settlement after the reopen is
 // therefore told, even when it says what the settlement before the close said.
 func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -305,10 +315,10 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 	want := []record.RoleMessage{}
 	for range 2 {
 		for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-			want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+			want = append(want, settledHead("head", "build=succeeded", "unit=failed").to(roleToken(t, role)))
 		}
 	}
-	assertRoleMessages(t, pool, "LEGION-208", want)
+	assertToldRows(t, pool, "LEGION-208", want)
 }
 
 // The implementer pushes and completes without waiting for CI, so a check can settle on its head
@@ -317,6 +327,7 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 // what it said when it arrived. The rule this replaced read the settlement here and sent the work
 // straight back to implementing rather than through a tester round.
 func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		failing []string
@@ -362,6 +373,7 @@ func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
 // a CONFLICTING answer is a confirmed conflict, and every case's base requires a check that is not
 // green on the head, so that conflict needs the merge in every phase that acts on one.
 func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		at         phase.Phase
@@ -409,6 +421,7 @@ func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 // merge forward it asked for that head (record.PullRequest.MergeForward), so the same read again
 // asks nothing and tells nobody a second time.
 func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", record.PullRequest{ConflictingHead: conflictHead})
 	applyRefusingNothing(t, pool, readsAfter(0), conflictingRead(&record.BaseRules{}))
 	if due := conflictConfirms(t, pool); len(due) != 0 {
@@ -451,10 +464,65 @@ func pushedFromTo(from, to, pusher string) intake.Fact {
 	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: from, After: to, Pusher: pusher}
 }
 
-// toldBody is the whole message a role is sent for one settlement of pull request 42 (workflow's
-// tellChecks): what the settlement says, that nothing moved on it, and no question to its reader.
-func toldBody(settled string) string {
-	return "Pull request #42: " + settled + ". Nothing moved on it."
+// ciTold is what one settlement of pull request 42 tells each role, as the role message carries it
+// beside its sentence (workflow's settlementMessage): the head the settlement stands for, each
+// check as name=word in name order, and each commit status as context=state in context order. The
+// zero value is a settlement that tells nobody.
+type ciTold struct {
+	head     string
+	checks   []string
+	statuses []string
+}
+
+// settledHead is a settlement of head that tells checks, each name=word, and no commit status.
+func settledHead(head string, checks ...string) ciTold {
+	return ciTold{head: head, checks: checks}
+}
+
+// withStatuses is told naming statuses too, each context=state.
+func (c ciTold) withStatuses(statuses ...string) ciTold {
+	c.statuses = statuses
+	return c
+}
+
+// to is the role message the settlement sends token, with its body left out: no test reads a word
+// of it.
+func (c ciTold) to(token string) record.RoleMessage {
+	return record.RoleMessage{Role: token, PullRequest: 42, Head: c.head, Checks: c.checks, Statuses: c.statuses}
+}
+
+// assertToldRows holds the role messages the outbox has queued for issue, in order, to want: each
+// row decoded whole as its role receives it and compared with its body left out, after a check
+// that it has one.
+func assertToldRows(t *testing.T, pool *pgxpool.Pool, issue string, want []record.RoleMessage) {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), "select payload from outbox where kind = 'role_message' and issue = $1 order by id", issue)
+	if err != nil {
+		t.Fatalf("read the role messages: %v", err)
+	}
+	defer rows.Close()
+	var got []record.RoleMessage
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan a role message: %v", err)
+		}
+		var message record.RoleMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode the role message %s: %v", payload, err)
+		}
+		if message.Body == "" {
+			t.Fatalf("the role message %s has no body", payload)
+		}
+		message.Body = ""
+		got = append(got, message)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the role messages: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
+		t.Fatalf("the role messages %+v, want %+v", got, want)
+	}
 }
 
 // roleToken is the Envoy role token of LEGION-208's role, the address a role message carries.
@@ -490,7 +558,7 @@ func assertRoleMessages(t *testing.T, pool *pgxpool.Pool, issue string, want []r
 		t.Fatalf("%d role messages %+v, want %d %+v", len(got), got, len(want), want)
 	}
 	for i, message := range got {
-		if message != want[i] {
+		if message.Role != want[i].Role || message.Body != want[i].Body {
 			t.Fatalf("role message %d is %+v, want %+v", i+1, message, want[i])
 		}
 	}
@@ -593,6 +661,7 @@ func recordedPR(t *testing.T, pool *pgxpool.Pool, issue string) record.PullReque
 // A hold keeps the phase's work where it stood, so its worker still needs the CI result.
 // In merging that worker is the merger, and the implementer is not a substitute for it.
 func TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from  phase.Phase
 		roles []claim.Role
@@ -612,9 +681,9 @@ func TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase(t *testing.T) {
 
 			want := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+				want = append(want, settledHead("head", "build=succeeded", "unit=failed").to(roleToken(t, role)))
 			}
-			assertRoleMessages(t, pool, "LEGION-208", want)
+			assertToldRows(t, pool, "LEGION-208", want)
 			if issue := storedIssue(t, pool, "LEGION-208"); issue.Phase != phase.Held || issue.Hold == nil || issue.Hold.From != tc.from {
 				t.Fatalf("the settlement changed the held issue to %+v", issue)
 			}

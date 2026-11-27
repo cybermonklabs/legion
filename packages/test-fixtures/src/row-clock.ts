@@ -100,11 +100,7 @@ export function spawnWithin(
   } = {}
 ) {
   const running = clock;
-  const left =
-    running === undefined
-      ? Number.POSITIVE_INFINITY
-      : Math.floor(running.limitMs - (performance.now() - running.started) - ROW_MARGIN_MS);
-  const timeout = Math.max(1, Math.min(wait.boundMs, left));
+  const timeout = timeoutOf(wait, running);
   const result = Bun.spawnSync(command, {
     ...options,
     stdout: "pipe",
@@ -112,13 +108,66 @@ export function spawnWithin(
     ...(Number.isFinite(timeout) ? { timeout, killSignal: "SIGKILL" as const } : {}),
   });
   if (!result.exitedDueToTimeout) return result;
+  throw timedOut(wait, running, timeout);
+}
+
+/**
+ * spawnWithin's form that holds no event loop: `Bun.spawn(command, options)`, awaited, killed at
+ * the same bound on the same clock, answering the process's exit code and its stderr. The clock
+ * is read when it is called, so a caller on onHookClock's clock keeps that clock for the whole
+ * wait.
+ */
+export async function spawnWithinAsync(
+  wait: Wait,
+  command: string[],
+  options: {
+    readonly cwd?: string;
+    readonly env?: Record<string, string | undefined>;
+  } = {}
+): Promise<{ exitCode: number | null; stderr: string }> {
+  const running = clock;
+  const timeout = timeoutOf(wait, running);
+  const child = Bun.spawn(command, {
+    ...options,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "pipe",
+  });
+  let killed = false;
+  const timer = Number.isFinite(timeout)
+    ? setTimeout(() => {
+        killed = true;
+        child.kill("SIGKILL");
+      }, timeout)
+    : undefined;
+  try {
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    if (!killed) return { exitCode, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
+  throw timedOut(wait, running, timeout);
+}
+
+/** How long a process for `wait` may run on the clock `running`: its bound, or less where the
+ * clock leaves it less, and at least 1 ms. */
+function timeoutOf(wait: Wait, running: typeof clock): number {
+  const left =
+    running === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.floor(running.limitMs - (performance.now() - running.started) - ROW_MARGIN_MS);
+  return Math.max(1, Math.min(wait.boundMs, left));
+}
+
+/** The failure of a process for `wait` that was killed at `timeout` on the clock `running`. */
+function timedOut(wait: Wait, running: typeof clock, timeout: number): Error {
   if (running === undefined || timeout === wait.boundMs) {
-    throw new Error(`${wait.part} did not end within its bound of ${wait.boundMs} ms`);
+    return new Error(`${wait.part} did not end within its bound of ${wait.boundMs} ms`);
   }
   // A part with a bound of its own that the clock cut short names the limit that left it out; a
   // part with none had only the clock, so the clock alone is what it did not end within.
   const why = Number.isFinite(wait.boundMs)
     ? ": the limit counts less than the parts the row waits for"
     : "";
-  throw new Error(`${wait.part} did not end within the ${timeout} ms ${running.of} left it${why}`);
+  return new Error(`${wait.part} did not end within the ${timeout} ms ${running.of} left it${why}`);
 }

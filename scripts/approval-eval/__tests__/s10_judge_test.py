@@ -252,11 +252,24 @@ def listing_answer(lines):
 REQUIRED = "required"
 
 
+def probe_of(model, calls=None):
+    """A preflight's probe of `model` as the sandbox records it: `calls` of its calls, by default
+    each of the probe's calls answered 200 with a message."""
+    answered = {"status": 200, "type": "message", "model": str(model).partition("/")[2]}
+    return {"model": model, "calls": [dict(answered) for _ in range(SANDBOX.PROBE_CALLS)] if calls is None else calls}
+
+
+# The gateway's answer to a call it refuses, as the sandbox records it.
+REFUSED = {"status": 401, "type": "error", "model": None, "error": "authentication_error",
+           "message": "litellm.AuthenticationError: Anthropic workload identity federation failed."}
+
+
 class FakeSandbox:
     """The sandbox, as a fake: `judge_tools`, `answers`, `model_changes`, `served`, `resolved`,
     `top_calls`, `record`, `manifests`, `drop`, `failure`, `listing`, `copied`, `files` and `key`
     change what it gives back or holds; `preflight_record` and `preflight_failure` change its
-    preflight. `copied` names a path outside the work tree that holds the first bundle's bytes.
+    preflight, whose probe answers each call of the model it is given unless `preflight_record`
+    names another. `copied` names a path outside the work tree that holds the first bundle's bytes.
     Its layout puts the emptyDir at the test's own root, where the driver's bundles and calls are.
     Each run records where the driver's `WORK/bundles` led while it ran; `during` is called in the
     middle of a run."""
@@ -321,12 +334,14 @@ class FakeSandbox:
                   "keyFound": []}
         return record, listing
 
-    def preflight(self):
+    def preflight(self, model):
         self.preflights.append({"link": os.readlink(os.path.join(self.test.work, "bundles"))
-                                if os.path.islink(os.path.join(self.test.work, "bundles")) else None})
+                                if os.path.islink(os.path.join(self.test.work, "bundles")) else None,
+                                "model": model, "runs": len(self.runs)})
         if self.preflight_failure is not None:
             return JOB.SandboxRun(job="fake-preflight", failure=self.preflight_failure)
         record, listing = self.checked_record({}, True)
+        record["probe"] = probe_of(model)
         record.update(self.preflight_record)
         return JOB.SandboxRun(job=f"fake-preflight-{len(self.preflights)}",
                               files={"listing.txt": ("\n".join(listing) + "\n").encode(),
@@ -1207,6 +1222,16 @@ class StageTest(Base):
             "a file outside": {"preflight_listing": [f"f 644 1 {self.root}/stray"]},
             "an evidence bundle": {"preflight_listing": ["f 644 1 /tmp/judge-1.md"]},
             "a record of a request's Job": {"preflight_record": {"preflight": False}},
+            "no probe": {"preflight_record": {"probe": None}},
+            "a probe of another model": {"preflight_record": {"probe": probe_of("anthropic/claude-opus-4-8")}},
+            "a call the gateway refused": {"preflight_record": {"probe": probe_of(self.pins.model, [REFUSED])}},
+            "a call with no answer": {"preflight_record": {"probe": probe_of(self.pins.model, [
+                {"status": None, "type": None, "model": None, "error": "TimeoutError", "message": None}])}},
+            "a 200 with no message": {"preflight_record": {"probe": probe_of(self.pins.model, [
+                {"status": 200, "type": "error", "model": None, "error": "overloaded_error", "message": "busy"}])}},
+            "fewer calls than the probe makes": {"preflight_record": {"probe": probe_of(
+                self.pins.model, probe_of(self.pins.model)["calls"][1:])}},
+            "a record that held the gateway key": {"preflight_record": {"keyFound": ["record.json"]}},
         }
         for name, changes in cases.items():
             with self.subTest(name=name):
@@ -1225,15 +1250,43 @@ class StageTest(Base):
                 self.assertIn(f"{STORE.PREFLIGHT_DIRECTORY}/1/record.json", self.record()["files"])
                 shutil.rmtree(self.out)
 
-    def test_the_preflight_runs_once_a_run_and_only_before_a_request_starts(self):
+    def test_a_preflight_runs_before_each_request_starts_and_probes_the_judges_model(self):
         sandbox = FakeSandbox(self)
         self.assertEqual(self.judge(self.two_requests(), sandbox), 0, self.stderr)
-        self.assertEqual(len(sandbox.preflights), 1)
+        # One before each request's Job, each naming point 2's model for its probe.
+        self.assertEqual([(one["model"], one["runs"]) for one in sandbox.preflights],
+                         [(self.pins.model, 0), (self.pins.model, 1)])
+        self.assertIn(f"{STORE.PREFLIGHT_DIRECTORY}/1/record.json", self.record()["files"])
         shutil.rmtree(self.out)
         only_deviations = self.admitted(deviation_line("b1", "no title"))
         sandbox = FakeSandbox(self)
         self.assertEqual(self.judge(only_deviations, sandbox), 0, self.stderr)
         self.assertEqual(sandbox.preflights, [])
+
+    def test_a_gateway_that_refuses_before_a_later_request_stops_the_run_and_spends_no_request(self):
+        class RefusedSecond(FakeSandbox):
+            def preflight(self, model):
+                if self.preflights:
+                    self.preflight_record = {"probe": probe_of(model, [REFUSED])}
+                return super().preflight(model)
+
+        admission = self.two_requests()
+        sandbox = RefusedSecond(self)
+        self.assertEqual(self.judge(admission, sandbox), 2)
+        self.assertEqual([run["ask"] for run in sandbox.runs], [ask_id("a1")])
+        self.assertTrue(self.has_outcome("a1"))
+        record = self.record()
+        reason = record["stops"][0]["reason"]
+        # The stop names the gateway's answer, so its reader sees why no request started.
+        for said in ("preflight", "401", "authentication_error", "workload identity federation failed"):
+            self.assertIn(said, reason)
+        # The second request did not start: no file of it is kept, so a later run judges it.
+        self.assertFalse([name for name in record["files"] if name.startswith(f"requests/{ask_id('a2')}/")])
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+        self.assertEqual([run["ask"] for run in resumed.runs], [ask_id("a2")])
+        self.assertEqual([(line["outcome"], line["verdict"]) for line in self.outcomes()],
+                         [("verdict", "approve"), ("verdict", "approve")])
 
     def test_a_kubernetes_api_failure_stops_the_run_with_no_outcome_and_is_resumed(self):
         admission = self.two_requests()
@@ -1763,6 +1816,186 @@ class SandboxTest(unittest.TestCase):
                 listener.close()
         self.assertTrue(seen and all(b"Metadata-Flavor: Google" in one for one in seen))
 
+    def gateway(self, answers):
+        """A stand-in gateway on this host, and the requests it took: each connection answered in
+        turn by `answers`, each a status and a body (bytes as they are, anything else as JSON), the
+        last one again once they run out."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.addCleanup(listener.close)
+        taken = []
+
+        def loop():
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                with connection:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = connection.recv(65536)
+                        if not chunk:
+                            break
+                        data += chunk
+                    head, _, body = data.partition(b"\r\n\r\n")
+                    length = int(re.search(rb"(?i)content-length: *(\d+)", head).group(1))
+                    while len(body) < length:
+                        body += connection.recv(65536)
+                    taken.append((head.decode("latin-1"), json.loads(body)))
+                    status, answer = answers[min(len(taken), len(answers)) - 1]
+                    text = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+                    connection.sendall(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: "
+                                       f"{len(text)}\r\nConnection: close\r\n\r\n".encode() + text)
+
+        threading.Thread(target=loop, daemon=True).start()
+        return f"http://127.0.0.1:{listener.getsockname()[1]}/v1/messages", taken
+
+    def test_the_probe_calls_the_judges_model_by_its_name_with_the_key_and_asks_one_token(self):
+        model = "anthropic/claude-opus-5-5"
+        url, taken = self.gateway([(200, {"type": "message", "model": "claude-opus-5-5",
+                                          "content": [{"type": "text", "text": "ready"}]})])
+        probe = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)
+        sessions = [call.pop("session") for call in probe["calls"]]
+        self.assertEqual(probe, {"model": model, "calls": [{"status": 200, "type": "message", "model": "claude-opus-5-5"}]
+                                 * SANDBOX.PROBE_CALLS})
+        self.assertIsNone(SANDBOX.probe_refusal(probe, model))
+        self.assertEqual(len(taken), SANDBOX.PROBE_CALLS)
+        # Each call is a session of its own, named where the gateway reads omp's session id, so the
+        # gateway pins each call to an organization by its id, not every call by their shared text.
+        self.assertEqual(len(set(sessions)), SANDBOX.PROBE_CALLS)
+        for (head, body), session in zip(taken, sessions):
+            self.assertTrue(head.startswith("POST /v1/messages HTTP/1.1"))
+            self.assertIn(f"x-api-key: {KEY.decode()}", head)
+            self.assertEqual(body, {"model": "claude-opus-5-5", "max_tokens": 1,
+                                    "metadata": {"user_id": f"user_s10_account_preflight_session_{session}"},
+                                    "messages": [{"role": "user", "content": SANDBOX.PROBE_PROMPT}]})
+
+    def test_the_probe_ends_at_the_first_call_not_answered_and_its_record_holds_no_key(self):
+        model = "anthropic/claude-opus-5-5"
+        message = {"type": "message", "model": "claude-opus-5-5"}
+        # The key straddles the width the record keeps, so a message cut before the key is replaced
+        # would keep its first bytes.
+        said = "y" * (SANDBOX.PROBE_MESSAGE_WIDTH - 5) + KEY.decode() + " and more"
+        refused = {"type": "error", "error": {"type": "authentication_error", "message": said}}
+        url, taken = self.gateway([(200, message), (200, message), (401, refused), (200, message)])
+        probe = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)
+        self.assertEqual(len(taken), 3)
+        self.assertEqual([call["status"] for call in probe["calls"]], [200, 200, 401])
+        last = probe["calls"][-1]
+        self.assertEqual((last["type"], last["error"]), ("error", "authentication_error"))
+        self.assertEqual(last["message"], ("y" * (SANDBOX.PROBE_MESSAGE_WIDTH - 5) + SANDBOX.KEY_REDACTION.decode())
+                         [:SANDBOX.PROBE_MESSAGE_WIDTH])
+        self.assertNotIn(KEY.decode()[:5], json.dumps(probe))
+        refusal = SANDBOX.probe_refusal(probe, model)
+        for part in ("call 3", "401", "authentication_error"):
+            self.assertIn(part, refusal)
+        # A body that is no JSON object, or no JSON at all, is kept as text, its start only.
+        for body in ("x" * 1000, b"<html>" + b"bad gateway " * 100 + b"</html>"):
+            with self.subTest(body=body[:8]):
+                url, _ = self.gateway([(502, body)])
+                [bad] = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)["calls"]
+                self.assertEqual((bad["status"], bad["error"], len(bad["message"])),
+                                 (502, "no message", SANDBOX.PROBE_MESSAGE_WIDTH))
+
+    def test_a_gateway_that_takes_no_connection_is_one_call_with_no_status(self):
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        self.addCleanup(closed.close)
+        url = f"http://127.0.0.1:{closed.getsockname()[1]}/v1/messages"
+        probe = SANDBOX.probe_gateway("anthropic/claude-opus-5-5", KEY, url=url, timeout=5)
+        [call] = probe["calls"]
+        self.assertEqual({key: value for key, value in call.items() if key != "session"},
+                         {"status": None, "type": None, "model": None, "error": "ConnectionRefusedError", "message": None})
+        self.assertIn("answered None", SANDBOX.probe_refusal(probe, "anthropic/claude-opus-5-5"))
+
+    def test_a_gateway_that_takes_the_call_and_never_answers_is_one_call_with_no_status(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.addCleanup(listener.close)
+        held = []
+
+        def hold():
+            try:
+                held.append(listener.accept()[0])
+            except OSError:
+                return
+
+        threading.Thread(target=hold, daemon=True).start()
+        self.addCleanup(lambda: [one.close() for one in held])
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/messages"
+        probe = SANDBOX.probe_gateway("anthropic/claude-opus-5-5", KEY, url=url, timeout=0.5)
+        [call] = probe["calls"]
+        self.assertEqual((call["status"], call["error"]), (None, "TimeoutError"))
+
+    def test_the_probe_must_name_the_judges_model_and_make_every_call_each_answered(self):
+        model = "anthropic/claude-opus-5-5"
+        self.assertIsNone(SANDBOX.probe_refusal(probe_of(model), model))
+        answered = probe_of(model)["calls"]
+        # The model under its full name passes, as `s10_transcripts.model_problems` takes a judge's.
+        self.assertIsNone(SANDBOX.probe_refusal(probe_of(model, [dict(one, model=model) for one in answered]), model))
+        cases = {"no probe": (None, "no probe"),
+                 "another model": (probe_of("anthropic/claude-opus-4-8"), "no probe"),
+                 "calls that are no list": ({"model": model, "calls": None}, "no probe"),
+                 "one call fewer": (probe_of(model, answered[1:]), f"made {SANDBOX.PROBE_CALLS - 1} calls"),
+                 "a refused call": (probe_of(model, answered[:4] + [REFUSED]), "call 5"),
+                 "a 200 that is no message": (probe_of(model, [{"status": 200, "type": "error"}]),
+                                              "answered 200 with no message"),
+                 "a message another model served": (probe_of(model, answered[:2] + [dict(answered[2], model="claude-sonnet-5")]
+                                                             + answered[3:]), "call 3"),
+                 "a message that names no model": (probe_of(model, [dict(one, model=None) for one in answered]), "None"),
+                 "a model that is an object": (probe_of(model, [dict(one, model={"id": "claude-opus-5-5"}) for one in answered]),
+                                               "call 1"),
+                 "a model that is a list": (probe_of(model, [dict(one, model=["claude-opus-5-5"]) for one in answered]),
+                                            "call 1"),
+                 "a call that is no object": (probe_of(model, answered[:9] + ["ok"]), "call 10")}
+        for name, (probe, reason) in cases.items():
+            with self.subTest(name=name):
+                self.assertIn(reason, SANDBOX.probe_refusal(probe, model))
+
+    def test_the_preflight_probes_the_gateway_only_once_every_check_has_passed(self):
+        model = "anthropic/claude-opus-5-5"
+        for refused in ("the variable GITHUB_TOKEN names a credential", None):
+            printed = []
+            with self.subTest(refused=refused), \
+                    mock.patch.dict(os.environ, {SANDBOX.MODE_VARIABLE: "preflight", SANDBOX.PROBE_MODEL_VARIABLE: model}), \
+                    mock.patch.object(SANDBOX, "checked", return_value=([], refused)), \
+                    mock.patch.object(SANDBOX, "layout_of", return_value=LAYOUT), \
+                    mock.patch.object(SANDBOX, "gateway_key", return_value=KEY), \
+                    mock.patch.object(SANDBOX, "probe_gateway", return_value=probe_of(model)) as probe, \
+                    mock.patch.object(SANDBOX, "print_result", side_effect=printed.append):
+                SANDBOX.main()
+                record = json.loads(printed[0]["record.json"])
+                if refused:
+                    probe.assert_not_called()
+                    self.assertNotIn("probe", record)
+                else:
+                    probe.assert_called_once_with(model, KEY)
+                    self.assertEqual(record["probe"], probe_of(model))
+                self.assertNotIn("omp", record)
+
+    def test_a_record_field_holding_the_key_is_replaced_in_the_printed_result_and_named(self):
+        # The gateway's error type echoes the key: the record that reaches the pod's log holds none
+        # of it, and names itself among the files that held it, so the driver refuses the preflight.
+        model = "anthropic/claude-opus-5-5"
+        echoed = {"type": "error", "error": {"type": "authentication_error " + KEY.decode(), "message": "refused"}}
+        url, _ = self.gateway([(401, echoed)])
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {SANDBOX.MODE_VARIABLE: "preflight", SANDBOX.PROBE_MODEL_VARIABLE: model}), \
+                mock.patch.object(SANDBOX, "checked", return_value=([], None)), \
+                mock.patch.object(SANDBOX, "layout_of", return_value=LAYOUT), \
+                mock.patch.object(SANDBOX, "gateway_key", return_value=KEY), \
+                mock.patch.object(SANDBOX, "GATEWAY_URL", url), \
+                contextlib.redirect_stdout(printed):
+            SANDBOX.main()
+        files = JOB.result_of(printed.getvalue())
+        self.assertNotIn(KEY, b"".join(files.values()))
+        record = json.loads(files["record.json"])
+        self.assertEqual(record["keyFound"], ["record.json"])
+        self.assertEqual(record["probe"]["calls"][0]["error"], "authentication_error " + SANDBOX.KEY_REDACTION.decode())
+
     def test_the_gateway_key_is_redacted_from_every_file(self):
         files = {"a": b"x " + KEY + b" y " + KEY, "b": b"nothing"}
         redacted, held = SANDBOX.redact_key(files, KEY)
@@ -1968,6 +2201,29 @@ class JobSpecTest(unittest.TestCase):
             self.assertEqual(volumes["route"]["configMap"]["name"], "s10-judge-route")
             self.assertNotIn("route-map", json.dumps(spec))
 
+    def test_a_judge_runs_at_its_drivers_priority_class(self):
+        # A pod that names no class can run at priority 0, where a pod above it may preempt a judge
+        # mid-run: the Job names the driver's own class, whichever it is, and none where the driver
+        # names none.
+        for name in ("agent-session-priority", "another-priority"):
+            pod = own_pod()
+            pod["spec"]["priorityClassName"] = name
+            spec = JOB.job_spec("s10-judge-1", pod, IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+            self.assertEqual(spec["spec"]["template"]["spec"]["priorityClassName"], name)
+        spec = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+        self.assertNotIn("priorityClassName", spec["spec"]["template"]["spec"])
+
+    def test_a_runs_deadline_counts_from_its_pods_start_and_the_job_waits_for_a_node_too(self):
+        # A Job's deadline also counts the time its pod waits for a node; a pod's counts from its
+        # start there. So the run's deadline is the pod's, and the Job's is PLACEMENT_LIMIT and
+        # MARGIN longer, so a pod the driver keeps after the limit still has its whole deadline.
+        request = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+        preflight = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ,
+                                 JOB.PREFLIGHT_DEADLINE)
+        for spec, deadline in ((request, SANDBOX.OMP_TIMEOUT + 900), (preflight, JOB.PREFLIGHT_DEADLINE)):
+            self.assertEqual(spec["spec"]["template"]["spec"]["activeDeadlineSeconds"], deadline)
+            self.assertEqual(spec["spec"]["activeDeadlineSeconds"], deadline + JOB.PLACEMENT_LIMIT + JOB.MARGIN)
+
     def test_a_pod_whose_gateway_key_is_not_one_item_is_refused(self):
         pod = own_pod()
         pod["spec"]["volumes"][3]["secret"]["items"].append({"key": "OTHER", "path": "other"})
@@ -2093,7 +2349,52 @@ class KubeRunnerTest(unittest.TestCase):
                               "get pods": [(0, json.dumps({"items": []}))]})
         self.assertEqual(runner.run("a1", {}).failure, "the Job ran 0 pods")
 
-    def test_the_preflight_sends_no_file_and_has_a_short_deadline(self):
+    def waiting_pod(self, started):
+        status = {"phase": "Pending"} if not started else {"phase": "Running", "startTime": "2026-11-23T17:00:00Z"}
+        return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": status}]})
+
+    def clocked(self, runner, *times):
+        # The driver reads its clock once at the create and once at each poll the Job is not done;
+        # a read past `times` fails the test rather than letting the loop run on.
+        readings = iter(times)
+        runner.clock = lambda: next(readings)
+        return runner
+
+    def test_a_job_whose_pod_has_not_started_once_the_limit_passed_stops_the_run_and_is_deleted(self):
+        # A pod the cluster cannot place, or one a quota refused, waits as long as the cluster
+        # lacks room: at the first poll at or past PLACEMENT_LIMIT the run stops, as on an API
+        # failure, so no later request meets the same cluster with a Job of its own.
+        limit = JOB.PLACEMENT_LIMIT
+        for name, pods in {"a pod not placed": self.waiting_pod(False), "no pod": json.dumps({"items": []})}.items():
+            with self.subTest(name=name):
+                runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))],
+                                                   "get pods": [(0, pods)]}), 100, 100 + limit - 1, 100 + limit)
+                with self.assertRaisesRegex(JOB.KubeUnavailable, f"no pod of Job s10-judge-\\S+ had started at a poll {limit} s"):
+                    runner.run("a1", {})
+                self.assertEqual(runner.calls, ["create", "get job", "get pods", "get job", "get pods", "delete"])
+        runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))],
+                                           "get pods": [(1, "connection refused")]}), 100, 100)
+        with self.assertRaisesRegex(JOB.KubeUnavailable, "kubectl get failed 3 times"):
+            runner.run("a1", {})
+        self.assertEqual(runner.calls[-1], "delete")
+
+    def test_a_pod_seen_started_runs_to_its_end_even_past_the_limit_and_is_not_read_again(self):
+        # The pod starts between the last poll before the limit and the first after it: the
+        # driver keeps it, since the Job's MARGIN leaves it its whole deadline.
+        limit = JOB.PLACEMENT_LIMIT
+        runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))] * 3
+                                           + [(0, json.dumps({"status": {"succeeded": 1}}))],
+                                           "get pods": [(0, self.waiting_pod(False)), (0, self.waiting_pod(True)),
+                                                        (0, self.pods())],
+                                           "logs": [(0, self.log({"record.json": b"{}"}))]}),
+                              100, 100 + limit - 1, 100 + limit + 60, 100 + limit + 120)
+        run = runner.run("a1", {})
+        self.assertIsNone(run.failure)
+        self.assertEqual(run.files, {"record.json": b"{}"})
+        self.assertEqual(runner.calls, ["create", "get job", "get pods", "get job", "get pods", "get job", "get job",
+                                        "get pods", "logs", "delete"])
+
+    def test_the_preflight_sends_no_file_names_the_model_it_probes_and_has_a_short_deadline(self):
         created = []
         runner = self.runner({"get job": [(0, json.dumps({"status": {"succeeded": 1}}))],
                               "get pods": [(0, self.pods())], "logs": [(0, self.log({}))]})
@@ -2105,12 +2406,15 @@ class KubeRunnerTest(unittest.TestCase):
             return original(arguments, stdin)
 
         runner.invoke = invoke
-        self.assertIsNone(runner.preflight().failure)
+        self.assertIsNone(runner.preflight("anthropic/claude-opus-5-5").failure)
         [spec] = created
-        self.assertEqual(spec["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
+        self.assertEqual(spec["spec"]["template"]["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
+        self.assertEqual(spec["spec"]["activeDeadlineSeconds"],
+                         JOB.PREFLIGHT_DEADLINE + JOB.PLACEMENT_LIMIT + JOB.MARGIN)
         env = {one["name"]: one["value"] for one in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         self.assertEqual(SANDBOX.payload_of(env), {})
         self.assertEqual(env[SANDBOX.MODE_VARIABLE], "preflight")
+        self.assertEqual(env[SANDBOX.PROBE_MODEL_VARIABLE], "anthropic/claude-opus-5-5")
 
     def test_a_requests_job_names_its_mode(self):
         created = []

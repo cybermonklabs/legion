@@ -65,6 +65,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,11 +148,24 @@ The released server records a result against a check.
 :::
 `
 
+// statesVerificationCI is the Verification document of ci-failure-tells: k1 and k2 as
+// statesVerification has them, and k3, a `before_merge` check whose ci_check names the CI job
+// acme-unit, so Dispatch takes its state from that job's run at the head (statesCIJob).
+const statesVerificationCI = statesVerification + `
+:::check{#k3 when="before_merge" ci_check="acme-unit" negative_control="A build whose unit tests fail."}
+The unit tests pass at the head.
+:::
+`
+
+// statesCIJob is the CI job k3 of ci-failure-tells names, as the stand-in of GitHub that the run's
+// Dispatch reads answers its run at that issue's head: completed, failure.
+const statesCIJob = "acme-unit"
+
 // statesCaseOrder is every case, in the order a run makes them. completion-before-event is last,
 // since it stops the broker every other case's events cross.
 var statesCaseOrder = []string{
 	"one-record", "daemon-records-nothing", "dispatch-tells", "pass-goes-to-review", "no-check",
-	"fail-sends-back", "completion-before-event",
+	"fail-sends-back", "ci-failure-tells", "completion-before-event",
 }
 
 // statesCaseIssues is the issues each case drives, by the title each is filed under, and whether
@@ -173,6 +187,7 @@ var statesCaseIssues = map[string][]statesIssueSpec{
 		{title: "A fail of k2 is named in the implementer's task", beforeMerge: true},
 		{title: "A pass and a fail of k1 are named in the implementer's task", beforeMerge: true},
 	},
+	"ci-failure-tells":        {{title: "A failed CI job of k3 reaches the implementer alone", beforeMerge: true, ciJob: true}},
 	"completion-before-event": {{title: "The completion arrives before Dispatch's events", beforeMerge: true}},
 }
 
@@ -180,6 +195,8 @@ var statesCaseIssues = map[string][]statesIssueSpec{
 type statesIssueSpec struct {
 	title       string
 	beforeMerge bool
+	// ciJob is whether the issue's document is statesVerificationCI, whose k3 a CI job runs.
+	ciJob bool
 }
 
 // statesIssue is one issue of the run: its key as Dispatch filed it, its title, its pull request's
@@ -229,6 +246,9 @@ type statesProof struct {
 	blind   []string
 	// stopped is the pid the case completion-before-event stopped, 0 while none is stopped.
 	stopped int
+	// ciFailedHead is the head at which the stand-in of GitHub the run's Dispatch reads answers
+	// statesCIJob completed, failure: ci-failure-tells's issue's, set once it is filed; "" before.
+	ciFailedHead atomic.Pointer[string]
 }
 
 // TestCheckStatesLive makes each chosen case, in statesCaseOrder. Its name is short on purpose: the
@@ -244,6 +264,7 @@ func TestCheckStatesLive(t *testing.T) {
 		"pass-goes-to-review":     r.passGoesToReview,
 		"no-check":                r.noCheck,
 		"fail-sends-back":         r.failSendsBack,
+		"ci-failure-tells":        r.ciFailureTells,
 		"completion-before-event": r.completionBeforeEvent,
 	}
 	for _, name := range r.cases {
@@ -325,7 +346,13 @@ func newStatesProof(t *testing.T) *statesProof {
 	r.note("Oh My Pi %s at %s; cases %s", strings.TrimSpace(string(version)), omp, strings.Join(cases, ", "))
 
 	r.root = proofCheckoutRoot(t)
-	r.dispatch = startStatesDispatch(t, r.root, os.Getenv(liveNATSURLEnv))
+	// Only ci-failure-tells reads CI, so only a run that makes it gives Dispatch a GitHub App and
+	// the stand-in of GitHub it calls (dispatchGitHub); every other case reads no CI run.
+	var dispatchEnv []string
+	if slices.Contains(cases, "ci-failure-tells") {
+		dispatchEnv = r.dispatchGitHub()
+	}
+	r.dispatch = startStatesDispatch(t, r.root, os.Getenv(liveNATSURLEnv), dispatchEnv)
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -368,14 +395,15 @@ func newStatesProof(t *testing.T) *statesProof {
 
 // startStatesDispatch starts the run's Dispatch server from root's packages/envoy on a database of
 // its own, as startHandoffDispatch does, with its events published on natsURL, the run's broker,
-// where the daemon consumes them. Dispatch's own log goes beside the daemon's in the evidence
-// directory when the script names one.
-func startStatesDispatch(t *testing.T, root, natsURL string) *handoffDispatch {
+// where the daemon consumes them, and env's settings of its own (a GitHub App, where a case reads
+// CI). Dispatch's own log goes beside the daemon's in the evidence directory when the script
+// names one.
+func startStatesDispatch(t *testing.T, root, natsURL string, env []string) *handoffDispatch {
 	t.Helper()
 	if natsURL == "" {
 		t.Fatalf("%s names no broker for Dispatch to publish its events on", liveNATSURLEnv)
 	}
-	options := scratchDispatchOptions{root: root, natsURL: natsURL}
+	options := scratchDispatchOptions{root: root, natsURL: natsURL, env: env}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
 		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
@@ -414,10 +442,17 @@ func (r *statesProof) setUpDispatch() {
 			if spec.beforeMerge {
 				content, document = statesVerification, "a Verification document of two before_merge checks, k1 and k2"
 			}
+			if spec.ciJob {
+				content, document = statesVerificationCI, "a Verification document of k1, k2 and k3, whose ci_check names "+statesCIJob
+			}
 			r.dispatch.user(http.MethodPost, "/api/v1/issues/"+created.Key+"/artifacts", map[string]any{"name": "verification.md", "content": content}, http.StatusCreated, nil)
 			base++
 			issue := &statesIssue{key: created.Key, title: spec.title, head: headCommit(created.Key, "test"), number: int(base)}
 			r.issues[name] = append(r.issues[name], issue)
+			if spec.ciJob {
+				head := issue.head
+				r.ciFailedHead.Store(&head)
+			}
 			r.note("%s filed %s %q with %s; its pull request #%d is open at %s", name, issue.key, issue.title, document, issue.number, issue.head)
 		}
 	}

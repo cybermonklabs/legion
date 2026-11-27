@@ -127,8 +127,12 @@ func (e *Engine) endFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wa
 	place := record.TaskPlace{Kind: record.PlaceStep, Position: fix.Place}
 	if role, typ, ok := stepOfWalk(w, place); ok && recordsSteps(issue) {
 		at := place.StepPlace(w.Task)
+		drawn, err := e.variantOf(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
 		if _, err := e.endRun(ctx, tx, issue.Key, at, end, func(start record.StepStart) record.StepRecord {
-			return stepWrite(issue, at, role, typ, start.Agent, start.Starts)
+			return stepWrite(issue, drawn, at, role, typ, start.Agent, start.Starts)
 		}); err != nil {
 			return err
 		}
@@ -288,7 +292,7 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return false, nil
 	}
 	if trigger == TriggerReviewRejected || (returns && step.typ == plan.TypeReview) {
-		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
+		if err := e.recordRound(ctx, tx, issue, w.Task, pr, nil); err != nil {
 			return false, err
 		}
 	}
@@ -315,8 +319,12 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 			return false, err
 		}
 	}
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
 	if _, err := e.endRun(ctx, tx, issue.Key, step.place, end, func(start record.StepStart) record.StepRecord {
-		return stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+		return stepWrite(issue, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	}); err != nil {
 		return false, err
 	}
@@ -496,6 +504,9 @@ func (e *Engine) moveFromHold(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	issue = *current
+	// The phase the start below moves the issue from: held, where the hold is put back, as a
+	// release of a hold that raises an entry writes it (record.PhaseRow.EntryFrom).
+	from := issue.Phase
 	if fixOrCIHold(issue) {
 		issue.Phase, issue.Hold = record.StandsAt(issue), nil
 		if err := e.WriteIssue(ctx, tx, issue); err != nil {
@@ -505,14 +516,14 @@ func (e *Engine) moveFromHold(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if target != issue.Phase {
 		return e.transition(ctx, tx, issue, TriggerBackward, target, handoff, pr, moveWhy{Reason: reason})
 	}
-	if err := e.recordPass(ctx, tx, issue, w.Task, rerunFrom, target, pr); err != nil {
+	if err := e.recordPass(ctx, tx, issue, w.Task, rerunFrom, target, pr, false); err != nil {
 		return err
 	}
 	role := RoleFor(target)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
-	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string { return task(issue, at, handoff, pr, reason) }, true); err != nil {
+	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string { return task(issue, at, handoff, pr, reason) }, from, true); err != nil {
 		return err
 	}
 	return e.queueMovedNews(ctx, tx, issue)

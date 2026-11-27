@@ -2,8 +2,8 @@
 
 // Package dpopproof signs RFC 9449 DPoP proofs. It is the one signer that the broker's Go client
 // (internal/cipherclient) and the broker's airlock proxy (internal/cipher/proxy) share, so a proof
-// the proxy makes for a CI run's result write is made as a client makes its own. It sits outside
-// internal/cipher because both sides call it.
+// the proxy makes for a minted capability's request is made as a client makes its own. It sits
+// outside internal/cipher because both sides call it.
 package dpopproof
 
 import (

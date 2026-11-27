@@ -56,6 +56,13 @@
       "conclusion": "failure",
       "log": "lint\tRun bunx biome ci .\tpackages/greet/greet.ts format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\t  × File content differs from formatting output\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\t    2 2 │   export function greet(name: string): string {\nlint\tRun bunx biome ci .\t    3   │ - → return `Hello, ${name}!`\nlint\tRun bunx biome ci .\t      3 │ + → return `Hello, ${name}!`;\nlint\tRun bunx biome ci .\t    4 4 │   }\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\tChecked 4 files in 3ms. No fixes applied.\nlint\tRun bunx biome ci .\tFound 1 error.\nlint\tRun bunx biome ci .\t##[error]Process completed with exit code 1.\n",
       "rerun": { "checkRun": 9322, "conclusion": "failure" }
+    },
+    "ci-late": {
+      "name": "usage-test",
+      "checkRun": 9301,
+      "run": 44,
+      "suite": 44,
+      "status": "in_progress"
     }
   }
 }

@@ -79,18 +79,27 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 		}
 		checks[index].Results = results
 	}
-	headCI, headAlone, err := s.deriveCIResults(ctx, issueKey, checks, former)
+	// The reader learns the heads GitHub names before any check CI proves is derived
+	// (deriveCIResults). A derived result is read at the heads of the issue's pull requests, and a
+	// head this read's read-through learns may be one of them: derived first, a first read would
+	// answer that Dispatch holds no head while it names the head it learned as another check's
+	// basis. A derived result is at one of those heads, which the learned heads already hold, so it
+	// leaves nothing to learn. Every head GitHub has to be asked for is learned before the first
+	// check is answered, and where the learn stored or learned any head every check's bases are read
+	// again, so each check of the answer is answered on the heads as they stand after this read's
+	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
+	// (comparisonReader.learn). The reader holds the read's memo of merge times too
+	// (comparisonReader.fills), so the CI read of each check and the comparison after it learn each
+	// merge time once (fillMergeTimes). The former heads are the reader's before it learns, since
+	// headBases adds them to the issue's heads.
+	reader := newComparisonReader(ctx, s, at)
+	reader.former = map[string][]delivery.AttributedHead{issueKey: former}
+	reader.learn(ctx, checks)
+	headCI, headAlone, err := s.deriveCIResults(ctx, reader, issueKey, checks, former)
 	if err != nil {
 		return issueCheckResults{}, false, err
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.headCI = headCI
-	reader.headAlone = headAlone
-	reader.former = map[string][]delivery.AttributedHead{issueKey: former}
-	reader.learn(ctx, checks)
+	reader.headCI, reader.headAlone = headCI, headAlone
 	for index := range checks {
 		reader.answer(ctx, &checks[index])
 	}

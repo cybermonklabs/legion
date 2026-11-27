@@ -46,6 +46,7 @@ func drainingHelper(t *testing.T, drains int32) (string, *atomic.Int32) {
 // TestRegisterRetriesADrainingHelper: a helper that answers DRAINING is about to be restarted, so
 // register retries it and registers with the restarted helper rather than giving up at once.
 func TestRegisterRetriesADrainingHelper(t *testing.T) {
+	t.Parallel()
 	sock, calls := drainingHelper(t, 2)
 	resp, err := registerWithPatience(sock, helper.Request{WaitSeconds: 5}, 0)
 	if err != nil || !resp.OK || resp.State != "enrolled" || calls.Load() != 3 {
@@ -54,14 +55,21 @@ func TestRegisterRetriesADrainingHelper(t *testing.T) {
 }
 
 // TestRegisterStopsRetryingDrainingAtItsWait: a helper still draining when the --wait budget runs
-// out is reported, as before, with its DRAINING code, and not before that budget has passed. The
-// upper bound only catches a retry that never stops.
+// out is reported, as before, with its DRAINING code, and not before that budget has passed. A
+// retry that never stops, or one that stops late, is caught by timing the call against its 1 s
+// wait, allowing for the time this process was held up (endsByItsDeadline).
 func TestRegisterStopsRetryingDrainingAtItsWait(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	sock, _ := drainingHelper(t, 1<<30)
+	done := make(chan error, 1)
+	meter := startStallMeter(t)
 	start := time.Now()
-	_, err := registerWithPatience(sock, helper.Request{WaitSeconds: 1}, 0)
-	elapsed := time.Since(start)
-	if err == nil || !strings.Contains(err.Error(), helper.CodeDraining) || elapsed < time.Second || elapsed > 30*time.Second {
+	go func() {
+		_, err := registerWithPatience(sock, helper.Request{WaitSeconds: 1}, 0)
+		done <- err
+	}()
+	err := endsByItsDeadline(t, meter, "register against a helper that stays draining", start, time.Second, done)
+	if elapsed := time.Since(start); err == nil || !strings.Contains(err.Error(), helper.CodeDraining) || elapsed < time.Second {
 		t.Fatalf("register against a helper that stays draining = %v after %s; want DRAINING once its 1 s wait passed", err, elapsed)
 	}
 }

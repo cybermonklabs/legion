@@ -683,7 +683,7 @@ const fixRigWatchPoll = 50 * time.Millisecond
 // supervise machine's hold of a phase task for another claim's turn (supervise/delivery.go,
 // sendPending), the testing move's wait (workflow/check_states.go, testingWaits), a review set
 // aside (workflow/review.go, review), the hold of a task's end before its retro and its release
-// (workflow/engine.go, holdBeforeRetro; workflow/retro_hold.go, startHeldRetro and rehold), and
+// (workflow/engine.go, holdBeforeRetro; workflow/retro_hold.go, StartHeldRetro and rehold), and
 // the merge state reads (daemon/merge_state_reads.go).
 var fixRigDaemonLines = []string{
 	"the phase task waits rather than adopt the working copy they share",

@@ -26,6 +26,7 @@ import (
 // durable did read the stored row; and the session's own message, stored after the others, is its
 // first frame, so its relay is live.
 func TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const (
 		sessionID = "ses_durable_forged_pub"
@@ -52,7 +53,7 @@ func TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession(t 
 	if _, err := interests.Put(sessionID, value); err != nil {
 		t.Fatalf("store %s's row naming %s's inbox and %s: %v", sessionID, victim, otherLane, err)
 	}
-	waitFor(t, 10*time.Second, "the registry's copy to hold the stored row", func() bool {
+	waitFor(t, "the registry's copy to hold the stored row", func() bool {
 		cached, ok := rig.harness.registry.Cached(sessionID)
 		return ok && strings.Contains(strings.Join(cached.Topics, " "), otherLane)
 	})

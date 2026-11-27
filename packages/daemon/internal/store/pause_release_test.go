@@ -56,6 +56,7 @@ func endPause(t *testing.T, st *Store, pause int64, at time.Time) {
 // pod a pause holds reads as held in the same view. Once the pause ends, the same decision marks
 // the release.
 func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -95,33 +96,35 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	}
 }
 
-// Decision 12 and departure 4 of dispatch://INFRA-3759: a release whose save has not run when the
-// pause begins is cancelled at its save, for the pause; a save that ran before the pause acts, and
-// the release's role stop after the pause still acts, since only the save reads the pause.
-func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
+// Under a project pause, a release whose workspace check has not run
+// when the pause begins is cancelled at its check, for the pause; a check that ran before the
+// pause acts, and the release's role stop after the pause still acts, since only the check reads
+// the pause.
+func TestAReleaseCheckIsCancelledWhileTheProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	first, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 
-	before, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	before, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || before.Act != ReleaseActs {
-		t.Fatalf("the save before the pause = %s, %v; want it to act", before.Act, err)
+		t.Fatalf("the check before the pause = %s, %v; want it to act", before.Act, err)
 	}
 	pauseLegion(t, st, pausedAt)
-	paused, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	paused, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || paused.Act != ReleaseCancel || paused.Cause != ReleaseCausePaused {
-		t.Fatalf("the save while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
+		t.Fatalf("the check while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 	if stop, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary); err != nil || stop.Act != ReleaseActs {
-		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release that saved finishes", stop.Act, err)
+		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release whose check ran finishes", stop.Act, err)
 	}
 }
 
 // otherIssue is an issue of another project whose pod this project's daemon runs: the operator's
 // spawn (`legion claims spawn`) makes a claim of any issue key under the daemon's own project
 // token, and such a claim is part of this project's pause as every other claim is. No production
-// row reaches a release's save or its cancel for such an issue (IssueReleaseSave,
+// row reaches a release's check or its cancel for such an issue (IssueReleaseCheck,
 // CancelIssueRelease): a release's rows are keyed by its issue, the release queues no row keyed by
 // another project's issue (insertOutboxRow, claim.KeyOfProject) and so marks no release of it, and
 // the daemon's outbox runs only the rows of its own project's keys. The tests below write the mark
@@ -133,34 +136,36 @@ const otherIssue = "OTHER-5"
 // role stop.
 const otherFirst, otherBoundary = 18, 20
 
-// Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the save of its
+// For the pod of another project's issue, the check of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so it is cancelled while LEGION is paused.
-func TestASaveOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
+func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseLegion(t, st, pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseCancel || saved.Cause != ReleaseCausePaused {
-		t.Fatalf("the save of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause saves no workspace and deletes no pod",
-			otherIssue, saved.Act, saved.Cause, err, ReleaseCancel, ReleaseCausePaused)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseCancel || checked.Cause != ReleaseCausePaused {
+		t.Fatalf("the check of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause deletes no pod",
+			otherIssue, checked.Act, checked.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 }
 
 // The inversion of the test above: a pause of the issue key's project is not this project's, so
-// the save of the same release acts while only OTHER is paused and LEGION runs.
-func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
+// the check of the same release acts while only OTHER is paused and LEGION runs.
+func TestACheckOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseProject(t, st, "OTHER", pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseActs {
-		t.Fatalf("the save of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
-			otherIssue, saved.Act, saved.Cause, err)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseActs {
+		t.Fatalf("the check of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
+			otherIssue, checked.Act, checked.Cause, err)
 	}
 }
 
@@ -170,6 +175,7 @@ func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t
 // generation, as the stop transaction does while its pause stands; the architect gets none. A role
 // a wake already owes a launch keeps that wake, owes the launch in its stop, and gets no backstop.
 func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		woken    bool
@@ -257,6 +263,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 // (resumeStanding), so the test seeds the record that OTHER's daemon keeps of the issue on the
 // same database.
 func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -308,6 +315,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 // project is paused is read inside the cancel's own transaction, so a cancel with no moment is
 // refused, naming the field, before it reads anything, and the release stays marked.
 func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	servingReleasedClaim(t, st, claim.RoleImplementer)
@@ -339,7 +347,11 @@ func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 // resume from its stuck clock (clock_at), never from the wake's own moment, and pass over every
 // resume of a project paused now. Decision 15: the stranded read keeps a resume a pause held,
 // which pairs with no release, until a release that suspended a role is recorded after it.
+// dispatch://INFRA-5682 R1: both reads pass over a resume whose clock a wait in the wake pacing's
+// queue stopped, however long ago its wake was, until the end of that wait or the next daemon's
+// boot starts the clock.
 func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	woke := pausedAt.Add(-2 * time.Hour)
@@ -349,9 +361,6 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
-	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, clock); err != nil {
-		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
-	}
 	reads := func(before time.Time) (stuck, unfinished []PodResume) {
 		t.Helper()
 		stuck, err := st.StuckPodResumes(ctx, "legion", before)
@@ -363,6 +372,28 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 			t.Fatalf("the stranded read: %v", err)
 		}
 		return stuck, unfinished
+	}
+
+	queue := func() {
+		t.Helper()
+		if err := st.SetResumeQueued(ctx, "legion", rootIssue, claim.RoleArchitect); err != nil {
+			t.Fatalf("stop the architect's stuck clock for its wait in the queue: %v", err)
+		}
+		if stuck, unfinished := reads(woke.Add(24 * time.Hour)); len(stuck) != 0 || len(unfinished) != 0 {
+			t.Fatalf("while the wake is queued the reads = %+v and %+v, want neither, a day after the wake", stuck, unfinished)
+		}
+	}
+	queue()
+	boot := woke.Add(20 * time.Minute)
+	if started, err := st.StartQueuedResumeClocks(ctx, "legion", boot); err != nil || started != 1 {
+		t.Fatalf("the boot started %d stopped clocks, %v; want the architect's", started, err)
+	}
+	if stuck, unfinished := reads(boot); len(stuck) != 1 || len(unfinished) != 1 || !stuck[0].ClockAt.Equal(boot) {
+		t.Fatalf("after the boot the reads = %+v and %+v, want the architect's resume with its clock at the boot", stuck, unfinished)
+	}
+	queue()
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, clock); err != nil {
+		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
 	}
 
 	// Ten minutes after the wake, but before the clock: the wake waited its turn and is not stuck.
@@ -415,6 +446,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 // pod of this project's there: the hold of this daemon's own spawn of that issue, in a tree of its
 // own, stands.
 func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openLingeringTree(t, st)
@@ -480,6 +512,7 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 // The pod of a claim of another project's issue, held under this project's pause, ends the same
 // way: the hold is read by its project, not by its issue key's prefix.
 func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -522,6 +555,7 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 // yet is queued with none: the hold stays. A launch whose process is recorded is coming up in the
 // pod, and the resume ends the hold for it.
 func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -569,7 +603,13 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 // launch (internal/daemon's podHolds.owes). Each launch the other two pods' holds owed has taken
 // its first turn, so those holds are read by their let-outs alone. Without the read of the open
 // resume, the third pod's hold is missing from every read since a moment after the resume.
+//
+// dispatch://INFRA-5682 R1: while a launch the pause owes waits in the wake pacing's queue, its
+// resume's clock is stopped and it has no let-out yet, so the hold reads its let-out as the read's
+// own now, and a round's bound counts the hold on to it. Only an open resume waits: a clock left
+// stopped on a resume whose launch took its first turn says nothing.
 func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -615,29 +655,76 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 			}
 		}
 	}
-	for _, tc := range []struct {
-		since time.Duration
-		want  map[string]time.Duration
-	}{
-		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute, owed: 0}},
-		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, owed: 0}},
-		{since: 10 * time.Minute, want: map[string]time.Duration{owed: 0}},
-	} {
-		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
+	now := resumedAt.Add(30 * time.Minute)
+	read := func(since time.Duration, want map[string]time.Duration) {
+		t.Helper()
+		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(since), now)
 		if err != nil {
-			t.Fatalf("read the holds since the resume %+v: %v", tc.since, err)
+			t.Fatalf("read the holds since the resume %+v: %v", since, err)
 		}
 		got := map[string]time.Duration{}
 		for _, hold := range holds {
 			if hold.Pause != pause.ID || !hold.EndedAt.Equal(resumedAt) || hold.End != PausePodHoldResumed {
-				t.Fatalf("a hold read since the resume %+v = %+v, want pause %d's, ended at the resume", tc.since, hold, pause.ID)
+				t.Fatalf("a hold read since the resume %+v = %+v, want pause %d's, ended at the resume", since, hold, pause.ID)
 			}
 			got[hold.Issue] = hold.LetOut.Sub(resumedAt)
 		}
-		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
-			t.Fatalf("the let-outs of the holds read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("the let-outs of the holds read since the resume %+v = %v, want %v", since, got, want)
 		}
 	}
+	read(-time.Minute, map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute, owed: 0})
+	read(7*time.Minute, map[string]time.Duration{rootIssue: 10 * time.Minute, owed: 0})
+	read(10*time.Minute, map[string]time.Duration{owed: 0})
+
+	if err := st.SetResumeQueued(ctx, "legion", owed, claim.RoleImplementer); err != nil {
+		t.Fatalf("stop the clock of %s's owed launch for its wait in the queue: %v", owed, err)
+	}
+	if _, err := st.Pool().Exec(ctx, `update pod_resumes set queued = true where issue = $1`, other); err != nil {
+		t.Fatalf("leave a stopped clock on the launched resume of %s: %v", other, err)
+	}
+	read(-time.Minute, map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute, owed: now.Sub(resumedAt)})
+	read(10*time.Minute, map[string]time.Duration{owed: now.Sub(resumedAt)})
+}
+
+// The architect-stalled arms count no time before the let-out of the launch a pause held for an
+// architect (PauseLetOutsTx): the stuck clock of its resume of that pause, which the project's
+// resume starts and the launch's let-out moves. While that launch waits in the wake pacing's
+// queue it has no let-out yet (dispatch://INFRA-5682 R1), so the read answers the reader's own
+// now for it, however long ago the project resumed, and the let-out's moment once it has one.
+func TestALaunchWaitingInThePacingReadsAsLetOutAtTheReadersNow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	resumedAt := pausedAt.Add(time.Hour)
+	if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
+		values (0, 'legion', $1, 'architect', $2, $3, $4, $5)`, rootIssue, pods.WakePause, pausedAt.Add(time.Minute), resumedAt, pause.ID); err != nil {
+		t.Fatalf("record the architect's resume the pause held: %v", err)
+	}
+	now := resumedAt.Add(40 * time.Minute)
+	want := func(what string, want time.Time) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) error {
+			letOuts, err := PauseLetOutsTx(ctx, tx, "legion", pause.ID, claim.RoleArchitect, now)
+			if err != nil {
+				return err
+			}
+			if got, held := letOuts[rootIssue]; !held || len(letOuts) != 1 || !got.Equal(want) {
+				t.Fatalf("%s the let-outs read %v, want the architect's of %s at %s", what, letOuts, rootIssue, want)
+			}
+			return nil
+		})
+	}
+	want("before its launch reaches the pacing", resumedAt)
+	if err := st.SetResumeQueued(ctx, "legion", rootIssue, claim.RoleArchitect); err != nil {
+		t.Fatalf("stop the architect's stuck clock for its wait in the queue: %v", err)
+	}
+	want("while its launch waits in the queue", now)
+	letOut := resumedAt.Add(25 * time.Minute)
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, letOut); err != nil {
+		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
+	}
+	want("once the pacing has let its launch out", letOut)
 }
 
 // Decision 12 of dispatch://INFRA-3759, as review rounds 3 and 4 of dispatch://INFRA-4109 set it:
@@ -657,6 +744,7 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 // whatever its open, ready resume. The latest let-out still counts every resume of the pause
 // (PausePodHold.LetOut).
 func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -714,7 +802,7 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Role(nil))}},
 		{since: 10 * time.Minute, want: map[string]string{rootIssue: owed}},
 	} {
-		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
+		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since), resumedAt.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("read the holds since the resume %+v: %v", tc.since, err)
 		}

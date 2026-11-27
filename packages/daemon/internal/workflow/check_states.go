@@ -46,9 +46,10 @@ type testingJudgement struct {
 // job's case (ci_case) there.
 //
 // Each check a CI job runs, the one whose held state names its job's case, is left out, whatever
-// that state is: its failure is the fix's or the owner's (fixRule, INFRA-4843 R15a's message), and
-// the end of the task holds it until it passes at the task's head (retroHold), so the testing step
-// judges only the checks that no CI job runs.
+// that state is: its failure is the fix's or the owner's (fixRule), or reaches the implementer by
+// its own message where no fix takes it (tellCIFailure), and the end of the task holds it until it
+// passes at the task's head (retroHold), so the testing step judges only the checks that no CI job
+// runs.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
 // and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
@@ -266,15 +267,37 @@ func (e *Engine) namedReturn(ctx context.Context, tx pgx.Tx, issue record.Issue,
 }
 
 // testingWaits is the testing move holding issue in testing for wait. At the tester's completion
-// it logs the wait and tells the architect, in wait's phase-finished notice of the tester's; at a
-// later state event it does neither, since the architect was told.
+// it tells the architect, in wait's phase-finished notice of the tester's, and logs the wait from
+// the same move (logTestingMove); at a later state event it does neither, since the architect was
+// told.
 func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, atCompletion bool, wait testingMove) error {
 	if !atCompletion {
 		return nil
 	}
-	e.logOnCommit(ctx, "workflow: the testing move waits for check states", "issue", issue.Key, "head", wait.Head,
-		"statesSerial", row.StatesSerial, "reason", wait.sentence())
-	return e.notice(ctx, tx, issue.Key, wait.notice(row))
+	if err := e.notice(ctx, tx, issue.Key, wait.notice(row)); err != nil {
+		return err
+	}
+	e.logTestingMove(ctx, issue.Key, "waits", wait.Head, &wait)
+	return nil
+}
+
+// logTestingMove logs `workflow: the testing move decided` once the fact commits, from the move
+// the agent's objects are written from, where they are written: transition calls it beside
+// noticeFor for the tester's moves back and on (TriggerTesterFailed, TriggerTesterPassed), with
+// the phase moved to, its head and why.Testing, and testingWaits, at the completion, with waits,
+// the wait's head and the move it gives notice. Its attributes are issue, head, move, and, only
+// where m is set, waits_for, waiting and failing (the ids of m's failing checks), so a move with
+// no testingMove logs no check and reads no field of a nil m. decideTesting logs nothing itself.
+func (e *Engine) logTestingMove(ctx context.Context, issue, move, head string, m *testingMove) {
+	args := []any{"issue", issue, "head", head, "move", move}
+	if m != nil {
+		failing := make([]string, 0, len(m.Failing))
+		for _, check := range m.Failing {
+			failing = append(failing, check.Check)
+		}
+		args = append(args, "waits_for", m.WaitsFor, "waiting", m.Waiting, "failing", failing)
+	}
+	e.logOnCommit(ctx, "workflow: the testing move decided", args...)
 }
 
 // checkState holds one of Dispatch's check.state_changed events of an issue the workflow records,
@@ -383,15 +406,17 @@ func sameFailure(a, b record.CheckState) bool {
 }
 
 // tellCIFailure tells the implementer of issue that state, a check a CI job runs, fails at its
-// head: one message on the implementer's role topic (record.RoleMessage) naming the pull request,
-// the check, the head, the job's case and the state, written in the state event's own transaction.
-// The implementer reads the job's log and decides whose failure it is. Only a state at the head of
-// the open pull request on record, in its repository, is told: a head the pull request has left is
-// no head the implementer works on. It tells no other role, starts no implementer and moves
-// nothing, so the tester or the reviewer that works goes on. Linger holds a member of a closed tree
-// where it stood (record.TreeLingers), so nobody is told there, as tellChecks tells nobody. A task
-// whose run takes a fix (record.PlanTask.FixesCI) is told nothing here: the fix rule (fixRule) gives
-// the failure to the step that holds it, or starts the fix, so the implementer hears it once.
+// head: one message on the implementer's role topic (ciFailureMessage) naming the pull request,
+// the check, the head, the job's case and the state, written in the state event's own transaction,
+// and once it is queued the line `workflow: the implementer is told of a failed CI job`, written
+// from that row. The implementer reads the job's log and decides whose failure it is. Only a state
+// at the head of the open pull request on record, in its repository, is told: a head the pull
+// request has left is no head the implementer works on. It tells no other role, starts no
+// implementer and moves nothing, so the tester or the reviewer that works goes on. Linger holds a
+// member of a closed tree where it stood (record.TreeLingers), so nobody is told there, as
+// tellChecks tells nobody. A task whose run takes a fix (record.PlanTask.FixesCI) is told nothing
+// here: the fix rule (fixRule) gives the failure to the step that holds it, or starts the fix, so
+// the implementer hears it once.
 func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issue, state record.CheckState) error {
 	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
 		return err
@@ -410,18 +435,28 @@ func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
+	for _, to := range addressed {
+		row := ciFailureMessage(string(to.token), pr.Number, state)
+		if err := e.enqueue(ctx, tx, to.issue, row); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the implementer is told of a failed CI job", "issue", issue.Key, "pull_request", row.PullRequest,
+			"check", row.Check, "repo", state.Repo, "head", row.Head, "ci_case", row.CICase)
+	}
+	return nil
+}
+
+// ciFailureMessage is the implementer's message that state fails at the head of pull request
+// number, sent to the role holder token: its fields are the pull request, the state's head, check
+// and job's case, and its body is written from those fields and the state's answer (its state, and
+// its reason where it has one).
+func ciFailureMessage(token string, number int, state record.CheckState) record.RoleMessage {
+	message := record.RoleMessage{Role: token, PullRequest: number, Head: state.Head, Check: state.Check, CICase: state.CICase}
 	answer := state.State
 	if state.Reason != "" {
 		answer += " (" + state.Reason + ")"
 	}
-	body := fmt.Sprintf("Pull request #%d: check %s fails at %s, where its CI job ended %s; its state there is %s. Nothing moved on it: read the job's log and decide whose failure it is.",
-		pr.Number, state.Check, state.Head, state.CICase, answer)
-	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
-			return err
-		}
-	}
-	e.logOnCommit(ctx, "workflow: the implementer is told of a failed CI job", "issue", issue.Key, "check", state.Check,
-		"repo", state.Repo, "head", state.Head, "ci_case", state.CICase)
-	return nil
+	message.Body = fmt.Sprintf("Pull request #%d: check %s fails at %s, where its CI job ended %s; its state there is %s. Nothing moved on it: read the job's log and decide whose failure it is.",
+		message.PullRequest, message.Check, message.Head, message.CICase, answer)
+	return message
 }

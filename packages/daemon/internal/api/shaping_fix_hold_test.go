@@ -50,15 +50,17 @@ func fixAndCIHolds(t *testing.T) State {
 // the contract the caller states, else its pod's lowest, and the record route serves each issue as
 // the state does. The state the source answered keeps both reasons for the next caller.
 //
-// Each reason's arrival is read from the declared table (answers.go's holdReasons) at
-// FixBesideReviewContract. A reason the table leaves out reads as arriving at this daemon's own
-// contract (fieldArrivals.heldBack), which is FixBesideReviewContract only until the next bump:
-// from then on such a reason would be held back from a caller at FixBesideReviewContract, whose
-// reader admits it.
+// Each reason's arrival is read from the declared table (EnumeratedFields(), to which the
+// fix-beside-review entry adds both reasons) at that entry's number,
+// entryNumber(FixBesideReviewContract). A reason the table leaves out reads as arriving at this
+// daemon's own contract (fieldArrivals.heldBack), which is the entry's number only while no entry
+// ranks after it: from then on such a reason would be held back from a caller at the entry's
+// number, whose reader admits it.
 func TestAnOlderCallerIsServedNoFixHoldOrCIHoldReason(t *testing.T) {
 	const remote = "192.0.2.1:41000"
+	fix := entryNumber(FixBesideReviewContract)
 	state := fixAndCIHolds(t)
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 	newer := map[string][2]string{
 		fixHeldIssue:   {"fix", "retro"},
 		ciHeldIssue:    {"ci", "retro"},
@@ -74,8 +76,8 @@ func TestAnOlderCallerIsServedNoFixHoldOrCIHoldReason(t *testing.T) {
 		served map[string][2]string
 		want   map[string][2]string
 	}{
-		{"a caller stating the contract", holdsServed(t, stateStating(t, handler, remote, FixBesideReviewContract)), newer},
-		{"a caller stating the contract before it", holdsServed(t, stateStating(t, handler, remote, FixBesideReviewContract-1)), older},
+		{"a caller stating the contract", holdsServed(t, stateStating(t, handler, remote, fix)), newer},
+		{"a caller stating the contract before it", holdsServed(t, stateStating(t, handler, remote, fix-1)), older},
 		{"a pod stating nothing at the contract before shapedAnswersContract",
 			holdsServed(t, stateFrom(t, state, statePodAddr+":41000", podClaims(shapedAnswersContract-1))), older},
 	} {
@@ -86,44 +88,47 @@ func TestAnOlderCallerIsServedNoFixHoldOrCIHoldReason(t *testing.T) {
 		}
 	}
 	for key, hold := range newer {
-		if got := recordHoldServed(t, handler, key, FixBesideReviewContract); got != hold {
+		if got := recordHoldServed(t, handler, key, fix); got != hold {
 			t.Errorf("the record of %s is served to a caller at the contract held %q, want %q", key, got, hold)
 		}
-		if got := recordHoldServed(t, handler, key, FixBesideReviewContract-1); got != older[key] {
+		if got := recordHoldServed(t, handler, key, fix-1); got != older[key] {
 			t.Errorf("the record of %s is served to a caller one contract behind held %q, want %q", key, got, older[key])
 		}
 	}
 	if got := state.Issues[fixHeldIssue].HoldReason; got != string(record.HoldForFix) {
 		t.Errorf("the state the source answered holds %s's reason as %q after the narrowing, want it kept", fixHeldIssue, got)
 	}
+	arrivals := arrivalsAt(issueKeyPath + "holdReason")
 	for _, reason := range []record.HoldReason{record.HoldForFix, record.HoldForCI} {
-		if arrival, declared := holdReasonArrivals.values[string(reason)]; !declared || arrival != FixBesideReviewContract {
-			t.Errorf("the declared table records the hold reason %q at %d (declared: %v), want FixBesideReviewContract (%d): "+
-				"an undeclared reason arrives at this daemon's own contract, which the next bump moves past the readers that admit it",
-				reason, arrival, declared, FixBesideReviewContract)
+		if arrival, declared := arrivals.values[string(reason)]; !declared || arrival != fix {
+			t.Errorf("the declared table records the hold reason %q at %d (declared: %v), want the fix-beside-review entry's number (%d): "+
+				"an undeclared reason arrives at this daemon's own contract, which the next entry moves past the readers that admit it",
+				reason, arrival, declared, fix)
 		}
 	}
 }
 
 // A caller whose plugin speaks a contract below FixBesideReviewContract reads `admission.held`'s
-// `reason` with a `z.enum` of the thirteen words before it, and refuses the whole body for
+// `reason` with a `z.enum` of the words before it, and refuses the whole body for
 // another. So the rows of the two words that contract added, fix_running and ci_at_head, are
 // served to it as what it read for those issues before: unclassified, with no heldBy. Every other
 // row is served as it stands, and a caller at the contract is served both words with their
 // heldBy. The rule is the value strip's (withoutUnadmittedHeldWords), so it follows the contract
 // the caller states, else its pod's lowest. The state the source answered keeps both words for the
-// next caller. Each word's arrival is read from the declared table (answers.go's heldReasons) at
-// FixBesideReviewContract, for the reason the hold reasons' arrivals are read above.
+// next caller. Each word's arrival is read from the declared table (EnumeratedFields(), to which
+// the fix-beside-review entry adds both words) at that entry's number, for the reason the hold
+// reasons' arrivals are read above.
 func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
 	const remote = "192.0.2.1:41000"
+	fix := entryNumber(FixBesideReviewContract)
 	others := len(populatedState(t).Admission.Held)
 	if others == 0 {
 		t.Fatal("the state golden holds no held row, so nothing here shows a row of another word served as it stands")
 	}
 	state := fixAndCIHolds(t)
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 
-	at := heldRowsServed(t, stateStating(t, handler, remote, FixBesideReviewContract))
+	at := heldRowsServed(t, stateStating(t, handler, remote, fix))
 	for key, want := range map[string]map[string]any{
 		fixHeldIssue: {"issue": fixHeldIssue, "reason": string(record.HeldFixRunning), "heldBy": []any{fixHoldCheck, fixHoldHead}},
 		ciHeldIssue:  {"issue": ciHeldIssue, "reason": string(record.HeldCIAtHead), "heldBy": []any{ciHoldBuild, fixHoldCheck}},
@@ -137,7 +142,7 @@ func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
 		name string
 		body []byte
 	}{
-		{"a caller stating the contract before it", stateStating(t, handler, remote, FixBesideReviewContract-1)},
+		{"a caller stating the contract before it", stateStating(t, handler, remote, fix-1)},
 		{"a pod stating nothing at the contract before shapedAnswersContract",
 			stateFrom(t, state, statePodAddr+":41000", podClaims(shapedAnswersContract-1))},
 	} {
@@ -156,10 +161,11 @@ func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
 	if got := state.Admission.Held[others].Reason; got != record.HeldFixRunning {
 		t.Errorf("the state the source answered holds %s's word as %q after the narrowing, want it kept", fixHeldIssue, got)
 	}
+	arrivals := arrivalsAt("admission.held.*.reason")
 	for _, word := range []record.HeldReason{record.HeldFixRunning, record.HeldCIAtHead} {
-		if arrival, declared := heldReasonArrivals.values[string(word)]; !declared || arrival != FixBesideReviewContract {
-			t.Errorf("the declared table records the held word %q at %d (declared: %v), want FixBesideReviewContract (%d)",
-				word, arrival, declared, FixBesideReviewContract)
+		if arrival, declared := arrivals.values[string(word)]; !declared || arrival != fix {
+			t.Errorf("the declared table records the held word %q at %d (declared: %v), want the fix-beside-review entry's number (%d)",
+				word, arrival, declared, fix)
 		}
 	}
 }
@@ -171,8 +177,9 @@ func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
 // `packages/contracts/src/legion-api.test.ts` parses the body with a frozen copy of the hold
 // reasons and the held list that reader knows, which is the reader the strip is written for.
 func TestStateBeforeTheFixHoldsGolden(t *testing.T) {
-	server := stateServer(t, fixAndCIHolds(t), podClaims(FixBesideReviewContract-1))
-	body := stateStating(t, server, statePodAddr+":41000", FixBesideReviewContract-1)
+	fix := entryNumber(FixBesideReviewContract)
+	server := stateServer(t, fixAndCIHolds(t), podClaims(fix-1))
+	body := stateStating(t, server, statePodAddr+":41000", fix-1)
 	holds := holdsServed(t, body)
 	for _, key := range []string{fixHeldIssue, ciHeldIssue} {
 		if holds[key] != [2]string{"", "retro"} {

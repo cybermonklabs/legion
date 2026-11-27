@@ -23,7 +23,7 @@ related_issues:
   its head mid-round, and the daemon counts the implementer's completion for a phase it does not
   hold as `HANDOFF_NOT_CURRENT_PHASE`.
 - So split the work at the push. Fetch, forward-merge `main` (`jj new legion/<KEY> main@origin`),
-  resolve, renumber, run the checks and the scratch proof, compute both fingerprints — all of it
+  resolve, run the checks and the scratch proof, compute both fingerprints — all of it
   in the working copy, which is yours to shape and nobody else reads until it is pushed. Then
   report to the architect's role topic: the prepared commit's SHA and parents, the fingerprints,
   what the checks showed, and that the issue is in `<phase>`. The role holding the phase sends the

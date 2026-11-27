@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4682
+body: |-
+  The descriptions of `dispatch_whoami`, of whoami's `project`, of the going request, and of the
+  step, step rating, plan and role holders routes say that a token that names one project writes
+  other projects' objects, and that another project's daemon writes an issue's records as the
+  session its broker token proves.

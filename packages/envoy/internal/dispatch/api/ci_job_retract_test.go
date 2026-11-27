@@ -22,6 +22,7 @@ import (
 // the remaining result gives it, yes from ci at the branch's head. A second retraction is 409
 // RESULT_RETRACTED.
 func TestTheClaimHolderRetractsACIJobsFail(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	failed := jobRecorded(t, "the first attempt's fail", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "fail")))

@@ -9,6 +9,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     attempt: 1,
     end_commit: null,
     ended_at: "2026-11-16T09:40:00Z",
+    experiment: null,
     fix_check: null,
     generation: 1,
     issue: "CORE-1",
@@ -26,6 +27,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     step: 2,
     task: "default",
     type: "implementation",
+    variant: null,
     ...fields,
   };
 }

@@ -9,15 +9,21 @@
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once; the rating of a retro is a third write of
 // the retro's run, in any order with the other two, and the commits a run started and ended at,
-// with the check a fix run fixes, are one more, in any order with the others. It writes a run's
-// plan under one id too, when the work starts and again at each later version of the owner's plan
-// that Legion takes. So a write never refuses for its order, and makes the node when none exists.
-// A run's write sets each field the node does not hold yet, but returned_to, which only the write
-// that sets the result sets, and leaves each field it holds (PutStep). A plan's source, document,
-// version and tasks are one fact, which a write of a higher version replaces whole and any other
-// write leaves (PutPlan). The read of an issue (IssueSteps) answers each run with its attempt,
-// which no write stores, and the read of a project (ProjectPlans) answers each of its finished
-// issues with its plan, its ratings, its time, its count of failed steps and its count of fixes.
+// with the check a fix run fixes, are one more, in any order with the others. For an issue a draw
+// put in an experiment's group, it also writes the run's identity with the experiment and the
+// variant after each of the run's own writes, in any order with them too. It writes a run's plan
+// under one id too, when the work starts and again at each later version of the owner's plan that
+// Legion takes. So a write never refuses for its order, and makes the node when none exists. A
+// run's write sets each field the node does not hold yet, but returned_to, which only the write
+// that sets the result sets, and leaves each field it holds (PutStep); it sets the experiment and
+// the variant together or neither. A plan's source, document, version and tasks are one fact,
+// which a write of a higher version replaces whole and any other write leaves (PutPlan). The read
+// of an issue (IssueSteps) answers each run with its attempt, which no write stores, and the read
+// of a project (ProjectPlans) answers each of its finished issues with its plan, its ratings, its
+// time, its count of failed steps, its count of fixes, and the experiment and the variant the step
+// records of its newest run name, nil where they name none. A run's write that appends a tuple
+// signals its issue on RunsChannel at its commit, and IssueRunsRevision counts the tuples of an
+// issue's runs, which each such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
@@ -87,10 +93,12 @@ const (
 
 // The attributes of a step, each the name of its value tuples and of its key in the node row's
 // `attributes`. A retro's run alone also holds AttributeRating and AttributeRatingReason: the
-// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason. A run
-// may hold AttributeStartCommit and AttributeEndCommit, the commits its task's head was at when it
-// started and when it ended, and a fix, a run of kind step that fixes a CI check failed at that
-// head, holds AttributeFixCheck, the block id of that check in the issue's Verification document.
+// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason. A run of
+// an issue that a draw put in an experiment also holds AttributeExperiment and AttributeVariant:
+// the experiment and the variant drawn. A run may hold AttributeStartCommit and
+// AttributeEndCommit, the commits its task's head was at when it started and when it ended, and a
+// fix, a run of kind step that fixes a CI check failed at that head, holds AttributeFixCheck, the
+// block id of that check in the issue's Verification document.
 const (
 	AttributeIssue        = "issue"
 	AttributeProject      = "project"
@@ -110,6 +118,8 @@ const (
 	AttributeReport       = "report"
 	AttributeRating       = "rating"
 	AttributeRatingReason = "rating_reason"
+	AttributeExperiment   = "experiment"
+	AttributeVariant      = "variant"
 	AttributeStartCommit  = "start_commit"
 	AttributeEndCommit    = "end_commit"
 	AttributeFixCheck     = "fix_check"
@@ -152,9 +162,9 @@ var (
 // Step is one run of one step, as its node holds it. Place is the step's place in its task, the
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
 // StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place 0,
-// and a time, ReturnedTo or Rating nil; a ReturnedTo of 0 is place 0 (StepWrite). StartCommit and
-// EndCommit are the commits the task's head was at when the run started and when it ended, and
-// FixCheck is the block id of the CI check a fix run fixes.
+// and a time, ReturnedTo, Rating or Experiment nil; a ReturnedTo of 0 is place 0 (StepWrite).
+// StartCommit and EndCommit are the commits the task's head was at when the run started and when it
+// ended, and FixCheck is the block id of the CI check a fix run fixes.
 type Step struct {
 	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
 	StartCommit, EndCommit, FixCheck                                                  string
@@ -162,6 +172,7 @@ type Step struct {
 	Place                                                                             int
 	ReturnedTo                                                                        *int
 	Rating                                                                            *StepRating
+	Experiment                                                                        *StepExperiment
 	StartedAt, EndedAt                                                                *time.Time
 }
 
@@ -173,13 +184,21 @@ type StepRating struct {
 	Reason string
 }
 
+// StepExperiment is the experiment a draw put a run's issue in and the variant it drew there: one
+// value, so a run never holds or is written one without the other. Each is a name of 1 to 32
+// characters of a-z, 0-9 and `-`, the daemon's rule for the names its settings declare.
+type StepExperiment struct {
+	Experiment string
+	Variant    string
+}
+
 // StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
 // where it states nothing. An empty text states nothing either, so a write that knows no model
 // leaves the model to a later write that knows it. ReturnedTo is the place a run returned its task
 // to, and 0 is a place: the retro's and the merge's, which a place alone does not tell apart.
 // Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return to the retro.
-// Only a retro takes a Rating. A commit is 40 lowercase hexadecimal digits, and only a run of kind
-// step takes a FixCheck, which has the form of a block id.
+// Only a retro takes a Rating. Any run takes an Experiment. A commit is 40 lowercase hexadecimal
+// digits, and only a run of kind step takes a FixCheck, which has the form of a block id.
 type StepWrite struct {
 	ID, Issue                                                              string
 	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
@@ -187,6 +206,7 @@ type StepWrite struct {
 	Generation                                                             *int64
 	Place, ReturnedTo                                                      *int
 	Rating                                                                 *StepRating
+	Experiment                                                             *StepExperiment
 	StartedAt, EndedAt                                                     *time.Time
 }
 
@@ -238,8 +258,9 @@ type PlanWrite struct {
 // IssuePlan is one finished issue of a project as the read of the project answers it: its plan
 // (the node of its newest run, nil where it has none), the rating of each retro of its runs (nil
 // where no retro rated it; the route answers that as []), the earliest start and the latest end its
-// runs hold (each nil where none holds one), its count of runs of kind step that failed, and its
-// count of fixes, the runs that name a fix_check.
+// runs hold (each nil where none holds one), its count of runs of kind step that failed, the
+// experiment and the variant the records of its newest run name (nil where they name none), and
+// its count of fixes, the runs that name a fix_check.
 type IssuePlan struct {
 	Issue, Title       string
 	ClosedAt           time.Time
@@ -247,6 +268,7 @@ type IssuePlan struct {
 	Ratings            []Rating
 	StartedAt, EndedAt *time.Time
 	FailedSteps        int
+	Experiment         *StepExperiment
 	Fixes              int
 }
 

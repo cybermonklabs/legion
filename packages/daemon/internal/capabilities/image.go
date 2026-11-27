@@ -138,24 +138,66 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 // is unavailable. An error names the command and its output.
 func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 	const args = "config get retry.modelFallback --json"
-	command := img.Launch + " " + args
-	r := img.launch(ctx, args)
-	if r.err != nil {
-		return "", fmt.Errorf("%s: %w", command, r.err)
-	}
-	if r.exit != 0 {
-		return "", fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
 	}
 	var answer struct {
 		Value *bool `json:"value"`
 	}
 	if err := json.NewDecoder(strings.NewReader(r.stdout)).Decode(&answer); err != nil || answer.Value == nil {
-		return "", fmt.Errorf("%s printed no JSON object with a boolean value: %s", command, r.output())
+		return "", fmt.Errorf("%s %s printed no JSON object with a boolean value: %s", img.Launch, args, r.output())
 	}
 	if *answer.Value {
 		return bootprobe.ModelFallbackOn, nil
 	}
 	return bootprobe.ModelFallbackOff, nil
+}
+
+// ReadOmpVersion runs `<Launch> --version` under img and answers the first non-blank line it
+// printed on stdout, trimmed: which Oh My Pi the image carries. It cannot say whether that Oh My
+// Pi takes --session-id (ReadSessionIDFlag): every release of the fork's 18.18.6 line prints
+// `omp/18.18.6`, those with the flag and those without it. An error names the command and its
+// output.
+func ReadOmpVersion(ctx context.Context, img Image) (string, error) {
+	const args = "--version"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(r.stdout), "\n")
+	if first = strings.TrimSpace(first); first == "" {
+		return "", fmt.Errorf("%s %s printed no version: %s", img.Launch, args, r.output())
+	}
+	return first, nil
+}
+
+// sessionIDFlag is a line of Oh My Pi's `--help` that defines --session-id: its flags table's flag
+// column, after an optional short flag (`  -r, --resume=<value>`), names the whole flag, followed
+// by `=<value>`, a space or the line's end. A description that mentions the words, and a longer
+// flag that begins with them, are not it.
+var sessionIDFlag = regexp.MustCompile(`(?m)^[ \t]*(?:-\w,[ \t]+)?--session-id(?:[=\s]|$)`)
+
+// ReadSessionIDFlag runs `<Launch> --help` under img and answers bootprobe.SessionIDFlagTaken when
+// the help it printed on stdout defines --session-id (sessionIDFlag), and
+// bootprobe.SessionIDFlagAbsent when it printed help that defines no such flag. The help is the
+// one answer Oh My Pi gives: its version does not tell (ReadOmpVersion), and
+// `<omp> --session-id <uuid> --version` exits 0 on a release without the flag, since --version
+// answers before Oh My Pi checks its flags. The first release of the fork whose help defines it is
+// v18.18.6-sami.20261117-074351. An error names the command and its output.
+func ReadSessionIDFlag(ctx context.Context, img Image) (string, error) {
+	const args = "--help"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(r.stdout) == "" {
+		return "", fmt.Errorf("%s %s printed no help: %s", img.Launch, args, r.output())
+	}
+	if sessionIDFlag.MatchString(r.stdout) {
+		return bootprobe.SessionIDFlagTaken, nil
+	}
+	return bootprobe.SessionIDFlagAbsent, nil
 }
 
 // evalJS: Oh My Pi is its JavaScript runtime, and the launch probes ran it.
@@ -533,6 +575,20 @@ func (r ran) failure() string {
 // has it parsed, and exec replaces the shell with Oh My Pi, so a kill reaches it.
 func (img Image) launch(ctx context.Context, args string) ran {
 	return img.run(ctx, "sh", "-c", "exec "+img.Launch+" "+args)
+}
+
+// answer is the launch's run of args when it exited 0, and otherwise an error naming the command
+// — `<Launch> <args>` — and the run's own error, or its exit and its output.
+func (img Image) answer(ctx context.Context, args string) (ran, error) {
+	command := img.Launch + " " + args
+	r := img.launch(ctx, args)
+	if r.err != nil {
+		return r, fmt.Errorf("%s: %w", command, r.err)
+	}
+	if r.exit != 0 {
+		return r, fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	}
+	return r, nil
 }
 
 // run runs one command within commandTimeout, under img's environment, in its directory, in a

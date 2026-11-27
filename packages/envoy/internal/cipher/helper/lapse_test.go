@@ -11,13 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -128,6 +126,7 @@ const lapseReason = "the broker refused this session's renew (ENROLLMENT_NOT_LIV
 // session is checked at every poll until the retry has renewed, so a lapse fails the test as soon
 // as it shows rather than when the wait runs out.
 func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	gate, release := testGate(t)
 	r.fake.mu.Lock()
@@ -166,6 +165,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 // so a helper restart meanwhile revokes it. Once the revoke lands the session enrolls afresh and
 // signs again.
 func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
+	t.Parallel()
 	r, lapsed, state := lapseRig(t, failAlways)
 	sign := Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"}
 	want := "this session is not enrolled with the broker yet; last attempt: " + lapseReason
@@ -214,6 +214,7 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 // can land the id (endSessionThenReleaseRevokes, which fails the row if the id lands before the
 // hand-off, if no hand-off comes, or if the handed-off revoke returns without landing it).
 func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T) {
+	t.Parallel()
 	r, lapsed, _ := lapseRig(t, failAlways)
 	endSessionThenReleaseRevokes(t, r, r.srv, r.srv.Registry.Get(os.Getpid()), lapsed)
 }
@@ -221,10 +222,11 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 // TestRegisterWaitWaitsForTheReEnrollmentAfterALapse: a lapse reopens the session's ready
 // channel, so `register --wait` from inside a lapsed session waits for its re-enrollment instead
 // of returning at once with the session still enrolling. The re-enrollment is held at the fake's
-// enroll gate until the register call is blocked in registerReply's select on that channel, so the
-// test cannot pass by arriving after the session enrolled again: a register that does not wait
-// answers while the gate is still shut, and the test fails.
+// enroll gate until the register call is blocked in waitForRegister's select on that channel, so
+// the test cannot pass by arriving after the session enrolled again: a register that does not
+// wait answers while the gate is still shut, and the test fails.
 func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
+	t.Parallel()
 	r, lapsed, _ := lapseRig(t, failAlways)
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
@@ -246,6 +248,7 @@ func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 // revoked before the next enrollment (the fake answers an unrevoked id's key with that same id),
 // and the session ends under a third id with no lapsed id left on it or on its record.
 func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
+	t.Parallel()
 	r, first, state := lapseRig(t, failAlways)
 	renewGate, releaseRenew := testGate(t)
 	r.fake.mu.Lock()
@@ -298,6 +301,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 // after it has handled the 503 and before the retry succeeds. The lease the retry gets is twice
 // that span, so the renewed expiry is later than the stored one wherever the test's clock stands.
 func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	first, releaseFirst := testGate(t)
 	r.fake.mu.Lock()
@@ -388,15 +392,22 @@ func startRegister(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 
 // registerWaitBlocked starts a `register --wait` (startRegister) from this process for sessionID
 // — nil for a register that names none — against the rig's one session, and returns its answer's
-// channel once the call is blocked in registerReply's select. The call answering first fails the
-// test: a register that waits must not answer before the enrollment it waits for has reached the
-// session.
+// channel once the call is blocked in waitForRegister's select. The call answering first fails
+// the test: a register that waits must not answer before the enrollment it waits for has reached
+// the session.
+//
+// It knows the call is blocked from the rig's own Server (registerWaiting), never from the
+// process: other tests' Servers park registers in registerReply too while the package runs in
+// parallel (TestARegisterWaitIsReadOnTheRigsOwnServer).
 func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 	t.Helper()
+	waiting := registerWaiting(t, r.srv)
 	replies := startRegister(t, r, sessionID)
 	testwait.Until(t, "the register call to wait on the session's ready channel", func() (bool, bool) {
-		if blockedInRegisterReply() {
+		select {
+		case <-waiting:
 			return true, true
+		default:
 		}
 		select {
 		case got := <-replies:
@@ -406,6 +417,24 @@ func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan callAns
 		return false, false
 	})
 	return replies
+}
+
+// registerWaiting returns a channel that srv's next register call sends on, once, as it blocks:
+// the call has taken its wait and none of the channels it waits on had fired
+// (Server.testRegisterWaiting). Only srv's own calls send on it; the hook comes off again when t
+// ends.
+func registerWaiting(t *testing.T, srv *Server) <-chan struct{} {
+	t.Helper()
+	waiting := make(chan struct{}, 1)
+	signal := func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	srv.testRegisterWaiting.Store(&signal)
+	t.Cleanup(func() { srv.testRegisterWaiting.CompareAndSwap(&signal, nil) })
+	return waiting
 }
 
 // freshEnrollment waits for the answer registerWaitBlocked's call gives once the session enrolls
@@ -419,26 +448,56 @@ func freshEnrollment(t *testing.T, replies <-chan callAnswer, stale ...string) s
 	return got.resp.EnrollmentID
 }
 
-// blockedInRegisterReply reports whether some goroutine is blocked in a select inside
-// Server.registerReply, which is where a register call waits for its session to enroll. It finds
-// that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
-// frame, so a rename of registerReply must be made here too. A name that no longer matches never
-// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails at the shared
-// wait's give-up, naming the wait.
-func blockedInRegisterReply() bool {
-	for _, g := range goroutinetest.Traces() {
-		header, _, _ := strings.Cut(g, "\n")
-		if strings.Contains(header, "[select") && strings.Contains(g, ").registerReply(") {
-			return true
+// TestARegisterWaitIsReadOnTheRigsOwnServer: a register is read as waiting on the Server it was
+// sent to, and on no other. Two rigs run at once; rig a's hook is set first and rig b's second, so
+// a hook shared by the Servers would now be b's, and a register is sent to rig a alone, parked in
+// registerReply with its re-enrollment held at a's gate. a's hook must fire and b's must not: a
+// shared hook fires b's for a's register, and a reading of the whole process's goroutines reads
+// a's register as b's too.
+func TestARegisterWaitIsReadOnTheRigsOwnServer(t *testing.T) {
+	t.Parallel()
+	a, lapsed, _ := lapseRig(t, failAlways)
+	gate, open := testGate(t)
+	a.fake.mu.Lock()
+	a.fake.enrollGate = gate
+	a.fake.revokeFailFirst = 0
+	a.fake.mu.Unlock()
+	b := startRig(t, "")
+	aWaiting := registerWaiting(t, a.srv)
+	bWaiting := registerWaiting(t, b.srv)
+
+	replies := startRegister(t, a, nil)
+	bFired := func() {
+		select {
+		case <-bWaiting:
+			t.Fatal("rig b's hook fired for a register sent to rig a alone: the reading is not the rig's own")
+		default:
 		}
 	}
-	return false
+	testwait.Until(t, "rig a's own Server to read its register as waiting", func() (bool, bool) {
+		bFired()
+		select {
+		case <-aWaiting:
+			return true, true
+		default:
+		}
+		select {
+		case got := <-replies:
+			t.Fatalf("register --wait answered before the enrollment it must wait for had reached the session: %+v (%v)", got.resp, got.err)
+		default:
+		}
+		return false, false
+	})
+	bFired()
+	open()
+	freshEnrollment(t, replies, lapsed)
 }
 
 // TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne: a session enrolling with no failure yet
 // (before its first attempt returns) is told only that it is not enrolled; one whose last attempt
 // failed is told why.
 func TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	if got := r.srv.notEnrolled(sess.snapshot()); got.Code != CodeNotEnrolled || got.Error != "this session is not enrolled with the broker yet" {
@@ -456,6 +515,7 @@ func TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne(t *testing.T) {
 // refusal is final, so the helper must stop retrying it and enroll the session afresh; before,
 // the session stayed NOT_ENROLLED until it was relaunched.
 func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-other-operator")
 
@@ -484,6 +544,7 @@ func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) 
 // which no retry can change, so the helper must stop retrying it and enroll the session afresh.
 // Before, the session retried that revoke for as long as its process lived and never enrolled.
 func TestAPriorEnrollmentOfAReplacedCredentialDoesNotStrandTheSession(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-other-credential")
 
@@ -547,6 +608,7 @@ func recordedID(t *testing.T, state string, pid int) string {
 // until the next login. Until then the saved record must still name it, as a lapsed id; before,
 // Recover's save wrote the re-pinned session with no enrollment id at all.
 func TestARestartWithNoLoginKeepsThePriorEnrollmentOnDisk(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 	r := newRig(t, state) // Recover re-pins the child and saves; no login
@@ -562,6 +624,7 @@ func TestARestartWithNoLoginKeepsThePriorEnrollmentOnDisk(t *testing.T) {
 // restarts again before anyone logs in. The second start must still find the prior enrollment
 // on disk and, once logged in, revoke it before enrolling the session afresh.
 func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 

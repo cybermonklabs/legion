@@ -27,6 +27,7 @@ import (
 // the opened message beside that task: each told row records the opening as owed, and the approval
 // queues the reconcile that sends the news.
 func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -71,6 +72,7 @@ func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *tes
 // Here a new version of the Verification document is approved: its checks are the root's alone, so
 // the root's reviewer and the root architect are owed it, and the child is not.
 func TestAnOpeningGoesAsNewsToAnOwedReviewerAndAsTheMessageWithTheClauseToAnUnowedChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 4, Status: "needs_review", Rank: "U"})
@@ -175,6 +177,7 @@ func TestAGateMoveReachesTheFixBesideTheReview(t *testing.T) {
 // same child with no architect of its own, which the tree root's architect holds: its row owes no
 // opening, since the root's architect is told the opening once, on its own row.
 func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-208", "LEGION-209"
 	for _, tc := range []struct {
 		name string
@@ -226,6 +229,7 @@ func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(
 // approved version, so it queues the reconcile, which finds the change decision-only and raises
 // what each holder took without a task (the daemon's design_changes executor).
 func TestADecisionOnlyCarryFromOpenToOpenSendsNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -258,6 +262,7 @@ func TestADecisionOnlyCarryFromOpenToOpenSendsNothing(t *testing.T) {
 // every holder told the gate closed is sent the opened message, with the clause that nothing its
 // issue holds changed since that version, and the architect with the words for the tree.
 func TestAChangesRequestThenARestoreTellsEveryHolderNothingChanged(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -295,6 +300,7 @@ func TestAChangesRequestThenARestoreTellsEveryHolderNothingChanged(t *testing.T)
 // A gate event that moves nothing — an approval of a gate already open — tells nobody: the
 // messages are of the two moves, not of every event of the document.
 func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -317,6 +323,7 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 // each is owed their news, and each is told the opening by the task that carries it, its told row
 // recording the opening as owed once the spec's approval opens the gate, and not before.
 func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -356,6 +363,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
 // which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
 func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	// The criteria step is gated and registered by nothing; the spec step is approved, so the
@@ -380,6 +388,7 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 // version nobody has approved. The merger merges on the message, so a registration that told
 // nobody left it merging under a document that is with its reviewer.
 func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -406,6 +415,7 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 // version the registration finds approved (a changes request had closed the gate on it), so each
 // is owed no news, and each is sent the opened message with the words that nothing changed since.
 func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,

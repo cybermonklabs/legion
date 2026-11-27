@@ -1,3 +1,4 @@
+-- replaces: 20261120144431_pull_request_heads_attribution_inputs.up.sql sha256:8ec836f82050a623e4731e2e8067428a99144c17b4c2a391fc97d40df241da60
 -- 20261120144431_pull_request_heads_attribution_inputs.up.sql
 --
 -- What a pull request's issue was judged from, stored on its pull_request_heads row, so that a
@@ -25,9 +26,13 @@
 -- the body and the commit messages are on no stored row, and a census that rewrites a row refuses
 -- the deploy (cmd/dispatch/README.md, "Pre-deploy census"). The release that carries this migration
 -- raises delivery.AttributionRuleVersion to 4, so the reconcile's merged arm reads each merged row
--- once more and stores its inputs, and an open row is read again within five minutes anyway. Until
--- then a change of the links judges such a row as the release before did: it takes the pull request
--- from the issue where the link that gave it is gone, and leaves it for the reconcile.
+-- once more and stores its inputs, at most delivery.RejudgedHeadsPerPass (50) rows a pass, about 600
+-- an hour. An open row is read again by the first reconcile pass that finds it unread for longer
+-- than delivery.PullRequestHeadStaleAfter (four and a half minutes), as far as the pass's batch of
+-- delivery.PullRequestHeadBatch (200) rows reaches, so two reads of it are at most about nine and a
+-- half minutes apart. Until then a change of the links judges such a row as the release before did:
+-- it takes the pull request from the issue where the link that gave it is gone, and leaves it for
+-- the reconcile.
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
 -- takes ACCESS EXCLUSIVE on pull_request_heads, which every pull request event and every results

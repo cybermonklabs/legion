@@ -12,6 +12,7 @@
     "kind": "pr",
     "merge_commit_sha": "3333333333333333333333333333333333333333",
     "merged": "true",
+    "merged_at": "2026-09-07T03:10:00Z",
     "merged_by": "octocat",
     "number": "42",
     "repo": "example-org/example-repo",

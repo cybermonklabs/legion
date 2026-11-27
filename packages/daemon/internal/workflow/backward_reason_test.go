@@ -23,6 +23,7 @@ import (
 // between the same two statuses the other way, planning to implementing or reviewing to
 // accepting.
 func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from, to phase.Phase
 		want     string
@@ -85,6 +86,7 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 // reviewing: the tester's own move out of testing is refused before its reason is read
 // (TestATestersBackwardMoveOutOfTestingIsRefused).
 func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
+	t.Parallel()
 	const decision = ":::ask{urgency=\"med\"}\nWhich table should the plan name?\n\n- users: the old one\n- accounts: the new one\n:::"
 	for _, tc := range []struct {
 		name, reason, code string
@@ -123,6 +125,7 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 // and the outbox's marker come with it, so the check reads the post and not the reason; a reason
 // one block shorter is taken.
 func TestABackwardReasonIsMeasuredAsItsPost(t *testing.T) {
+	t.Parallel()
 	reason := strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n")
 	if err := dispatchbody.Check(reason); err != nil {
 		t.Fatalf("the reason alone = %v, want Dispatch taking it", err)

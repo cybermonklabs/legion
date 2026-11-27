@@ -94,10 +94,19 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 	return condition()
 }
 
-// margin is how long before the test binary's deadline Until and Receive give up: the time the
+// Margin is how long before the test binary's deadline Until and Receive give up: the time the
 // failing test's cleanups and the failure itself have to run in before Go's alarm panics the
-// binary.
-const margin = 30 * time.Second
+// binary. A bound of another package's that must end before that alarm too (testdb's connect
+// timeout) leaves the same.
+const Margin = 30 * time.Second
+
+// PastTheRun is a span longer than any run of a test binary: longer than the longest -timeout a
+// command of this repository gives one (the API race step's 70 minutes,
+// .github/workflows/ci-job-envoy-go-race-api.yaml). A test sets a product's window, interval or
+// timeout to it where the row needs that span never to end during the run (a hold that must stay
+// live, a ping on a healthy connection, a publish bound the row does not race), so a loaded machine
+// cannot end it before the binary's deadline ends the test.
+const PastTheRun = 24 * time.Hour
 
 // Until waits until read reports true, asking every Poll, and returns what it read then. Its one
 // bound is the test binary's deadline less margin, and its failure prints the last value read.
@@ -130,7 +139,7 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 // select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	if end, bounded := giveUpAt(t); !bounded || time.Now().Before(end) {
+	if end, bounded := giveUpAt(t); !bounded || clock.Now().Before(end) {
 		expired, stop := expiry(t)
 		defer stop()
 		select {
@@ -173,7 +182,7 @@ func Context(t *testing.T) context.Context {
 // (bounded false) it asks until holds reports true.
 func asked(end time.Time, bounded bool, poll time.Duration, holds func() bool) bool {
 	for !holds() {
-		if bounded && !time.Now().Before(end) {
+		if bounded && !clock.Now().Before(end) {
 			return false
 		}
 		time.Sleep(poll)
@@ -188,8 +197,7 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	if !bounded {
 		return nil, func() bool { return false }
 	}
-	timer := time.NewTimer(time.Until(end))
-	return timer.C, timer.Stop
+	return clock.Timer(end)
 }
 
 // giveUpAt is the moment Until, Receive and Context give up in t: the test binary's deadline less
@@ -199,7 +207,7 @@ func giveUpAt(t *testing.T) (time.Time, bool) {
 	if !bounded {
 		return time.Time{}, false
 	}
-	return deadline.Add(-margin), true
+	return deadline.Add(-Margin), true
 }
 
 // oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
@@ -210,7 +218,7 @@ var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 // wait that has none.
 func gaveUp(t *testing.T, what string, reading func() string) {
 	t.Helper()
-	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
+	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, Margin)
 	if reading != nil {
 		text += "; last read: " + reading()
 	}

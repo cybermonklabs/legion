@@ -176,6 +176,7 @@ func assertWalksAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 // task: each return counts and tells as today, on the task. A plan whose one step is the tester is
 // refused, since it has no implementer.
 func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
+	t.Parallel()
 	t.Run("a review that requests changes returns to the implementer, the same agents on", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -321,6 +322,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 // (step_stop) and its session kept, and the owner told once (task-stopped). The first test's
 // assertion of that review, that the issue stands in implementing, fails on it.
 func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -425,6 +427,7 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // that no row serves is refused today. An issue with no plan rows has no step to name: a report
 // naming one is refused, and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
+	t.Parallel()
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once, with its check failed at headOne, the head the
 	// tester's completion names, and the task of the planner's start the gate's opening wrote: the
@@ -709,6 +712,7 @@ func TestAPassThatMovesNothingSaysNothingOfTheStepNamed(t *testing.T) {
 // is. The same fail naming no step is then taken on the tester's own row and moves nothing. Before,
 // the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the same fail.
 func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -753,6 +757,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 // its plan of one task, which walks it. Each walk is read in a transaction of its own and with no
 // boot pass, which would read the same walk first.
 func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

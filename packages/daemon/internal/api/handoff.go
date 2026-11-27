@@ -19,9 +19,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// HandoffCompleteRequest is what a worker reports when its phase is done, or what the checking
-// role reports on a look of its closed issue's production check. A phase with a handoff (planning,
-// implementing, testing, reviewing; phase.Handoff) ends with a handoff record on the Dispatch
+// HandoffCompleteRequest completes a phase, or reports a production check's look when
+// CheckOpenedAt names that check. No state decides which call it is. A phase with a handoff
+// (planning, implementing, testing, reviewing; phase.Handoff) ends with a handoff record on the Dispatch
 // issue, which the worker writes with `dispatch handoff-write` under its own session, and its
 // completion names it: HandoffID and HandoffVersion, which the `legion` tool's handoff_complete
 // reads as the newest record of the phase before posting. The daemon reads that record back from
@@ -73,6 +73,7 @@ type HandoffCompleteRequest struct {
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
+	CheckOpenedAt  *time.Time `json:"checkOpenedAt,omitempty"`
 	PlanRating     *int       `json:"planRating,omitempty"`
 	PlanReason     *string    `json:"planReason,omitempty"`
 	ReturnTo       *int       `json:"returnTo,omitempty"`
@@ -142,30 +143,13 @@ func (a *completionAnswer) answered() int {
 	return a.status
 }
 
-// answerCompletion records a phase completion or a production check report (checkReport), and
-// answers the grant it redeemed — the zero grant for a call refused before it redeemed one — and
-// the request as it decoded it, for the route's line (handoffComplete). The grant is redeemed and
-// the record read before the two are told apart, so an invalid grant is refused before a field
-// only one of them requires. Which of the two a call is, is what the caller's own
-// live assignment says: a claim whose worker took a look of its issue's production check
-// (supervise.Claim.ServingCheck) reports on that look, so the report lands where the check's own
-// refusals are written — CHECK_NOT_OPEN when the issue has no open check, CHECK_ROLE_MISMATCH
-// when the caller is not the role the check records — and every other call is a phase completion.
-// The issue's phase is not what decides it: under `production_check: tester` a merged close
-// spares the tester's claim and opens a look behind its running testing turn, and that turn's own
-// completion — which a tester's plugin below CheckStatesContract still sends with pass or fail, as
-// a check report names a verdict — would be recorded as a report on production nobody made. A
-// phase completion is held to its commit (the implementer's and the merger's, and the tester's,
-// the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff
-// record a file-backed phase ends with (handoffRecord), the refusal of a verdict
-// (VERDICT_NOT_TAKEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED), the
-// run and the phase entry its claim serves, the implementer's in implementing to an open pull
-// request on its branch or a merged one recorded (implementationPullRequest), and one of a phase
-// its role does not run is refused HANDOFF_NOT_CURRENT_PHASE: by the entry fence (entryFence),
-// before the fact, when the entry its claim serves differs from the role's phases row, and
-// otherwise by the engine, which records instead a completion that arrives after the daemon moved
-// the issue on by an event (workflow's leftItsPhase). A completion of a done issue, which runs no
-// phase, by a session working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
+// answerCompletion records a phase completion, or a check report when CheckOpenedAt is present.
+// The grant and issue are read first. On the check path, the named open check, its role and the
+// look the claim serves are validated before any fact is applied (checkReport). On the phase
+// path, the claim supplies the run and entry, never the meaning of the call. The phase completion
+// is held to its commit (the tester's, the head it tested: TESTED_HEAD_REQUIRED), handoff record,
+// the refusal of a verdict (VERDICT_NOT_TAKEN) and entry; the engine takes a late report only
+// where this run's role actually started its step (workflow's ranUnreported).
 func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant credential.Grant, req HandoffCompleteRequest) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
@@ -201,39 +185,22 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return
 	}
-	// The run, the phase entry and the production check look this completion belongs to are the
-	// task's that the worker took, which the claim answers (supervise.Claim.ServingRun,
-	// ServingEntry, ServingCheck) and nothing on the request says. The claim is read once,
-	// here, and the route, the run, the entry and the queued task the refusals name all come
-	// from that one read: Claim() waits for the decision in flight, so two reads can straddle one
-	// and answer from different decisions — a run taken before a delivery was confirmed beside
-	// the entry that confirmation left.
+	// One claim snapshot supplies the run, entry and served look: two reads could straddle a
+	// delivery's confirmation. Only the request field chooses the route.
 	c := machine.Claim()
-	// A completion is a check report when the caller's own live assignment is a look of its
-	// issue's production check (the doc above), and a phase completion otherwise.
-	if look := c.ServingCheck(); look.Look > 0 {
-		s.checkReport(w, r, grant, position.check, look, req)
+	if req.CheckOpenedAt != nil {
+		s.checkReport(w, r, grant, position.check, c.ServingCheck(), req)
 		return
 	}
-	// A done issue runs no phase, so a completion from a session working no look of its
-	// production check is neither of the two, and the cause is named here rather than left to
-	// the phase path below: that path holds an implementer's and a merger's completion to a
-	// commit (MISSING_FIELD), which the plugin's done branch never sends, since it sends what a
-	// check report sends (pi-shared's legion-phase-ops.ts, completeHandoff). A late implementer
-	// or merger turn after the close lands here, an architect's on a done root does, and so does
-	// a look a restart of the daemon left unrecorded on its claim. Nothing of this call is
-	// recorded either way, so the answer is the whole of it, and it says who reports here and
-	// who has nothing to: the check names one role, and only a turn of that role's own look task
-	// reports on it.
 	if issue.Phase == phase.Done {
 		whose := "it has no open production check, so there is nothing here for any role to report"
 		if position.check != nil && position.check.Open() {
 			whose = fmt.Sprintf(
-				"its production check is the %s's, and only a turn of that role's own look task reports on it, naming the look and a verdict of pass, pending or fail; every other role has nothing to report here",
+				"its production check is the %s's; that role reports pass, pending or fail with checkOpenedAt, the check_opened_at time in its look task or check.openedAt from read_record",
 				position.check.Role)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
-			"%s is done: no phase of it is open, and this session works no look of its production check. This completion reported on nothing and recorded nothing: %s.",
+			"%s is done: no phase of it is open, and this completion names no check with checkOpenedAt. This completion reported on nothing and recorded nothing: %s.",
 			grant.Issue, whose))
 		return
 	}
@@ -246,7 +213,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// the contract, in a turn when its daemon was upgraded, still sends pass or fail, which the route
 	// ignores so that the completion is taken and the states decide; no other role ever sent one,
 	// so another role's below the contract is refused alike.
-	if req.Verdict != "" && (c.PluginContract >= CheckStatesContract || grant.Role != claim.RoleTester) {
+	if req.Verdict != "" && (c.PluginContract >= entryNumber(CheckStatesContract) || grant.Role != claim.RoleTester) {
 		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_NOT_TAKEN",
 			"a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded")
 		return
@@ -542,9 +509,9 @@ func returnToRefusal(req HandoffCompleteRequest, testsAStep bool, what string) *
 //     completes again once Dispatch answers.
 //   - HANDOFF_RECORD_MISMATCH: the record is another issue's, another phase's, or another version.
 //   - HANDOFF_SESSION_MISMATCH: another session wrote it, or no session did. A record carried
-//     from before handoffs moved to the Dispatch issue is under the daemon's own session
-//     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
-//     and write it again from the worker's session.
+//     from before handoffs moved to the Dispatch issue is under the daemon's own session, the
+//     session of its own Dispatch project (dispatch.DaemonSession), so it is refused this way too,
+//     and the refusal says to read it and write it again from the worker's session.
 //
 // The claim holds session as the store keeps it (supervise's register), so the record Dispatch
 // answers is compared as the store would keep it (storetext.Strings).
@@ -585,7 +552,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 	if handoff.Author.IsSession(session) {
 		return handoff, true
 	}
-	if handoff.Author.IsSession(dispatch.DaemonSession(issue.Key)) {
+	if handoff.Author.IsSession(dispatch.DaemonSession(s.dispatchProject)) {
 		s.writeFailure(w, r, http.StatusForbidden, "HANDOFF_SESSION_MISMATCH", fmt.Sprintf(
 			"handoff record %s (%s version %d) was written by the daemon's own session %s, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session %s: read it with %s, write it again with %s from this session, then complete naming the new record; this completion changed nothing",
 			req.HandoffID, word, handoff.Version, handoff.Author.ID, session, read, write))
@@ -1000,42 +967,26 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
-// checkReport records the checking role's report on look, the look of its closed issue's
-// production check the caller's own live assignment is (supervise.Claim.ServingCheck, which the
-// route read before it sent the call here). Every refusal below is written before the fact is
-// applied — the apply marks the event processed before any handler runs (intake.ApplyFact) — so a
-// refused report changes nothing, leaves the look open, and the report sent again, corrected, is
-// recorded:
-//
-//   - CHECK_NOT_OPEN: the issue has no open check (a done issue whose check closed, or one never
-//     opened, since nothing merged), or the one it has is not the check this look belongs to — a
-//     later merge of the same issue replaced it (record.ProductionCheck.NamedBy), and its looks
-//     count from one again, so the look reported names no look of the check the issue holds.
-//   - CHECK_ROLE_MISMATCH: the grant is not the check's own role (record.ProductionCheck.Role,
-//     the role the check opened with). The API is the only layer that holds the caller's role —
-//     intake.CheckReport carries a claim token, not a role — so this is the one place that can
-//     hold a report to the role the check records. What it guards is one path: a start row
-//     queued before start rows carried the check instance (record.SuperviseRequest.CheckOpenedAt,
-//     written by workflow's startLook), whose zero instance NamedBy takes for whatever check the
-//     issue holds now. That row's look is the earlier check's, worked by the role that check
-//     opened with, and the check open now — a later merge's, under a project whose
-//     `production_check` names another role — records the other. Every look the running daemon
-//     starts is the check's own role's (startLook starts check.Role) and names its instance, so
-//     the two checks above answer every other claim that holds a look of another role.
+// checkReport records the look of the check explicitly named by CheckOpenedAt. Before any fact,
+// it refuses a missing, closed or different check (CHECK_NOT_OPEN), another role's check
+// (CHECK_ROLE_MISMATCH), then a look the claim has not served (CHECK_LOOK_NOT_SERVED). The
+// remaining refusals validate the report's fields, not which kind of call the request is.
 //   - CHECK_VERDICT_REQUIRED: the verdict is not one of pass, pending or fail.
 //   - CHECK_WAKE_REQUIRED: a pending on a look that is not the check's last (Last) names no
 //     wakeAt. The checking agent names its own next look, and nothing else would start one.
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
+//   - CHECK_PHASE_FIELDS_UNEXPECTED: a commit, handoffId or handoffVersion, which only a phase
+//     completion carries.
 //   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, whatever its form, which only the
 //     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
-// No commit is read: the look pushed nothing. No run is read either: the check fences itself on
-// the issue and the look, since the look's task is no phase's run and a woken session may hold an
-// older one. The look sent is the caller's own, not whichever look the check has reached, so a
-// report from a turn that outlived its look is held to the look it was given and the engine
-// refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
+// A commit or handoff is refused: the look pushed nothing and completed no phase. No run is read:
+// the check fences itself on the issue and the look, since its task is no phase's run and a woken
+// session may hold an older one. The look sent is the caller's own, not whichever look the check
+// has reached, so a report from a turn that outlived its look is held to the look it was given and
+// the engine refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
 // the issue, the check (record.ProductionCheck.ID: a later merge of the same issue replaces the
 // check and counts its looks from one again, and the rerun's report on look 1 is a new fact, not
 // the first check's), the look and the verdict: a retried report of the same look is the same
@@ -1044,19 +995,27 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // report of the next look is a new fact.
 func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, check *record.ProductionCheck, look supervise.CheckLook, req HandoffCompleteRequest) {
 	if check == nil || !check.Open() {
-		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf("%s has no open production check; this completion changed nothing", grant.Issue))
+		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
+			"%s has no open production check opened at %s; this completion changed nothing",
+			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano)))
 		return
 	}
-	if !check.NamedBy(look.OpenedAt) {
+	if !check.OpenedAt.Equal(*req.CheckOpenedAt) {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
-			"look %d of %s belongs to a production check a later merge replaced; the check open now was opened %s and counts its looks from one again, so this completion changed nothing",
-			look.Look, grant.Issue, check.OpenedAt.UTC().Format(time.RFC3339)))
+			"%s's production check is open, but it did not open at %s. This completion changed nothing. Use check_opened_at from its look task or check.openedAt from read_record as checkOpenedAt. Send the report again with that time.",
+			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano)))
 		return
 	}
 	if grant.Role != check.Role {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_ROLE_MISMATCH", fmt.Sprintf(
 			"%s's production check is the %s's, and this completion is the %s's: only the role the check records reports on it; the record is unchanged, so the check's own role may send this report",
 			grant.Issue, check.Role, grant.Role))
+		return
+	}
+	if look.Look <= 0 || !check.NamedBy(look.OpenedAt) {
+		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
+			"this session works no look of %s's check opened at %s; nothing was recorded. Report from the turn of its own look task, naming checkOpenedAt (check_opened_at on the tool)",
+			grant.Issue, check.OpenedAt.UTC().Format(time.RFC3339Nano)))
 		return
 	}
 	if req.Verdict != "pass" && req.Verdict != "pending" && req.Verdict != "fail" {
@@ -1076,6 +1035,11 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		}
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
+		return
+	}
+	if req.Commit != "" || req.HandoffID != "" || req.HandoffVersion != 0 {
+		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_PHASE_FIELDS_UNEXPECTED",
+			"a check report carries no commit, handoffId or handoffVersion. Remove those phase fields and send the report again. Nothing was recorded.")
 		return
 	}
 	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)

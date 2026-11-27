@@ -11,36 +11,57 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
-// The workspace's records — its creation moment and its in-use mark — live in its own .jj
-// directory, on the issue's volume, which every agent of the issue can write. So each record is
-// read and written through the one descriptor openJJ answers, never by its path: a .jj swapped for
-// a link once it is open reaches no other directory.
+// The workspace's creation record lives in its own .jj directory, on the issue's volume, which
+// every agent of the issue can write. So the record is read and written through the one
+// descriptor openJJ answers, never by its path: a .jj swapped for a link once it is open reaches
+// no other directory.
 
 // errLinkedJJ is the refusal of a workspace whose .jj is a symbolic link (openJJ).
 var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 
-// openJJ opens the .jj directory of the workspace at dir with O_DIRECTORY|O_NOFOLLOW, so a .jj
-// that is a symbolic link is refused with errLinkedJJ and one that is no other directory with
-// ENOTDIR. A link there would carry the records into a directory off the workspace's disk: a
-// record read there says nothing of this workspace, and one written there can be lost at a
-// container restart while the workspace keeps its work. Every read and write of a record goes
-// through the open directory (openat, fstatat), so nothing after this open reads .jj by its path
-// again. held, when set, runs once the directory is open and before the record is read or
-// written: a test's seam for a .jj swapped in that window.
+// openJJ opens the .jj directory of the workspace at dir with O_NOFOLLOW and no O_DIRECTORY, so a
+// .jj that is a symbolic link is refused with errLinkedJJ, and then has the descriptor's own fstat
+// refuse anything but a directory with ENOTDIR. A link there would carry the record into a
+// directory off the workspace's disk: a record read there says nothing of this workspace, and one
+// written there can be lost at a container restart while the workspace keeps its work.
+//
+// The open does not ask for O_DIRECTORY because the kernels it runs under answer a link opened with
+// O_DIRECTORY|O_NOFOLLOW three ways: Linux with ENOTDIR, other kernels with ELOOP, and gVisor, which
+// every issue pod runs under, by following the link and opening its target
+// (TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten fails in a gVisor pod with
+// O_DIRECTORY). O_NOFOLLOW alone is refused at a link under each of them (ELOOP on Linux and gVisor; the
+// Lstat names the refusal on a kernel that answers otherwise), and the fstat of what was opened, not
+// of the path, is what says it is a directory (CERT FIO01-C). O_NONBLOCK keeps a .jj that is a FIFO
+// from holding the open, and O_NOCTTY keeps a .jj that is a terminal from becoming the controlling
+// terminal of the process that opens it. The open is asked again where a signal interrupts it, as
+// os.OpenFile asks (rolefile.Openat), and the descriptor is an *os.File from the moment it is open,
+// so its fstat (File.Stat) is asked again on an interrupt too, and every refusal closes it through
+// File.Close (the Legion reviewer's Minor on #5285 at 69e00593). Every read and write of the record
+// goes through the open directory (openat), so nothing after this open reads .jj by its path again.
+// held, when set, runs once the directory is open and before the record is read or written: a
+// test's seam for a .jj swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	jj, err := os.OpenFile(path, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-		// The open refused it: Linux answers a link opened with O_DIRECTORY|O_NOFOLLOW ENOTDIR, as
-		// it does a file, and other kernels ELOOP. The Lstat only says which the refusal was.
+	fd, err := rolefile.Openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
 		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
 			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
 		}
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
+	jj := os.NewFile(uintptr(fd), path)
+	info, err := jj.Stat()
 	if err != nil {
+		jj.Close()
 		return nil, err
+	}
+	if !info.IsDir() {
+		jj.Close()
+		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
 	}
 	if held != nil {
 		held()
@@ -131,70 +152,4 @@ func created(dir string, held func()) (at time.Time, ok bool, err error) {
 		return time.Time{}, false, fmt.Errorf("the creation record %s holds %q, not an RFC 3339 instant", record, body)
 	}
 	return at, true, nil
-}
-
-// inUseFile is where MarkInUse records that the workspace is in use, beside createdFile in the
-// workspace's own .jj directory: jj never snapshots it, so the record is never committed, and it
-// goes with the workspace, so a workspace created again holds no record.
-const inUseFile = "legion-in-use"
-
-// MarkInUse records that the workspace at dir is in use: a restore or a role has started on it.
-// It opens .jj (openJJ), refusing a .jj that is a symbolic link, and creates the record in that
-// directory with O_CREAT|O_EXCL|O_NOFOLLOW. A create that fails with EEXIST means something is at
-// its path already, which InUse reads as in use, and MarkInUse returns nil for it. Then it syncs
-// the same directory, so the record's entry is on the disk before MarkInUse returns. It returns
-// every other error it meets: an ENOTDIR from a .jj that is no directory, an EACCES, an ENOSPC.
-// The caller must start no role on a workspace it could not mark.
-func MarkInUse(dir string) error { return markInUse(dir, nil) }
-
-// markInUse is MarkInUse, with held run as openJJ runs it.
-func markInUse(dir string, held func()) error {
-	jj, err := openJJ(dir, held)
-	if err != nil {
-		return fmt.Errorf("create the in-use record: %w", err)
-	}
-	defer jj.Close()
-	file, err := openIn(jj, inUseFile, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0o644)
-	switch {
-	case errors.Is(err, fs.ErrExist):
-	case err != nil:
-		return fmt.Errorf("create the in-use record: %w", err)
-	default:
-		if err := file.Close(); err != nil {
-			return fmt.Errorf("create the in-use record: %w", err)
-		}
-	}
-	if err := jj.Sync(); err != nil {
-		return fmt.Errorf("sync the in-use record's directory: %w", err)
-	}
-	return nil
-}
-
-// InUse says whether MarkInUse recorded the workspace at dir in use. The record is on the issue's
-// volume, which every agent of the issue can write, so .jj is opened refusing a symbolic link
-// (openJJ), and the record is read in that directory with fstatat and AT_SYMLINK_NOFOLLOW, which
-// follows no link and opens nothing, so no special file can block it. Anything at the path counts
-// as in use. A workspace with no .jj holds no record.
-func InUse(dir string) (bool, error) { return inUse(dir, nil) }
-
-// inUse is InUse, with held run as openJJ runs it.
-func inUse(dir string, held func()) (bool, error) {
-	jj, err := openJJ(dir, held)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read the in-use record: %w", err)
-	}
-	defer jj.Close()
-	var stat unix.Stat_t
-	err = unix.Fstatat(int(jj.Fd()), inUseFile, &stat, unix.AT_SYMLINK_NOFOLLOW)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, fs.ErrNotExist):
-		return false, nil
-	default:
-		return false, fmt.Errorf("read the in-use record: %w", &fs.PathError{Op: "fstatat", Path: filepath.Join(jj.Name(), inUseFile), Err: err})
-	}
 }

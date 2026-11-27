@@ -11,6 +11,8 @@
 // is held to what Dispatch publishes after a move, and not to a sequence a test wrote by hand.
 package api
 
+//ci:reads packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json TestAFormerHeadOfAnOpenPullRequestKeepsItsStates compares the events the settler published with the committed fixture, which it writes again under UPDATE_GOLDEN=1
+
 import (
 	"bytes"
 	"context"

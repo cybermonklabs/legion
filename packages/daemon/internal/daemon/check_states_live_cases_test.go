@@ -171,9 +171,11 @@ func (r *statesProof) failSendsBack() {
 // back to implementing within statesWithin of the completion (assertion names it), the tester's one
 // phase-finished notice the architect's topic received, whose head is the issue's head and whose
 // failing is failing, compared whole, the implementer's pending task, which carries the reason
-// that notice gives (the move writes both from one value; neither is compared with a literal), and
-// the results Dispatch holds of issue. The implementers' stand-in holds every turn while the task
-// is read, so the task is still the claim's pending delivery.
+// that notice gives (the move writes both from one value; neither is compared with a literal), the
+// daemon's JSON line of the move, with move implementing, the issue's head and failing the ids of
+// failing, the states the daemon holds at the head, each check of failing in its state for its
+// reason, and the results Dispatch holds of issue. The implementers' stand-in holds every turn
+// while the task is read, so the task is still the claim's pending delivery.
 func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, assertion string, failing ...record.FailingCheck) {
 	r.implementer.holdTurn()
 	defer r.implementer.releaseTurn()
@@ -193,6 +195,21 @@ func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, asser
 		r.fail("task-carries-notice", "the implementer's task of %s does not carry the reason %q its tester's notice gives: %q", issue.key, told[0].Reason, task)
 	}
 	r.note("the tester's notice carries the head %s and failing %+v, and the implementer's task carries its reason", told[0].Head, told[0].Failing)
+	var ids []string
+	for _, check := range failing {
+		ids = append(ids, check.Check)
+	}
+	line := r.moveLine(issue, string(phase.Implementing), "move-line")
+	if line.Attrs["head"] != issue.head || !slices.Equal(attrStrings(line.Attrs["failing"]), ids) || len(attrStrings(line.Attrs["waiting"])) != 0 {
+		r.fail("move-line", "the daemon's line %q of %s = %v, want the head %s and failing %v", statesMoveDecided, issue.key, line.Attrs, issue.head, ids)
+	}
+	held := r.heldStates(issue, "held-states")
+	for _, check := range failing {
+		if state := held.States[check.Check]; state.State != check.State || state.Reason != check.Reason {
+			r.fail("held-states", "the daemon holds %s of %s at %s as %+v, want %s for %s", check.Check, issue.key, issue.head, state, check.State, check.Reason)
+		}
+	}
+	r.note("read back: the daemon's line of the move names the head %s and failing %v, and it holds each of them at that head as the notice says", issue.head, ids)
 	r.resultsHeld(issue)
 }
 
@@ -200,8 +217,9 @@ func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, asser
 // nats-server is stopped (SIGSTOP, by the pid the run started it with). The tester records a pass
 // of k1 and of k2, writes its test record and completes testing. For 10 seconds the issue stays in
 // testing and the daemon starts no worker, and the architect is told once, in the tester's
-// phase-finished notice, whose head is the tested head and whose waits_for is fence: the move
-// waits for Dispatch's check states. Then the broker is continued (SIGCONT), Dispatch's outbox and
+// phase-finished notice, whose head is the tested head and whose waits_for is fence, and the
+// daemon's line of the move says it waits, at that head, for the fence: the move waits for
+// Dispatch's check states. Then the broker is continued (SIGCONT), Dispatch's outbox and
 // the daemon's consumer deliver what waited, and the issue goes to reviewing within 10 seconds of
 // the SIGCONT. Once its reviewer starts, the implementer has been given no task, and Dispatch holds
 // the tester's two results.
@@ -240,6 +258,11 @@ func (r *statesProof) completionBeforeEvent() {
 		r.fail("notice", "the tester's phase-finished notices of %s while the move waited = %+v, want one with the head %s and waits_for fence", issue.key, told, issue.head)
 	}
 	r.note("read back: the tester's one phase-finished notice carries the head %s and waits_for %s", told[0].Head, told[0].WaitsFor)
+	waits := r.moveLine(issue, "waits", "move-line")
+	if waits.Attrs["head"] != issue.head || waits.Attrs["waits_for"] != "fence" || len(attrStrings(waits.Attrs["failing"])) != 0 {
+		r.fail("move-line", "the daemon's line %q of %s = %v, want move waits, the head %s and waits_for fence", statesMoveDecided, issue.key, waits.Attrs, issue.head)
+	}
+	r.note("read back: the daemon's line of the move says it waits, at %s, for the fence", issue.head)
 	continued := r.continueBroker()
 	if continued.IsZero() {
 		r.fail("broker", "the run's nats-server was not continued, so nothing can be measured from the SIGCONT")

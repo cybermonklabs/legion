@@ -125,6 +125,7 @@ type requestWindow struct {
 // STALE_ENTRY. Each control is the same request with no change between the read and the fact, and
 // it moves the issue.
 func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	for _, request := range architectsRequests {
 		windows := []requestWindow{
 			{"control: the request of the record its route read", nil, nil},

@@ -32,11 +32,6 @@
 -- branch. Each default is what every row the upgrade finds reads: no commit, no check, no fix, no
 -- branch.
 --
--- workspace_bundles.fix_head is the commit the fix's working copy beside the workspace stood on
--- when a release saved the workspace's work (runtime.WorkspaceBundle.FixHead), '' where none was
--- there, which every saved bundle the upgrade finds reads. The pod that replaces the released one
--- makes the fix's working copy again at that commit.
---
 -- The kind fix_job_read reads a fix's failed job from Dispatch before the fix starts
 -- (record.FixJobRead), ci_news tells a step of a task a CI report or a change of Dispatch's state
 -- (record.CINews), and beside_branches_delete deletes the branches beside a fix on GitHub
@@ -75,11 +70,9 @@
 -- after the block, which a retry of the release before releases. Each deleted notice is one its
 -- architect is never told, and each deleted start a fix that does not run; the failed check stands
 -- on the pull request, where the release before reads it. A deleted ci_news row is a report or a
--- prompt that nobody gets; a step starts by reading Dispatch, so none is owed after the block. A
--- saved bundle keeps its work when the block drops fix_head: the release before restores it
--- without the fix's working copy, whose commits it still carries. The branches legion-beside/… on
--- GitHub stay: each holds the commits of a step beside a fix, which a person reads before deleting
--- it (docs/kubernetes.md lists them).
+-- prompt that nobody gets; a step starts by reading Dispatch, so none is owed after the block. The
+-- branches legion-beside/… on GitHub stay: each holds the commits of a step beside a fix, which a
+-- person reads before deleting it (docs/kubernetes.md lists them).
 --
 -- begin;
 -- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'ci-failed' and split_part(issue, '-', 1) = '<PROJECT>';
@@ -93,7 +86,6 @@
 -- update pull_requests set merge_forward = (merge_forward - 'fix') || case when jsonb_typeof(merge_forward->'earlier') = 'array' then jsonb_build_object('earlier', (select coalesce(jsonb_agg(landed - 'fix' order by at), '[]'::jsonb) from jsonb_array_elements(merge_forward->'earlier') with ordinality as earlier(landed, at))) else '{}'::jsonb end where (merge_forward ? 'fix' or jsonb_path_exists(merge_forward, '$.earlier[*].fix')) and split_part(issue, '-', 1) = '<PROJECT>';
 -- delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
 -- alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix, drop column if exists fix_branch;
--- alter table workspace_bundles drop column if exists fix_head;
 -- update issues set hold_reason = null where hold_reason in ('fix', 'ci') and split_part(key, '-', 1) = '<PROJECT>';
 -- alter table step_starts drop column if exists push_branch, drop column if exists beside_fix, drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
 -- drop table if exists ci_failures;
@@ -140,7 +132,6 @@ alter table step_starts add column start_commit text not null default '',
 alter table pending_task_deliveries add column fix int not null default 0,
   add column fix_from text not null default '', add column move_to text not null default '';
 alter table pending_task_deliveries add column fix_branch text not null default '';
-alter table workspace_bundles add column fix_head text not null default '';
 
 do $$
 declare

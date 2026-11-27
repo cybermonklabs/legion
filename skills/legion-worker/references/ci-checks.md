@@ -4,7 +4,7 @@ Read it when a check of the issue's Verification document carries `ci_check`, be
 
 ## What it is
 
-`ci_check` names the GitHub check run that proves the check at the head.
+`ci_check` names the GitHub check run that proves the check at the head, as GitHub writes it: Dispatch matches the name exactly, and a job of a called workflow writes its check run as `<caller> / <job>` (on cybermonklabs/legion, `test / test` or `dispatch-browser-pr / merge`).
 Such a check has no `run`, its `when` is `before_merge`, and it names its `negative_control`.
 The architect writes it as `skill://legion-architect/references/design-gate.md` says.
 
@@ -47,9 +47,12 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   A check that its task, or a message of a fix, names as a running fix's check is the fix's, and so is its named run: the reviewer may approve while it is red, but that red still holds the merge, and the run must be green before the merge, like any other required check.
   On a task that takes a fix, a prompt to read Dispatch again comes when a check's state changes at the head: it names no verdict.
 
-- A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
-  The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.
+- A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
+  A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
+  The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
+  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
+  On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 
 ## A name that no run answers
 
@@ -57,9 +60,10 @@ When the head's checks have settled and no run of the name answers:
 
 1. Read the merge state first (`gh pr view <n> --json mergeStateStatus`): a `DIRTY` head gets no `pull_request` run, and the forward merge cures it.
 
-2. A held-back job reads `skipped`, not absent: the label cures it.
+2. A held-back job's check is `absent`, not `skipped`, on a pull request without the job's label when the job calls a workflow, as each held-back job on cybermonklabs/legion does (`test / test`, `dispatch-browser / merge`): the calling job concludes `skipped` under its bare name, and no job of the called file starts.
+   The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it, as for any check with no pass.
 
-3. Otherwise the check's words are wrong.
+3. Otherwise the check's words are wrong, as a called workflow's job named without its caller is (`test` for `test / test`).
    Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, Legion holds the task before its retro, and the architect reads the name in the `retro-held` notice.
    No role fails the round or requests changes for it.
 

@@ -223,7 +223,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// is spent, and what is carried over is the account of it the line reports. Without this
 		// the copy publishes and no "supervise: wake ran" is written at all, so the operator's
 		// own check neither counts that wake nor builds its window (scripts/wake-windows.py).
-		notice.PacedAt, notice.PacedFrom = payload.PacedAt, payload.PacedFrom
+		notice.PacedAt, notice.PacedFrom, notice.PacedTurns = payload.PacedAt, payload.PacedFrom, payload.PacedTurns
 		reported := reportedNotice{issue: row.Issue, notice: notice, row: source, architect: architect, claims: row.ID}
 		if err := r.reholdNotice(ctx, reported, notDelivered.Reason, notDelivered.Holder); err != nil {
 			return fmt.Errorf("re-hold the notice for %s that its architect %s did not take: %w", row.Issue, architect, err)
@@ -245,6 +245,9 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	}
 	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
+			return err
+		}
+		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
@@ -308,7 +311,8 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // supersededKept), the copy that would have carried its claims on never being written. Nor is
 // a notice whose architect stopped with its finished tree (stoppedWithTree): nothing of the close
 // is sent to it, and a person's spec decision such a notice reports goes to the controller instead
-// (parkDecision). Those checks read the claim from memory, outside ApplyFact's lock, which the
+// (parkDecision), as does a notice of the issue pod's disk (tellControllerOfKeptPod). Those checks
+// read the claim from memory, outside ApplyFact's lock, which the
 // ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
 // again when it runs the row.
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
@@ -323,6 +327,9 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		}
 		if stoppedWithTree(lingers, held) {
 			if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
+				return err
+			}
+			if err := r.tellControllerOfKeptPod(ctx, issue, reported.row, notice, key, reported.architect, "it stopped with its finished tree"); err != nil {
 				return err
 			}
 			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",

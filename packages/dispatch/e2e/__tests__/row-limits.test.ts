@@ -88,11 +88,11 @@ function collectedFiles(root: string, relative: string): string[] {
   return files;
 }
 
-// The walk is `e2e/source-files.ts`'s, which `e2e/fixed-waits.ts` and `e2e/no-browser-rows.ts`
-// walk with too, and the filters `testFiles` hands it are this rule's own, so what it covers is
-// asserted rather than assumed: every file `bun test` collects in this directory, at any depth
-// below it, `fixtures/` included, and no file beside them. The set this row expects is walked
-// above, not asked of the rule.
+// The walk is `e2e/source-files.ts`'s, which the suite's other source scans walk with too, and
+// the filters `testFiles` hands it are this rule's own, so what it covers is asserted rather than
+// assumed: every file `bun test` collects in this directory, at any depth below it, `fixtures/`
+// included, and no file beside them. The set this row expects is walked above, not asked of the
+// rule.
 test("the scan reads every test file of the directory, wherever it stands", () => {
   const collected = collectedFiles(e2eDirectory, "__tests__").sort();
   expect(scannedFiles).toEqual(collected);
@@ -183,7 +183,7 @@ test("the scan reads every spelling of a test file the lane collects", () => {
 });
 
 // The lane is `bun run test:harness e2e/__tests__`, and package.json's `test:harness` script is
-// `bun test --parallel --timeout 60000`. `bun test <directory>` collects a `*.test.ts` at any
+// `bun test --parallel=8 --timeout 60000`. `bun test <directory>` collects a `*.test.ts` at any
 // depth below it, so a row written one directory down runs on the lane like any other. This row
 // plants the same bare `90_000` at the top of a scratch `__tests__`, one directory below it, and
 // under its `fixtures/`, and proves the rule reads all three files and refuses the limit in each.

@@ -8,17 +8,123 @@
 package requests
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
+
+// MintMessage is logged, at INFO, once for each credential the broker mints for a grant: each
+// token a minter makes on a release (one for each slot of its value, so one for each account of a
+// GitHub App's installations), and each access token the proxy gets at an exchange
+// (internal/cipher/proxy). Its fields are enrollment=, grant=, secret=, way= (mint, exchange),
+// type= (the secret's type), slot= (which of the name's values: a GitHub account's slot, or
+// "value"), what the release minted it from where it knows it (mintedFrom): app= (the GitHub
+// App's id) and account= (the GitHub account of the slot, or the service account the token was
+// minted as), the repositories= of that account and the permissions= the mint asked for, and
+// sha256=, the hex SHA-256 of the credential. No field holds the credential or any part of it: the
+// hash is what a scan of a pod's files compares against, to tell a minted token that reached the
+// pod.
+const MintMessage = "broker: a token was minted for a call"
+
+// mintedFrom is what a release minted a value from, as its MintMessage lines name it: the GitHub
+// App's id, which a github-app secret's stored value names (app_id); the account, which is the
+// service account a google-service-account or anthropic-federation token is minted as (the stored
+// value's service_account, which its minter mints for only where it is the deployment's binding of
+// the secret), or the one GitHub account a scope of one account mints for; and the repositories and
+// permissions of the GitHub scope the mint asked for (gitHubScope), the request's target's where it
+// named one. None of it is a credential: the stored value's key and every token stay out of it.
+type mintedFrom struct {
+	app, account string
+	repositories []string
+	permissions  map[string]string
+}
+
+// mintedFromOf is what a release of secretType minted from value, the stored value its minter was
+// given, under scope, the GitHub scope it asked for (nil for a type of no GitHub scope). The value
+// is read for its two fields that name no credential and no other: the minter has decoded it
+// whole already, so a field it lacks names nothing.
+func mintedFromOf(secretType, value string, scope *secrets.GitHubScope) mintedFrom {
+	var from mintedFrom
+	if scope != nil {
+		from.repositories, from.permissions = scope.Repositories, scope.Permissions
+		if len(scope.Accounts) == 1 {
+			from.account = scope.Accounts[0]
+		}
+	}
+	var named struct {
+		AppID          string `json:"app_id"`
+		ServiceAccount string `json:"service_account"`
+	}
+	switch secretType {
+	case policy.TypeGitHubApp:
+		if json.Unmarshal([]byte(value), &named) == nil {
+			from.app = named.AppID
+		}
+	case policy.TypeGoogleServiceAccount, policy.TypeAnthropicFederation:
+		if json.Unmarshal([]byte(value), &named) == nil {
+			from.account = named.ServiceAccount
+		}
+	}
+	return from
+}
+
+// logMinted writes one MintMessage line for each slot of a value a minter made for name (its
+// split, or the split a release that holds nothing back would take of it, as redact.go takes it),
+// with what the release minted it from: a GitHub account's slot names that account, and the
+// repositories of it alone, since each account's token names its own repositories.
+func logMinted(grantID, enrollmentID, name, way string, released releasedName) {
+	split := released.split
+	if !released.behindAirlock() {
+		split, _ = airlockSplitOf("", released.secretType, released.gitHubValue, released.value)
+	}
+	from := released.from
+	var permissions string
+	for _, permission := range slices.Sorted(maps.Keys(from.permissions)) {
+		permissions = strings.TrimSpace(permissions + " " + permission + ":" + from.permissions[permission])
+	}
+	for _, slot := range split.slots() {
+		sum := sha256.Sum256([]byte(split.values[slot]))
+		fields := []any{"enrollment", enrollmentID, "grant", grantID, "secret", name, "way", way, "type", released.secretType, "slot", slot}
+		account := from.account
+		if owner, ok := strings.CutPrefix(slot, SlotGitHubPrefix); ok {
+			account = owner
+		}
+		if from.app != "" {
+			fields = append(fields, "app", from.app)
+		}
+		if account != "" {
+			fields = append(fields, "account", account)
+		}
+		var repositories []string
+		for _, repository := range from.repositories {
+			if strings.HasPrefix(repository, account+"/") {
+				repositories = append(repositories, repository)
+			}
+		}
+		if len(repositories) > 0 {
+			fields = append(fields, "repositories", strings.Join(repositories, " "))
+		}
+		if permissions != "" {
+			fields = append(fields, "permissions", permissions)
+		}
+		slog.Info(MintMessage, append(fields, "sha256", hex.EncodeToString(sum[:]))...)
+	}
+}
 
 // ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
 // is written, followed by grant=, request=, enrollment= and the fields grantUse.recorded answers,
@@ -104,6 +210,9 @@ type releaseRead struct {
 	// airlockOnly leaves every name the airlock does not hold back out of the read: no value of
 	// it is read, and none is minted.
 	airlockOnly bool
+	// narrowing is a release body's github_app field (ValuesNarrowed), nil for none: each name is
+	// minted as narrowedServed hands it over, and none is held back by the airlock.
+	narrowing *GitHubAppNarrowing
 }
 
 // releasedName is one granted name as a release read it.
@@ -132,6 +241,9 @@ type releasedName struct {
 	// installation holds left out, by account (secrets.Minted.LeftOut); nil for any other name
 	// and where the cut left nothing out.
 	leftOut map[string][]string
+	// from is what a minter minted the value from (mintedFromOf), which its MintMessage lines
+	// name; zero for a stored value.
+	from mintedFrom
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -153,33 +265,52 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 			m.giveBack(ctx, read)
 		}
 	}()
+	rules := checked.set.ProxyRules()
 	for _, g := range checked.granted {
-		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
-		// binds at least one host (proxyrules.Validate), so an entry is a name the airlock holds back.
-		entry := m.Airlock.Lookup(g.name)
-		// A name under an entry of kind dpop is a CI run's results capability, which the broker
-		// mints and holds, and never a stored secret's release: it is refused before anything of
-		// it is read.
-		if entry != nil && entry.Kind == proxyrules.KindDPoP {
-			return nil, fmt.Errorf("release %s: %w", g.name, ErrAirlockMintedOnly)
+		// The name's binding, nil for a name whose secret's proxy tag names no kind. Every kind
+		// binds at least one host (proxyrules.Validate), so a binding is a name the airlock holds
+		// back.
+		entry := rules.Lookup(g.name)
+		// A name bound by a dpop block is a capability the broker mints and holds, and never a
+		// stored secret's release: it is refused before anything of it is read.
+		if entry != nil && entry.Way == proxyrules.WayDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrMintedOnly)
+		}
+		// A grant made from a github_app field releases only through that field: its recorded
+		// read_only is what cut the token, and a release that dropped the field would hand over
+		// the profile's own, wider, value. The session's release refuses it (its caller answers
+		// ErrGitHubAppFieldRefused), and so does the proxy's, which holds no such name anyway.
+		if want.narrowing == nil && g.gitHubAppField {
+			return nil, gitHubAppFieldRefused("the grant of " + g.name + " was made from a github_app field, so its release carries that field")
+		}
+		if want.narrowing != nil {
+			entry = nil
 		}
 		if entry == nil && want.airlockOnly {
 			continue
 		}
 		served := checked.set.Secrets[g.name]
-		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
+		if want.narrowing != nil {
+			served = narrowedServed(served, *want.narrowing)
+		}
+		minted, from, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
 		if err != nil {
 			return nil, err
 		}
 		// Held for the give-back as soon as it is read, so a split that refuses this value gives
 		// it back as well as every value before it.
 		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type(),
-			gitHubValue: gitHubValueOf(served), leftOut: minted.LeftOut})
+			gitHubValue: gitHubValueOf(served), leftOut: minted.LeftOut, from: from})
+		released := &read[len(read)-1]
+		way := ""
 		if entry != nil {
-			released := &read[len(read)-1]
-			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, released.gitHubValue, minted.Value); err != nil {
+			way = entry.Way
+			if released.split, err = airlockSplitOf(way, released.secretType, released.gitHubValue, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
+		}
+		if _, _, mintedType, _ := policy.ParseTypeSource(g.source); mintedType {
+			logMinted(grantID, checked.enrollmentID, g.name, cmp.Or(way, proxyrules.WayMint), *released)
 		}
 	}
 	if err := m.recheckStoredSources(ctx, grantID, checked.granted); err != nil {

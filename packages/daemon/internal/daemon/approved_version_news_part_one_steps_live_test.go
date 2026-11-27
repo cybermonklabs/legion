@@ -285,12 +285,15 @@ func (r *versionNewsLive) a3() {
 
 // Step A5. The tester is in a turn when a checks-only version of its root's Verification document
 // is approved; the task that carries the news waits behind that turn. In that same turn the tester
-// completes, its check passing at the head it tested, and its turn ends. The tester is sent
-// nothing, since its phase is over, and the reviewer the pass starts is prompted with a start task
-// naming the changed check and the two versions. The same version changes nothing the root's child
-// holds, since a root's checks are the root's alone, so the reviewer the child's tester's pass
-// starts is prompted with a start task that names no check and no change at all: the same read
-// that found the root reviewer's change.
+// completes with a pass, and its turn ends. The tester is sent nothing, since its phase is over,
+// and the reviewer the pass starts is prompted with a start task naming the changed check and the
+// two versions. A checks-only version changes nothing a root's child holds, since a root's checks
+// are the root's alone, so in the second tree, a5-child, the reviewer that its child's tester's
+// pass starts after its root's checks-only version is approved is prompted with a start task that
+// names no check and no change at all: the same read that found the first root reviewer's change.
+// The child stands in a tree of its own, under a root waiting at admitted, since a root in testing
+// with an open child waits in awaiting_children (dispatch://INFRA-3320 R9) and its tester's pass
+// is refused there.
 func (r *versionNewsLive) a5() {
 	tree := r.trees["a5"]
 	key := tree.root().key
@@ -323,8 +326,16 @@ func (r *versionNewsLive) a5() {
 	r.quiet([]*versionNewsClaimant{tester}, mark, task.at.Add(liveSettle))
 	r.held("%s, whose phase ended before its task could go, was sent nothing in the window the reviewer's task arrived in", tester.name())
 
-	child := tree.members[1]
+	other := r.trees["a5-child"]
+	child := other.members[1]
 	childTester := r.claimant(child, claim.RoleTester)
+	r.openTree(other)
+	r.newVersion(other, record.DesignStepCriteria, versionNewsCheck, versionNewsCheckAgain, 2)
+	r.approve(other.verification, 2)
+	r.awaitSteps(other, "the criteria row of "+other.root().key+" approved at version 2", func(views map[record.DesignStep]api.GatedStepView) bool {
+		view := views[record.DesignStepCriteria]
+		return view.Status == api.GatedStepApproved && view.CurrentVersion == 2
+	})
 	id, version = r.writeHandoff(child.key, "test", childTester.session)
 	before = r.rt.Calls()
 	testedAs(r.t, r.st.Pool(), child.key, versionNewsHead(child.key), true)
@@ -332,7 +343,7 @@ func (r *versionNewsLive) a5() {
 		r.fail("%s's completion with a pass = %d %s: %s, want 200", childTester.name(), status, failure.Code, failure.Error)
 	}
 	r.awaitPhase(child.key, phase.Reviewing)
-	r.held("%s completed with a pass after the approval, and %s moved to reviewing", childTester.name(), child.key)
+	r.held("%s completed with a pass after version 2 of %s's checks was approved, and %s moved to reviewing", childTester.name(), other.root().key, child.key)
 	childReviewer := r.connect(child, claim.RoleReviewer, before)
 	start := childReviewer.awaitPrompt("the child reviewer's start task", mark)
 	r.note("%s was prompted:\n%s", childReviewer.name(), start.message)
@@ -342,10 +353,11 @@ func (r *versionNewsLive) a5() {
 		return strings.Contains(message, "Checks:") || strings.Contains(message, "The approved design of")
 	}
 	if names(start.message) {
-		r.fail("%s's start task names a change; want none, since version 2 changed nothing %s holds: %q", childReviewer.name(), child.key, start.message)
+		r.fail("%s's start task names a change; want none, since version 2 of %s's checks changed nothing %s holds: %q", childReviewer.name(),
+			other.root().key, child.key, start.message)
 	}
-	r.held("%s's start task names no check and no change, since version 2 changed nothing %s holds, where the same read finds %s in %s's",
-		childReviewer.name(), child.key, tree.check, reviewer.name())
+	r.held("%s's start task names no check and no change, since version 2 of %s's checks changed nothing %s holds, where the same read finds %s in %s's",
+		childReviewer.name(), other.root().key, child.key, tree.check, reviewer.name())
 }
 
 // writeHandoff records the handoff of key's phase word under session on Dispatch's own route, as

@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A session's return to its own model after a provider's refusal no longer undoes a model chosen
+  after the fallback. A launch that names its model starts the session on it without recording a
+  model change, so a role whose model the deployment raised while a return waited was moved down
+  to the older model when that return fell due, and stayed there until its next launch. The return
+  is now made only while the session still runs the model the fallback moved it to; otherwise it is
+  dropped and the session stays on the model it runs.

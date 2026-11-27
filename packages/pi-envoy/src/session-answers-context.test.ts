@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +6,13 @@ import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
   readSessionAnswers,
+  renderSessionAnswers,
   SESSION_ANSWERS_MARKER,
+  SESSION_ANSWERS_WINDOW_MS,
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
+import { realTimeDeadline } from "@legion/test-fixtures/deadline";
 import {
   answersSentEntry,
   ask,
@@ -351,6 +354,85 @@ test("prefix case: after a restart the first request carries every answers messa
   const resumed = await withSessionAnswers([...followed], requestOf(readingEach(LATER), branch));
   expect(resumed).toEqual([...(changed ?? []), docsCall, docsResult]);
   keepsSent(changed, resumed);
+});
+
+// A person who deletes a comment a list sent showed leaves the next read that item with
+// `deleted_at`, `deleted_by` and no words (`sessionanswers.go`), and the renderer prints it with
+// the delete's mark and no words line (`renderSessionAnswerItem`). The list sent keeps its place
+// and its bytes, the person's words with them: an earlier request delivered it. What keeps the
+// model from reading those words as current is the list appended after the last message, which
+// shows the comment deleted and says in its second block that it replaces every earlier list
+// (`SESSION_ANSWERS_REPLACES`). An edit is the same change, with the edited mark and the new words.
+const COMMENT: SessionAnswer = {
+  ...ITEM,
+  kind: "comment",
+  relation: "commented_on_an_issue",
+  id: "c-1",
+  at: "2026-10-27T10:00:00.000Z",
+  author: { kind: "user", id: "alice" },
+  text: "Hold the release until the docs land.",
+  owner: { issue: { key: "CORE-7", title: "Release notes" } },
+  ref: "dispatch://CORE-7/comment/c-1",
+  href: "/issues/CORE-7#comment-c-1",
+};
+const COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the docs land.`;
+/** `COMMENT` once alice deleted it, as Dispatch sends it. */
+const DELETED_COMMENT: SessionAnswer = {
+  ...COMMENT,
+  deleted_at: "2026-10-27T11:30:00.000Z",
+  deleted_by: { kind: "user", id: "alice" },
+  text: "",
+};
+const DELETED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · Deleted by user alice at 2026-10-27T11:30:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes`;
+/** `COMMENT` once alice edited it, as Dispatch sends it. */
+const EDITED_COMMENT: SessionAnswer = {
+  ...COMMENT,
+  edited_at: "2026-10-27T11:00:00.000Z",
+  text: "Hold the release until the changelog lands too.",
+};
+const EDITED_COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · edited 2026-10-27T11:00:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the changelog lands too.`;
+
+/** What `readSessionAnswers` gives for a read whose window, from `SINCE` on, holds `item` alone:
+ *  the list `renderSessionAnswers` renders at the window's end, the item's words and `SINCE`. */
+function readOf(item: SessionAnswer): CarriedAnswers {
+  const now = Date.parse(SINCE) + SESSION_ANSWERS_WINDOW_MS;
+  return {
+    text: renderSessionAnswers([item], { now }),
+    words: sessionAnswersWords([item]),
+    since: SINCE,
+  };
+}
+
+test("a comment deleted, or edited, appends a list showing it so with the sentence that it replaces every earlier list, and the list sent stays where it went", async () => {
+  for (const [changed, shown] of [
+    [DELETED_COMMENT, DELETED],
+    [EDITED_COMMENT, EDITED_COMMENTED],
+  ] as const) {
+    const session = {};
+    const [placed, next] = await deepRequests(session, readOf(COMMENT), readOf(changed));
+    // The list sent, alice's words in it, is re-sent with every byte where it went.
+    keepsSent(placed, next);
+    // After the last message: the list as the read renders it, with none of the words it
+    // replaced, then exactly the sentence saying it replaces every earlier list.
+    expect(next?.slice(placed?.length)).toEqual([
+      readCall,
+      readResult,
+      grepCall,
+      grepResult,
+      listOf(shown),
+    ]);
+    expect(JSON.stringify(next?.at(-1))).not.toContain(COMMENT.text);
+    expect(placed?.slice(opened.length)).toEqual([listOf(COMMENTED)]);
+    // The entry recorded for it holds the read's words, which the next read is compared with.
+    expect(recordedFor(session)).toStrictEqual([
+      { after: "user@1", blocks: [COMMENTED, REPLACES], words: sessionAnswersWords([COMMENT]) },
+      {
+        after: "toolResult@6#call-2",
+        blocks: [shown, REPLACES],
+        words: sessionAnswersWords([changed]),
+      },
+    ]);
+  }
 });
 
 test("a list with no new item stays where it first went: the request still ends with its own last message", async () => {
@@ -1327,22 +1409,47 @@ test("a request another copy of the extension read no text for is not read again
   expect(calls()).toBe(2);
 });
 
-// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
-// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
-// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
-// that two copies of the handler make together against it.
+// The empty-list case with the shared read: two copies, a Dispatch that answers 600 ms in, one
+// HTTP read, and a request that waits on that read alone. The read's 800 ms deadline is a platform
+// timer inside `readSessionAnswers`, in this process, so the row holds it on Bun's fake clock and
+// Dispatch's answer behind a gate the row opens: the clock moves to the moment Dispatch answers,
+// inside the deadline, and what follows is in the row's order. The read answers rather than its
+// deadline (the read's own record, `source`), copy A passes the request on with nothing added, and
+// copy B passes it on with no read of its own.
 const stateRoots: string[] = [];
 afterEach(() => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here too, before the next row.
+  jest.useRealTimers();
   for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
+/**
+ * Resolves as `promise` does, or fails naming `what` once the row's deadline has passed in real
+ * time. For a row that holds Bun's fake clock, under which the shared wait refuses to start and no
+ * timer of the row's runs: the deadline is the one the row-deadline preload armed in real time
+ * (`realTimeDeadline`), so a wait that never ends fails by name before Bun's guard ends the row.
+ */
+async function beforeTheRowsDeadline<T>(what: string, promise: Promise<T>): Promise<T> {
+  const deadline = realTimeDeadline(what);
+  return await Promise.race([
+    promise,
+    deadline.reached.then((): never => {
+      throw new Error(`${what} had not happened by the row's deadline, ${deadline.source}`);
+    }),
+  ]);
+}
+
+test("two copies of the extension and an empty list: one HTTP read, answered inside its deadline", async () => {
   const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
   stateRoots.push(stateRoot);
   let fetches = 0;
+  const asked = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<void>();
   const fetchImpl = (async (input: string | URL | Request) => {
     fetches += 1;
-    await Bun.sleep(600);
+    asked.resolve();
+    await answer.promise;
     const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
     return Response.json({
       session_id: session,
@@ -1351,31 +1458,55 @@ test("two copies of the extension and an empty list: one HTTP read, under one se
       items: [],
     });
   }) as typeof fetch;
-  const read = async () =>
-    carry(
-      (
-        await readSessionAnswers({
-          session: "ses_two_copies_empty",
-          dispatch: {
-            enabled: true,
-            url: "http://dispatch.test",
-            credential: bearerCredential("token"),
-          },
-          env: { DISPATCH_STATE_DIR: stateRoot },
-          fetchImpl,
-        })
-      ).text
-    );
+  /** How each read the copies made ended, as the read reports it. */
+  const sources: string[] = [];
+  const read = async () => {
+    const answered = await readSessionAnswers({
+      session: "ses_two_copies_empty",
+      dispatch: {
+        enabled: true,
+        url: "http://dispatch.test",
+        credential: bearerCredential("token"),
+      },
+      env: { DISPATCH_STATE_DIR: stateRoot },
+      fetchImpl,
+    });
+    sources.push(answered.source);
+    return carry(answered.text);
+  };
   const messages = [skill, ask];
 
-  const started = performance.now();
-  // Copy A's handler, then copy B's on the array A passed on.
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  const elapsed = performance.now() - started;
+  jest.useFakeTimers();
+  try {
+    // Copy A's handler, its read in flight to Dispatch and its deadline armed.
+    const copyA = withSessionAnswers(messages, requestOf(read, noBranch));
+    await beforeTheRowsDeadline(
+      "copy A's handler asking Dispatch",
+      Promise.race([
+        asked.promise,
+        copyA.then((): never => {
+          throw new Error("copy A's handler returned without asking Dispatch");
+        }),
+      ])
+    );
+    // Dispatch answers 600 ms in: the deadline has not run out by then.
+    jest.advanceTimersByTime(600);
+    answer.resolve();
+    expect(await beforeTheRowsDeadline("copy A's handler returning", copyA)).toBeUndefined();
+    expect(sources).toEqual(["fresh"]);
+    // Copy B's, on the array A passed on, with the clock where Dispatch answered.
+    expect(
+      await beforeTheRowsDeadline(
+        "copy B's handler returning",
+        withSessionAnswers(messages, requestOf(read, noBranch))
+      )
+    ).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
 
+  expect(sources).toEqual(["fresh"]);
   expect(fetches).toBe(1);
-  expect(elapsed).toBeLessThan(1_000);
 });
 
 test("a list quoted earlier in the conversation does not switch the list off", async () => {

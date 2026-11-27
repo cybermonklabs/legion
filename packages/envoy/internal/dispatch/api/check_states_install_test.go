@@ -1,5 +1,5 @@
 // check_states_install_test.go holds the settler to the former heads the install of
-// pull_request_former_heads seeded (migration 20261124122830), and to the candidates a result
+// pull_request_former_heads seeded (migration 20261126005348), and to the candidates a result
 // recorded since leaves: the commits of results the settle of an open pull request's issue reads,
 // unverified until the settler has read that pull request's commits (verifyFormerHeads). The rig
 // is check_states_test.go's.

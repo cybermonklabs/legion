@@ -70,8 +70,8 @@ func stopByOwner(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine 
 }
 
 // holdForChildren holds key, whose plan holds task a at its retro, for the open issue heldBeneath
-// in implementing beneath it, as the transition does only while an issue beneath it is in the
-// workflow (workflow's retroHold), and the last one's leave starts the retro.
+// in implementing beneath it, as the transition does only while a hold on its acceptance holds it
+// (workflow's retroHold, through retroHeld), and the last one's leave starts the retro.
 func holdForChildren(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {

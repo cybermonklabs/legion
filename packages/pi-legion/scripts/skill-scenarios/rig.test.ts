@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
   cpSync,
@@ -13,16 +13,19 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { fileLimit, spawnWithin } from "@legion/test-fixtures/row-clock";
+import { fileLimit, spawnWithin, type Wait } from "@legion/test-fixtures/row-clock";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
+import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import { headsCases } from "./heads-scenarios";
+import { K1_RUN } from "./heads-world";
 import { RIG_WORLD } from "./rig-world";
 import {
   JUDGE_OMP,
@@ -42,8 +45,9 @@ const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} 
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
 // what they wait for: the most of a row of judge-omp's describe (JUDGE_OMP: the row's measured
 // normal work and one Docker call's bound, since a stalled call ends the row at once) and four
-// rig.sh steps, the limit of every other row.
-setDefaultTimeout(
+// rig.sh steps, the limit of every other row. A wait of a row on its processes (untilRunning)
+// ends rowWaitMarginMs before that limit (rowWaits).
+const waits = rowWaits(
   fileLimit(Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP)))
 );
 
@@ -57,36 +61,66 @@ const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 /**
  * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
- * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
- * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
- * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
- * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
- * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
- * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
- * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
- * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
- * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
- * the 1.8 MiB a run held there at its largest (1,392 entries).
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or
+ * is in the developer's home, and then /tmp. A plain path, because the model route installers and
+ * judge-omp write the path of each key command, and of the key file, into a profile as one plain
+ * `!command` word, and refuse any other character in it (install-model-gateway.sh and
+ * install-key-file-model-route.sh at `--dest`, rig.sh's judge_keys at the key file): under a
+ * TMPDIR with a space or a quote in its name, every row that installs a route failed on that
+ * refusal. Not in the developer's home, because childCwd is in this directory (memoryRoot gives
+ * TMPDIR where /dev/shm does not suit, and a TMPDIR can be in the home). A tmpfs, because the
+ * file's afterAll removes the whole directory under the file's 60 s: on the disk TMPDIR names,
+ * that removal of about 1,600 entries took 70 to 90 s at a five-minute load of about 2,200, and
+ * failed the file with "a beforeEach/afterEach hook timed out" after every row had passed. `need`
+ * is about sixteen times the 1.8 MiB a run held there at its largest (1,392 entries).
  */
 const memory = memoryRoot({ need: 32 * 1024 * 1024 });
-const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+const memoryPath = realpathSync(memory);
+// A HOME that does not exist holds no config, and realpathSync would throw on it.
+const developerHome = existsSync(homedir()) ? realpathSync(homedir()) : path.resolve(homedir());
+/** Whether DIR, a real path, is the developer's home or a directory in it. Every path is in a
+ * home of `/`. */
+function inDeveloperHome(dir: string): boolean {
+  const relative = path.relative(developerHome, dir);
+  return !(relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative));
+}
+const workRoot =
+  /^[A-Za-z0-9/._-]+$/.test(memoryPath) && !inDeveloperHome(memoryPath) ? memory : "/tmp";
 if (workRoot !== memory) {
   console.error(
-    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, or is in ${developerHome}, so the work directory is under /tmp`
   );
 }
 const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
+/** The cwd of each child process that childSpawn starts. The test runner's own cwd is in the
+ * checkout, and every checkout on a devbox is in the developer's home. mise reads a config file
+ * in the cwd and in each directory above it. Under a HOME that is not the developer's, it reads
+ * the developer's ~/.config/mise/config.toml found there as the config of a project, not as its
+ * global config. That file holds [settings], [env] and [tool_alias], and mise loads each of them
+ * only from a trusted file. Under that HOME no record marks the file trusted, so every mise shim
+ * exits 1 there, python3 included ("Config files in /home/<user>/.config/mise/config.toml are not
+ * trusted", in services_up's row). The work directory is not in the developer's home (workRoot),
+ * so no directory above this one is. */
+const childCwd = path.join(work, "child-cwd");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
-// read it would list this directory. It is staged in a hook, below the one the reservation
-// registered: a run that selects no row of this file makes neither. Each level is made on its
-// own, never with `recursive`, so this hook makes nothing above the reserved root and a root the
-// fixture did not make is an error here rather than a directory nothing removes.
+// read it would list this directory. It and childCwd are staged in a hook, below the one the
+// reservation registered: a run that selects no row of this file makes none of them. Each level
+// is made on its own, never with `recursive`, so this hook makes nothing above the reserved root
+// and a root the fixture did not make is an error here rather than a directory nothing removes.
 beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  mkdirSync(childCwd);
 });
+/** The caller's PATH, which a row puts its stand-ins ahead of. */
+const callerPath = process.env.PATH ?? "";
+const miseData =
+  process.env.MISE_DATA_DIR ??
+  (process.env.XDG_DATA_HOME === undefined
+    ? undefined
+    : path.join(process.env.XDG_DATA_HOME, "mise"));
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
  * own, and the caller's mise data and config directories when the caller names them. A tool on
  * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
@@ -94,19 +128,25 @@ beforeAll(() => {
  * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
  * to every agent. A caller that names neither variable gets neither: the developer's own home
  * decides nothing here. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
 const childEnv = {
-  PATH: process.env.PATH ?? "",
+  PATH: callerPath,
   HOME: operatorHome,
   ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
 };
+/** Runs ARGV within WAIT's bound (spawnWithin), in childCwd, with childEnv and ENV over it. It is
+ * the one place this file gives a child childEnv with childCwd, so a child that gets the test's
+ * HOME gets childCwd with it: every such child starts through it, but jj in a fixture's workspace,
+ * which runs in that workspace (workspaceParent), and the pane workerPane builds, whose processes
+ * this file does not start. The other children of this file do not get the test's HOME: the key
+ * command and the libpq probe pass no environment, so they run under the caller's own HOME, where
+ * mise reads the caller's config as its global config. runProcess's child gets PATH and
+ * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. */
+function childSpawn(wait: Wait, argv: string[], env: Record<string, string> = {}) {
+  return spawnWithin(wait, argv, { env: { ...childEnv, ...env }, cwd: childCwd });
+}
 
 let profiles = 0;
 /** A label's profile directory with an empty Oh My Pi home, as make_omp_home leaves it. */
@@ -121,7 +161,7 @@ function keyFile(mode: number): string {
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
-  const result = spawnWithin(
+  const result = childSpawn(
     { ...RIG_STEP, part: "rig.sh install_model_route" },
     [
       "bash",
@@ -132,7 +172,7 @@ function route(dir: string, env: Record<string, string>, model = "") {
       dir,
       model,
     ],
-    { env: { ...childEnv, ...env } }
+    env
   );
   return { code: result.exitCode, stderr: result.stderr.toString() };
 }
@@ -254,6 +294,37 @@ describe("install_model_route", () => {
     expect(readFileSync(path.join(agent, "config.yml"), "utf8")).toContain(
       "  default: box-gateway/claude-opus-5-5\n"
     );
+  });
+
+  // An Oh My Pi config that disables a provider by name disables a models.yml block of that name
+  // too, so a box whose gateway block is named `anthropic` would leave the agents no model.
+  test("provider whose block is named after a built-in provider leaves that provider enabled", () => {
+    const dir = profileDir();
+    const file = path.join(work, `models-${profiles}-anthropic.yml`);
+    writeFileSync(
+      file,
+      [
+        "providers:",
+        "  anthropic:",
+        "    baseUrl: http://gateway.internal.example:4000",
+        '    apiKey: "!cat /run/user/1000/box/gateway-key"',
+        "    api: anthropic-messages",
+        "",
+      ].join("\n")
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const config = readFileSync(
+      path.join(dir, "home/.omp/profiles/skills-test/agent/config.yml"),
+      "utf8"
+    );
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(config).toContain("disabledProviders:\n  - amazon-bedrock\n");
+    expect(config).not.toContain("  - anthropic\n");
   });
 
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
@@ -423,7 +494,7 @@ describe("a setup that fails after install_model_route", () => {
     );
     const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
       ...routeEnv(),
-      PATH: `${bin}:${childEnv.PATH}`,
+      PATH: `${bin}:${callerPath}`,
     });
     expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
     expect(existsSync(calls)).toBe(false);
@@ -442,15 +513,13 @@ describe("a setup that fails after install_model_route", () => {
   });
 });
 
-/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
- * environment of PATH and the test's own HOME. */
+/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., through
+ * childSpawn. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = spawnWithin(
+  const result = childSpawn(
     { ...RIG_STEP, part: `rig.sh ${script.split("\n").at(-1)}` },
     ["bash", "-c", script, "-", ...args],
-    {
-      env: { ...childEnv, ...env },
-    }
+    env
   );
   return {
     code: result.exitCode,
@@ -466,26 +535,34 @@ function freshDir(name: string): string {
   return dir;
 }
 
+// Catches: a child of this file that starts in the test runner's cwd, or a work directory in the
+// developer's home. Either way the developer's home is above the child's cwd, where a mise shim
+// run under the test's HOME exits 1 (childCwd). Every child that gets the test's HOME starts
+// through childSpawn, and bash() is one of them, so this row holds each one. CI's PATH holds no
+// mise shim, so services_up's row passes in CI either way. Without childCwd this row fails in CI
+// too, because a runner's checkout is in the runner's home.
+test("a child of this file starts in childCwd, outside the developer's home", () => {
+  const cwd = realpathSync(childCwd);
+  expect(bash("pwd -P")).toEqual({ code: 0, stdout: `${cwd}\n`, stderr: "" });
+  expect({ cwd, inDeveloperHome: inDeveloperHome(cwd) }).toEqual({ cwd, inDeveloperHome: false });
+});
+
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
 // no .jj, and jj alone printed an empty commit line for it.
 describe("checkout_commit", () => {
   const git = (dir: string, ...args: string[]) => {
-    const result = spawnWithin(
-      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
-      [
-        "git",
-        "-C",
-        dir,
-        "-c",
-        "user.name=Rig Test",
-        "-c",
-        "user.email=rig@example.invalid",
-        "-c",
-        "commit.gpgsign=false",
-        ...args,
-      ],
-      { env: childEnv }
-    );
+    const result = childSpawn({ ...VCS_COMMAND, part: `git ${args.join(" ")}` }, [
+      "git",
+      "-C",
+      dir,
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=rig@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ]);
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
@@ -603,12 +680,10 @@ describe("omp_ancestor", () => {
     const top = freshDir("omp-rig");
     mkdirSync(path.join(top, ".omp"));
     const work = path.join(top, "work");
-    const result = spawnWithin(
+    const result = childSpawn(
       { ...RIG_STEP, part: "rig.sh score" },
       ["bash", path.join(import.meta.dir, "rig.sh"), "score"],
-      {
-        env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
-      }
+      { SKILL_SCENARIOS_WORK: work }
     );
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
@@ -646,6 +721,144 @@ describe("next_run", () => {
   });
 });
 
+// A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
+// (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
+describe("safe_url", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
+  // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
+  // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
+  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
+  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
+  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
+  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
+  test("safe_url drops the password of a URL and keeps the rest", () => {
+    expect(
+      bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
+        "postgres://u:p@h:1/d",
+        "postgres://u@h:1/d",
+        "nats://127.0.0.1:4222",
+        "postgres://u:?@127.0.0.1:5433/legion_test",
+        "postgres://u@localhost:5432@10.1.2.3/db",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
+        "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
+        "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
+        "nats://u:p@ss@127.0.0.1:4222",
+        "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
+      ])
+    ).toEqual({
+      code: 0,
+      stdout:
+        "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/legion_test\n" +
+        "<a Postgres URL pg-url.sh refuses>\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
+        "postgresql://u@127.0.0.1:5433/d\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
+        "nats://u@127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
+      stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
+    });
+  });
+});
+
+// services_up reads a given SKILL_SCENARIOS_POSTGRES_URL before anything connects to that server
+// or the batch writes the URL anywhere. python3 with libpq: its guards read the URL with this
+// host's libpq (scripts/e2e/lib/loopback-dsn.py), which refuses every URL where it finds none.
+const withoutPython = skipWithout("python3");
+const withoutLibpq =
+  !withoutPython &&
+  Bun.spawnSync([
+    "python3",
+    "-c",
+    "import ctypes.util, sys; sys.exit(ctypes.util.find_library('pq') is None)",
+  ]).exitCode !== 0;
+if (withoutLibpq) {
+  console.warn(
+    `Skipped the services_up rows in ${import.meta.path}. services_up reads a given Postgres ` +
+      `URL with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  );
+}
+describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
+   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
+   * that passed every check would reach psql at once. Answers services_up's status and standard
+   * error, whether psql ran, and what the services directory holds. */
+  function up(url: string) {
+    const dir = freshDir("services-up");
+    const bin = path.join(dir, "bin");
+    const log = path.join(dir, "psql.log");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(services);
+    writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
+      mode: 0o755,
+    });
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `until_true() { shift 2; "$@"; }\n` +
+        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, services],
+      {
+        PATH: `${bin}:${callerPath}`,
+        SKILL_SCENARIOS_POSTGRES_URL: url,
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+      }
+    );
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      psqlRan: existsSync(log),
+      written: readdirSync(services),
+    };
+  }
+  const host = (name: string) =>
+    `SKILL_SCENARIOS_POSTGRES_URL must name 127.0.0.1, localhost or ::1: libpq reads the host ${name}, and each run creates a database there`;
+  const sslpassword =
+    "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase";
+
+  // Catches: a services_up that connects to, or writes into its services file, a given URL that
+  // its checks refuse, because a check is gone or runs after the write or the first psql: a host
+  // that is not loopback, the `localhost?x@evil.example` shape whose host libpq reads as
+  // evil.example (scripts/e2e/lib/loopback-dsn.sh), a key=value connection string, an
+  // `sslpassword` parameter (its key percent-decoded too), a URL pg-url.sh refuses (a raw `@` in
+  // its path, which pg-url.sh names on its own line first), and a value run_database_url refuses
+  // to write into each run's connection string (a newline, which it refuses in a password the same
+  // way). Each refusal is the one its own check prints, and holds no password.
+  test("refuses a URL the runs cannot use before psql runs or the URL is written", () => {
+    for (const [url, refusal, before = ""] of [
+      ["postgres://u:p@db.example:5432/postgres", host("db.example")],
+      ["postgres://localhost?x:p@evil.example:5432/postgres", host("evil.example")],
+      [
+        "host=127.0.0.1 port=5432 user=u password=p dbname=postgres",
+        "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string",
+      ],
+      ["postgres://u:p@127.0.0.1:5432/postgres?sslmode=require&sslpassword=x", sslpassword],
+      ["postgresql://u@localhost:5432/postgres?%73slpassword=x&sslmode=require", sslpassword],
+      [
+        "postgres://u@127.0.0.1:5432/post@gres",
+        "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it",
+        "-: refused a Postgres URL: an @ sits between the first / and the ? (the URL is not printed)\n",
+      ],
+      [
+        "postgres://u@localhost:5432/postgres?application_name=x%0A",
+        "SKILL_SCENARIOS_POSTGRES_URL gives application_name U+000A, a character that does not print: it reaches the rewritten connection string, where a caller writes that string into a file, and this refusal prints no value that holds one",
+      ],
+    ]) {
+      expect({ url, ...up(url) }).toEqual({
+        url,
+        code: 1,
+        stderr: `${before}skill-scenarios: ${refusal}\n`,
+        psqlRan: false,
+        written: [],
+      });
+    }
+  });
+});
+
 // run_env_pids names each process whose environment carries a run under DIR, with its start time,
 // for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
@@ -672,9 +885,13 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stderr: "ignore",
     });
   const groupBash = (script: string, args: string[], procRoot: string) => {
-    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
-      env: { ...childEnv, proc_root: procRoot },
-    });
+    const result = childSpawn(
+      { ...RIG_STEP, part: "rig.sh stop_env_processes" },
+      ownGroup(["bash", "-c", script, "-", ...args]),
+      {
+        proc_root: procRoot,
+      }
+    );
     return {
       code: result.exitCode,
       stdout: result.stdout.toString(),
@@ -705,6 +922,10 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     }
   );
 
+  // stopScript is a shell that sources the rig's process walks and runs BODY, for DIR in $1.
+  const stopScript = (body: string) =>
+    `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}\n${body}`;
+
   // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
   // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
   // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
@@ -712,16 +933,46 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep");
+    await untilRunning(run.pid, "sleep", waits.end());
     try {
-      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
-      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
       const own = groupBash(
-        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        stopScript(`stop_env_processes "$1"; echo "status $?"`),
         [dir],
         procRootOf(dir, [run.pid])
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+
+  // Catches: a stop_env_processes that stops nothing when the exit trap of a run that failed runs
+  // it. There bash's bare `exit` in a process substitution exits with the status the trap was
+  // entered with, so the walk read xargs as exiting 1 after every failed run and named no process
+  // (procs_naming, scripts/e2e/lib/process-tree.sh). A walk of a busy machine always meets a batch
+  // of entries with no match (xargs 123), and only then hands a status out through that `exit`;
+  // this row's proc root fits one batch that matches, so a grep that prints what the real one
+  // prints and then answers as such a batch does stands in for the rest of the machine. The trap
+  // runs inside `fail`, whose arguments are not the script's, so it names the run by $work.
+  test("stops each process of the run from the exit trap of a run that failed", async () => {
+    const dir = freshDir("env-stop-failed");
+    const busy = freshDir("env-stop-busy");
+    writeFileSync(path.join(busy, "grep"), `#!/bin/sh\n/usr/bin/grep "$@"\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep", waits.end());
+    try {
+      const failed = groupBash(
+        stopScript(
+          `export PATH=${JSON.stringify(busy)}:$PATH\ntrap 'stop_env_processes "$work"; echo "status $?"' EXIT\nfail`
+        ),
+        [dir],
+        procRootOf(dir, [run.pid])
+      );
+      expect(failed).toEqual({ code: 1, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);
       expect(run.signalCode).toBe("SIGKILL");
     } finally {
@@ -957,7 +1208,7 @@ echo done
       bash(
         `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
-        { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
+        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
     return { bin, label, run };
   }
@@ -1109,21 +1360,18 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     output = "answer.json",
     env: Record<string, string> = {}
   ) => {
-    const result = spawnWithin(
+    const result = childSpawn(
       { ...JUDGE_OMP, part: `rig.sh judge-omp ${kind}` },
       ["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output],
       {
-        env: {
-          ...childEnv,
-          ...JUDGE_OMP_ENVIRONMENT,
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: work,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          ...env,
-        },
+        ...JUDGE_OMP_ENVIRONMENT,
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: work,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        ...env,
       }
     );
     if (env.SKILL_SCENARIOS_DOCKER_TIMEOUT === undefined) {
@@ -1432,7 +1680,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     });
     const gatewayJudge = (kind: string, dir: string, env: Record<string, string> = {}) =>
       judge(kind, dir, "answer.json", {
-        PATH: `${fakeBin}:${childEnv.PATH}`,
+        PATH: `${fakeBin}:${callerPath}`,
         SKILL_SCENARIOS_WORK: gatewayWork,
         SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${gatewayWork}`,
         LEGION_E2E_MODEL_ROUTE: "gateway",
@@ -1522,7 +1770,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
             recursive: true,
             force: true,
           });
-        const result = gatewayJudge("ste", refused, { PATH: `${broken}:${childEnv.PATH}` });
+        const result = gatewayJudge("ste", refused, { PATH: `${broken}:${callerPath}` });
         expect(result.exitCode).toBe(1);
         expect(result.stderr.toString()).toContain(
           "judge-omp: the gateway's key command gave no key"
@@ -1540,7 +1788,11 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     mkdirSync(scripts, { recursive: true });
     for (const file of ["rig.sh", "rig-world.json"])
       writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
-    for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+    for (const file of [
+      ".omp-pin",
+      "skills/asd-ste100/SKILL.md",
+      "packages/envoy/scripts/lib/pg-url.sh",
+    ]) {
       mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
       writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
     }
@@ -1549,20 +1801,17 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       recursive: true,
     });
     const rootWork = freshDir("judge-root-work");
-    const result = spawnWithin(
+    const result = childSpawn(
       { ...JUDGE_OMP, part: "rig.sh judge-omp ste" },
       ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
       {
-        env: {
-          ...childEnv,
-          ...JUDGE_OMP_ENVIRONMENT,
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        },
+        ...JUDGE_OMP_ENVIRONMENT,
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: rootWork,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        GIT_CEILING_DIRECTORIES: path.dirname(top),
       }
     );
     expect(result.exitCode).toBe(1);
@@ -1702,7 +1951,7 @@ sleep() { command sleep 0.05; }`;
     const result = bash(
       `${functions.map(fn).join("\n")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin profile=skills\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
       [run, profile, work],
-      { PATH: `${bin}:${childEnv.PATH}`, ...env }
+      { PATH: `${bin}:${callerPath}`, ...env }
     );
     const read = (name: string) => readFileSync(path.join(run, name), "utf8");
     return { ...result, run, bin, read, work, profile, checkout, tools, data };
@@ -2090,9 +2339,10 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
   });
 });
 
-// services_up, then services_down, with a stand-in docker, which records each call, answers each
-// `run` with an id and `logs` with the lines NATS logs on a port it chose, and refuses a `run` that
-// publishes a host port, as Docker does when another process holds the port it chose.
+// services_up, then services_down, given no servers, with a stand-in docker, which records each
+// call, answers each `run` with an id and `logs` with the lines NATS logs on a port it chose, and
+// refuses a `run` that publishes a host port, as Docker does when another process holds the port it
+// chose; and a stand-in go, whose `store/cmd/connections -process` counts 30 connections a run.
 describe("services_up", () => {
   const TAKEN =
     "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint t-nats (bb7e): failed to bind host port 127.0.0.1:41026/tcp: address already in use";
@@ -2109,6 +2359,9 @@ describe("services_up", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("given_services"),
+        fn("safe_url"),
+        fn("connections_needed"),
         fn("services_up"),
         fn("services_down"),
         `docker() {
@@ -2125,11 +2378,11 @@ describe("services_up", () => {
   esac
 }`,
         "until_true() { :; }",
-        "go() { :; }",
+        "go() { echo 30; }",
         "start_listener() { envoy_port=1; }",
         "stop_tree() { :; }",
         "note() { :; }",
-        "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env",
+        "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env services_postgres=$1/services/postgres-url pg_socket=''",
         "services_up",
         `cp "$services_env" "$S/env-seen" && printf '%s' "$pg_socket" >"$S/socket-seen"`,
         `[ -d "$pg_socket" ] && echo made >"$S/socket-made"`,
@@ -2187,6 +2440,8 @@ describe("services_up", () => {
     );
     expect(env).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4567\n");
     const postgres = runs.find((line) => line.startsWith("run -d --name t-pg ")) ?? "";
+    // 30 connections for each of the 5 concurrent runs, and 20 for the batch's own queries.
+    expect(postgres).toEndWith(" -c max_connections=170");
     expect(postgres).toContain(
       `--mount type=bind,source=${socket},destination=/var/run/postgresql`
     );
@@ -2642,7 +2897,7 @@ describe("heads_fixture", () => {
     const result = bash(
       [
         "set -euo pipefail",
-        ...["fail", "g", "fixture_repo", "workspace_on", fixture].map(fn),
+        ...["fail", "g", "fixture_repo", "workspace_on", "worker_routes", fixture].map(fn),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         `${fixture} 3 1700000000`,
       ].join("\n"),
@@ -2651,13 +2906,12 @@ describe("heads_fixture", () => {
     return { ...result, run };
   }
   const git = (dir: string, ...args: string[]) => {
-    const result = spawnWithin(
-      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
-      ["git", "-C", dir, ...args],
-      {
-        env: childEnv,
-      }
-    );
+    const result = childSpawn({ ...VCS_COMMAND, part: `git ${args.join(" ")}` }, [
+      "git",
+      "-C",
+      dir,
+      ...args,
+    ]);
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
@@ -2675,11 +2929,11 @@ describe("heads_fixture", () => {
       .stdout.toString()
       .trim();
 
-  // Catches: one branch where the case needs two heads, a head that is no commit of the remote, a
-  // commit that is not one above main or that changes code (the reviewer then runs its
-  // thermonuclear pair), a fixture that ignores the run's index and start, a workspace left on
-  // main, and a world that names another pull request than #702.
-  test("two branches of the issue, each one docs-only commit above main, and the world of #702", () => {
+  // Catches: one branch where the case needs two heads, a base revision that is not main's, a head
+  // that is no commit of the remote, a commit that is not one above main or that changes code (the
+  // reviewer then runs its thermonuclear pair), a fixture that ignores the run's index and start, a
+  // workspace left on main, and a world that names another pull request than #702.
+  test("two branches of the issue carry main's base revision and are each docs-only one commit above it", () => {
     const { code, stderr, run } = build("heads_fixture");
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     const remote = path.join(run, "remote.git");
@@ -2687,10 +2941,11 @@ describe("heads_fixture", () => {
       string,
       string
     >;
-    expect(Object.keys(heads).toSorted()).toEqual(["702", "703"]);
+    expect(Object.keys(heads).toSorted()).toEqual(["702", "703", "base"]);
     expect(heads["702"]).not.toBe(heads["703"]);
     const main = git(remote, "rev-parse", "main");
-    for (const [pr, head] of Object.entries(heads)) {
+    expect(heads.base).toBe(main);
+    for (const [pr, head] of Object.entries(heads).filter(([key]) => key !== "base")) {
       expect(head).toMatch(/^[0-9a-f]{40}$/);
       expect(git(remote, "rev-parse", `legion/LWEVAL-9-${pr}`)).toBe(head);
       expect(git(remote, "rev-parse", `${head}^`)).toBe(main);
@@ -2795,6 +3050,7 @@ describe("heads_fixture", () => {
         "packages/notify/notify.test.ts"
       );
       expect(JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))).toEqual({
+        base: git(remote, "rev-parse", "main"),
         "702": head,
       });
       expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
@@ -2992,6 +3248,85 @@ describe("heads_fixture", () => {
     expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
   });
 
+  // Catches: a tester world whose GitHub shows k3's job other than Dispatch reads it (passed, or
+  // ended where the case says it still runs), a failed job whose log no read answers, a body that
+  // carries k1's line alone, and a second pull request.
+  test("heads_routes of tester-reads-no-ci serve #702 alone, k3's job still going in ci-late and failed with its log in ci-red", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const k1Line = `- Check k1 (before_merge): pass at ${String(head).slice(0, 12)} (implementer) on #702`;
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page", lines: { "702": k1Line } })
+    );
+    const late = RIG_WORLD.ciJobs["ci-late"];
+    const red = RIG_WORLD.ciJobs["ci-check-fail"];
+    const routes = (scenarioCase: string, k3Line: string) => {
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        [
+          "Checks of LWEVAL-9:",
+          "",
+          "- k1 (before_merge). A pass stands: yes.",
+          `  - #702 at ${head}: yes, from implementer.`,
+          `    Pull request line: ${k1Line}`,
+          "- k3 (before_merge): its CI job's results below.",
+          `  - #702 at ${head}: no.`,
+          `    Pull request line: ${k3Line}`,
+          "",
+        ].join("\n")
+      );
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("pr_line"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes tester-reads-no-ci "$2"',
+        ].join("\n"),
+        [run, scenarioCase]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown; exit?: number }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      return (match: string) => all.find((each) => each.match === match);
+    };
+    const jobLine = (job: { name: string; run: number; checkRun: number }, state: string) =>
+      `${job.name}\t${state}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}`;
+    const logOf = (id: number) => `^gh run view (?=.*--job[ =]${id}\\b)(?=.*--log)`;
+    /** The body of the pull request a `gh pr view` route answers, "" when it answers none. */
+    const bodyOf = (stdout: unknown) =>
+      typeof stdout === "object" && stdout !== null && "body" in stdout ? String(stdout.body) : "";
+
+    const lateLine = `- Check k3 (before_merge): CI run ${late.name} has no result (not_completed)`;
+    const lateRoute = routes("ci-late", lateLine);
+    expect(String(lateRoute("^gh pr checks")?.stdout)).toContain(jobLine(late, "pending\t0"));
+    expect(lateRoute("^gh pr checks")?.exit).toBe(8);
+    expect(lateRoute(`^gh api .*commits/${head}/check-runs`)?.stdout).toMatchObject({
+      check_runs: [
+        { name: "lint" },
+        { name: "test" },
+        { id: late.checkRun, status: "in_progress", conclusion: null },
+      ],
+    });
+    expect(lateRoute(logOf(late.checkRun))).toBeUndefined();
+    const lateBody = bodyOf(lateRoute("^gh pr view")?.stdout);
+    expect(lateBody).toContain(`**Checks:**\n${k1Line}\n${lateLine}\n`);
+    expect(lateRoute("^gh pr list")?.stdout).toHaveLength(1);
+    expect(lateRoute("^gh api .*pulls/702/reviews")?.stdout).toEqual([]);
+
+    const redLine = `- Check k3 (before_merge): fail at ${String(head).slice(0, 12)}, from CI run ${red.name}.`;
+    const redRoute = routes("ci-red", redLine);
+    expect(String(redRoute("^gh pr checks")?.stdout)).toContain(jobLine(red, "fail\t10s"));
+    expect(redRoute("^gh pr checks")?.exit).toBe(1);
+    expect(redRoute(logOf(red.checkRun))?.stdout).toBe(red.log);
+    const redBody = bodyOf(redRoute("^gh pr view")?.stdout);
+    expect(redBody).toContain(`**Checks:**\n${k1Line}\n${redLine}\n`);
+  });
+
   // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
   // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
   // name. The round's agents named two repositories, since the pane's addressing named another than
@@ -3062,10 +3397,10 @@ describe("heads_fixture", () => {
       // A jq program of several words is one argument, as the agent's shell quoted it.
       const jq = argv.findIndex((arg) => arg === "--jq" || arg === "-q");
       const args = jq < 0 ? argv : [...argv.slice(0, jq + 1), argv.slice(jq + 1).join(" ")];
-      const result = spawnWithin(
+      const result = childSpawn(
         { ...SCRIPT_RUN, part: "gh-standin.ts" },
         ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-        { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+        { SKILL_SCENARIO_RUN: run }
       );
       return {
         code: result.exitCode,
@@ -3159,10 +3494,13 @@ describe("heads_fixture", () => {
       template.indexOf("## Verification")
     );
     const briefLines = brief.split("\n");
+    // A line the reviewer writes says so, on it or on its continuation (a next line that starts no
+    // label of its own): "the reviewer writes this line" or "The reviewer writes it".
     const implementerLabels = briefLines.flatMap((line, index) => {
       const label = /^\*\*([^*]+):\*\*/.exec(line)?.[1];
-      const reviewers = `${line}\n${briefLines[index + 1] ?? ""}`.includes(
-        "the reviewer writes this line"
+      const next = briefLines[index + 1] ?? "";
+      const reviewers = /the reviewer writes (this line|it)\b/i.test(
+        /^\*\*[^*]+:\*\*/.test(next) ? line : `${line}\n${next}`
       );
       return label === undefined || reviewers ? [] : [label];
     });
@@ -3263,7 +3601,7 @@ describe("heads_fixture", () => {
   // stand-in held `example/widgets` on `main`): an agent that reads the repository it was told
   // then reads a world that does not exist. The addressing comes from daemon-pane.go, the world
   // from rig.sh, and both read rig-world.json, so each side is read here and they must agree.
-  test("the pane's addressing names the repository and default branch the stand-in's world serves", () => {
+  test("the pane's addressing names the repository and default branch the stand-in's world serves", async () => {
     const { code, run } = build("heads_fixture");
     expect(code).toBe(0);
     writeFileSync(
@@ -3286,7 +3624,7 @@ describe("heads_fixture", () => {
       [run]
     );
     expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
-    const pane = workerPane(
+    const pane = await workerPane(
       { rig: run, port: 13399, profile: "rig-profile" },
       { ...childEnv, HOME: path.join(run, "pane-home") },
       { project: "skillsrig", issue: "LWEVAL-9", role: "reviewer" },
@@ -3303,11 +3641,14 @@ describe("heads_fixture", () => {
     ).routes;
     const repoRead = routes.find((route) => route.match.includes("/?repos/[^/ ]+/[^/ ?]+([ ?]|$)"))
       ?.stdout as { full_name?: string; default_branch?: string } | undefined;
-    const remoteHead = spawnWithin(
-      { ...VCS_COMMAND, part: "git symbolic-ref" },
-      ["git", "-C", path.join(run, "remote.git"), "symbolic-ref", "--short", "HEAD"],
-      { env: childEnv }
-    )
+    const remoteHead = childSpawn({ ...VCS_COMMAND, part: "git symbolic-ref" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "symbolic-ref",
+      "--short",
+      "HEAD",
+    ])
       .stdout.toString()
       .trim();
     const world = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
@@ -3359,10 +3700,10 @@ describe("heads_fixture", () => {
       const job = RIG_WORLD.ciJobs[world];
       const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
       const gh = (...args: string[]) => {
-        const result = spawnWithin(
+        const result = childSpawn(
           { ...SCRIPT_RUN, part: "gh-standin.ts" },
           ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-          { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+          { SKILL_SCENARIO_RUN: run }
         );
         return {
           code: result.exitCode,
@@ -3435,20 +3776,20 @@ describe("heads_fixture", () => {
     expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
     const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
     const gitShow = (spec: string) =>
-      spawnWithin(
-        { ...VCS_COMMAND, part: "git show" },
-        ["git", "-C", path.join(run, "remote.git"), "show", spec],
-        {
-          env: childEnv,
-        }
-      ).stdout.toString();
+      childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+        "git",
+        "-C",
+        path.join(run, "remote.git"),
+        "show",
+        spec,
+      ]).stdout.toString();
     const usage = gitShow(`${head}:docs/usage.md`);
     expect(usage.length).toBeGreaterThan(0);
     const gh = (...args: string[]) => {
-      const result = spawnWithin(
+      const result = childSpawn(
         { ...SCRIPT_RUN, part: "gh-standin.ts" },
         ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-        { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+        { SKILL_SCENARIO_RUN: run }
       );
       return {
         code: result.exitCode,
@@ -3495,4 +3836,142 @@ describe("heads_fixture", () => {
     });
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
   }, 600_000);
+
+  // Catches: a page at #702's head that the failed job's log does not describe. The log of k2's
+  // and k3's job says the page names 3 of the 4 commands `widgets --help` lists and leaves out
+  // export, and the page named none of them: the miss was then plain in the three-line diff, so a
+  // role could judge the round from the diff alone, with no state and no CI read, and the case
+  // measured that judgement rather than its rule. k1's run still counts the page's one line.
+  test("the page at #702's head names each command the failed job's log says it names", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const page = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "show",
+      `${head}:docs/usage.md`,
+    ]).stdout.toString();
+    // The log's own words: the commands `widgets --help` lists, and the one the page leaves out.
+    const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+    const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "")
+      .split(", ")
+      .filter((command) => command !== "");
+    const missing = /The page leaves out (\w+)\./.exec(log)?.[1] ?? "";
+    const named = /lists \d+ of them, (\d+) of them|names (\d+) of them/.exec(log) ?? [];
+    expect({ listed, missing, named: Number(named[1] ?? named[2]) }).toEqual({
+      listed: ["add", "export", "list", "remove"],
+      missing: "export",
+      named: 3,
+    });
+    for (const command of listed.filter((name) => name !== missing))
+      expect(page).toContain(`\`${command}\``);
+    expect(page).not.toContain(missing);
+    // k1's run, which no CI job runs, still counts the page's line at that head. The fixture's
+    // workspace stands on #703, which carries no page, so the run reads the head's own bytes in a
+    // copy of its own.
+    const copy = freshDir("heads-k1-run");
+    mkdirSync(path.join(copy, "docs"), { recursive: true });
+    writeFileSync(path.join(copy, "docs", "usage.md"), page);
+    expect(
+      childSpawn({ ...SCRIPT_RUN, part: "k1's run" }, ["bash", "-c", `cd ${copy} && ${K1_RUN}`])
+        .stdout.toString()
+        .trim()
+    ).toBe("1");
+  }, 600_000);
+});
+
+// The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
+// finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
+// repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
+// (packages/daemon/internal/prompts/go/worker-common.md).
+describe("worker_routes", () => {
+  const pr = {
+    number: 1001,
+    url: "https://github.com/example/widgets/pull/1001",
+    headRefName: "legion/LWEVAL-1",
+    headRefOid: "099b05dc19f7f7e5058e791d16ae05f0b123a2cc",
+    body: "Dispatch: LWEVAL-1",
+  };
+  /** The run directory whose fixtures.json holds worker_routes' routes for `pr`: made by the first
+   * call, inside a test, since the file's work directory is made in a hook, and read by every call
+   * after it, since no call here edits a body. */
+  let run: string | undefined;
+  /** `gh <args>` answered by the gh stand-in from worker_routes' fixtures.json for `pr`. */
+  function gh(...args: string[]) {
+    if (run === undefined) {
+      run = freshDir("worker-routes");
+      const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
+        JSON.stringify(pr),
+        run,
+      ]);
+      expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    }
+    const result = childSpawn(
+      { ...SCRIPT_RUN, part: "gh-standin.ts" },
+      [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      { SKILL_SCENARIO_RUN: run }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+
+  // Catches: a world whose stand-in answers the prompt's lookup of the pull request with a 404,
+  // after which a tester took the pull request to be unreachable and left its body unedited; and a
+  // list of the open pull requests with no head that answers none, which tells a tester that lists
+  // the repository's pull requests that none exists.
+  test("a list of the PR's branch, or of no head, lists the PR, picked to the fields asked", () => {
+    expect(
+      gh(
+        "pr",
+        "list",
+        "--repo",
+        "example/widgets",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number"
+      )
+    ).toEqual({ code: 0, stdout: "1001\n", stderr: "" });
+    for (const filter of [
+      ["--head", "legion/LWEVAL-1", "--state", "open"],
+      ["--head=legion/LWEVAL-1", "--state", "open"],
+      ["-H", "legion/LWEVAL-1", "--state", "open"],
+      ["--state", "open"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number,headRefOid")).toEqual({
+        code: 0,
+        stdout: `[{"number":1001,"headRefOid":"${pr.headRefOid}"}]\n`,
+        stderr: "",
+      });
+    }
+  });
+
+  // Catches: a list of another branch, or of the closed or merged pull requests (on the PR's own
+  // branch too), that names the fixture's open PR, or that fails where GitHub answers an empty
+  // list.
+  test("a list of any other head, or of closed or merged pull requests, is empty", () => {
+    for (const filter of [
+      ["--head", "legion/LWEVAL-10"],
+      ["--head", "legion/LWEVAL-2"],
+      ["--state", "closed"],
+      ["-s", "merged"],
+      ["--head", "legion/LWEVAL-1", "--state", "closed"],
+      ["--state", "merged", "--head", "legion/LWEVAL-1"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
+        code: 0,
+        stdout: "[]\n",
+        stderr: "",
+      });
+    }
+  });
 });

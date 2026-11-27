@@ -3,6 +3,9 @@
 // reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
 // reply (CommitFaults); and a pool whose transactions are cancelled between two statements
 // (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
+// TableRows and ChangedTables (rows.go) read every table of a database's current schema whole, so
+// a test can say which tables a write changed, a row changed in place among them, or that it
+// changed none.
 //
 // Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
 // same as a URL any other client reads. A test that needs the daemon's schema takes
@@ -39,6 +42,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -84,7 +89,9 @@ func PlainDatabase(t testing.TB, prefix string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := drop(); err != nil {
+		ctx, cancel := testwait.TeardownContext(t)
+		defer cancel()
+		if err := drop(ctx); err != nil {
 			t.Error(err)
 		}
 	})
@@ -92,12 +99,12 @@ func PlainDatabase(t testing.TB, prefix string) string {
 }
 
 // create makes an empty database named <prefix>_<random> on the server dsn names, and answers its
-// URL and the function that drops it, which also closes the admin connection create opened. Both
-// URLs it connects or points a caller at — the admin database's and the new database's — come
-// from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database is its caller: one database
-// per test.
-func create(dsn, prefix string) (string, func() error, error) {
+// URL and a function that drops it with the context its caller supplies, which also closes the
+// admin connection create opened. Both URLs it connects or points a caller at — the admin
+// database's and the new database's — come from DatabaseURL, and it makes them before it connects,
+// so a DSN whose rewrite names another server ends the call with no connection and no database.
+// Database is its caller: one database per test.
+func create(dsn, prefix string) (string, func(context.Context) error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
 		return "", nil, err
@@ -121,9 +128,9 @@ func create(dsn, prefix string) (string, func() error, error) {
 		_ = conn.Close(ctx)
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
-	drop := func() error {
+	drop := func(ctx context.Context) error {
 		defer func() { _ = conn.Close(context.Background()) }()
-		if err := Drop(context.Background(), conn, name); err != nil {
+		if err := Drop(ctx, conn, name); err != nil {
 			return fmt.Errorf("drop %s: %w", name, err)
 		}
 		return nil
@@ -139,36 +146,60 @@ const insufficientPrivilege = "42501"
 // has not exited yet: PostgreSQL waits only a few seconds for one before it gives up.
 const objectInUse = "55006"
 
-// Execer is what Drop needs of a connection or a pool: one statement.
+// Execer is the admin handle Drop needs: a forced drop and the read that identifies the database's
+// backends when the test's teardown deadline ends.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Drop drops name, waiting out an autovacuum worker and a backend that has not exited yet.
 // `drop database ... with (force)` terminates every other session of the database, which
 // PostgreSQL refuses to a login that is neither superuser nor a member of pg_signal_backend as
 // soon as one session belongs to another role — an autovacuum worker, which attaches to a
-// database a test has just filled. Every Legion pod shares one server whose test login holds
-// neither privilege (dispatch://INFRA-714 round six). Where the login may terminate every session,
-// the drop then waits only a few seconds for those backends to exit, and answers 55006 while one
-// has not, which a run under load reaches (envoy's storetest retries the same code). Both
-// refusals are waited out for 30 seconds; any other error is the caller's at once.
+// database a test has just filled. Where the login may terminate every session, the drop then
+// waits only a few seconds for those backends to exit, and answers 55006 while one has not.
+//
+// Both refusals are retried until ctx ends. A caller supplies the test binary's bound: a test's
+// cleanup takes testwait.TeardownContext(t), which stays before go test's alarm and is finite
+// under -timeout 0; testpg.Main uses testwait.TeardownDeadline after m.Run has returned. That
+// lets a correct teardown survive machine load but still ends a holder that never leaves, naming
+// its backends. Any error that is not either refusal is the caller's at once.
 //
 // It lives here rather than in internal/testpg because this package imports no package of the
 // module except internal/testwait, which imports none, so every package's tests can take it —
 // internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for attempt := 0; ; attempt++ {
+	var (
+		attempt  int
+		last     error
+		reason   string
+		backends = "not read"
+	)
+	for {
+		if cause := ctx.Err(); cause != nil {
+			if last == nil {
+				last = errors.New("no forced drop ran before its context ended")
+				reason = "the context ended before a forced drop ran"
+			}
+			return dropDeadlineError(cause, last, attempt, reason, name, backends)
+		}
+		attempt++
 		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
 		if err == nil {
 			return nil
 		}
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) {
+			if cause := ctx.Err(); cause != nil {
+				if last == nil {
+					last = err
+					reason = "the forced drop did not finish before its context ended"
+				}
+				return dropDeadlineError(cause, last, attempt, reason, name, backends)
+			}
 			return err
 		}
-		var reason string
 		switch pgErr.Code {
 		case insufficientPrivilege:
 			reason = "a session of another role, an autovacuum worker, holds the database and this login may not terminate it"
@@ -177,15 +208,43 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 		default:
 			return err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w (still refused after %d attempts over 30s: %s)", err, attempt+1, reason)
+		last = err
+		if read := holdingBackends(ctx, admin, name); read != "" {
+			backends = read
 		}
+		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(250 * time.Millisecond):
+			timer.Stop()
+			return dropDeadlineError(ctx.Err(), err, attempt, reason, name, backends)
+		case <-timer.C:
 		}
 	}
+}
+
+// holdingBackends names the backends still attached to the database. It returns "" when the read
+// fails, so the caller keeps the last list a live context read rather than a cut read's error. It
+// prints usename, state, the wait event and the backend type, never the statement text, which can
+// hold a role's password.
+func holdingBackends(ctx context.Context, admin Execer, name string) string {
+	var backends string
+	if err := admin.QueryRow(ctx, `select coalesce(string_agg(
+		'pid=' || pid::text || ' type=' || coalesce(backend_type, 'not visible') ||
+		' user=' || coalesce(usename, '') || ' state=' || coalesce(state, '') || ' wait=' ||
+		coalesce(nullif(coalesce(wait_event_type, '') || '/' || coalesce(wait_event, ''), '/'), 'none'),
+		'; ' order by pid), 'none')
+		from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()`, name).Scan(&backends); err != nil {
+		return ""
+	}
+	return backends
+}
+
+// dropDeadlineError keeps the PostgreSQL error that explains why the drop was retried, and names
+// the backends the last live pg_stat_activity read saw. reason says what the context's end
+// interrupted, so it reads right whether or not any attempt was refused.
+func dropDeadlineError(cause, err error, attempts int, reason, name, backends string) error {
+	return fmt.Errorf("%w (gave up dropping %s after %d attempt(s) before its context bound: %s; backends still holding %s: %s): %w",
+		err, name, attempts, reason, name, backends, cause)
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is
@@ -311,10 +370,12 @@ func PoolBounded(server, dsn string) (string, error) {
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
 // rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
-// CommitFaults), and the pool keys of its query. With pools set, the rewrite takes every pool key
-// out of the query and appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL,
-// the server's own or pool_max_conns=PoolConns for PoolBounded. A field left empty is one the
-// rewrite keeps.
+// CommitFaults, Outage), the pool keys of its query, and whether TLS is off. With pools set, the
+// rewrite takes every pool key out of the query and appends pool, the raw pairs pgx reads as
+// poolRead: none for DatabaseURL, the server's own or pool_max_conns=PoolConns for PoolBounded.
+// With plain set, it appends sslmode=disable, which pgx reads over an sslmode the query already
+// holds since it keeps the last of a repeated key (pgconn's parse_url.go), so an attempt makes no
+// TLS connection and falls back to none (Outage). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
@@ -322,6 +383,7 @@ type rewrite struct {
 	pools    bool
 	pool     []string
 	poolRead map[string]string
+	plain    bool
 }
 
 // applied is read with this rewrite in it, which is what pgx must read from the rewritten DSN.
@@ -341,6 +403,9 @@ func (r rewrite) applied(read reading) reading {
 		}
 		maps.Copy(params, r.poolRead)
 		read.params = params
+	}
+	if r.plain {
+		read.settings.tls, read.settings.fallbacks = tlsReading{}, ""
 	}
 	return read
 }
@@ -474,6 +539,12 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	if want.pools {
 		_, rest := splitPoolPairs(parsed.RawQuery)
 		parsed.RawQuery = strings.Join(append(rest, want.pool...), "&")
+	}
+	if want.plain {
+		if parsed.RawQuery != "" {
+			parsed.RawQuery += "&"
+		}
+		parsed.RawQuery += "sslmode=disable"
 	}
 	rewritten := parsed.String()
 	after, err := pgconn.ParseConfig(rewritten)

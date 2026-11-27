@@ -240,7 +240,7 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 
 // queueTaskEnd queues the deletion of the branches beside each fix w's task holds now
 // (queueBesideDelete) where no step of the task can run again because it moves into its retro with
-// no hold (transition, startHeldRetro).
+// no hold (transition, StartHeldRetro).
 func (e *Engine) queueTaskEnd(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if !w.Stored {
 		return nil

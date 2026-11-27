@@ -384,7 +384,7 @@ func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 
 // A refused turn's message, the provider's words with a NUL and a URL that carries a token, is
 // held in the claim's window of turn outcomes as the store holds it: U+FFFD for the NUL and the
-// URL without its query, so the refusal the claim's failure would name is the stored one.
+// URL without its query, so the refusal a retry's log line names is the stored one.
 func TestARefusedTurnsMessageWithNULAndAQueryTokenIsHeldInMemoryAsItIsStored(t *testing.T) {
 	h := newHarness(t)
 	token, _ := h.launch("LEGION-209", claim.RoleImplementer)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +30,7 @@ import (
 // record, so the 503 rows come from the record that did not store and from nothing else of the
 // rig. A record write that failed another way (a seam) is the same 503.
 func TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
 	rig := newSessionConsumerRigOn(t, client, testnats.URL(t))
 	const previous, claimant = "ses_full_stream_previous", "ses_full_stream_claimant"
@@ -112,20 +112,7 @@ func TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim(t *testing.T) {
 		if recorder := claim(previous, role); recorder.Code != http.StatusOK {
 			t.Fatalf("the previous holder's claim: %d %s", recorder.Code, recorder.Body.String())
 		}
-		bustest.FillStream(t, client, 64)
-		// A kibibyte's fill can leave room for a record of a few hundred bytes; messages of one
-		// byte take that room too, until the stream refuses one.
-		for tiny := 0; ; tiny++ {
-			if tiny == 2000 {
-				t.Fatalf("the stream took %d messages of one byte after the fill, want it full", tiny)
-			}
-			if _, err := client.JS().Publish(fmt.Sprintf("notifications.github.fill.tiny.%d", tiny), []byte("x")); err != nil {
-				if !strings.Contains(err.Error(), "maximum bytes exceeded") {
-					t.Fatalf("a one-byte fill publish: %v, want the full stream's refusal", err)
-				}
-				break
-			}
-		}
+		bustest.FillStream(t, client)
 		for try := range 3 {
 			recorder := claim(claimant, role)
 			if !strings.Contains(recorder.Body.String(), bus.ErrStreamFull.Error()) {
@@ -137,7 +124,7 @@ func TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim(t *testing.T) {
 			t.Fatalf("the stream holds %d takeover records of %s, want none: the stream refused each", got, role)
 		}
 		// Age makes room in a deployment; the purge of the fill makes it here.
-		if err := client.JS().PurgeStream(bus.Stream, &nats.StreamPurgeRequest{Subject: "notifications.github.fill.>"}); err != nil {
+		if err := client.JS().PurgeStream(bus.Stream, &nats.StreamPurgeRequest{Subject: bustest.FillSubject + ".>"}); err != nil {
 			t.Fatalf("purge the fill: %v", err)
 		}
 		if recorder := claim(claimant, role); recorder.Code != http.StatusOK {

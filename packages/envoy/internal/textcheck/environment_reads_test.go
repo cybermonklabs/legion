@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads packages/envoy/cmd/dispatch/**/*.go !**/*_test.go !packages/envoy/cmd/dispatch/**/testdata/** TestNoReaderBypassesTheSettingsTable environmentReads walks it, testdata and node_modules passed over, and parses each .go file but the test files
+//ci:reads packages/envoy/internal/dispatch/**/*.go !**/*_test.go !packages/envoy/internal/dispatch/**/testdata/** TestNoReaderBypassesTheSettingsTable environmentReads walks it, testdata and node_modules passed over, and parses each .go file but the test files
+
 import (
 	"fmt"
 	"go/ast"
@@ -117,6 +120,7 @@ func writeFile(t *testing.T, name, contents string) string {
 // other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
 // the table, `envoy-dispatch settings` and the generated configuration reference do not list.
 func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
+	t.Parallel()
 	reads, storetestImporters, err := environmentReads(filepath.Join("..", "..", "cmd", "dispatch"), filepath.Join("..", "dispatch"))
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +136,7 @@ func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
 // The guard sees a read however the file imports its package: under another name, or with no
 // name at all, where the read is a bare Getenv.
 func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
+	t.Parallel()
 	for name, probe := range map[string]string{
 		"an aliased import":       "package auth\n\nimport environment \"os\"\n\nfunc acceptProbe() string { return environment.Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
 		"a dot import":            "package auth\n\nimport . \"os\"\n\nfunc acceptProbe() string { return Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
@@ -156,6 +161,7 @@ func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
 // prover (store/storetest/lockstep), is imported only by test files itself. A non-test file
 // anywhere else that imports storetest is still found.
 func TestTheGuardFindsAStoretestImportOutsideTheFixtureTree(t *testing.T) {
+	t.Parallel()
 	probe := "package probe\n\nimport _ \"" + storetestImport + "\"\n"
 	for name, want := range map[string]bool{
 		filepath.Join("auth", "probe.go"):                              true,

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // appliedFactKinds is every fact type the workflow's and admission's entry functions act on, read
@@ -384,6 +385,14 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 			fact: intake.DispatchCheckState{Key: inAccepting, Mark: record.EventMark{Seq: 9, At: fixedNow}, Repo: "acme/widgets", Head: "head-5",
 				Checks: []string{"k1"}, Check: "k1", CheckVersion: 1, State: "no", Reason: "fail", Roles: []string{}, Serial: 1},
 			keeps: inAccepting}},
+		"ControllerTick": {
+			{name: "applied to the running tree", arrange: none, fact: intake.ControllerTick{}},
+			// A Dispatch child opened under a member in the middle of its phase holds it: the pass
+			// moves it to awaiting_children, which runs no step (dispatch://INFRA-3320 R9).
+			{name: "an open child stops a member in the middle of its phase", arrange: func(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+				spMirror(t, pool, "LEGION-777", "todo", planning, 1)
+			}, source: "controller", fact: intake.ControllerTick{}, leaves: planning},
+		},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -470,13 +479,18 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.DispatchApprovalMoved{}, intake.DispatchAskRestored{}, intake.HandoffComplete{}, intake.PullRequestOpened{},
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
+		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{}, intake.ControllerMemoryGuardKill{}, intake.FixJobRead{},
+		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{}, intake.FixJobRead{},
+		// A change of the P0 bound, which records it and makes the pass every fact that is not a
+		// Dispatch issue makes.
+		intake.P0BoundChanged{Change: store.P0BoundChange{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"}},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

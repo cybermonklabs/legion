@@ -105,7 +105,7 @@
 #                   run_brainstorm (below). Scored by brainstormSurface.
 #   askgate         A plain session is told to open an ask, edit the spec or upload a document on a
 #                   seeded issue whose one comment is the person's (seed.ts askgate), with AskGate,
-#                   the Envoy plugin's review of each Dispatch write, on (any label) or off (the
+#                   the Envoy plugin's review of each gated Dispatch write, on (any label) or off (the
 #                   label `off`, built with --envoy-json holding {"askgate":{"enabled":false}}).
 #                   SKILL_SCENARIOS_ASKGATE_CASE names the prompt: `facts` (an ask carrying facts
 #                   that do not help the choice), `link` (an ask linking the person's comment, on a
@@ -144,13 +144,16 @@
 #                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
 #                   each of the six: sibling-fails (both roles' passes at #702, the tester's fail
 #                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
-#                   no-implementer and no-tester (one role's pass alone at #702), no-verdict-pass
-#                   (both roles' passes at #702) and no-verdict-fail (the implementer's pass, the
-#                   tester's record and then its fail at #702), whose task, as every task of today,
-#                   names no verdict of the tester. #702's line reads yes in each but
-#                   no-verdict-fail, where it reads not known, and the state at the head decides,
-#                   whoever recorded the pass, so the reviewer approves #702 in the other five.
-#                   Scored by headsReview, counted per case and label.
+#                   no-implementer and no-tester (one role's pass alone at #702; in no-tester the
+#                   implementer's, whose `implement` record names #702's head, which it made),
+#                   no-verdict-pass (both roles' passes at #702) and no-verdict-fail (the
+#                   implementer's pass, the tester's record and then its fail at #702), whose task,
+#                   as every task of today, names no verdict of the tester. #702's line reads yes in
+#                   each but no-verdict-fail, where it reads not known. The reviewer approves #702
+#                   in sibling-fails, ci-only, no-implementer and no-verdict-pass, whoever recorded
+#                   the pass, since the state at the head decides; in no-tester it does not approve
+#                   on that pass: it records its own pass of k1 at the head before it approves, or
+#                   sends the issue to testing. Scored by headsReview, counted per case and label.
 #   reviewer-pass-and-fail
 #                   The same reviewer and pull requests, with a pass of the implementer, a pass of
 #                   the tester, the tester's record and then a fail of the tester at #702's head.
@@ -189,6 +192,12 @@
 #                   (gh-standin.ts's state); once the turn that pressed it has ended, the rig
 #                   settles it and the same session gets its task again (fix_settle). Scored by
 #                   fixJudge, counted per case and label.
+#   tester-reads-no-ci
+#                   The tester, on the implementer's completion, tests #702 alone, at whose head k1
+#                   has no ci_check and k3 carries ci_check="usage-test": its job's run is still in
+#                   progress in the case ci-late and ended failure, with its log, in ci-red. The case
+#                   is in the run's name, tester-reads-no-ci-<case>-<label>-<n>. Scored by
+#                   headsTesterReadsNoCI: the tester records k1 and neither reads CI nor waits.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -200,17 +209,23 @@
 # arm has scored lower on it. A label's cuts are its patch's (label-checkouts.sh), and its runs
 # show that the patch cuts the rule: the label scores below the head.
 #
-# A batch's services are a Postgres container, a NATS container, and the Envoy listener built from
-# this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the
-# run's directory (run_<id>) in the batch's Postgres, and the e2e harness's real Go Dispatch server
-# (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its API
-# (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
-# server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
-# each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. Docker assigns the containers' host
-# ports, the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it
-# until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
-# reports, and the kernel assigns each run's daemon stand-in its port.
+# A batch's services are a Postgres, a NATS, and the Envoy listener built from this checkout. The
+# Postgres and the NATS are two containers the batch starts and removes, or, when
+# SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
+# URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
+# docker. The two Optional entries below say what each given server must be: the Postgres on this
+# machine, and a NATS of the batch's own. Each run gets a Dispatch of its own (own_dispatch): a
+# database named after the run's directory (run_<id>) in the batch's Postgres, and the e2e
+# harness's real Go Dispatch server (packages/dispatch/e2e/run-server.sh) on that database, seeded
+# and read back through its API (seed.ts) and stopped when the run ends. A `dispatch search`
+# searches every project of its server, and a Dispatch bearer cannot be limited to one project, so
+# a shared server would show each run the other runs' issues and asks. Each run records its
+# Dispatch in <run>/dispatch.json, and score.ts does not score two runs that name one database. A
+# given server's URL carries its port; a container publishes none (services_up): NATS binds a
+# loopback port its own bind chooses, and Postgres answers on its unix socket. The listener serves
+# on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it until it serves (start_held),
+# each run's Dispatch on its own run-server.sh holds the same way and reports, and the kernel
+# assigns each run's daemon stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
@@ -259,6 +274,51 @@
 #   SKILL_SCENARIOS_OWNER     a label `owner=<value>` on the batch's Postgres and NATS containers,
 #                             for a machine whose rules name each container's owner; each
 #                             container's id is in <work>/services/containers either way
+#   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
+#                                 start, as a postgres:// or postgresql:// URL
+#                                 (postgres://<user>:<password>@<host>:<port>/<database>), never
+#                                 a key=value connection string: services_up refuses one, since
+#                                 the batch can take a password out of a URL alone. It must hold
+#                                 no sslpassword parameter, a client key's passphrase, its key
+#                                 percent-decoded as safe_url decodes it (`%73slpassword=` is
+#                                 `sslpassword=`): services_up refuses one, since pg_sql takes
+#                                 only the password out of the URL it gives psql, and every user
+#                                 of this machine can read psql's arguments. It must be the
+#                                 Postgres on this machine: services_up reads the URL with
+#                                 require_loopback_env (scripts/e2e/lib/loopback-dsn.sh) before
+#                                 anything connects to it or the batch writes the URL anywhere,
+#                                 and refuses every host libpq reads from it but 127.0.0.1,
+#                                 localhost and ::1. Then it refuses a URL with a value that the
+#                                 connection string each run's Dispatch gets cannot carry
+#                                 (run_database_url_env), a password with a character that does not
+#                                 print among them. Its login must be allowed to CREATE
+#                                 DATABASE, since each run makes a database of
+#                                 its own on it (own_dispatch), and each new database must offer
+#                                 the `vector` extension, as the container (pgvector) does: each
+#                                 run's Dispatch runs `create extension if not exists vector`, so
+#                                 the extension is in the server's template1 or the login may
+#                                 create it. Those databases stay there, because the batch drops
+#                                 no database and stops no server it was given, so drop them
+#                                 between batches: a later run of the same name finds its database
+#                                 there and fails, naming it. Its max_connections must admit, for
+#                                 each concurrent run, the connections one Dispatch server opens
+#                                 (`store/cmd/connections -process` prints them) and 20 more:
+#                                 services_up reads max_connections and refuses a
+#                                 SKILL_SCENARIOS_PARALLEL above what the server admits, so a
+#                                 server at Postgres's default of 100 is refused
+#   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
+#                                 as a URL (nats://<host>:<port>). It must run JetStream, as the
+#                                 container does (`-js`), on a nats-server at or above the floor
+#                                 packages/envoy/natsversion holds: v2.11.12, v2.12.4, or v2.14.0
+#                                 and later (the container runs the image
+#                                 scripts/e2e/lib/nats-image.sh reads). It must be a scratch server
+#                                 of the batch's own: the listener and every tester-proof run's
+#                                 agent (as ENVOY_NATS_URL) get this URL, so never give a pod's own
+#                                 ENVOY_NATS_URL or a shared hub here
+# Set both and the batch starts no container, so it needs neither docker nor a docker daemon. It
+# needs psql and python3 instead: it reads the Postgres URL with python3 and libpq, and reaches the
+# server with psql. Set one without the other and the batch ignores it and starts both
+# containers, as it does when neither is set.
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -318,8 +378,13 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too, for the loopback guard services_up reads a given
+# Postgres URL with (require_loopback_env, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
+# URL alone, psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name a service entry that can
+# set hostaddr, so psql would connect to an address the guard never read. The sweep runs in every
+# process of this script, so `rig.sh run`, which runs own_dispatch, has them cleared too.
 for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -401,6 +466,10 @@ timeout_hook=
 # ready. That bound is the run's own deadline, SKILL_SCENARIOS_TIMEOUT (1500 s unset), at each call:
 # nothing but the box's own speed delays a readiness signal, a stalled box held the daemon
 # stand-in's past a fixed 30 s, and a service held past the run's deadline fails the run anyway.
+# packages/envoy/scripts/lib/pg-url.sh's pg_url_run and pg_url_without_password: pg_sql gives psql
+# a given Postgres URL's password in PGPASSWORD alone, and safe_url prints that URL without it.
+# shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/pg-url.sh
+. "$root/packages/envoy/scripts/lib/pg-url.sh"
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
@@ -409,12 +478,12 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them, and a heads run's
-# own natsd and GitHub stand-in), and the services' ports and directory.
+# own natsd and GitHub stand-in), and the services' ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
 # A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
 hide_state_file=''
 natsd_pid='' fake_github_pid=''
-S='' envoy_port='' dispatch_port='' pg_socket='' nats_port='' github_port='' run_nats_url=''
+S='' envoy_port='' dispatch_port='' pg_socket='' pg_url='' nats_url='' github_port='' run_nats_url=''
 
 # label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
 # or nothing when the link or the directory is missing.
@@ -528,7 +597,7 @@ install_provider_route() {
     const models = { providers: { [name]: { ...connection, models: [entry] } } };
     await Bun.write(out, `${JSON.stringify(models, null, 2)}\n`);
   ' "$LEGION_E2E_MODEL_PROVIDER_FILE" "$LEGION_E2E_MODEL_PROVIDER" "$model_id" "$agent/models.yml" || return 1
-  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role
+  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role builtin
   {
     echo "# Written by rig.sh install_provider_route: $model is the one model, and no other provider"
     echo "# a session or a subagent could fall back to without a word is enabled."
@@ -536,8 +605,13 @@ install_provider_route() {
     # of every profile: AskGate's review is one tool call, and the default limit cuts it short.
     printf 'extensionHandlers:\n  toolCallTimeoutMs: 120000\n'
     printf 'enabledModels:\n  - %s\n' "$model"
+    # Every built-in provider but the block's own name: a block named after one (a box's
+    # `anthropic` block that points at its gateway) replaces that provider, and disabling the name
+    # would disable the block too, leaving the agents no model.
     printf 'disabledProviders:\n'
-    printf '  - %s\n' anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio
+    for builtin in anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio; do
+      [ "$builtin" = "$LEGION_E2E_MODEL_PROVIDER" ] || printf '  - %s\n' "$builtin"
+    done
     printf 'modelRoles:\n'
     for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
       printf '  %s: %s\n' "$role" "$model"
@@ -987,8 +1061,9 @@ stop_panes() {
 # A run's or a live read's exit: the switch of a -hidden run turned off (hide_state_off), its daemon
 # stand-in, its own Dispatch server, a heads run's own natsd and GitHub stand-in, its agent's
 # session, and every process that carries its SKILL_SCENARIO_RUN. The run's database stays in the
-# batch's Postgres container, which services_down removes. The services are this shell's own jobs,
-# so each is waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
+# batch's Postgres: services_down removes the container it started, and leaves a given server, with
+# every database its runs made, to the operator. The services are this shell's own jobs, so each is
+# waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
@@ -1045,12 +1120,17 @@ cmd_live_read() {
 }
 
 services_env=$work/services/env
+# The Postgres SKILL_SCENARIOS_POSTGRES_URL names, written by services_up and read by own_dispatch,
+# which runs in a process of its own (`rig.sh run`): a run takes the Postgres its batch brought up,
+# never one its own environment names. The file is 0600, since the URL can carry a password, and
+# its absence is how a run knows its batch started a container instead.
+services_postgres=$work/services/postgres-url
 
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
+    ENVOY_MACHINE_ID="$tag" NATS_URLS="$nats_url" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the Envoy listener to answer /v1/sessions" listener_answers
 }
@@ -1096,81 +1176,253 @@ lock_services() {
     fail "a batch already holds $S/up; a batch killed outright leaves it, its $tag-* containers and its processes behind"
 }
 
-# Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
-# (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
-# packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so max_connections is 30 for each concurrent run and 20 more for psql. Each
-# container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it.
+# given_services is whether the operator gave the batch both a Postgres and a NATS, so it starts
+# no container and needs no docker. One URL without the other is ignored: a batch that started the
+# other service as a container would need docker anyway.
+given_services() {
+  [ -n "${SKILL_SCENARIOS_POSTGRES_URL:-}" ] && [ -n "${SKILL_SCENARIOS_NATS_URL:-}" ]
+}
+
+# safe_url URL prints URL without its password, for a note, a failure message and a run's
+# dispatch.json: a server the operator gave can carry one in its URL. A postgres:// or
+# postgresql:// URL loses its password as pg_url_without_password (pg-url.sh, sourced above) takes
+# it out, which reads the URL as libpq reads it. Then it loses each `sslpassword` parameter, which
+# pg-url.sh keeps: the query starts at the first `?` past the user info, each key is
+# percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
+# stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
+# pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
+# URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
+# URL with: the password runs to the last `@` before the path, the query or the fragment, so a raw
+# `@` in it goes too.
+safe_url() {
+  local url scheme rest user='' kept='' param key
+  local -a params=()
+  case $1 in
+  postgres://* | postgresql://*) ;;
+  *)
+    printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
+    return
+    ;;
+  esac
+  if ! url=$(pg_url_without_password "$1"); then
+    printf '%s\n' '<a Postgres URL pg-url.sh refuses>'
+    return
+  fi
+  scheme=${url%%://*} rest=${url#*://}
+  if [[ ${rest%%/*} == *@* ]]; then
+    user=${rest%%@*}@
+    rest=${rest#*@}
+  fi
+  case $rest in *\?*)
+    IFS='&' read -ra params <<<"${rest#*\?}"
+    rest=${rest%%\?*}
+    ;;
+  esac
+  for param in "${params[@]}"; do
+    key=${param%%=*}
+    printf -v key '%b' "${key//%/\\x}"
+    [ "$key" = sslpassword ] || kept+="&$param"
+  done
+  printf '%s://%s%s%s\n' "$scheme" "$user" "$rest" "${kept:+?${kept#&}}"
+}
+
+# pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
+# between them. psql is libpq, so the host it connects to is the host require_loopback_env read
+# from the same URL (services_up). pg_url_run (pg-url.sh, sourced above) gives psql the URL
+# without its password, and the password in PGPASSWORD for that one command, so no process list
+# shows it. psql never asks for a password (-w): a server that asks for one the URL does not hold
+# fails at once, and does not wait on a terminal prompt that no time limit covers. A failure is
+# psql's own: it prints what Postgres answered and exits non-zero. A URL pg-url.sh refuses runs
+# no psql: pg-url.sh names the fault on standard error and returns 2.
+# until_true polls this for readiness, so the connect carries a bound of its own
+# (PGCONNECT_TIMEOUT), as nats_ready's probe does: a host that takes the connection and never
+# answers holds no caller past five seconds.
+pg_sql() {
+  PGCONNECT_TIMEOUT=5 pg_url_run "$1" psql -X -q -w -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
+}
+
+# nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
+# NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
+# own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
+# client, and a host that swallows the connection cannot hold its caller past its bound.
+nats_ready() {
+  local hostport=${1#*://} line=''
+  hostport=${hostport##*@}
+  hostport=${hostport%%/*}
+  line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
+    -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
+  case $line in 'INFO '*) ;; *) return 1 ;; esac
+}
+
+# connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
+# which `store/cmd/connections -process` prints, and its needs, what parallel runs and the batch's
+# own queries open at once: per_run for each run and 20 more. It fails when no count is printed.
+connections_needed() {
+  per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
+    [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
+    fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
+  needs=$((per_run * parallel + 20))
+}
+
+# services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
+# gave (given_services) or two containers it starts, and the Envoy listener built from this
+# checkout, which the services file ($services_env) names with the NATS and the listener token.
 #
-# Neither container publishes a host port. Docker would choose one among the ports it has not
-# handed out itself, which another process of a shared host can hold, and `docker run` then fails
-# with "address already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS
-# runs on the host's network and binds a loopback port its own bind chooses (`-p -1`), and the
-# rig reads that port from its log, so nothing can take the port between the choice and the bind.
-# Its container's address on the Docker network would be free of the race too, but the listener
-# refuses a NATS server that is not this machine's (bus: ENVOY_ALLOW_REMOTE_NATS), and the rig
-# turns that guard off nowhere. Postgres is reached through its unix socket, in a directory of the
-# batch's own (pg_socket) that the container mounts: each run's Dispatch serves dev sign-in, which
-# refuses a database host that is neither loopback nor a socket (loopbackDatabase,
-# packages/envoy/cmd/dispatch/main.go). The container runs as this user, so the socket and its
-# lock are this user's to remove.
+# Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
+# Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
+# pool.go), which `store/cmd/connections -process` prints, so this script holds no number of its
+# own. Postgres admits 100 by default, too few for 5 servers at once, so a container this batch
+# starts gets max_connections of that count for each concurrent run and 20 more for the batch's own
+# queries. A given server's max_connections is the operator's, not the batch's, so services_up
+# reads it and refuses a parallelism the server cannot serve. The count is read after a given
+# URL's checks, so a refused URL builds nothing.
+#
+# Each container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it. Neither container
+# publishes a host port. Docker would choose one among the ports it has not handed out itself,
+# which another process of a shared host can hold, and `docker run` then fails with "address
+# already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS runs on the
+# host's network and binds a loopback port its own bind chooses (`-p -1`), and the rig reads that
+# port from its log, so nothing can take the port between the choice and the bind. Its container's
+# address on the Docker network would be free of the race too, but the listener refuses a NATS
+# server that is not this machine's (bus: ENVOY_ALLOW_REMOTE_NATS), and the rig turns that guard off
+# nowhere. Postgres is reached through its unix socket, in a directory of the batch's own
+# (pg_socket) that the container mounts: each run's Dispatch serves dev sign-in, which refuses a
+# database host that is neither loopback nor a socket (loopbackDatabase,
+# packages/envoy/cmd/dispatch/main.go). The container runs as this user, so the socket and its lock
+# are this user's to remove.
+#
+# A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
+# a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
+# only the password out of the URL it gives psql, and every user of this machine can read psql's
+# arguments. Its query is read as safe_url reads it: from the first `?` past the user info, each
+# key percent-decoded. Its URL is read with require_loopback_env (scripts/e2e/lib/loopback-dsn.sh)
+# before anything connects to that server or this batch writes the URL anywhere. The guard reads
+# the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
+# the host the guard read. run_database_url_env then rebuilds, for a placeholder database, the
+# connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
+# cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
+# take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
 services_up() {
   local owner=()
   evidence=$S
-  [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
-  # A unix socket's path holds at most 107 bytes, and a TMPDIR can be longer than that (a test's
-  # or a session's own), so the directory is a new one of /tmp's.
-  pg_socket=$(mktemp -d /tmp/rig-pg.XXXXXX)
-  # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" "${owner[@]}" --user "$(id -u):$(id -g)" --cpus 2 --memory 2g \
-    --mount type=tmpfs,destination=/var/lib/postgresql --mount "type=bind,source=$pg_socket,destination=/var/run/postgresql" \
-    -e POSTGRES_PASSWORD=ci ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >>"$S/containers"
-  # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
-  # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
-  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
-  . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" "${owner[@]}" --network host --cpus 1 --memory 512m "$nats_image" -js -a 127.0.0.1 -p -1 >>"$S/containers"
-  until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
-  until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
-  nats_port=$(docker logs "$tag-nats" 2>&1 | sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1)
-  [ -n "$nats_port" ] || fail "NATS logged no client port on 127.0.0.1; see docker logs $tag-nats"
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits nats_port pg_host run_url tool rest param key postgres
+  local -a params=()
+  if given_services; then
+    case $SKILL_SCENARIOS_POSTGRES_URL in
+    postgres://* | postgresql://*) ;;
+    *) fail "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string" ;;
+    esac
+    rest=${SKILL_SCENARIOS_POSTGRES_URL#*://}
+    [[ ${rest%%/*} != *@* ]] || rest=${rest#*@}
+    case $rest in *\?*) IFS='&' read -ra params <<<"${rest#*\?}" ;; esac
+    for param in "${params[@]}"; do
+      key=${param%%=*}
+      printf -v key '%b' "${key//%/\\x}"
+      [ "$key" != sslpassword ] ||
+        fail "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase"
+    done
+    pg_url_without_password "$SKILL_SCENARIOS_POSTGRES_URL" >/dev/null ||
+      fail "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it"
+    for tool in psql python3; do
+      command -v "$tool" >/dev/null ||
+        fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
+    done
+    require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there" || fail "$pg_host"
+    run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    connections_needed
+    pg_url=$SKILL_SCENARIOS_POSTGRES_URL
+    nats_url=$SKILL_SCENARIOS_NATS_URL
+    (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
+    until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
+    until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
+    admits=$(pg_sql "$pg_url" 'SHOW max_connections')
+    fits=$(((admits - 20) / per_run))
+    [ "$fits" -ge 1 ] ||
+      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs $((per_run + 20)): give a Postgres whose max_connections is $((per_run + 20)) or more"
+    [ "$parallel" -le "$fits" ] ||
+      fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
+    postgres=$(safe_url "$pg_url")
+  else
+    connections_needed
+    # A given Postgres's URL that a batch killed outright left would send this batch's runs there.
+    rm -f -- "$services_postgres"
+    [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
+    # A unix socket's path holds at most 107 bytes, and a TMPDIR can be longer than that (a test's
+    # or a session's own), so the directory is a new one of /tmp's.
+    pg_socket=$(mktemp -d /tmp/rig-pg.XXXXXX)
+    # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+    docker run -d --name "$tag-pg" "${owner[@]}" --user "$(id -u):$(id -g)" --cpus 2 --memory 2g \
+      --mount type=tmpfs,destination=/var/lib/postgresql --mount "type=bind,source=$pg_socket,destination=/var/run/postgresql" \
+      -e POSTGRES_PASSWORD=ci ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+      -c max_connections=$needs >>"$S/containers"
+    # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
+    # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+    # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+    . "$root/scripts/e2e/lib/nats-image.sh"
+    docker run -d --name "$tag-nats" "${owner[@]}" --network host --cpus 1 --memory 512m "$nats_image" -js -a 127.0.0.1 -p -1 >>"$S/containers"
+    until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
+    until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+    nats_port=$(docker logs "$tag-nats" 2>&1 | sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1)
+    [ -n "$nats_port" ] || fail "NATS logged no client port on 127.0.0.1; see docker logs $tag-nats"
+    nats_url=nats://127.0.0.1:$nats_port
+    postgres=$pg_socket
+  fi
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
+    echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres $pg_socket"
+  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $postgres"
 }
 
+# services_down stops and removes what this batch started and made: the listener, the two
+# containers services_up starts when it is given no servers and the directory of their Postgres's
+# socket, the services file, the given Postgres's URL, and the lock. A given Postgres and a given
+# NATS keep running, and every database a run made on that Postgres (own_dispatch) stays there for
+# the operator to drop.
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
-  docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  given_services || docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
   [ -z "$pg_socket" ] || rm -rf -- "$pg_socket"
-  rm -f "$services_env" "$S/up"
+  rm -f "$services_env" "$services_postgres" "$S/up"
 }
 
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
 # the scenario needs (project, or brainstorm): a database named after the run's directory in the
-# batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
-# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
+# batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
+# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
+# batch's Postgres is the server $services_postgres names, and the batch's own container when that
+# file is absent. On a given server, services_up checks the URL with run_database_url_env.
+# Here own_dispatch calls run_database_url on the URL from the file to set dbname to the run's
+# database. Dispatch's pgx driver reads the resulting keyword/value connection string.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} postgres socket
+  local seed=$1 database=run_${R##*/} postgres socket url
   database=${database//-/_}
   # Postgres cuts a longer name to 63 bytes, and two runs whose names agree that far would share it.
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
-  # The container's id, and the directory of its socket that services_up mounted; an inspect that
-  # answers nothing leaves both empty for the refusal below.
-  read -r postgres socket < <(docker inspect -f \
-    '{{.Id}} {{range .Mounts}}{{if eq .Destination "/var/run/postgresql"}}{{.Source}}{{end}}{{end}}' "$tag-pg") || true
-  [ -n "$postgres" ] && [ -n "$socket" ] || fail "no Postgres container $tag-pg with its socket for the run's Dispatch"
-  docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
-    fail "CREATE DATABASE $database failed; see $R/fixture.log"
-  start_dispatch "postgres:///$database?host=$socket&user=postgres&sslmode=disable"
+  if [ -f "$services_postgres" ]; then
+    postgres=$(<"$services_postgres")
+    run_database_url url SKILL_SCENARIOS_POSTGRES_URL "$postgres" "$database" "this run creates a database there" || fail "$url"
+    # A given server must let its login make a database. Nothing here checks that: the refusal a
+    # server without the right gives is Postgres's own, in the run's fixture.log.
+    pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
+      fail "CREATE DATABASE $database on $(safe_url "$postgres") failed; see $R/fixture.log"
+    postgres=$(safe_url "$postgres")
+  else
+    # The container's id, and the directory of its socket that services_up mounted; an inspect that
+    # answers nothing leaves both empty for the refusal below.
+    read -r postgres socket < <(docker inspect -f \
+      '{{.Id}} {{range .Mounts}}{{if eq .Destination "/var/run/postgresql"}}{{.Source}}{{end}}{{end}}' "$tag-pg") || true
+    [ -n "$postgres" ] && [ -n "$socket" ] || fail "no Postgres container $tag-pg with its socket for the run's Dispatch"
+    docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
+      fail "CREATE DATABASE $database failed; see $R/fixture.log"
+    url="postgres:///$database?host=$socket&user=postgres&sslmode=disable"
+  fi
+  start_dispatch "$url"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -1252,8 +1504,8 @@ run_measure_before_ask() {
   dispatch_session
 }
 
-# The person's words are one comment on the run's own issue, and AskGate reviews each Dispatch
-# write the agent makes. The case's prompt names that issue, and every case but `facts` and
+# The person's words are one comment on the run's own issue, and AskGate reviews each gated
+# Dispatch write the agent makes. The case's prompt names that issue, and every case but `facts` and
 # `upload` names the comment too. `link` asks a choice the comment leaves open, so only AskGate's
 # rule 10 (the person's words with no link to them) bears on it: an ask whether to do what the
 # person asked is authority 6 (applying a decision they already gave). Its reindex fact cites the
@@ -1288,7 +1540,7 @@ run_askgate() {
     ;;
   upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact --force, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
   nochange) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
-  nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
+  nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each gated Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
   untried) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Do not run the command it names yourself. %s Question: "Can you run %s and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$issue" "$one" "$billing" "$ref" ;;
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;
@@ -1786,12 +2038,42 @@ workspace_on() {
   ) >/dev/null 2>&1
 }
 
+# worker_routes PR prints the routes the gh stand-in answers the tester's world from
+# (fixtures.json), for PR, the fixture's pull request as `gh pr view --json` prints it whole.
+# `gh pr list` answers as GitHub does for a repository whose one pull request is PR, open. A
+# `--state` (`-s`) of closed or merged lists nothing, whatever the head, so its route comes first:
+# the stand-in answers with the first route that matches. Otherwise a `--head` (`--head=`, `-H`)
+# that names PR's branch lists PR, as the worker prompt's lookup of the PR by `--head
+# legion/<issue>` does, any other head lists nothing, as GitHub's answer for a branch with no pull
+# request is, and every other list, a list with no head among them, lists PR. The branch is
+# legion/<key>, and a Dispatch key holds letters, digits and a hyphen, so it goes into the route's
+# regex as it is.
+worker_routes() {
+  jq -n --argjson pr "$1" '
+    ($pr.number|tostring) as $number
+    | {routes:[
+      {match:"^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", stdout:[]},
+      {match:("^gh pr list( .*)? (--head[ =]|-H ?)" + $pr.headRefName + "( |$)"), stdout:[$pr]},
+      {match:"^gh pr list( .*)? (--head[ =]|-H ?)", stdout:[]},
+      {match:"^gh pr list", stdout:[$pr]},
+      {match:"^gh pr view", stdout:$pr},
+      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
+      {match:"^gh pr (edit|comment|review|ready)", stdout:($pr.url+"#issuecomment-1")},
+      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
+      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($pr.url+"#issuecomment-6001")}},
+      {match:("^gh api .*pulls/" + $number + "/(reviews|comments)"), stdout:[]},
+      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
+      {match:("^gh api .*pulls/" + $number), stdout:$pr},
+      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
+    ]}'
+}
+
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
 # run_tester_proof files first): fixture_repo's, the implementer's commit on legion/<key>, the PR
-# the gh stand-in serves, and the implementer's handoff body at $R/implement.json, which
-# run_tester_proof records on the issue. The fixture's content is the same in every run; the PR
-# number is 1000 plus <index>, the run's index in its batch, so no two runs of a batch share a PR
-# number.
+# the gh stand-in serves (worker_routes), and the implementer's handoff body at $R/implement.json,
+# which run_tester_proof records on the issue. The fixture's content is the same in every run; the
+# PR number is 1000 plus <index>, the run's index in its batch, so no two runs of a batch share a
+# PR number.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
 # testerProof fails a run that
@@ -1799,7 +2081,7 @@ workspace_on() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 C1 body worker_pr worker_pr_url
+  local index=$1 start=$2 C1 body worker_pr worker_pr_url pr
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   fixture_repo "$index" "$start"
@@ -1836,14 +2118,12 @@ EOF
   C1=$(g rev-parse HEAD)
   g push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
-  # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
-  # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
-  # written. What the implementer ran is no part of it: seed.ts implement-handoff records that as a
-  # result against the issue's check k1. The PR's head is the implementer's code commit, since no
-  # handoff commit sits above it.
-  jq -n --arg key "$worker_key" '
-    {schemaVersion:1, phase:"implement", issue:$key,
-     filesChanged:["greet.ts","greet.test.ts"]}' >"$R/implement.json"
+  # The implement handoff as the implementer records it with `dispatch handoff-write`: `head`, the
+  # commit the implementer pushed. The PR's head is that commit, since no handoff commit sits above
+  # it. The record holds the issue and the phase, and Dispatch records when it was written. What the
+  # implementer ran is no part of it: seed.ts implement-handoff records that as a result against the
+  # issue's check k1.
+  jq -n --arg head "$C1" '{head:$head}' >"$R/implement.json"
   workspace_on "legion/$worker_key"
   body="Dispatch: $worker_key
 
@@ -1859,24 +2139,14 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
+  pr=$(jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --arg base "$worker_base" --argjson number "$worker_pr" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
      reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:$base},
      statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
-    | {routes:[
-      {match:"^gh pr view", stdout:$pr},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
-      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
-      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
-    ]}' >"$R/fixtures.json"
+                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]}')
+  worker_routes "$pr" >"$R/fixtures.json"
   # The world the scorer reads: head is the PR's head, the implementer's code commit.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
@@ -1955,16 +2225,21 @@ run_tester_proof() {
 # branches of the issue, legion/<key>-702 and legion/<key>-703, each one docs-only commit on the base,
 # so the reviewer runs no thermonuclear pair. #702 adds docs/usage.md, which the issue's check k1
 # reads; #703 points the README at that page and adds none. Both are pushed, and the workspace is
-# on legion/<key>-702. It writes $R/heads.json, each branch's head by its pull request's number,
-# which seed.ts heads-events reads, and $R/world.json, the world the scorer reads, in
-# worker_fixture's shape, with pr 702 and #702's head.
+# on legion/<key>-702. It writes $R/heads.json, the base revision and each branch's head by pull
+# request number, which seed.ts heads-events reads, and $R/world.json, the world the scorer reads,
+# in worker_fixture's shape, with pr 702 and #702's head.
 heads_fixture() {
-  local pr head heads='{}'
+  local pr head base heads='{}'
   fixture_repo "$1" "$2"
+  base=$(g rev-parse "$worker_base")
+  heads=$(jq -cn --arg base "$base" '{base:$base}')
   g checkout -qb "legion/$worker_key-702" "$worker_base"
   mkdir -p "$R/src/docs"
+  # The page names three of the four commands `widgets --help` lists, which is what the log of the
+  # failed CI job of the ci-check-fail worlds says it names (rig-world.json): the miss is export,
+  # and it shows in that job's log and in the check's state, never in the three-line diff alone.
   # shellcheck disable=SC2016 # Markdown, written as it stands
-  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n' >"$R/src/docs/usage.md"
+  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n' >"$R/src/docs/usage.md"
   g add -A && g commit -qm "docs: the usage page of the widgets CLI ($worker_key)"
   g checkout -qb "legion/$worker_key-703" "$worker_base"
   printf '\nUsage: see docs/usage.md.\n' >>"$R/src/README.md"
@@ -1998,11 +2273,12 @@ beside_branch() { printf 'legion-beside/%s/1/default/fix-1/%s\n' "$worker_key" "
 # semicolon whose lack the lint job's failure names. The branch is pushed and the workspace is on
 # it. In the implementer's worlds the fix's own working copy stands beside the workspace,
 # <workspace>-fix ($R/ws-fix, workspace.FixDir), a jj workspace of the same clone made at the
-# head, as the shim's adoption makes it before a fix's task. It writes $R/heads.json ({"702":
-# <head>}) and $R/world.json, in heads_fixture's shape with the branch legion/<key>, and `own`, the
-# branch the run's role pushes to beside the fix (beside_branch).
+# head, as the shim's adoption makes it before a fix's task. It writes $R/heads.json ({"base":
+# <base>, "702": <head>}, as heads_fixture writes it) and $R/world.json, in heads_fixture's shape
+# with the branch legion/<key>, and `own`, the branch the run's role pushes to beside the fix
+# (beside_branch).
 fix_fixture() {
-  local index=$1 start=$2 world=$3 head own
+  local index=$1 start=$2 world=$3 head own base
   fixture_repo "$index" "$start"
   mkdir -p "$R/src/packages/notify"
   # shellcheck disable=SC2016 # TypeScript, written as it stands
@@ -2042,6 +2318,7 @@ fix_fixture() {
     '});' >"$R/src/packages/notify/notify.test.ts"
   g add -A && g commit -qm "feat: notify(), the send helper of the widgets CLI"
   g push -q "$R/remote.git" "$worker_base"
+  base=$(g rev-parse "$worker_base")
   g checkout -qb "legion/$worker_key"
   mkdir -p "$R/src/packages/greet"
   # shellcheck disable=SC2016 # TypeScript, written as it stands
@@ -2088,7 +2365,7 @@ fix_fixture() {
   head=$(g rev-parse HEAD)
   g push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
-  jq -cn --arg head "$head" '{"702": $head}' >"$R/heads.json"
+  jq -cn --arg base "$base" --arg head "$head" '{base:$base, "702":$head}' >"$R/heads.json"
   workspace_on "legion/$worker_key"
   own=$(beside_branch tester)
   if [ "$world" != tester-beside ]; then
@@ -2244,9 +2521,9 @@ pr_line() {
 # reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
 # k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line k2 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check='' why thermo thermo_docs branch
+  local scenario=$1 scenario_case=${2:-} pr head line k2 k3 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check='' why thermo thermo_docs branch
   case $scenario_case in ci-check-fail | ci-check-fail-other-head) ci_check=$scenario_case ;; esac
-  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:* | fix-judge:*) prs=(702) ;; esac
+  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:* | fix-judge:* | tester-reads-no-ci:*) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
     head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
@@ -2266,6 +2543,12 @@ ${k2:-- Check k2 (before_merge): not yet run}"
       k2=$(pr_line k-ci "$pr")
       line="$line
 ${k2:-- Check k-ci (before_merge): not yet run}"
+    fi
+    # k3, the check a CI job runs in the tester's world, has the line its job's state gives it.
+    if [ "$scenario" = tester-reads-no-ci ]; then
+      k3=$(pr_line k3 "$pr")
+      line="$line
+${k3:-- Check k3 (before_merge): not yet run}"
     fi
     why="Nothing told a reader how to list the commands of the widgets CLI ($worker_key)."
     thermo='not run (the whole change touches no runtime code)'
@@ -2341,6 +2624,12 @@ ${line:-- Check k1 (before_merge): not yet run}
       named=$(jq -c --arg world "fix-judge-$scenario_case" '[.ciJobs[$world] // error("rig-world.json names no CI job of \($world)")]' "$here/rig-world.json")
       jobs=$(jq -c '["lint", "typecheck", "unit-tests"] - [.[0].name]' <<<"$named")
     fi
+    # k3's job in the tester's world: still going at #702's head in ci-late, failed there with its
+    # log in ci-red.
+    case $scenario:$scenario_case:$pr in
+    tester-reads-no-ci:ci-late:702) named=$(jq -c '[.ciJobs["ci-late"]]' "$here/rig-world.json") ;;
+    tester-reads-no-ci:ci-red:702) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
+    esac
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
       --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
       --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" --arg branch "$branch" \
@@ -2449,7 +2738,7 @@ hide_state_off() {
 # cmd_batch refuses any other scenario, and heads_cases any catalog row that names one.
 rig_scenario() {
   case $1 in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail | fix-judge) ;;
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail | fix-judge | tester-reads-no-ci) ;;
   *) return 1 ;;
   esac
 }
@@ -2767,8 +3056,24 @@ run_fix_judge() {
     fail "the results of $worker_key could not be read from the run's Dispatch"
 }
 
+# tester-reads-no-ci: the tester, started on the implementer's completion (tester_prompt), tests
+# #702, at whose head k1 has no ci_check and k3's CI job is still going (ci-late) or has failed
+# (ci-red), and its records are read back afterwards (seed.ts capture-handoffs). Scored by
+# headsTesterReadsNoCI.
+run_tester_reads_no_ci() {
+  local index=$1 start=$2 scenario_case=$3
+  heads_world tester-reads-no-ci "$index" "$start" "$scenario_case"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes tester-reads-no-ci "$scenario_case"
+  tester_prompt 702 "$(jq -r '."702"' "$R/heads.json")"
+  hide_state_on
+  legion_session tester
+  hide_state_off
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge> <label> <n> <index> <start> [<case>]" cases askgate
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge|tester-reads-no-ci> <label> <n> <index> <start> [<case>]" cases askgate
   # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
   heads_cases "${1:-}"
   [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
@@ -2826,6 +3131,7 @@ cmd_run() {
   architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" "$scenario_case" ;;
   ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
   fix-judge) run_fix_judge "$index" "$start" "$scenario_case" ;;
+  tester-reads-no-ci) run_tester_reads_no_ci "$index" "$start" "$scenario_case" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
@@ -2850,7 +3156,7 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge|tester-reads-no-ci> <runs> <label>..."
   local runs=$2 label n index=0 start scenario_case cases askgate
   batch_scenario=$1
   rig_scenario "$batch_scenario" || fail "unknown scenario $batch_scenario"

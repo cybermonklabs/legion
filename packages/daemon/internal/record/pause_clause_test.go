@@ -49,6 +49,8 @@ var pauseQueue = []pauseQueued{
 			Reader: &CIReader{Phase: phase.Reviewing, Entry: 2}, Checks: &[]string{}, Body: ReadPromptBody("LEGION-313", "c0de", nil)}},
 	{name: "a deletion of the branches beside a fix", issue: "LEGION-314", held: true,
 		payload: BesideBranchesDelete{Generation: 1, Task: "a", Through: 1}},
+	{name: "a merge-holds change", issue: "LEGION-315", held: true, claim: "legion-legion-legion-315-merger",
+		payload: MergeHoldsChanged{Project: "LEGION"}},
 	{name: "a check's wake", issue: "LEGION-308", held: true, payload: CheckWakeDue{Look: 1, Reason: "the tester's own wake"}},
 	{name: "a check's look bound", issue: "LEGION-309", held: true, payload: CheckLook{Look: 1}},
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},

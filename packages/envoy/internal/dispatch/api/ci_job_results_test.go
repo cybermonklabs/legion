@@ -793,6 +793,7 @@ func (r *ciJobRig) readJobCheck(t *testing.T, blockID string) jobCheckRead {
 // names ran nothing, so the answer, the stored row and the event carry no person (R12). One
 // result.recorded event goes on the issue.
 func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	response := rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass"))
 	result := jobRecorded(t, "the job's result for c1", response)
@@ -849,6 +850,7 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 // answer, the stored row, the read and the statement of the run all hold the kept text. The text
 // of the bound is the control: a route that cuts every text, or none, fails one of the two rows.
 func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
+	t.Parallel()
 	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
 	log := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
 	if utf8.RuneCountInString(log) != 10000 {
@@ -905,6 +907,7 @@ func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
 // TestARoleStillCannotRecordACheckOfACIJob: a session's tester and implementer results against
 // c1 are refused, 409 CHECK_PROVED_BY_CI, saying that only a run of the job records its result.
 func TestARoleStillCannotRecordACheckOfACIJob(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	want := `check c1 names CI job "` + ciJobName + `": only a run of that job records its result, through the secrets broker`
 	for _, role := range []string{"tester", "implementer"} {
@@ -921,6 +924,7 @@ func TestARoleStillCannotRecordACheckOfACIJob(t *testing.T) {
 // names its own check run. The run of envoy-go is refused c1, and the run of go-checks is
 // refused k1, which names no ci_check.
 func TestAResultsTokenOfAnotherJobIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setCheckRun(98, "envoy-go", ciJobCommit)
 	other := rig.jobToken(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = "98" })
@@ -945,6 +949,7 @@ func TestAResultsTokenOfAnotherJobIsRefused(t *testing.T) {
 // tested, and only through a check run that GitHub names at that commit. Each refusal names both
 // commits.
 func TestAJobsResultAtAnotherCommitIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	body := jobResultOf("c1", "pass")
 	body["commit"] = ciJobOtherCommit
@@ -967,6 +972,7 @@ func TestAJobsResultAtAnotherCommitIsRefused(t *testing.T) {
 // its row names that branch, which is how the results read tells it from a role's. A
 // run of a tag, and a ref that names an empty branch, are refused, and nothing is stored.
 func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	for _, ref := range []string{"refs/tags/v1.0.0", "refs/heads/"} {
 		token := rig.jobToken(func(answer *ciphertoken.Introspection) {
@@ -984,6 +990,7 @@ func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
 // TestAJobOfAnotherRepositoryIsRefused: the token's run is of a repository that the issue does not
 // resolve to, so its commit is no commit of the issue.
 func TestAJobOfAnotherRepositoryIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	const other = "example-org/other-repo"
 	token := rig.jobToken(func(answer *ciphertoken.Introspection) {
@@ -1002,6 +1009,7 @@ func TestAJobOfAnotherRepositoryIsRefused(t *testing.T) {
 // never a field the caller set, so a job's body that names any field of a role's result is
 // refused by name.
 func TestAJobsResultCarriesNoFieldOfARole(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	for name, value := range map[string]any{
 		"role":             "tester",
@@ -1027,6 +1035,7 @@ func TestAJobsResultCarriesNoFieldOfARole(t *testing.T) {
 // TestAResultsTokenOfAnotherProjectIsRefused: a results token records on the issues of its own
 // project alone.
 func TestAResultsTokenOfAnotherProjectIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	other, _ := rig.issueOf(t, "OTHER", "example-org/other-repo")
 	response := rig.post(t, other, rig.jobToken(nil), jobResultOf("c1", "pass"))
@@ -1047,6 +1056,7 @@ func TestAResultsTokenOfAnotherProjectIsRefused(t *testing.T) {
 // again (refuseCICheckBlocks), is stored. A settlement with nothing owed judges no block, so the
 // edit is what makes the first half able to fail.
 func TestAJobsResultLeavesTheCheckCIs(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	jobRecorded(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
 	documents := rig.deps.Docs.(*docs.Service)
@@ -1088,6 +1098,7 @@ func TestAJobsResultLeavesTheCheckCIs(t *testing.T) {
 // of such a check as the derived one; and in recorded_results each one the job recorded at the
 // commit it tested, newest first.
 func TestTheReadShowsTheJobsResultBesideTheDerivedOne(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
 

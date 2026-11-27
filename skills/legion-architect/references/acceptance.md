@@ -16,7 +16,7 @@ Read, against the goal, every check and every requirement:
 
 1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed, but the check a running fix's message names, which is the fix's and holds no acceptance;
+2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
 3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head; beside a fix that head is the one its step started at, even after the fix pushed;
 
@@ -24,42 +24,40 @@ Read, against the goal, every check and every requirement:
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
+- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake.
 
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
-  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
-  a closed issue hides its open questions from the controller.
+  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`).
 
 - No `after_merge` result is asked here; the production check records it after the close.
+
+## A merge hold
+
+Before every `sign_off`, read the project's merge holds, `merge-holds-md`: a line that names the pull request's repository, or `all`, and whose end is not past holds the sign-off.
+While one holds, end the turn with a WAITING line that names it, and send the controller no message about a hold: it lifts a hold by deleting its line.
+Read "A merge hold" in acceptance-steps.md before every `sign_off`: it says how to read the document and a line, and what each wake does.
 
 ## The last round
 
 A parent has a last round only where its task names `acceptance:owner`.
-Sign it off only on a head that carries the merges of every child its checks need.
+Sign it off only on a head at which its checks pass.
 Each check needs a pass at that head; one in another repository needs a pass standing since the close of each child it needs, at a commit on the branch that issue's pull request merged into or on its default branch;
 a `default_branch` check needs the default branch.
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
 A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
-Nothing builds on the parent's merge, which comes last.
 Until those children close, leave the issue in `accepting`.
-Then, in one turn:
-
-1. Where a tester step comes before your acceptance, `envoy_publish` to its tester's role topic:
-   "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
-   With no tester step before your acceptance, the implementer's evidence for those checks at the merge head is the full round.
-
-2. `request_backward_move` to `implementing`, with the reason "Last round:
-   merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
-   Never hard-code `main`.
+Then start the last round: `request_backward_move` to `testing`, or to `implementing` where no tester step comes before your acceptance, its reason naming the children that closed and the checks of the parent that need their code.
+The tester sizes that round like any other; with no tester step before your acceptance, the implementer's evidence for those checks at its head is the round.
+The last round merges the base only on a trigger every pull request has: GitHub reads the pull request `CONFLICTING` (*A conflicting head*, below), or a check that needs a child's merged code fails at the head without it, and the implementer merges the base on that trigger.
 
 A child's merge while the parent waits needs no move of its own:
-the last round's forward merge takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
+the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
 If the pull request merged before its last round, move nothing back. Once the children close:
 
-1. Have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, and `wait` for its report.
+1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
 2. Read each `ci_check` result in `dispatch results`.
 3. Post the results in the acceptance comment, then `sign_off`.
 
@@ -75,8 +73,7 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
+- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.
@@ -95,7 +92,6 @@ You start nothing for the merge.
 Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
-A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve
 
@@ -105,7 +101,6 @@ When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the th
 ## The close
 
 The merge closes the issue (`done`).
-The production check after the close is not yours.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger

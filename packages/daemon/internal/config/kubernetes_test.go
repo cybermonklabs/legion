@@ -1,5 +1,7 @@
 package config
 
+//ci:reads deploy/kubernetes/operator-route/pod.yml `packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod` reads it under ../../../.. for the tests of the operator route's placeholders
+
 import (
 	"fmt"
 	"os"
@@ -309,10 +311,10 @@ func modeRefusal(kind, got string) string {
 }
 
 // What a block that sets only its required members settles to: the issue volume at 50Gi, both
-// pods' reservations at the daemon's default (an issue pod 3 CPU and 19Gi over an 80Gi disk limit
+// pods' reservations at the daemon's default (an issue pod 2 CPU and 8Gi over an 80Gi disk limit
 // and a 6Gi disk request, the controller's pod 1 CPU and 4Gi over a 10Gi limit and a 1Gi request),
-// no scheduling beyond the Legion pool the runtime selects, in-cluster credentials, and nothing of
-// the operator's in any pod.
+// no scheduling (a pod selects no node label but a microVM pod's ComputeClass), in-cluster
+// credentials, and nothing of the operator's in any pod.
 func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
 	if err != nil {
@@ -328,7 +330,7 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	}{
 		{"issue_volume", block.IssueVolume, "50Gi"},
 		{"resources", block.Resources, PodResources{
-			Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+			Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 			Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 		}},
 		{"scheduling", block.Scheduling, Scheduling{}},
@@ -358,16 +360,33 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 // settles to a complete reservation: the pod stays Guaranteed with no memory the operator wrote,
 // and bounded on the node's disk with no ephemeral storage the operator wrote.
 func TestAPodSettingOnlyItsCPUKeepsTheDefaultMemory(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, "controller: daemon\n"+kubernetesFile+"    resources: {issue: {cpu: 2}, controller: {memory: 2Gi}}\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, "controller: daemon\n"+kubernetesFile+"    resources: {issue: {cpu: 4}, controller: {memory: 2Gi}}\n"), noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
 	resources := cfg.Runtime.Kubernetes.Resources
-	if got, want := resources.Issue, (Reservation{CPU: "2", CPURequest: "2", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); got != want {
+	if got, want := resources.Issue, (Reservation{CPU: "4", CPURequest: "4", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); got != want {
 		t.Errorf("issue = %+v, want %+v: the file's cpu and the default memory and disk bound", got, want)
 	}
 	if got, want := resources.Controller, (Reservation{CPU: "1", CPURequest: "1", Memory: "2Gi", MemoryRequest: "2Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"}); got != want {
 		t.Errorf("controller = %+v, want %+v: the default cpu and disk bound and the file's memory", got, want)
+	}
+}
+
+// An issue pod's entry that sets only its memory takes the default's cpu, and its memory request
+// settles to the file's own limit: `memory: 32Gi` alone is 2 CPU and 32Gi, each requested in full,
+// so the pod stays Guaranteed over the default disk bound.
+func TestAnIssuePodThatSetsOnlyItsMemoryTakesTheDefaultCPU(t *testing.T) {
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {memory: 32Gi}}\n"), noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	issue := cfg.Runtime.Kubernetes.Resources.Issue
+	if want := (Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "32Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); issue != want {
+		t.Errorf("issue = %+v, want %+v: the default cpu and disk bound and the file's memory", issue, want)
+	}
+	if issue.Burstable() {
+		t.Errorf("issue %+v reads Burstable, want Guaranteed", issue)
 	}
 }
 
@@ -380,7 +399,7 @@ func TestAPodCanRequestLessMemoryThanItsLimit(t *testing.T) {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
 	issue := cfg.Runtime.Kubernetes.Resources.Issue
-	want := Reservation{CPU: "3", CPURequest: "3", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
+	want := Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
 	if issue != want {
 		t.Errorf("issue = %+v, want %+v", issue, want)
 	}
@@ -403,6 +422,94 @@ func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
 	if got := cfg.Runtime.Kubernetes.RepositoryCache.Resources; got != want {
 		t.Errorf("the repository cache's reservation = %+v, want %+v", got, want)
 	}
+}
+
+// The two repository_cache keys that keep the cache's packs in a Cloud Storage bucket are a pair.
+// Both absent is off, with neither value and every other member at its default. Both supplied are
+// read as written. One without the other is refused naming the missing key, a blank value and an
+// unfilled `${…}` placeholder naming the key itself, a bucket that is no bucket's name naming the
+// shape, and an account that is no ServiceAccount's name (a capital or an underscore, a slash, or
+// past 253 characters) naming the key and the value. A cache account that is the one the issue
+// pods run as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
+// unset, the namespace's `default`, which is what every issue pod then runs as. The bucket's grant
+// goes to the cache's account, and on that account it would reach every issue pod. So is the
+// controller's own account, runtime.kubernetes.pod.controller_service_account, on which the grant
+// would reach the controller's pod.
+func TestRepositoryCacheBucketSettings(t *testing.T) {
+	const key = "runtime.kubernetes.repository_cache"
+	cache := func(members string) string { return kubernetesFile + "    repository_cache: {" + members + "}\n" }
+	withPodAccount := func(account, members string) string {
+		return kubernetesFile + "    pod: {service_account: " + account + "}\n    repository_cache: {" + members + "}\n"
+	}
+	for _, tc := range []struct {
+		name, body      string
+		bucket, account string
+		want            string
+	}{
+		{name: "both absent", body: kubernetesFile},
+		{name: "both absent beside the block's other members", body: cache("volume: 20Gi")},
+		{name: "both supplied", body: cache("bucket: example-legion-packs, service_account: legion-cache"),
+			bucket: "example-legion-packs", account: "legion-cache"},
+		{name: "both supplied beside a pod account, the bucket dotted", body: withPodAccount("legion-worker", "bucket: packs.example_legion-2, service_account: legion-cache"),
+			bucket: "packs.example_legion-2", account: "legion-cache"},
+		{name: "the bucket alone", body: cache("bucket: example-legion-packs"),
+			want: key + ".bucket needs " + key + ".service_account: the cache pods alone write the bucket, and they run as a ServiceAccount no other pod runs as to hold its grant alone"},
+		{name: "the account alone", body: cache("service_account: legion-cache"),
+			want: key + ".service_account needs " + key + ".bucket: the cache pods run as a ServiceAccount of their own only to write the bucket"},
+		{name: "a blank bucket", body: cache(`bucket: "", service_account: legion-cache`), want: key + ".bucket must not be empty"},
+		{name: "a blank account", body: cache(`bucket: example-legion-packs, service_account: " "`), want: key + ".service_account must not be empty"},
+		{name: "a placeholder bucket", body: cache(`bucket: "${CACHE_BUCKET}", service_account: legion-cache`),
+			want: key + `.bucket "${CACHE_BUCKET}" is an unfilled placeholder: put the Cloud Storage bucket's name in its place`},
+		{name: "a placeholder account", body: cache(`bucket: example-legion-packs, service_account: "${CACHE_SERVICE_ACCOUNT}"`),
+			want: key + `.service_account "${CACHE_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the cache pods run as in its place`},
+		{name: "a bucket's address rather than its name", body: cache("bucket: gs://example-legion-packs, service_account: legion-cache"),
+			want: key + `.bucket "gs://example-legion-packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "a bucket in capitals", body: cache("bucket: Example-Legion-Packs, service_account: legion-cache"),
+			want: key + `.bucket "Example-Legion-Packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "a bucket part past 63 between two dots", body: cache("bucket: example." + strings.Repeat("p", 64) + ", service_account: legion-cache"),
+			want: key + `.bucket "example.` + strings.Repeat("p", 64) + `" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "an account in capitals with an underscore", body: cache("bucket: example-legion-packs, service_account: Legion_Cache"),
+			want: serviceAccountRefusal(key+".service_account", "Legion_Cache")},
+		{name: "an account holding a slash", body: cache("bucket: example-legion-packs, service_account: a/b"),
+			want: serviceAccountRefusal(key+".service_account", "a/b")},
+		{name: "an account past 253 characters", body: cache("bucket: example-legion-packs, service_account: " + strings.Repeat("a", 300)),
+			want: serviceAccountRefusal(key+".service_account", strings.Repeat("a", 300))},
+		{name: "the configured pod account", body: withPodAccount("legion-worker", "bucket: example-legion-packs, service_account: legion-worker"),
+			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`},
+		{name: "default where no pod account is set", body: cache("bucket: example-legion-packs, service_account: default"),
+			want: key + `.service_account "default" must differ from the account the issue pods run as, the namespace's default while runtime.kubernetes.pod.service_account is unset: the bucket's grant to it would reach every issue pod`},
+		{name: "the controller's own account", body: "controller: daemon\n" + kubernetesFile +
+			"    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-controller}\n",
+			want: key + `.service_account "legion-controller" must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if tc.want != "" {
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("LoadForValidation error =\n%v\nwant\n%q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			got := cfg.Runtime.Kubernetes.RepositoryCache
+			if got.Bucket != tc.bucket || got.ServiceAccount != tc.account {
+				t.Errorf("the repository cache's bucket and account are %q and %q, want %q and %q", got.Bucket, got.ServiceAccount, tc.bucket, tc.account)
+			}
+			want := DefaultRepositoryCache()
+			want.Bucket, want.ServiceAccount = tc.bucket, tc.account
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("the repository cache settles to %+v, want the defaults with the pair %+v", got, want)
+			}
+		})
+	}
+}
+
+// serviceAccountRefusal is the loader's refusal of key's value, which is no ServiceAccount's name.
+func serviceAccountRefusal(key, value string) string {
+	return fmt.Sprintf("%s %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.',"+
+		" starting and ending with a letter or digit, in at most 253 characters", key, value)
 }
 
 // A cpu or memory request settles to the file's request where it set one, else to the file's limit
@@ -449,13 +556,13 @@ func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 		},
 		{
 			name:      "memory request past the default limit",
-			resources: "issue: {memory_request: 20Gi}",
-			want:      "runtime.kubernetes.resources.issue.memory_request 20Gi exceeds memory 19Gi",
+			resources: "issue: {memory_request: 9Gi}",
+			want:      "runtime.kubernetes.resources.issue.memory_request 9Gi exceeds memory 8Gi",
 		},
 		{
 			name:      "cpu request past its limit",
-			resources: "issue: {cpu: 2, cpu_request: 2500m}",
-			want:      "runtime.kubernetes.resources.issue.cpu_request 2500m exceeds cpu 2",
+			resources: "issue: {cpu: 4, cpu_request: 4500m}",
+			want:      "runtime.kubernetes.resources.issue.cpu_request 4500m exceeds cpu 4",
 		},
 		{
 			name:      "memory request is not a quantity",
@@ -487,8 +594,8 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 		resources string
 		want      Reservation
 	}{
-		{"issue: {ephemeral_storage: 100Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "100Gi", EphemeralStorageRequest: "6Gi"}},
-		{"issue: {ephemeral_storage_request: 8Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "8Gi"}},
+		{"issue: {ephemeral_storage: 100Gi}", Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "100Gi", EphemeralStorageRequest: "6Gi"}},
+		{"issue: {ephemeral_storage_request: 8Gi}", Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "8Gi"}},
 	} {
 		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {"+tc.resources+"}\n"), noEnv)
 		if err != nil {
@@ -796,6 +903,9 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		name string
 		body string
 		want string
+		// contains is set where want is a part of the refusal and not all of it: the refusal must
+		// hold want, and its other words are free.
+		contains bool
 	}{
 		{
 			name: "the kubernetes scalar with no block",
@@ -983,9 +1093,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.node_selector must be a mapping of strings",
 		},
 		{
-			name: "node_selector setting the Legion pool",
-			body: kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
-			want: "runtime.kubernetes.scheduling.node_selector must not set legion.dev/pool: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value",
+			name:     "node_selector setting the Legion pool",
+			body:     kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
+			want:     "legion.dev/pool",
+			contains: true,
 		},
 		{
 			name: "tolerations not an array",
@@ -1386,7 +1497,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "projects absent",
 			body: kubernetesWith("projects:\n  LEGSMOKE: {}\n", ""),
-			want: "projects is required when runtime is kubernetes: every pod works one issue of a configured project",
+			want: "projects is required when runtime is kubernetes: every pod works one issue of one of the projects it names",
 		},
 		{
 			name: "omp_invocation set",
@@ -1726,13 +1837,31 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator, read_only: sometimes}]\n",
 			want: "runtime.kubernetes.pod.volume_mounts[0].read_only must be true or false",
 		},
+		{
+			name: "a pod account in capitals with an underscore",
+			body: kubernetesFile + "    pod: {service_account: Legion_Cache}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "Legion_Cache"),
+		},
+		{
+			name: "a pod account holding a slash",
+			body: kubernetesFile + "    pod: {service_account: a/b}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "a/b"),
+		},
+		{
+			name: "a pod account past 253 characters",
+			body: kubernetesFile + "    pod: {service_account: " + strings.Repeat("a", 300) + "}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", strings.Repeat("a", 300)),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
 			if err == nil {
 				t.Fatalf("LoadForValidation succeeded, want %q", tc.want)
 			}
-			if err.Error() != tc.want {
+			switch {
+			case tc.contains && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("LoadForValidation error =\n%q\nwant one holding\n%q", err.Error(), tc.want)
+			case !tc.contains && err.Error() != tc.want:
 				t.Errorf("LoadForValidation error =\n%q\nwant\n%q", err.Error(), tc.want)
 			}
 		})
@@ -1919,10 +2048,38 @@ func TestAgentSecretsBlockSettlesWithDefaults(t *testing.T) {
 	}
 	got := cfg.Runtime.Kubernetes.AgentSecrets
 	want := &AgentSecretsConfig{
-		URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token", Audience: "agent-secrets", TokenExpirySeconds: 3600,
+		URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token", Audience: "cipher", TokenExpirySeconds: 3600,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent_secrets = %+v, want %+v", got, want)
+	}
+}
+
+// A runtime.kubernetes.agent_secrets block that names no audience reads Cipher's, `cipher`, and
+// `legion config reference` documents that default as the loader applies it.
+func TestKubernetesAudienceDefaultsToCipher(t *testing.T) {
+	path := writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+agentSecretsTokenFile)
+	cfg, err := LoadForValidation(path, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Runtime.Kubernetes.AgentSecrets.Audience; got != "cipher" {
+		t.Errorf("a block with no audience reads the audience %q, want cipher", got)
+	}
+	const key = agentSecretsKey + ".audience"
+	var row *ConfigNestedKey
+	for _, entry := range ConfigReference() {
+		for i, nested := range entry.Nested {
+			if nested.Path+"."+nested.Name == key {
+				row = &entry.Nested[i]
+			}
+		}
+	}
+	switch {
+	case row == nil:
+		t.Errorf("the config reference has no row for %s", key)
+	case row.Default != "`cipher`":
+		t.Errorf("the config reference gives %s the default %q, want `cipher`", key, row.Default)
 	}
 }
 
@@ -1980,7 +2137,7 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 	for name, tc := range map[string]struct{ block, want string }{
 		"no broker url":        {"    agent_secrets:\n" + tf + "      exchange_audience: legion-broker-exchange\n", "runtime.kubernetes.agent_secrets.url is required"},
 		"blank":                {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: \"\"\n", "runtime.kubernetes.agent_secrets.exchange_audience must not be empty"},
-		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: agent-secrets\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both agent-secrets)"},
+		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: cipher\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both cipher)"},
 		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
 	} {

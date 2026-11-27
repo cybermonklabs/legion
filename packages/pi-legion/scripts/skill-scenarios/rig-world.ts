@@ -30,10 +30,12 @@ const CIJob = z.strictObject({
 export type RigCIJob = z.infer<typeof CIJob>;
 
 /** The worlds' named jobs: ci-only's and ci-pass-and-fail's, the job of k2, the check a CI job
- * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other,
- * and the job of k-ci in each world of fix-judge, failed at #702's head: a test of a package the
+ * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other;
+ * the job of k-ci in each world of fix-judge, failed at #702's head: a test of a package the
  * change does not touch, which passes on its second attempt; a test of the package the change
- * touches, which fails again; and the lint job beside which a tester works. */
+ * touches, which fails again; and the lint job beside which a tester works; and the job of k3 in
+ * tester-reads-no-ci, still going in its case ci-late (`ci-late`) and failed in ci-red
+ * (`ci-check-fail`, with its log). */
 const World = z.strictObject({
   repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   defaultBranch: z.string().min(1),
@@ -45,6 +47,7 @@ const World = z.strictObject({
     "fix-judge-unrelated-test": CIJob,
     "fix-judge-touched-test": CIJob,
     "fix-judge-tester-beside": CIJob,
+    "ci-late": CIJob,
   }),
 });
 

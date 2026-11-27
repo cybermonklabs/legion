@@ -8,6 +8,7 @@ import {
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
@@ -18,8 +19,9 @@ import pkg from "../package.json" with { type: "json" }
  * process loaded, never a path read anywhere else. In a pod a Claude Code role installs no plugin
  * (the daemon's `NoPluginInstall`) and loads its image's own claude-envoy, so a relaunch keeps
  * this build and only the update round over the pod brings another. It is an Oh My Pi role's
- * relaunch that installs its plugin pair fresh under the role's state home. */
-const BUILD = pluginBuildOf(pkg)
+ * relaunch that installs its plugin pair fresh under the role's state home. Its contract is
+ * `daemonContract`'s, read as the module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir)
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
 export const LEGION_TOOL_NAME = "legion"
@@ -86,4 +88,21 @@ export async function executeLegionTool(
     },
     input,
   )
+}
+
+/** Runs a successful call through the host's input hooks; a refusal changes no input gate. */
+export async function answerLegionTool(
+  runtime: LegionToolRuntime,
+  args: Record<string, unknown>,
+  hooks: {
+    readonly phaseClosed: () => void | Promise<void>
+    readonly updateAnswered: () => void | Promise<void>
+  },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const answer = await executeLegionTool(runtime, args, signal)
+  const effect = phaseInputAfter(String(args["op"]), args)
+  if (effect === "phase-closed") await hooks.phaseClosed()
+  else if (effect === "update-answered") await hooks.updateAnswered()
+  return answer
 }

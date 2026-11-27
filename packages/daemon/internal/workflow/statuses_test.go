@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,13 +54,13 @@ func seedSettlingRound(t *testing.T, pool *pgxpool.Pool) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
 }
 
-// tell is messages with the CI message settled added for each role a settlement of
+// tell is messages with the CI message of settled added for each role a settlement of
 // seedSettlingRound's issue is told to - the architect, the tester and the implementer - in the
-// order the daemon queues them.
-func tell(t *testing.T, messages []record.RoleMessage, settled string) []record.RoleMessage {
+// order the daemon queues them, each with its body left out (ciTold).
+func tell(t *testing.T, messages []record.RoleMessage, settled ciTold) []record.RoleMessage {
 	t.Helper()
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-		messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(settled)})
+		messages = append(messages, settled.to(roleToken(t, role)))
 	}
 	return messages
 }
@@ -70,22 +71,23 @@ func tell(t *testing.T, messages []record.RoleMessage, settled string) []record.
 // in which only a status changed state, a newer status of its context, says something new, and is
 // told again.
 func TestTheCIMessageNamesEachStatus(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	messages := []record.RoleMessage{}
 	for i, step := range []struct {
 		fact    intake.Fact
-		settled string
+		settled ciTold
 	}{
 		{naming(settledAt("head", 1, "unit"), status("sched-suite", "error", 1), status("ci/untested-draft", "failure", 1), status("deploy", "success", 1)),
-			`CI settled at head: "build" succeeded, "unit" failed; commit statuses: "ci/untested-draft" failure, "deploy" success, "sched-suite" error`},
+			settledHead("head", "build=succeeded", "unit=failed").withStatuses("ci/untested-draft=failure", "deploy=success", "sched-suite=error")},
 		{naming(settledAt("head", 2, "unit"), status("ci/untested-draft", "failure", 1), status("deploy", "failure", 2), status("sched-suite", "error", 1)),
-			`CI settled at head: "build" succeeded, "unit" failed; commit statuses: "ci/untested-draft" failure, "deploy" failure, "sched-suite" error`},
+			settledHead("head", "build=succeeded", "unit=failed").withStatuses("ci/untested-draft=failure", "deploy=failure", "sched-suite=error")},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
 		messages = tell(t, messages, step.settled)
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
 		}
@@ -99,30 +101,32 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 
 // The notice of a head GitHub will not merge names every commit status the record keeps for that
 // head, with its state, after the head's own check runs, when the checked head is the current
-// head; it names none of another head's. Three records: the head settled with two statuses; the
-// branch moved on to a new head whose own settlement names none, which starts the head's fence
-// afresh and the statuses with it; and the record an earlier release leaves after a rollback,
-// whose checked head and runs it moved to the head while the statuses stayed stamped with the head
-// before, which the stamp alone keeps out of the notice.
+// head; it names none of another head's. Three records, each of a head GitHub answers `behind`
+// for, a state the round does not end on: the head settled with two statuses; the branch moved on
+// to a new head whose own settlement names none, which starts the head's fence afresh and the
+// statuses with it; and the record an earlier release leaves after a rollback, whose checked head
+// and runs it moved to the head while the statuses stayed stamped with the head before, which the
+// stamp alone keeps out of the notice.
 func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
+	t.Parallel()
 	const earlier = "0000000000000000000000000000000000000abc"
 	t.Run("the current head's statuses", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}),
 			status("deploy", "success", 1), status("ci", "failure", 1)))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 		}
 	})
 	t.Run("a new head whose settlement names none", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}), status("ci", "failure", 1)))
 		apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
@@ -133,27 +137,27 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply("settled-new-head", settledRunsAt(headTwo, 1, []record.AttemptRun{{Name: "unit tests", ID: 3}}))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo,
 			HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
-		apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
-			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+		apply("behind", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
+			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBehind})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, headOne)
 		}
 	})
 	t.Run("a list an earlier release left beside its checked head", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
-			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked,
+			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBehind,
 			CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}},
 			Statuses: []record.CommitStatus{keptStatus("ci", "failure", 1, earlier)}})
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, earlier)
 		}
@@ -165,6 +169,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 // decide what it means, and nothing else happens - no phase moves, no notice reaches the
 // architect, no worker is started and no return is counted.
 func TestAFailedStatusMovesNoIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -202,10 +207,9 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 			}
 			want := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: roleToken(t, role),
-					Body: toldBody(`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" failure, "deploy" error`)})
+				want = append(want, settledHead("head", "build=succeeded", "unit=succeeded").withStatuses("ci=failure", "deploy=error").to(roleToken(t, role)))
 			}
-			assertRoleMessages(t, pool, "LEGION-208", want)
+			assertToldRows(t, pool, "LEGION-208", want)
 		})
 	}
 }
@@ -217,6 +221,7 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 // could not read names no status, so the green list stays as it is and no red name comes back,
 // and it says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
@@ -225,23 +230,23 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 	messages := []record.RoleMessage{}
 	for i, step := range []struct {
 		fact intake.Fact
-		// settled is the line the roles are told, "" when the settlement says nothing new.
-		settled string
+		// settled is what the roles are told, the zero value when the settlement says nothing new.
+		settled ciTold
 		kept    []record.CommitStatus
 	}{
 		{naming(settledAt("head", 1), status("ci", "failure", 1)),
-			`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" failure`,
+			settledHead("head", "build=succeeded", "unit=succeeded").withStatuses("ci=failure"),
 			[]record.CommitStatus{keptStatus("ci", "failure", 1, "head")}},
 		{naming(settledAt("head", 2), status("ci", "success", 2)),
-			`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" success`,
+			settledHead("head", "build=succeeded", "unit=succeeded").withStatuses("ci=success"),
 			[]record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
-		{unread, "", []record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
+		{unread, ciTold{}, []record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
-		if step.settled != "" {
+		if step.settled.head != "" {
 			messages = tell(t, messages, step.settled)
 		}
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		pr := recordedPR(t, pool, "LEGION-208")
 		if !reflect.DeepEqual(pr.Statuses, step.kept) {
 			t.Fatalf("after settlement %d the pull request keeps %+v, want %+v", i+1, pr.Statuses, step.kept)
@@ -266,6 +271,7 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 // applying it leaves as they are, rather than telling the role the head passed every check. A
 // settlement that names no failed status gives today's text, "passed every check" included.
 func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
+	t.Parallel()
 	checks := func(failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)
 		fact.Cancelled, fact.Statuses = cancelled, statuses
@@ -333,6 +339,7 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 // changed status, and the newer settlement delivered again after it changes nothing, tells nobody
 // and marks no movement of the issue (record.Issue.MovedAt).
 func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
+	t.Parallel()
 	build1, build2 := []record.AttemptRun{{Name: "build", ID: 1}}, []record.AttemptRun{{Name: "build", ID: 2}}
 	for _, tc := range []struct {
 		name string
@@ -341,17 +348,17 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 		// arrives after it, and toldOlder what the roles are told of that one.
 		newerRuns, olderRuns []record.AttemptRun
 		newer                []record.CommitStatus
-		told, toldOlder      string
+		told, toldOlder      ciTold
 	}{
 		{"a status created later than the kept one", build2, build1, []record.CommitStatus{status("ci", "success", 1)},
-			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" success`,
-			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" failure`},
+			settledHead("head", "build=succeeded", "e2e=cancelled").withStatuses("ci=success"),
+			settledHead("head", "build=succeeded", "e2e=cancelled").withStatuses("ci=failure")},
 		{"a context the newer settlement left out", build2, build1, nil,
-			`CI settled at head: "build" succeeded, "e2e" cancelled`,
-			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" failure`},
+			settledHead("head", "build=succeeded", "e2e=cancelled"),
+			settledHead("head", "build=succeeded", "e2e=cancelled").withStatuses("ci=failure")},
 		{"the same runs as the newer settlement but the check name it added", []record.AttemptRun{{Name: "build", ID: 2}, {Name: "lint", ID: 3}}, build2, nil,
-			`CI settled at head: "build" succeeded, "e2e" cancelled, "lint" succeeded`,
-			`CI settled at head: "build" succeeded, "e2e" cancelled, "lint" succeeded; commit statuses: "ci" failure`},
+			settledHead("head", "build=succeeded", "e2e=cancelled", "lint=succeeded"),
+			settledHead("head", "build=succeeded", "e2e=cancelled", "lint=succeeded").withStatuses("ci=failure")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -377,23 +384,30 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 				t.Fatalf("the newer settlement left %+v; want the runs %+v, e2e cancelled at generation 6, head-6: this test proves nothing without it", settled, fence)
 			}
 			messages = tell(t, messages, tc.told)
-			assertRoleMessages(t, pool, "LEGION-208", messages)
+			assertToldRows(t, pool, "LEGION-208", messages)
 
 			applyRefusingNothing(t, pool, mergingEngineAt(base.Add(time.Minute)), older)
 			want := settled
 			want.Statuses = []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}
+			// The head's remembered fence takes the same change (record.PullRequest.SettledHeads).
+			want.SettledHeads = slices.Clone(settled.SettledHeads)
+			for i := range want.SettledHeads {
+				if want.SettledHeads[i].Head == "head" {
+					want.SettledHeads[i].Statuses = want.Statuses
+				}
+			}
 			if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the older settlement the pull request is\n  %+v\nwant the newer settlement's record with ci's failure its one change:\n  %+v", got, want)
 			}
 			messages = tell(t, messages, tc.toldOlder)
-			assertRoleMessages(t, pool, "LEGION-208", messages)
+			assertToldRows(t, pool, "LEGION-208", messages)
 			moved := issueRecord(t, pool, "LEGION-208").MovedAt
 
 			applyRefusingNothing(t, pool, mergingEngineAt(base.Add(2*time.Minute)), newer)
 			if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the newer settlement delivered again the pull request is\n  %+v\nwant it as it was:\n  %+v", got, want)
 			}
-			assertRoleMessages(t, pool, "LEGION-208", messages)
+			assertToldRows(t, pool, "LEGION-208", messages)
 			if got := issueRecord(t, pool, "LEGION-208").MovedAt; !got.Equal(moved) {
 				t.Fatalf("the newer settlement delivered again marked the issue moved at %s, want it last moved at %s still", got, moved)
 			}
@@ -408,6 +422,7 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 // keeps the failure at its own numbering, 4 and head-4, and the daemon names that failed status to
 // the roles.
 func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
@@ -416,15 +431,15 @@ func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
 	messages := []record.RoleMessage{}
 	for _, step := range []struct {
 		fact    intake.Fact
-		settled string
+		settled ciTold
 	}{
 		{naming(settledAt("head", 4), status("ci", "success", 1)),
-			`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" success`},
-		{recreated, `CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" failure`},
+			settledHead("head", "build=succeeded", "unit=succeeded").withStatuses("ci=success")},
+		{recreated, settledHead("head", "build=succeeded", "unit=succeeded").withStatuses("ci=failure")},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
 		messages = tell(t, messages, step.settled)
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 	}
 	pr := recordedPR(t, pool, "LEGION-208")
 	if want := []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}; !reflect.DeepEqual(pr.Statuses, want) || pr.Generation != 4 || pr.Snapshot != "head-4" {

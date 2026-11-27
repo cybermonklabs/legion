@@ -1,0 +1,20 @@
+# requests-profile-scopes-not-in-digest: a profile of a google-service-account source with no google
+# block of its own is fingerprinted without the source's scopes tag it mints at, so a grant decided
+# under devstorage.read_only goes on releasing after the tag is widened, and its next release asks
+# Google for cloud-platform. Applied with patch -p1 from a copy; its tests need the Postgres
+# BROKER_TEST_DATABASE_URL names.
+# must fail: TestAScopesTagChangeEndsTheGrantsDecidedUnderTheOldScopes
+
+--- a/packages/envoy/internal/cipher/policy/profileset.go
++++ b/packages/envoy/internal/cipher/policy/profileset.go
+@@ -315,9 +315,7 @@
+ 		return faults[0].Reason, faults[0].Detail
+ 	}
+ 	var scopes string
+-	if profile.Google == nil {
+-		scopes = source.Scopes
+-	}
++	// MUTANT: a profile with no google block is fingerprinted without the scopes it mints at.
+ 	kind := p.fileRules.Kind(ProfileKind(profile, source.Proxy))
+ 	if kind == nil {
+ 		secret.ProfileDigest = p.servedDigest(i, servedAs{scopes: scopes})

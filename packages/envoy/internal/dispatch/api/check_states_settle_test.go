@@ -6,6 +6,8 @@
 // check_states_test.go's.
 package api
 
+//ci:reads packages/envoy/cmd/dispatch/main.go TestTheLeasePoolCountsTheCheckStatesLoop parses ../../../cmd/dispatch/main.go for the lease pool's reservations it counts
+
 import (
 	"context"
 	"go/ast"

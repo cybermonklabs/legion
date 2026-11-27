@@ -12,16 +12,36 @@
 // enrollment before its own (enroll.Service.checkMember), and a secret request and a release
 // before theirs (requests.Machine.restrictedOperator).
 //
-// Answers are cached CacheTTL per project and person and per person, aged from before each
-// question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible and States ask again for an answer that aged past it while a list
-// was read, a caller holding answers across further reads ages them again where it decides
-// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
-// a question asked later. A failure to reach Dispatch is never an answer: each caller decides what
-// an outage means for its own check. A project's failure is not kept; a person's member-kind read
-// that failed is the answer to that person's next reads for failureTTL (2 s), and the person's
-// reads in flight together share one call (MemberKind), so an outage costs each person one call
-// at a time, not one per caller. A read under Fresh takes neither: it asks Dispatch itself.
+// Answers are cached CacheTTL per project and person, and per person: one answer of the person
+// route, which MemberKind and Person both read (person.go). Each is aged from before its question
+// was sent, which bounds how long a person removed from a project's access list goes on passing a
+// check here; Visible and States ask again for an answer that aged past it while a list was read,
+// a caller holding answers across further reads ages them again where it decides (Stale), a
+// question asked under Fresh skips the cache, and a slower answer never replaces one to a question
+// asked later. A failure to reach Dispatch is never an answer: each caller decides what an outage
+// means for its own check. A project's failure is not kept; a person's read that failed is the
+// answer to that person's next reads for failureTTL (2 s), and the person's reads in flight
+// together, MemberKind's and Person's alike, share one call, so an outage costs each person one
+// call at a time, not one per caller. A read under Fresh takes neither: it asks Dispatch itself.
+//
+// A broker keeps each answer of the person route it fetches in its database (Keep, kept.go), in
+// one write whichever read fetched it: its member kind in person_member_kind, and, where it names
+// held, whether Dispatch holds the person in person_standing, each under the later-as_of rule. So
+// while Dispatch cannot be asked (Unanswered) MemberKind answers from the member kind Dispatch last
+// gave, for at most KeptAnswerTTL (one hour) after Dispatch gave it: a person last kept as a full
+// member within the hour is served as one, and every other person, one kept restricted, one of
+// whom no kind is kept, one whose kept kind cannot be read, and one whose kept kind is older than
+// the hour (counted stale), is refused as before; and the hold gate answers from the hold Dispatch
+// last gave (KeptHold). A demotion that Dispatch answers, during an outage or before it, is written
+// and refuses from then on; one it never answered takes effect when it answers again, or once the
+// hour has passed. An answer Dispatch gives always wins. It keeps each answer of the project route
+// the same way (project_standing, later by the time it was asked), and a read under OrKept, the
+// request machine's person rule's, answers from it while Dispatch cannot be asked, each for at most
+// KeptAnswerTTL after it was asked: a project last answered private and visible to the person shows
+// it to them, and so does one last answered public until an answer that it is private is kept for
+// anyone; a key last answered no project is no project again until an answer that it exists is
+// kept for anyone; and every other read, a kept answer older than the hour among them, is refused
+// as before.
 package projectaccess
 
 import (
@@ -56,6 +76,12 @@ const (
 // before the removal (BROKER_ACCESS_TOKEN_SECONDS).
 const CacheTTL = 30 * time.Second
 
+// KeptAnswerTTL is the longest a client serves a kept full member kind, a kept visible project, or
+// a kept no-project answer while Dispatch cannot be asked. It bounds the stale access of a person
+// demoted, or removed from a project's list, and a project made private or made under a key the
+// broker last saw as no project, before the outage that kept the broker from learning the change.
+const KeptAnswerTTL = time.Hour
+
 // RelayedReadBound is how long a member-kind read made for a route Dispatch's server relays may
 // run: Dispatch waits 5 seconds for the broker's whole answer (internal/dispatch/cipher's
 // defaultTimeout), and one call to Dispatch may take requestTimeout, so a read with no bound of its
@@ -67,14 +93,8 @@ const RelayedReadBound = 2 * time.Second
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
 
-// failureTTL is how long a member-kind read that failed is the answer to the next reads of the
-// same person, counted from when the failure came back: while Dispatch does not answer, those
-// reads fail at once rather than each waiting up to requestTimeout for a call of its own. It is
-// short beside CacheTTL because a failure is no answer: the read is asked again once it passes.
-const failureTTL = 2 * time.Second
-
-// maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and a
-// list of repositories, so anything larger is not Dispatch's and is refused rather than held.
+// maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and the
+// project's Slack channel ids, so anything larger is not Dispatch's and is refused rather than held.
 const maxAnswerBytes = 64 << 10
 
 // maxCached bounds how many answers are kept at once, so a caller naming project keys at random
@@ -115,11 +135,21 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
+	// ErrNoHeldField is Person's answer for a person whose answer from Dispatch has no held
+	// field: a Dispatch older than the hold of refused people. It is a failure to ask and never
+	// read as not held, since during a roll such a Dispatch cannot say whether a newer one holds
+	// the person.
+	ErrNoHeldField = errors.New("projectaccess: dispatch's answer for a person names no held")
 	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 502, 503
 	// or 504 whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
 	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
 	// whose body names no code or names internalCode.
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
+	// errStillAsking is a read's answer when a call of the person route for the same person has
+	// already run failureTTL with no answer: a Dispatch that hangs, where waiting the reader's own
+	// bound would gain nothing. It is Unanswered, so a kept answer serves and the hold reads the
+	// kept row, as a timed-out ask does.
+	errStillAsking = errors.New("projectaccess: dispatch has not answered a call already in flight")
 )
 
 // outageCodes are the codes Dispatch answers its access routes with, beside a 503, for an outage
@@ -136,17 +166,22 @@ var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
 // that fails at once, in a failover or a restart, is that 500, not a 503. A 500 naming it, or
 // naming no code at all (a page in front of Dispatch), is Dispatch not answering now; a 500 naming
 // any other code of Dispatch's, such as IDENTITY_ERROR, is an answer that lasts until somebody
-// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL reads as an outage while it
-// lasts, which lets only what an outage lets through: a revoke by the person a grant names as its
-// approver, which takes access away.
+// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL gets the same degraded
+// behavior as an outage, for as long as it lasts: a caller can use an answer it kept. That can
+// serve a kept full member or a kept visible project, up to KeptAnswerTTL; the hold gate decides
+// from person_standing, which serves a person of whom no answer is kept unless
+// BROKER_HOLD_REQUIRES_DEADLINE is set (hold.Gate.Decide); and an approver's revoke goes
+// ahead, since a revoke only takes access away (requests.Machine.RevokeByApprover).
 const internalCode = "INTERNAL"
 
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
 // answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
-// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); and a 500
-// whose body names no code or internalCode, the 500 Dispatch answers while its database fails.
+// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); a 500
+// whose body names no code or internalCode, the 500 Dispatch answers while its database fails; and
+// a call that has already run failureTTL with no answer, which a later read does not wait on
+// (errStillAsking).
 // Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
 // broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
 // not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
@@ -160,7 +195,7 @@ func Unanswered(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable)
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable) || errors.Is(err, errStillAsking)
 }
 
 // NoApprover is refusal, a caller's own refusal of a person who may not act as an approver there
@@ -200,10 +235,12 @@ func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 const UncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 
 // MemberKindUncheckable is the refusal of something done for Person — an enrollment, a secret
-// request, a release — because Dispatch could not be asked what kind of member Person is: a
-// check that cannot decide refuses rather than answer as if the person were a full member. Err is
-// the failure, which a caller logs. Error names the person and why in uncheckableReason's fixed
-// words and never Err, which can carry Dispatch's address, so a caller answers it as it is.
+// request, a release — because Dispatch could not be asked what kind of member Person is (and,
+// where Dispatch does not answer, the broker keeps no answer that Person is a full member:
+// Client.Keep): a check that cannot decide refuses rather than answer as if the person were a full
+// member. Err is the failure, which a caller logs. Error names the person and why in
+// uncheckableReason's fixed words and never Err, which can carry Dispatch's address, so a caller
+// answers it as it is.
 type MemberKindUncheckable struct {
 	Person string
 	Err    error
@@ -245,6 +282,8 @@ func uncheckableReason(err error) string {
 // caller about to enroll, decide or release something for that person. MemberFull and MemberNone
 // are not; any other kind, and any MemberKind failure, is a *MemberKindUncheckable naming person,
 // which the caller returns as it is: a check that cannot decide refuses, whatever Access answered.
+// While Dispatch cannot be asked, a client that keeps its answers (Client.Keep) answers a person
+// last kept full as MemberFull, so only everyone else is refused so.
 func Restricted(ctx context.Context, a Access, person string) (bool, error) {
 	kind, err := a.MemberKind(ctx, person)
 	if err != nil {
@@ -300,9 +339,6 @@ type Answer struct {
 	// Visible is whether the person may see the project, or, for a question naming no person,
 	// whether it is public.
 	Visible bool `json:"visible"`
-	// Repositories is every "owner/name" repository Dispatch's answer names for the project,
-	// renames included, nil when the answer carries none.
-	Repositories []string `json:"repositories"`
 	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
 	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says
 	// whether the answer carried the key at all: a Dispatch from before that task carries none,
@@ -355,15 +391,20 @@ type Client struct {
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
-	kinds   map[string]cachedKind
-	// failures holds each person's member-kind read that failed, for failureTTL from when it
-	// came back, and flights each person's read in flight, which a read of the same person
-	// joins rather than making a call of its own.
-	failures map[string]failedKind
-	flights  map[string]*kindFlight
-	// joined, when set, runs each time a member-kind read joins one already in flight for the
-	// same person: a test's signal that the read waits on that call rather than making its own.
+	people  map[string]cachedPerson
+	// failures holds each person's read that failed, for failureTTL from when it came back, and
+	// flights each person's read in flight, which a read of the same person, MemberKind's or
+	// Person's, joins rather than making a call of its own.
+	failures map[string]failedRead
+	flights  map[string]*personFlight
+	// joined, when set, runs each time a read joins one already in flight for the same person: a
+	// test's signal that the read waits on that call rather than making its own.
 	joined func()
+
+	// kept, when set (Keep), is what the client keeps of Dispatch's answers in the broker's
+	// database and how it answers from them while Dispatch cannot be asked; nil for a client that
+	// keeps nothing.
+	kept *keeping
 }
 
 type accessKey struct{ project, person string }
@@ -372,24 +413,6 @@ type cachedAnswer struct {
 	answer          Answer
 	projectNotFound bool
 	at              time.Time
-}
-
-type cachedKind struct {
-	kind string
-	at   time.Time
-}
-
-type failedKind struct {
-	err error
-	at  time.Time
-}
-
-// kindFlight is one call for a person's member kind, which every read of that person made while
-// it is in flight waits on: kind and err are its outcome, set before done closes.
-type kindFlight struct {
-	done chan struct{}
-	kind string
-	err  error
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
@@ -401,9 +424,9 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 		read:     dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
 		now:      time.Now,
 		answers:  map[accessKey]cachedAnswer{},
-		kinds:    map[string]cachedKind{},
-		failures: map[string]failedKind{},
-		flights:  map[string]*kindFlight{},
+		people:   map[string]cachedPerson{},
+		failures: map[string]failedRead{},
+		flights:  map[string]*personFlight{},
 	}
 }
 
@@ -450,7 +473,8 @@ func isAskedNow(ctx context.Context) bool {
 // CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
 // empty person asks whether the project is public. An answer is aged from before its question was
 // sent, so a slow answer is kept no longer than CacheTTL from the moment Dispatch could last have
-// changed it.
+// changed it. Each answer it fetches is also kept (Keep, keepProject); and under OrKept a read
+// Dispatch does not answer is answered from the answer kept (keptProject).
 func (c *Client) Access(ctx context.Context, project, person string) (Answer, error) {
 	key := accessKey{project: project, person: record.CanonicalLogin(person)}
 	if cached, ok := c.cachedAnswer(key); ok && !fresh(ctx) {
@@ -474,9 +498,12 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	}
 	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &wire)
 	switch {
+	case err != nil && c.kept != nil && orKept(ctx) && Unanswered(err):
+		return c.keptProject(ctx, key, err)
 	case err != nil:
 		return Answer{}, err
 	case status == http.StatusNotFound:
+		c.keepProject(ctx, key, Answer{}, true, asked)
 		c.keepAnswer(key, cachedAnswer{projectNotFound: true, at: asked})
 		return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: asked}
 	}
@@ -490,152 +517,14 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
 	}
 	answer.AskedAt = asked
+	c.keepProject(ctx, key, answer, false, asked)
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
-// ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
-// empty one included, is ErrUnknownMemberKind naming it, never kept as an answer; like any other
-// failure of a call to Dispatch, it is kept failureTTL as that person's failure.
-//
-// Reads of one person in flight together share one call to Dispatch, which runs on none of their
-// contexts, so a reader that gives up ends only its own wait; and a read that failed is the
-// answer to that person's reads for failureTTL from when it came back. So while Dispatch does not
-// answer, a person's reads wait on one call at a time, each for no longer than that call's
-// requestTimeout, rather than each making a call of its own. A read under Fresh, or one under
-// AskedNow, joins no call already in flight, which may have been asked before the change it must
-// see, and takes no kept failure: it asks Dispatch itself (memberKindAskedNow).
-func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
-	if isAskedNow(ctx) {
-		return c.memberKindAskedNow(ctx, person)
-	}
-	person, err := askedPerson(person)
-	if err != nil {
-		return "", err
-	}
-	c.mu.Lock()
-	if cached, ok := c.kinds[person]; ok && c.now().Sub(cached.at) < CacheTTL {
-		c.mu.Unlock()
-		return cached.kind, nil
-	}
-	if failed, ok := c.failures[person]; ok && c.now().Sub(failed.at) < failureTTL {
-		c.mu.Unlock()
-		return "", failed.err
-	}
-	flight, joined := c.flights[person]
-	if !joined {
-		flight = &kindFlight{done: make(chan struct{})}
-		c.flights[person] = flight
-		go c.askKind(context.WithoutCancel(ctx), person, flight)
-	}
-	hook := c.joined
-	c.mu.Unlock()
-	if joined && hook != nil {
-		hook()
-	}
-	select {
-	case <-flight.done:
-		return flight.kind, flight.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
-// memberKindAskedNow is MemberKind with no failure an earlier read kept and no call already in
-// flight: an answer from the cache younger than CacheTTL unless ctx is one Fresh made, else a call
-// of its own on ctx, settled as any other. A read under Fresh asks it, and so does a read whose
-// failure lets something through (ListAllowed), so that what it lets through lasts no longer than
-// Dispatch does not answer. The call runs on the caller's own context, so a call that failed
-// because that context ended, its deadline passed or its caller cancelled, keeps no failure for the
-// person's next reads: that ending says nothing of Dispatch.
-func (c *Client) memberKindAskedNow(ctx context.Context, person string) (string, error) {
-	person, err := askedPerson(person)
-	if err != nil {
-		return "", err
-	}
-	c.mu.Lock()
-	if cached, ok := c.kinds[person]; ok && !fresh(ctx) && c.now().Sub(cached.at) < CacheTTL {
-		c.mu.Unlock()
-		return cached.kind, nil
-	}
-	c.mu.Unlock()
-	asked := c.now()
-	kind, err := c.readKind(ctx, person)
-	if err != nil && ctx.Err() != nil {
-		return "", err
-	}
-	c.mu.Lock()
-	c.settleKindLocked(person, asked, kind, err)
-	c.mu.Unlock()
-	return kind, err
-}
-
-// askedPerson is person as a member-kind read asks Dispatch about them: their canonical login,
-// and a refusal when it names no one.
-func askedPerson(person string) (string, error) {
-	person = record.CanonicalLogin(person)
-	if person == "" {
-		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
-	}
-	return person, nil
-}
-
-// askKind makes flight's one call for person's member kind and settles it (settleKindLocked). The
-// flight leaves c.flights under the same lock, so a read that finds no flight finds what this one
-// settled.
-func (c *Client) askKind(ctx context.Context, person string, flight *kindFlight) {
-	asked := c.now()
-	kind, err := c.readKind(ctx, person)
-	c.mu.Lock()
-	delete(c.flights, person)
-	c.settleKindLocked(person, asked, kind, err)
-	c.mu.Unlock()
-	flight.kind, flight.err = kind, err
-	close(flight.done)
-}
-
-// settleKindLocked keeps the outcome of a member-kind call for person asked at asked: an answer
-// is kept CacheTTL, aged from before its question, unless one to a question asked later is
-// already held, and clears a kept failure; a failure is kept failureTTL from when it came back.
-// A caller whose own context ended settles nothing (memberKindAskedNow), and the shared call runs
-// on no caller's context (askKind). c.mu is held.
-func (c *Client) settleKindLocked(person string, asked time.Time, kind string, err error) {
-	if len(c.kinds) >= maxCached || len(c.failures) >= maxCached {
-		c.sweepLocked()
-	}
-	if err != nil {
-		if len(c.failures) < maxCached {
-			c.failures[person] = failedKind{err: err, at: c.now()}
-		}
-		return
-	}
-	delete(c.failures, person)
-	if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
-		c.kinds[person] = cachedKind{kind: kind, at: asked}
-	}
-}
-
-// readKind asks Dispatch's person route for person's member kind, a call bounded by
-// requestTimeout.
-func (c *Client) readKind(ctx context.Context, person string) (string, error) {
-	var answer struct {
-		MemberKind string `json:"member_kind"`
-	}
-	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
-	if err != nil {
-		return "", err
-	}
-	if status == http.StatusNotFound {
-		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
-	}
-	switch answer.MemberKind {
-	case MemberFull, MemberRestricted, MemberNone:
-	default:
-		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
-	}
-	return answer.MemberKind, nil
-}
+// UseClock makes c read now instead of the wall clock, for every answer's age and AskedAt, so a
+// test moves an answer past CacheTTL rather than waiting it out. It is set before c is first used.
+func (c *Client) UseClock(now func() time.Time) { c.now = now }
 
 // States answers each of projects as it is to a question naming no person, and Missing for each
 // Dispatch does not hold. Any other failure is the whole answer's.
@@ -700,8 +589,8 @@ func (c *Client) keepAnswer(key accessKey, answer cachedAnswer) {
 	}
 }
 
-// sweepLocked drops every answer older than CacheTTL and every failure older than failureTTL.
-// c.mu is held.
+// sweepLocked drops every answer older than CacheTTL and every failure older than failureTTL. c.mu
+// is held.
 func (c *Client) sweepLocked() {
 	now := c.now()
 	for key, cached := range c.answers {
@@ -709,9 +598,9 @@ func (c *Client) sweepLocked() {
 			delete(c.answers, key)
 		}
 	}
-	for person, cached := range c.kinds {
+	for person, cached := range c.people {
 		if now.Sub(cached.at) >= CacheTTL {
-			delete(c.kinds, person)
+			delete(c.people, person)
 		}
 	}
 	for person, failed := range c.failures {
@@ -845,18 +734,22 @@ func Oldest(a, b time.Time) time.Time {
 // clock is the time c reads, for Stale to age c's answers by the same clock that stamped them.
 func (c *Client) clock() time.Time { return c.now() }
 
-// ListAllowed is the one statement of the rule for a person's list, used by the exchange and by
-// an enrollment alike. A non-empty list must pass Visible. An empty list is refused with
+// ListAllowed is the rule for the list of a token an operator's exchange entry maps, which the
+// exchange checks it by (oauth's projectAccess); a person's own credential is held to Visible
+// instead, and a restricted member's machine login to exactly one project before it is asked
+// (exchange.Set.Machine). A non-empty list must pass Visible. An empty list is refused with
 // ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
 // answers a kind that is none of the three (restrictedKind); MemberFull and MemberNone answer nil,
-// so a person Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
+// so an entry whose person Dispatch has never seen mints as before. A MemberKind failure that is
 // dispatchread.ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints
 // through either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it:
-// the list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes
-// on logs that it did so unchecked. Because that failure lets the list through, the member kind is
+// the entry's empty list is allowed while Dispatch cannot be reached, and the caller that goes on
+// logs that it did so unchecked. Because that failure lets the list through, the member kind is
 // asked afresh (AskedNow, which any Access that hands the context on honours), never answered by
 // a failure an earlier read kept: the list goes through unchecked only while Dispatch does not
-// answer.
+// answer. A client that keeps its answers (Client.Keep) answers a person last kept full as
+// MemberFull meanwhile, so their empty list goes through as a full member's, logged by MemberKind
+// rather than as unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)

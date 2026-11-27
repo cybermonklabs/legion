@@ -24,15 +24,16 @@ func TestACallerBelowTheFixContractIsServedNoFix(t *testing.T) {
 		"task": "a", "step": float64(1), "check": "unit", "head": "c0de0000000000000000000000000000000000ff",
 		"dir": "/var/lib/legion/workspaces/acme/widgets/LEGION-208-fix", "entry": float64(4), "givenEntry": float64(3),
 	}
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
+	fix := entryNumber(FixBesideReviewContract)
 
 	for _, tc := range []struct {
 		name     string
 		contract int
 		served   bool
 	}{
-		{name: "a caller below the contract", contract: FixBesideReviewContract - 1},
-		{name: "a caller at the contract", contract: FixBesideReviewContract, served: true},
+		{name: "a caller below the contract", contract: fix - 1},
+		{name: "a caller at the contract", contract: fix, served: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var record map[string]any

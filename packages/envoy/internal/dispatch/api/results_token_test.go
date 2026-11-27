@@ -3,12 +3,15 @@
 // scope results, a person, one project and the run - reaches the routes resultsScopeRoutes names
 // and nothing else. Every other row of the table and GET /ws/live answer it 403
 // RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseLimitedToken). The walks are the read-only token's, run with
-// this token and this list (limitedToken).
+// Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
+// (readOnlyWalkToken.probe) with this token and this list (limitedToken), each under a key of its
+// row's own (limitedProbe); the read-only token is held to the read class instead
+// (read_only_token_test.go).
 package api
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,11 +57,10 @@ type limitedAnswer struct {
 }
 
 // limitedToken is a broker token Dispatch serves on a list of its own beside the route table and
-// answers 403 on every other row and on GET /ws/live, before the row's handler: a read-only token
-// (readScopeRoutes) or a results token (resultsScopeRoutes), and refuseLimitedToken holds each to
-// its list. The two walks below take one, so both tokens are held to one walk.
+// answers 403 on every other row and on GET /ws/live, before the row's handler: a results token
+// (resultsScopeRoutes), which refuseLimitedToken holds to its list. The two walks below take one.
 type limitedToken struct {
-	// kind names the token in a failure: "a read-only token".
+	// kind names the token in a failure: "a results token".
 	kind string
 	// answer is what the broker answers for the token, bound to the caller's key.
 	answer func(jkt string) ciphertoken.Introspection
@@ -74,16 +76,17 @@ type limitedToken struct {
 	seed func(t *testing.T, rig *brokerTokenRig)
 }
 
-// readOnlyLimitedToken is the read-only token as the walks take it.
-func readOnlyLimitedToken() limitedToken {
-	return limitedToken{
-		kind:        "a read-only token",
-		answer:      readOnlyToken,
-		list:        readScopeRoutes,
-		listed:      func(route apiRoute) bool { return route.ReadScope },
-		refusal:     contracts.DispatchReadOnlyToken,
-		listAnswers: readListAnswers,
-	}
+// limitedProbe is the request the holder of a limited token sends route when it walks the table:
+// the probe a read-only token's walk sends (readOnlyWalkToken.probe), under an Idempotency-Key of
+// the row's own. A key is the caller's for every route, so the two keyed rows the results list
+// names would otherwise answer the second 422 KEY_REUSED for the first's body, and never reach its
+// handler.
+func limitedProbe(t *testing.T, caller *brokerCaller, route apiRoute, token string) *http.Request {
+	t.Helper()
+	request := readOnlyWalkToken{token: token}.probe(t, caller, route)
+	row := sha256.Sum256([]byte(route.Method + " " + route.Pattern))
+	request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey+"-"+hex.EncodeToString(row[:8]))
+	return request
 }
 
 // resultsLimitedToken is the results token as the walks take it: one of project TEST, the
@@ -112,21 +115,6 @@ func resultsLimitedToken() limitedToken {
 			}
 		},
 	}
-}
-
-// notTheLimitedRefusal says how response differs from a limited token's refusal, and is empty
-// when it is that refusal: 403 with the code given and no WWW-Authenticate challenge, since no
-// scope makes the route the token's to call.
-func notTheLimitedRefusal(response *httptest.ResponseRecorder, code string) string {
-	var refusal refusalAnswer
-	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-	switch {
-	case response.Code != http.StatusForbidden || refusal.Code != code:
-		return "answered " + http.StatusText(response.Code) + " " + strings.TrimSpace(response.Body.String())
-	case response.Header().Get("WWW-Authenticate") != "":
-		return "carries the challenge " + response.Header().Get("WWW-Authenticate")
-	}
-	return ""
 }
 
 // walkEveryChainWith builds every row's own chain as register does (routeHandler), with the row's
@@ -162,7 +150,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 		mux := http.NewServeMux()
 		mux.Handle(name, rig.served.routeHandler(route, replays[name]))
 		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, caller.presentingProbe(t, route, presented))
+		mux.ServeHTTP(response, limitedProbe(t, caller, route, presented))
 		if token.listed(route) {
 			listed++
 			if _, known := token.listAnswers[name]; !known {
@@ -176,7 +164,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 			if ran != 0 {
 				t.Errorf("%s ran its handler %d times for %s, want none", name, ran, token.kind)
 			}
-			if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
 			}
 		}
@@ -190,7 +178,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 	if socketOpened != 0 {
 		t.Errorf("GET %s opened the socket %d times for %s, want none", liveSocketPattern, socketOpened, token.kind)
 	}
-	if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+	if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 		t.Errorf("GET %s %s for %s, want 403 %s", liveSocketPattern, why, token.kind, token.refusal)
 	}
 
@@ -222,9 +210,9 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 	walked := 0
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
-		response := rig.serve(caller.presentingProbe(t, route, presented))
+		response := rig.serve(limitedProbe(t, caller, route, presented))
 		if !token.listed(route) {
-			if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
 			}
 		} else if want, known := token.listAnswers[name]; !known {
@@ -236,7 +224,7 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 	}
 
 	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, presented, nil))
-	if why := notTheLimitedRefusal(live, token.refusal); why != "" {
+	if why := notTheGatesRefusal(live, token.refusal, ""); why != "" {
 		t.Errorf("GET %s %s for %s, want 403 %s", liveSocketPattern, why, token.kind, token.refusal)
 	}
 	room := "/ws/doc/00000000-0000-0000-0000-000000000001"
@@ -253,12 +241,14 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 // TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler: a results token
 // reaches the handlers of the rows the results list names and of no other row, and no socket.
 func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	walkEveryChainWith(t, resultsLimitedToken())
 }
 
 // TestTheMountedServerServesAResultsTokenOnTheResultsListAlone: the mounted server answers a
 // results token 403 RESULTS_ONLY_TOKEN on every row but the listed ones, whose handlers answer it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
+	t.Parallel()
 	walkTheMountedServerWith(t, resultsLimitedToken())
 }
 
@@ -266,6 +256,8 @@ func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) 
 // reads as though it opened a route that is not there, so Register refuses it and names the
 // route. It replaces the package's list for its length, so it is not parallel.
 func TestRegisterRefusesAResultsListOfNoMountedRow(t *testing.T) {
+	// Not parallel: it swaps the package variable resultsScopeRoutes, which every server a test of
+	// the package builds registers.
 	kept := resultsScopeRoutes
 	t.Cleanup(func() { resultsScopeRoutes = kept })
 	if refusal := registerRefusal(t); refusal != "" {
