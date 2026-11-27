@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { DASHBOARD_PAGES_FILE, renderDashboardPages } from "./dashboard-pages-file";
+import { parseDispatchReference } from "./routes";
 
 // The committed pages file is what the route table renders today: a tab added to `ISSUE_TABS`
 // whose page names something in text (not a page of the web alone, as Dashboard's is), a segment
@@ -49,4 +50,16 @@ test("the render names the eight tabs of the issue, both segments of a document 
     project: ["/projects/{project}/documents/{slug}"],
     agent: ["/agents/{session}/artifacts/{slug}"],
   });
+});
+
+// Each tab the file names reads back as that tab through the reader of a reference, so the file
+// names no reference segment that the reader does not take.
+test("each tab's reference in the render reads back as that tab", () => {
+  const file = JSON.parse(renderDashboardPages());
+  for (const { page, reference } of file.tabs) {
+    expect(parseDispatchReference(`dispatch://CORE-1/${reference}`)).toEqual({
+      key: "CORE-1",
+      kind: page,
+    });
+  }
 });
