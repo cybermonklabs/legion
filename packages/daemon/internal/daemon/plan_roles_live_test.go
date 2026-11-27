@@ -22,6 +22,15 @@
 // What is stood in for lies outside the role: GitHub's REST API (stepRecordsGitHub), the Apps'
 // tokens, Envoy's listener, and the panes, which the package's fake runtime launches and the driver
 // plays, each answering with the model its launch's spec named.
+//
+// Dispatch's block schema stays at version 6 in this release, which reads plan_role and creates
+// it only from version 8 (pmdoc/schema/blocks.json), so what ships is the daemon's read of the
+// roles a stored plan defines. The driver first has the owner's write of the role block refused,
+// through the CLI and through the route, then writes creatable_since 6 on the plan_role node of
+// Dispatch's database and waits until Dispatch serves plan_role as creatable
+// (makePlanRoleCreatable, plan_roles_test.go), and proves the daemon reads the stored plan's role
+// and runs it on that store. This models a store whose manifest creates plan_role at version 6,
+// not a real version-8 build.
 package daemon
 
 import (
@@ -47,9 +56,10 @@ type planRolesLive struct {
 }
 
 // TestPlanRolesLive drives the proof's checks against one booted daemon and one Dispatch, over three
-// issues of one project: the first walks its owner's plan, which defines prober and names
-// `implementer prober`; the second, the control, is given the same task with no role block; the
-// third is given prober on the model other-model, which the deployment does not list.
+// issues of one project: the first is refused the role block at this build, then, once the store
+// creates plan_role, walks its owner's plan, which defines prober and names `implementer prober`;
+// the second, the control, is given the same task with no role block; the third is given prober on
+// the model other-model, which the deployment does not list.
 func TestPlanRolesLive(t *testing.T) {
 	fixtureenv.Live(t)
 	proof := newLiveProof(t, "scripts/e2e/plan-roles.sh")
@@ -64,6 +74,13 @@ func TestPlanRolesLive(t *testing.T) {
 		l.dispatch.base, l.cfg.Project, liveRepo, runs, noBlock, otherModel, l.cfg.DispatchURL, l.cfg.ListedModels())
 
 	l.on(runs)
+	l.check("plan-role-refused", l.planRoleRefusedAtThisBuild)
+	l.check("plan-role-creatable", func() {
+		// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+		l.makePlanRoleCreatable()
+		l.note("creatable_since %d written on the plan_role supertag node of Dispatch's database; GET /api/v1/schema/blocks serves plan_role as a type it creates",
+			planRoleCreatableAt)
+	})
 	var plan string
 	l.check("role-block-stored", func() { plan = l.roleBlockStored() })
 	l.check("plan-role-runs", func() { l.planRoleRuns(plan) })
@@ -75,6 +92,27 @@ func TestPlanRolesLive(t *testing.T) {
 		l.on(otherModel)
 		l.refused(planWithProber("other-model", true), "step 2 of task a names the role prober, whose model other-model the deployment does not list; it lists prober-model.")
 	})
+}
+
+// planRoleRefusedAtThisBuild is the owner's session, the architect's claim of the walk's issue,
+// writing plan.md with the role block prober (planWithProber) through the real `dispatch artifact`
+// command, and Dispatch refusing it at this build: the command exits non-zero and prints
+// INVALID_MARKDOWN and planRoleRefusal. The same text uploaded as a person through the route
+// (planRoleRefused) is answered 400 INVALID_MARKDOWN with those words.
+func (l *planRolesLive) planRoleRefusedAtThisBuild() {
+	t := l.t
+	t.Helper()
+	owner := l.worker(claim.RoleArchitect)
+	shell := cliShell{t: t, dir: l.reads.cliHome, session: owner.session, base: l.dispatch.base, token: l.dispatch.token}
+	out, code := shell.bun(nil, dispatchCLI(l.reads.root), "artifact", "--issue", l.key, "--name", "plan.md", "--content", planWithProber(planProberModel, true))
+	printed := string(out.stdout) + string(out.stderr)
+	if code == 0 || !strings.Contains(printed, "INVALID_MARKDOWN") || !strings.Contains(printed, planRoleRefusal) {
+		t.Fatalf("`dispatch artifact --issue %s --name plan.md` of the role block as the owner's session %s exited %d: %s; want it refused, printing INVALID_MARKDOWN and %q",
+			l.key, owner.session, code, printed, planRoleRefusal)
+	}
+	l.note("`dispatch artifact --issue %s --name plan.md` of the role block as the owner's session %s exited %d: %s", l.key, owner.session, code, strings.TrimSpace(printed))
+	answer := l.planRoleRefused("plan.md", planWithProber(planProberModel, true))
+	l.note("POST /api/v1/issues/%s/artifacts of the same text as a person: 400 %s", l.key, strings.TrimSpace(answer))
 }
 
 // roleBlockStored is the owner's session, the architect's claim of the walk's issue, writing plan.md

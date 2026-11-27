@@ -105,7 +105,7 @@ func TestALeftPodCloseNamesEveryClaimOfOneRole(t *testing.T) {
 	if check.Claim != claims[0].Token || len(check.CloseRoles) != 1 || check.CloseRoles[0] != claim.RoleTester {
 		t.Fatalf("the close's check names %+v, want claim %s and one tester role", check, claims[0].Token)
 	}
-	mark, err = leftPodStopRows(view, decision, now, turn)
+	mark, err = leftPodStopRows(view, decision, now, turn, "")
 	if err != nil {
 		t.Fatalf("encode the checked close: %v", err)
 	}

@@ -430,12 +430,12 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 		{name: "impersonate_service_account as the account's login",
 			edit: [][2]string{{"impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com", "impersonate_service_account: legion-sessions@example-project.iam"}},
 			code: 1,
-			stderr: `legion config check: runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email,` +
+			stderr: `legion config check: runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email,` +
 				" such as <name>@<project>.iam.gserviceaccount.com\n"},
 		{name: "user as another login",
 			edit: [][2]string{{"user: legion-sessions@example-project.iam ", "user: other@example-project.iam "}},
 			code: 1,
-			stderr: `legion config check: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
+			stderr: `legion config check: runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam":` +
 				" Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

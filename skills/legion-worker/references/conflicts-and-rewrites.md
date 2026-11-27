@@ -8,7 +8,7 @@ The agent of the task's implementation step (the implementer, in the default ste
 
 - GitHub reports the pull request `CONFLICTING`.
   The daemon's merge-forward message counts as this trigger because two reads of GitHub confirmed the conflict (*The daemon's ask*, below).
-  A controller request counts only if it identifies a conflict GitHub reports.
+  A request from your own architect, for a conflict another tree reported, counts only if it identifies a conflict GitHub reports.
 
 - The change needs something only the base has, such as a fix for its only red check.
 
@@ -24,8 +24,6 @@ If any other message asks for a merge without identifying a conflict GitHub repo
 Never merge just to refresh CI or to pick up the default branch.
 Each merge creates a new head, reruns CI and can void a review.
 Never use `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
-
-Before you race another tree's pull request on shared files, `envoy_publish` to the agent of its implementing step that runs now (`dispatch steps --issue <KEY>` names it: an issue can have two implementer agents), ask when its next push lands, and merge once, after it.
 
 1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 

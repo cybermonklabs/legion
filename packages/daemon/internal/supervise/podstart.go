@@ -600,13 +600,13 @@ func (m *Machine) adoptPodLoad() {
 // caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
 // and launchTries returns no error at the park. The launch has not failed — it waits at the gate
 // to start as asked — and an error would fail the request that raised it: an operator's resume or
-// spawn answered as a failure (internal/api's operatorFailure), and the decision logged at Error
+// spawn answered as a failure (internal/api's operationFailure), and the decision logged at Error
 // as an event that failed (internal/daemon's supervisor). stopUnconfirmed is what carries the
 // refusal to whoever must hear that the process may be running still: the owner of a stalled
 // worker.
 //
 // A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
-// it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
+// it waits on the machine as a paced wake over no process does (waitOnMachine), holding the
 // rest of the launch from that grant on (launchTries with the grant), and the decision ends where
 // launchTries returns at the park, so nothing waits under the machine's lock. The claim is written
 // launching at this try's generation with no process already: the try wrote it before its backoff
@@ -624,10 +624,10 @@ func (m *Machine) adoptPodLoad() {
 // grant on while the wake carries the hold, and a fresh try of the same launch, asked of the gate
 // anew, once it carries none: the pause's gate holds the wake in the park's place where the
 // project is paused at the grant (podStartDue), and its let-out after the pause runs it
-// (letOutHeldLaunch, runWake), without a second token or wake line, since the launch passed the
-// wake gate before it parked (wake.paid, wake.ran). Its state is the claim's as the park leaves
-// it, launching, which a request that does not wait restores once the pause's gate holds the wake
-// (dropWakeFor).
+// (letOutHeldLaunch, runWake), without a second place in the pacing or a second wake line, since
+// the launch passed the wake gate before it parked (wake.paid, wake.ran). Its state is the claim's
+// as the park leaves it, launching, which a request that does not wait restores once the pause's
+// gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes

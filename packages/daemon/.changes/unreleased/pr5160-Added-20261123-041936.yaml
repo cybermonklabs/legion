@@ -1,7 +1,9 @@
 kind: Added
 body: |-
   An owner's plan can define a role of its own in a `plan_role` block: the block's id is the
-  role's name, `type` is its type, `model` is its model and the block's text is its prompt. A step
+  role's name, `type` is its type, `model` is its model and the block's text is its prompt.
+  Dispatch writes the block from its block schema version 8 on and refuses it before that; the
+  daemon reads and runs each role a stored plan's blocks define. A step
   names the role as it names any other, and the role's agent runs on Oh My Pi with that prompt and
   model. The prompt stands between two lines that name it as the issue owner's text. A later
   version of the plan that changes the role's type, model or prompt relaunches a live agent of the

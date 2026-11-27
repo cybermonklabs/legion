@@ -255,7 +255,7 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	}
 
 	recorder, _ = publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","message":"this one waits for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202, the message kept", recorder.Code, recorder.Body.String())
 	}

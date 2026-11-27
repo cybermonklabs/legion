@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 6,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -135,23 +135,6 @@
       "creatable_since": 3
     },
     {
-      "name": "plan_role",
-      "content": "block+",
-      "render": "host",
-      "attributes": {
-        "type": {
-          "kind": "string",
-          "default": ""
-        },
-        "model": {
-          "kind": "string",
-          "default": ""
-        }
-      },
-      "since": 10,
-      "creatable_since": 10
-    },
-    {
       "name": "check",
       "content": "paragraph+",
       "render": "host",
@@ -179,10 +162,38 @@
           "kind": "string",
           "since": 4,
           "creatable_since": 4
+        },
+        "subject": {
+          "kind": "enum",
+          "choices": ["code", "production", "graph"],
+          "since": 6,
+          "creatable_since": 7
+        },
+        "program": {
+          "kind": "string",
+          "since": 6,
+          "creatable_since": 7
         }
       },
       "since": 3,
       "creatable_since": 3
+    },
+    {
+      "name": "plan_role",
+      "content": "block+",
+      "render": "host",
+      "attributes": {
+        "type": {
+          "kind": "string",
+          "default": ""
+        },
+        "model": {
+          "kind": "string",
+          "default": ""
+        }
+      },
+      "since": 6,
+      "creatable_since": 8
     }
   ]
 }

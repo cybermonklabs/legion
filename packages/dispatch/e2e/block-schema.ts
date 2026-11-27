@@ -1,6 +1,8 @@
 /**
- * The block schema as the store holds it, for the two specs that move it under a running server:
- * `e2e/graph-store.e2e.ts` and `e2e/schema-switch.multiprocess.e2e.ts`.
+ * The block schema as the store holds it, for the specs that move it under a running server:
+ * `e2e/graph-store.e2e.ts` and `e2e/schema-switch.multiprocess.e2e.ts`, which apply a supertag
+ * migration, and `e2e/typed-blocks.e2e.ts`, which has the store create `plan_role`
+ * (`makeStagedTypeCreatable`).
  *
  * A type is data: one `supertag` node per block type and one `attribute` node per attribute it
  * holds, seeded from `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json` by migration
@@ -41,16 +43,17 @@ export function documentWithAddedType(line: string): string {
   return `# Notes\n\n:::${ADDED_TYPE}{#c1}\n${line}\n:::\n`;
 }
 
+/** The block schema this build embeds: the file the migration seeded the store from. */
+const shippedSchema = JSON.parse(
+  readFileSync(
+    new URL("../../envoy/internal/dispatch/pmdoc/schema/blocks.json", import.meta.url),
+    "utf-8"
+  )
+) as BlockSchema;
+
 /** The schema version this build embeds, read from the file the migration seeded the store from:
  *  the version it compiles into its pages, installs a store at, and the store ships at. */
-export const builtSchemaVersion: number = (
-  JSON.parse(
-    readFileSync(
-      new URL("../../envoy/internal/dispatch/pmdoc/schema/blocks.json", import.meta.url),
-      "utf-8"
-    )
-  ) as BlockSchema
-).version;
+export const builtSchemaVersion: number = shippedSchema.version;
 
 /** The version the migration raises the store to: one past the binary's own. */
 export const newerSchemaVersion = builtSchemaVersion + 1;
@@ -177,4 +180,59 @@ export async function processStartTimes(): Promise<string> {
   return sql(
     `select instance::text || ' started ' || started_at from server_processes order by started_at, instance`
   );
+}
+
+/** The block type this build reads and does not create yet: blocks.json declares `plan_role`
+ *  read from version 6 and created only from version 8, and migration 20261125115000 writes those
+ *  numbers on its type node, so a write that adds one is refused at this build. */
+const STAGED_TYPE = "plan_role";
+
+/** What this build's Dispatch says of a write that adds a `plan_role` block to a document that
+ *  holds none (`pmdoc.refuseUncreatable`), which an upload route answers 400 INVALID_MARKDOWN. */
+export const STAGED_TYPE_REFUSAL =
+  'this Dispatch build reads typed block "plan_role" but cannot write it yet';
+
+/** The creatable_since the store ships `plan_role` with: blocks.json's, which migration
+ *  20261125115000 copies onto the type's node. */
+export function shippedStagedCreatableSince(): number {
+  const staged = shippedSchema.types.find((type) => type.name === STAGED_TYPE);
+  if (staged === undefined) {
+    throw new Error(`blocks.json declares no ${STAGED_TYPE}`);
+  }
+  return staged.creatable_since ?? 1;
+}
+
+/** Writes `version` as the creatable_since of `plan_role`'s type node where it is another one, in
+ *  one statement: the write announces itself (migration 20261109051232's trigger), and the server
+ *  installs the schema the nodes then build. A write that moves nothing announces nothing. */
+async function writeStagedCreatableSince(version: number): Promise<void> {
+  await sql(
+    `update graph_nodes set attributes = jsonb_set(attributes, '{creatable_since}', to_jsonb(${version}::int))
+     where kind = 'supertag' and id = '${STAGED_TYPE}'
+       and attributes->>'creatable_since' is distinct from '${version}'`
+  );
+}
+
+/** Has the store create `plan_role` from this build's own version, where it ships creatable only
+ *  from a later one. A caller then waits for the server to serve it so
+ *  (`servedStagedCreatableSince`), and puts it back with `restoreStagedType`. */
+export async function makeStagedTypeCreatable(): Promise<void> {
+  // This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+  await writeStagedCreatableSince(builtSchemaVersion);
+}
+
+/** Puts `plan_role` back at the creatable_since the store ships it with. A caller then waits for
+ *  the server to serve it so. */
+export async function restoreStagedType(): Promise<void> {
+  await writeStagedCreatableSince(shippedStagedCreatableSince());
+}
+
+/** The creatable_since of `plan_role` in the schema the server serves now, 1 where it names none
+ *  (as pmdoc's normalizeVersions reads it), and undefined where it serves no such type. */
+export async function servedStagedCreatableSince(): Promise<number | undefined> {
+  const staged = (await installedSchema()).types.find((type) => type.name === STAGED_TYPE);
+  if (staged === undefined) {
+    return undefined;
+  }
+  return staged.creatable_since ?? 1;
 }

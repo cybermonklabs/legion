@@ -200,12 +200,12 @@ func TestOnlyTheFailureOfTheStepsWorkerHoldsTheIssue(t *testing.T) {
 	}
 }
 
-// A phase worker's claim failing holds the issue, and the two notices that say so — the hold the
-// architect and the controller read, and the worker-died beside it — are all an agent has to
-// decide between retrying the phase and escalating it. So each names the failure the fact
-// carries: the one word for what failed the claim, the sentence written beside that word, and
-// each of the four counts the failure left against the limit it ran out at, deaths against the
-// launch failure limit, which is the limit the supervisor measures them by (record.NoticeFailure).
+// A phase worker's claim failing holds the issue, and the two notices that say so — the hold and
+// the worker-died beside it, both the architect's alone — are all an agent has to decide between
+// retrying the phase and escalating it. So each names the failure the fact carries: the one word
+// for what failed the claim, the sentence written beside that word, and each of the four counts
+// the failure left against the limit it ran out at, deaths against the launch failure limit,
+// which is the limit the supervisor measures them by (record.NoticeFailure).
 // The record also carries the two causes the claim recorded, its last death and its last failed
 // start, which an agent deciding between a retry and an escalation has no other way to read
 // (R6); `reason` keeps its one value, `escalated`, which both agents' texts read as the
@@ -235,7 +235,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		PromptRetires:  record.FailureBudget{Count: 2, Limit: 2}}
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"}
 
-	t.Run("the hold, its controller copy and the worker-died", func(t *testing.T) {
+	t.Run("the hold and the worker-died, to the architect alone", func(t *testing.T) {
 		pool := migratedPool(t)
 		ctx := context.Background()
 		seedIssue(t, pool, root)
@@ -254,8 +254,12 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		held := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
 		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
 		got := noticeRows(t, pool)
-		if want := []record.OutboxPayload{held, record.ControllerNotice(held), died}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v: the hold, its controller copy and the worker-died, each naming the failure", got, want)
+		// No controller copy of the hold: the architect retries or escalates it, and the
+		// controller's skill does nothing for a hold that is not escalated (#4065).
+		// TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater holds that the
+		// escalation reaches the controller.
+		if want := []record.OutboxPayload{held, died}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v: the hold and the worker-died to the architect, each naming the failure, and no copy to the controller", got, want)
 		}
 		// Decoded from the stored rows, so each field above crossed the wire; the hold's `reason`
 		// is read off the row's own keys, since a notice that carried one as "" decodes the same.
@@ -457,7 +461,9 @@ func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testin
 // A lingering tree holds its members where they stood (TestNoFactMovesAMemberOfALingeringTree), so a
 // phase worker's failed claim there holds nothing and tells neither the architect nor the
 // controller. The tree architect's own failed claim holds no phase either, and is still told to the
-// issue's topic and to the controller, lingering or not: nobody inside the tree can act on it.
+// issue's topic, lingering or not. It is not told to the controller: a lingering root is done, and
+// the controller's skill does nothing for a failed architect whose root is done, since the tree is
+// parked or closed already (#4065).
 func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -485,8 +491,8 @@ func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *te
 		t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 	}
 	died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Done}
-	if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("notice rows = %+v, want %+v, to the issue and then to the controller", got, want)
+	if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("notice rows = %+v, want %+v, to the issue alone and none to the controller", got, want)
 	}
 }
 

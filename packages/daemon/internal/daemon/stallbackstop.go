@@ -191,11 +191,12 @@ type stallNoticeOwed struct {
 
 // tellStallBackstopped tells the architect that owns the stall's notice — for a phase worker the
 // architect its issue's notices reach, for a child's own architect the architect above that child,
-// and for a tree's architect that architect itself, with the controller — what the daemon's stall
-// backstop did to this turn, with the record the machine acted on in the notice: how long the
-// agent was silent, the bound it passed, when the turn began and the call the record names, if
-// any. The call's arguments are in no part of it: their text is in no column either, a shell
-// command routinely holding a credential (supervise.StepRecord).
+// and for a tree's architect that architect itself, with the controller too only when the stall's
+// end failed the claim over a stop the runtime did not confirm (enqueueStallNotice) — what the
+// daemon's stall backstop did to this turn, with the record the machine acted on in the notice:
+// how long the agent was silent, the bound it passed, when the turn began and the call the record
+// names, if any. The call's arguments are in no part of it: their text is in no column either, a
+// shell command routinely holding a credential (supervise.StepRecord).
 //
 // What the lines below say of the end is the record itself, which carries it: the end says what
 // became of the claim's process, the machine's own record of the stop says whether the runtime
@@ -222,7 +223,7 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
 	}
-	written, err := s.enqueueStallNotice(ctx, c, found)
+	written, err := s.enqueueStallNotice(ctx, c, stop, found)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the owner what the daemon's stall backstop did to a stalled turn; telling again at the next sweep",
@@ -244,14 +245,21 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
 // for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
 // is read by the architect that owns its issue, and a child's own architect's stall by the
-// architect above that child, as each one's death is. A tree architect's own stall is told to the
-// controller as well, in a row of its own: every notice of the tree that no child's own architect
-// takes reaches that architect, and nobody inside the tree is left to act on it (workflow's
-// claimFailed, which tells a failed tree architect's death the same way).
-func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) (bool, error) {
+// architect above that child, as each one's death is. A tree architect's own stall whose end
+// failed its claim over a stop the runtime did not confirm
+// (supervise.StallBackstopStop.StopUnconfirmed) is told to the controller as well, in a row of
+// its own: every notice of the tree that no child's own architect takes reaches that architect,
+// whose claim has failed, so nobody inside the tree is left to open the finding for a process
+// that may still be running. A failed claim whose stop the runtime confirmed is told to the
+// architect alone: the controller answers the `worker-died` that failure sends it (workflow's
+// claimFailed), and the stall's copy would be a wake it does nothing on. Every other end of that
+// architect's stall is told to the architect alone too: the task is still owed to it and nothing
+// failed, and the architect's own skill opens the finding for a stop the runtime did not confirm
+// and for a stall that repeats, so the controller's copy would be a second telling (#4065).
+func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
+	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) && stop.End == supervise.EndFailed && stop.StopUnconfirmed {
 		rows = append(rows, record.ControllerNotice(notice))
 	}
 	return s.enqueue(ctx, c.Issue, rows...)
@@ -400,7 +408,7 @@ func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) stri
 // ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
 // for no stop at all, where that room and that disk are what nothing of the daemon's has given
 // back, and where the claim goes on recording the process until the queued launch comes due
-// (supervise's reserveWake, parkWake).
+// (supervise's reserveWake, waitOnMachine).
 const (
 	stallProcessStopped    = "Its stalled process was stopped."
 	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
@@ -408,10 +416,10 @@ const (
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
-// role, and the moment the launch a park queued is due to run
-// (supervise.StallBackstopStop.WakeDue). They are written into the clauses as words rather than
-// handed to a format string so that each row of stallBackstopEnds reads as the sentence the
-// owner gets, and so that a clause naming neither needs nothing of its caller.
+// role, and the moment the wake pacing estimated, when the stop was built, that it lets out the
+// launch a park queued (supervise.StallBackstopStop.WakeDue). They are written into the clauses
+// as words rather than handed to a format string so that each row of stallBackstopEnds reads as
+// the sentence the owner gets, and so that a clause naming neither needs nothing of its caller.
 func stallFill(c supervise.Claim, stop supervise.StallBackstopStop) *strings.Replacer {
 	return strings.NewReplacer(stallRoleWord, string(c.Role), stallDueWord, stallInstant(stop.WakeDue))
 }
@@ -538,9 +546,9 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
 		did: "and queued the replacement launch",
-		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
-			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
+			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
+			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		process: stallProcessKept},

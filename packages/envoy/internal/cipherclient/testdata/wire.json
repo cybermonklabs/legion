@@ -648,6 +648,46 @@
       }
     },
     {
+      "name": "Dispatch holds the person a sign-in names, behind Identity-Aware Proxy",
+      "about": "An Identity-Aware Proxy deployment's broker (BROKER_HOLD_REQUIRES_DEADLINE) answers membership_held in the Workspace Directory's words: Dispatch holds the person because the Directory no longer confirms their account, and its next active answer, not a sign-in, ends the hold. It is the same refusal as the row before, so it is not one a client stops on either (expect.permanent is false), and each client prints its words whole for the person the trade names.",
+      "subject": {
+        "kind": "person-device-sign-in",
+        "token": "person.google.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:person-google-identity"
+      },
+      "actor": {
+        "kind": "google-metadata",
+        "token": "google.machine.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:machine-google-identity"
+      },
+      "session": "ada-box-1",
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:envoy:params:oauth:token-type:person-google-identity",
+        "actor_token": "${actor_token}",
+        "actor_token_type": "urn:envoy:params:oauth:token-type:machine-google-identity",
+        "session": "${session}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 400,
+        "body": {
+          "error": "membership_held",
+          "error_description": "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
+        }
+      },
+      "expect": {
+        "outcome": "refuse",
+        "permanent": false,
+        "error_contains": "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
+      }
+    },
+    {
       "name": "an answer that carries a refresh token",
       "about": "This grant issues none: a renewal is a fresh subject token traded again. A client that kept one would hold a credential the contract says is never minted, so an answer carrying one is refused.",
       "subject": {

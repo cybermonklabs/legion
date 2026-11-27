@@ -826,10 +826,11 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 
 // ControllerCredential is one read-only directory per owner the review App is installed on, each
 // reaching every repository its installation holds and holding no repository directory of its
-// own: the controller writes to none. Its default is the owner it is asked for — an alias owner
-// included, which its launch may have recorded — or the first owner sorted when it is asked for
-// none. An owner the bundle holds no directory for is refused before anything is minted, the
-// refusal saying the App is not installed on it, and an App installed nowhere has no bundle.
+// own: the controller's own gh writes to none. Its default is the owner it is asked for — an
+// alias owner included, which its launch may have recorded — or the first owner sorted when it is
+// asked for none. An owner the bundle holds no directory for is refused before anything is
+// minted, the refusal saying the App is not installed on it, and an App installed nowhere has no
+// bundle.
 func TestControllerCredentialIsReadOnlyForEveryOwner(t *testing.T) {
 	served := servesOneOf("Cybermonklabs/legion", "cybermonklabs/tools", "acme/widgets")
 	renames := ghrepo.MustRenames(legionRename)

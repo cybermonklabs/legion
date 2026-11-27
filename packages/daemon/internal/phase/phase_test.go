@@ -10,8 +10,8 @@ import (
 // All is the wire contract's phase list, in the transition table's order.
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	want := []string{
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "step", "accepting",
-		"retro", "merging", "done", "held",
+		"admitted", "awaiting_person", "awaiting_children", "planning", "implementing", "testing", "reviewing",
+		"step", "accepting", "retro", "merging", "done", "held",
 	}
 	got := make([]string, len(All))
 	for index, value := range All {
@@ -25,7 +25,7 @@ func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 // BackwardPairs is every move back of today's line, Order: the triangle over the seven working
 // phases of Order, 21 pairs. There is no move back of Order beyond them, since no phase of this
 // workflow waits for a merge somebody else makes (dispatch://INFRA-714). A task in another order
-// moves back by its own order (workflow's Walk.MovesBack), along 41 of the 57 pairs of MovePairs,
+// moves back by its own order (workflow's Walk.MovesBack), along 44 of the 57 pairs of MovePairs,
 // step's among them (plan.MovesBackPairs), so these 21 are the moves back of a task in the default
 // steps, not of every task.
 func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {
@@ -96,7 +96,7 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 	if MovesBack(Testing, Retro) {
 		t.Fatal("testing -> retro moves forward")
 	}
-	for _, outside := range []Phase{Admitted, AwaitingPerson, Done, Held} {
+	for _, outside := range []Phase{Admitted, AwaitingPerson, AwaitingChildren, Done, Held} {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
 			t.Fatalf("%s stands outside Order, so MovesBack answers no move into or out of it", outside)
 		}

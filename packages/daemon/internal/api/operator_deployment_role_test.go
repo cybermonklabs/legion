@@ -118,7 +118,7 @@ func TestTheRoleListNamesARoleOfTheDeployment(t *testing.T) {
 		route, ending string
 		harness       func(t *testing.T) *harness
 	}{
-		{"/legion/v1/claims/fresh-session", "and its own claim takes no fresh session", func(t *testing.T) *harness { return freshSessionHarness(t, &phaseRestarter{}) }},
+		{"/legion/v1/claims/fresh-session", "and its own agent takes no fresh session", func(t *testing.T) *harness { return freshSessionHarness(t, &phaseRestarter{}) }},
 		{"/legion/v1/claims/compact", "and the controller does not compact its own session", func(t *testing.T) *harness { return compactHarness(t, nil) }},
 	} {
 		t.Run(tc.route, func(t *testing.T) {

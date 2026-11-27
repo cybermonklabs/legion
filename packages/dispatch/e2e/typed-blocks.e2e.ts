@@ -1,7 +1,34 @@
-import { createComment, createIssue, createProject, createProjectDocument } from "./api";
+import {
+  baseUrl,
+  createComment,
+  createIssue,
+  createProject,
+  createProjectDocument,
+  userHeaders,
+} from "./api";
+import {
+  builtSchemaVersion,
+  makeStagedTypeCreatable,
+  restoreStagedType,
+  servedStagedCreatableSince,
+  shippedStagedCreatableSince,
+  STAGED_TYPE_REFUSAL,
+} from "./block-schema";
 import { documentEditor } from "./editor";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
+
+/** Puts plan_role back at the creatable_since the store ships it with, and waits until the server
+ *  serves it so. The last row has the store create plan_role (makeStagedTypeCreatable), and the
+ *  reset keeps the schema's own nodes (e2e/seed.ts), so every row does this before and after: a
+ *  row that failed before its end must not leave the next one on another schema. */
+async function shipStagedType(): Promise<void> {
+  await restoreStagedType();
+  await expect.poll(() => servedStagedCreatableSince()).toBe(shippedStagedCreatableSince());
+}
+
+test.beforeEach(shipStagedType);
+test.afterEach(shipStagedType);
 
 test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -97,12 +124,29 @@ function attributesOffTheirLabels(header: Locator): Promise<string[]> {
 // A typed block's attributes read as `name: value` pairs on the header's row. The document's
 // typography (`.prose`, in a document and in a body alike) gives every `dt` a top margin and
 // every `dd` an indent, which drew each value above its label and far to its right.
+//
+// This build reads plan_role and creates it only from block schema version 8 (blocks.json), so
+// the document's write is refused first, 400 INVALID_MARKDOWN. The row then has the store create
+// plan_role from this build's version and reads the block that build stores.
 test("a typed block's attribute values sit beside their labels, in a document and in a body", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const block =
     ':::plan_role{#prober type="testing" model="prober-model"}\nProbe the change.\n:::\n';
+  const refused = await fetch(new URL("/api/v1/projects/CORE/artifacts", baseUrl), {
+    body: JSON.stringify({ content: block, name: "Typed blocks" }),
+    headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+    method: "POST",
+  });
+  expect(refused.status).toBe(400);
+  expect(await refused.json()).toMatchObject({
+    code: "INVALID_MARKDOWN",
+    error: expect.stringContaining(STAGED_TYPE_REFUSAL),
+  });
+  // This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+  await makeStagedTypeCreatable();
+  await expect.poll(() => servedStagedCreatableSince()).toBe(builtSchemaVersion);
   await createProjectDocument("CORE", { content: block, name: "Typed blocks" });
   const issue = await createIssue({ project: "CORE", title: "A role in a comment" });
   const comment = await createComment(

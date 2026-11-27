@@ -4,12 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 )
 
 // versionBlocksAnswer is what a version read with ?blocks=true answers, as a reader of the plan
@@ -113,12 +117,38 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 
 // A plan document can define a role with a plan_role block, and a version read lists it beside the
 // plan's tasks: the role's name as the block's id, its type and model as its attributes, and a
-// byte range whose markdown holds its body, the role's prompt, headings and lists included.
+// byte range whose markdown holds its body, the role's prompt, headings and lists included. This
+// build reads plan_role from block schema version 6 and creates it only from version 8
+// (pmdoc/schema/blocks.json), so the upload is first refused as this release refuses it: 400
+// INVALID_MARKDOWN, saying this build reads the block but cannot write it yet. The read is then
+// proved under the shipped manifest with plan_role's creatable_since lowered to the manifest's
+// version, on a server built after that manifest is in place, so the server's cleanup runs before
+// the manifest is put back (pmdoctest.UseBlockSchema).
 func TestAVersionReadListsAPlanRoleWithItsAttributes(t *testing.T) {
+	const role = ":::plan_role{#prober type=\"testing\" model=\"listed-model\"}\n# Prober\n\nProbe the change.\n\n- one\n- two\n:::\n"
+	const planText = role + "\n:::plan_task{#a steps=\"implementer prober\"}\nDo it.\n:::\n"
+	refusing := newTestHandler(t)
+	refused := postUpload(t, refusing, createArtifactIssue(t, refusing).Key, map[string]any{"name": "plan.md", "content": planText})
+	if code, message := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_MARKDOWN" ||
+		!strings.Contains(message, `reads typed block "plan_role" but cannot write it yet`) {
+		t.Fatalf("the upload of a plan that defines a role, at this build: status=%d body=%.300s, want 400 INVALID_MARKDOWN saying this build reads typed block \"plan_role\" but cannot write it yet",
+			refused.Code, refused.Body.String())
+	}
+
+	// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+	var creating pmdoc.BlockSchema
+	if err := json.Unmarshal(pmdoc.SchemaJSON(), &creating); err != nil {
+		t.Fatalf("decode the block schema: %v", err)
+	}
+	index := slices.IndexFunc(creating.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == "plan_role" })
+	if index < 0 {
+		t.Fatalf("the block schema declares no plan_role: %s", pmdoc.SchemaJSON())
+	}
+	creating.Types[index].CreatableSince = creating.Version
+	pmdoctest.UseBlockSchema(t, creating)
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
-	const role = ":::plan_role{#prober type=\"testing\" model=\"listed-model\"}\n# Prober\n\nProbe the change.\n\n- one\n- two\n:::\n"
-	plan := createIssueDocument(t, handler, issue.Key, "plan.md", role+"\n:::plan_task{#a steps=\"implementer prober\"}\nDo it.\n:::\n")
+	plan := createIssueDocument(t, handler, issue.Key, "plan.md", planText)
 	answer := readVersionBlocks(t, handler, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true")
 	assertPlanTask(t, answer, "a", "implementer prober", "Do it.")
 	var roles []model.ArtifactBlock

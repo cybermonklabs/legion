@@ -34,22 +34,29 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 10 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "plan_role", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 10 and callout, ask, requirement, plan_task, plan_role, check", schema.Version, names)
+	if schema.Version != 6 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check", "plan_role"}) {
+		t.Fatalf("schema = version %d, types %v; want version 6 and callout, ask, requirement, plan_task, check, plan_role", schema.Version, names)
 	}
-	if ciCheck, declared := schema.Types[5].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
+	if ciCheck, declared := schema.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
 	}
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
-	role := schema.Types[4]
-	if role.Content != "block+" || role.Since != 10 || role.CreatableSince != 10 {
-		t.Fatalf("plan_role = content %q since %d creatable_since %d, want block+ read and created from version 10", role.Content, role.Since, role.CreatableSince)
+	role := schema.Types[5]
+	if role.Content != "block+" || role.Since != 6 || role.CreatableSince != 8 {
+		t.Fatalf("plan_role = content %q since %d creatable_since %d, want block+ read from version 6 and created from 8", role.Content, role.Since, role.CreatableSince)
 	}
 	for _, name := range []string{"type", "model"} {
 		if attribute, declared := role.Attributes.Lookup(name); !declared || attribute.Kind != pmdoc.BlockAttributeString {
 			t.Fatalf("plan_role attribute %s = %+v (declared %v), want a string", name, attribute, declared)
 		}
+	}
+	if subject, declared := schema.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
+		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 7 {
+		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 7", subject, declared)
+	}
+	if program, declared := schema.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 7 {
+		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 7", program, declared)
 	}
 }

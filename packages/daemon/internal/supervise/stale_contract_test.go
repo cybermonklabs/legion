@@ -127,7 +127,7 @@ func TestAStalePluginBelowTheUpdateContractDropsTheHeldRelaunchWithItsProcess(t 
 		t.Fatal("no relaunch is held for the turn")
 	}
 
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 
 	if h.m.staleRelaunch != nil {
 		t.Errorf("the relaunch still waits for a turn of a process the claim no longer runs: %q", *h.m.staleRelaunch)

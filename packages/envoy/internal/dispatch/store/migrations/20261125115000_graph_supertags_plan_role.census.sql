@@ -1,12 +1,9 @@
 -- This migration inserts the type node plan_role, its attribute nodes plan_role/type and
--- plan_role/model and their tuples, and sets the attributes of the five block type supertag nodes
--- (callout, ask, requirement, plan_task and check) to what 20261109051232_graph_supertags,
--- 20261113230000_graph_supertags_check_ci_check, 20261115130000_graph_supertags_element_versions
--- and 20261123080000_graph_supertags_plan_task_steps left on them, the version moved from 5 to 10
--- and check's position from 4 to 5. Those rows are type nodes, and nothing but a migration writes a
--- type node: no route and no command writes one (cmd/dispatch's requireNoRouteOrCommandWritesAType),
--- and no migration between 20261123080000 and this one writes one. So the five nodes hold what those
--- four left, and the update rewrites only their version and check's position; and no node
--- plan_role, plan_role/type or plan_role/model exists for the inserts to meet. It reads no row of
+-- plan_role/model and their tuples, and writes no other row: it updates no node, and it moves no
+-- other block type's supertag node. Those three nodes are type nodes, and nothing but a migration
+-- writes a type node: no route and no command writes one (cmd/dispatch's
+-- requireNoRouteOrCommandWritesAType), and no other migration writes any of the three. So no node
+-- plan_role, plan_role/type or plan_role/model exists for the inserts to meet, whether
+-- 20261125125701_graph_supertags_check_subject has run before it or not. It reads no row of
 -- another table. The number of existing rows this migration would refuse or rewrite is therefore 0.
 select 0

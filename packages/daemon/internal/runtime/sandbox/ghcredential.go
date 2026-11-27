@@ -23,13 +23,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
-// function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
-// expiry, so most ticks render the hosts.yml the Secret already holds and write nothing; a minute
-// keeps the time an agent's gh runs on a token the daemon has already replaced short against an
-// installation token's hour, at one Secret read per live slot. A runtime reads it once, as it starts
-// (start); a test that must see a tick inside its run shortens it before starting one.
-var gitHubRefreshInterval = time.Minute
+// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store unless the
+// runtime's Options set another (Options.GitHubRefreshInterval). The daemon's function
+// (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its expiry,
+// so most ticks render the hosts.yml the Secret already holds and write nothing; a minute keeps the
+// time an agent's gh runs on a token the daemon has already replaced short against an installation
+// token's hour, at one Secret read per live slot.
+const gitHubRefreshInterval = time.Minute
 
 // refreshGitHubCredentialsEvery runs refreshGitHubCredentials, then refreshCacheTokens, then
 // readCacheHealth, every interval until ctx ends: the informers' lifetime (start), so the walk never
@@ -138,12 +138,13 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles), and
 		// of those a slot in which no stored claim runs is refreshed only where its role is still
 		// configured: a newly added role has no Secret in an old pod, and a dropped role's GitHub
-		// lease should expire without another mint. A slot of an agent of the plan whose name is no
-		// role of the runtime, and in which no stored claim runs yet, names no App to render it for
-		// (slotAppRole refuses it), and runs nothing that reads it: its claim's first launch writes
-		// it for that claim's role before its child starts (writeLaunchCredential). The walk passes
-		// over such a slot here, which saves the warning a refused refresh of it would log at every
-		// tick. A slot in which a stored claim runs is refreshed whatever its name.
+		// lease should expire without another mint. So the slot of an agent of the plan whose name
+		// is no role (`implementer-2`) is passed over while no stored claim runs in it: its name
+		// names no App (slotAppRole refuses it, and a refused refresh would log a warning at every
+		// tick), and nothing in it reads its files before a claim's launch writes them for that
+		// claim's role (writeLaunchCredential). Until a claim of its agent has run there, it holds
+		// the App of the agent's first step, which the pod's build wrote (gitHubBundles). A slot in
+		// which a stored claim runs is refreshed whatever its name.
 		repo, named := fetchRepository(pod)
 		configuredRoles := kind.roles(r)
 		for _, role := range builtRoles(pod.Spec) {

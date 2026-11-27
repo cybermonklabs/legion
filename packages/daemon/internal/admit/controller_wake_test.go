@@ -258,13 +258,13 @@ func tellOfProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission
 }
 
 // A provider-errors notice is one claim's, so one stands per claim: in an outage every claim's
-// turns fail, and the machine tells at exactly the sixth turn in a row and not again until a
-// turn with no error puts that run back to zero, so a second claim's notice dropped behind the
-// first claim's would never be sent at all. Two claims of one issue — its architect and its
-// worker — are two such claims, so the issue alone is not the key. These notices name no claim,
-// as a row the release before wrote names none, so each is keyed by its issue and role, and one
-// claim that keeps failing still tells once: a second notice for the same issue and role finds
-// the first one waiting.
+// turns fail, and the machine tells at exactly the sixth turn in a row and once for each run
+// (supervise.Claim's ProviderErrorRun says what ends a run), so a second claim's notice dropped
+// behind the first claim's would never be sent at all. Two claims of one issue — its architect and
+// its worker — are two such claims, so the issue alone is not the key. These notices name no
+// claim, as a row the release before wrote names none, so each is keyed by its issue and role,
+// and one claim that keeps failing still tells once: a second notice for the same issue and role
+// finds the first one waiting.
 func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)

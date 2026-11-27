@@ -1,8 +1,9 @@
 //go:build e2e
 
-// The rig of dispatch://INFRA-4425's checks K2, K3 and K4: every Dispatch client a Legion
-// deployment runs, writing with a credential the secrets broker issued, against a real broker, a
-// real Dispatch and the real clients. scripts/e2e/dispatch-broker.sh runs it.
+// The rig of dispatch://INFRA-4425's checks K2, K3 and K4, and of dispatch://INFRA-4799's C2:
+// every Dispatch client a Legion deployment runs, writing with a credential the secrets broker
+// issued, and a tool's reads through `dispatch proxy`, against a real broker, a real Dispatch and
+// the real clients. scripts/e2e/dispatch-broker.sh runs it.
 //
 // Nothing of the credential path is stood in for. The broker is packages/envoy's own
 // (ciphertest.NewRig, its real handlers on a real Postgres), with the exchange accounts that rig
@@ -34,7 +35,8 @@
 // with the rig's values, so the rig and the launch cannot drift apart. The `dispatch` command is
 // packages/envoy-client/bin/dispatch.ts under bun in that environment, and the long-lived clients
 // are scripts/e2e/dispatch-broker-clients.ts: one process holding the client the `dispatch`
-// command builds and the client the pi-envoy plugin builds.
+// command builds and the client the pi-envoy plugin builds. C2's tool is a Python standard-library
+// client the test writes (proxyClient), which `dispatch proxy` runs as its command.
 //
 // Each test writes its tables to TMPDIR and logs the file's path.
 package daemon
@@ -67,6 +69,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,11 +81,14 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
 	"github.com/sjawhar/envoy/ciphertest"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The rig's two projects: P, which every account of the rig's exchange names but one, and Q, the
@@ -307,7 +313,7 @@ func (r *dispatchBrokerRig) setUp() {
 	r.qIssue = r.createIssue(rigQ, "An issue of the other project", "")
 	r.call(http.MethodPost, "/api/v1/issues/"+r.pIssue+"/artifacts", false, map[string]any{
 		"name": "verification.md", "actor": rigSetupActor,
-		"content": fmt.Sprintf("How %s is proved.\n\n:::check{#%s serves=\"dispatch://%s/spec#b-r1\" surface=\"api\" run=\"bash scripts/e2e/dispatch-broker.sh\" negative_control=\"A token of another project is refused 403 PROJECT_SCOPE.\"}\nA role records a result with its own token.\n:::\n",
+		"content": fmt.Sprintf("How %s is proved.\n\n:::check{#%s serves=\"dispatch://%s/spec#b-r1\" surface=\"api\" run=\"bash scripts/e2e/dispatch-broker.sh\" negative_control=\"A token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role.\"}\nA role records a result with its own token.\n:::\n",
 			r.pIssue, rigCheck, r.pIssue),
 	}, http.StatusCreated, nil)
 }
@@ -608,12 +614,68 @@ func (run rigRun) outcome() string {
 // as an Oh My Pi session's shell runs `dispatch` (handoff_records_live_test.go's cliOut).
 func (r *dispatchBrokerRig) command(role *rigRole, env []string, args ...string) rigRun {
 	r.t.Helper()
+	command, stdout, stderr := r.dispatchCommand(role, env, args...)
+	return r.ran(args, command.Run(), stdout, stderr)
+}
+
+// commandIntrospecting runs the dispatch command as command does, and reads each broker token
+// that a request from mark on carries back at the broker's introspection while the command runs,
+// as soon as the request reaches the proxy. The broker names no session and no expiry of a token
+// that has expired, and a run longer than a token's life outlives the tokens it presented first,
+// so a reading after the run would find those expired. Introspect fails the test with t.Fatalf,
+// which must run on the test's goroutine, so the reads run here: another goroutine waits for the
+// command, and this one reads at each arrival the proxy signals and once more after the command
+// exits.
+func (r *dispatchBrokerRig) commandIntrospecting(mark int, role *rigRole, env []string, args ...string) rigRun {
+	r.t.Helper()
+	command, stdout, stderr := r.dispatchCommand(role, env, args...)
+	if err := command.Start(); err != nil {
+		return r.ran(args, err, stdout, stderr)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	done := false
+	defer func() {
+		if !done {
+			_ = command.Process.Kill()
+			<-exited
+		}
+	}()
+	next := mark
+	read := func() {
+		var digests []string
+		digests, next = r.proxy.tokensFrom(next)
+		for _, digest := range digests {
+			r.introspect(digest)
+		}
+	}
+	for {
+		select {
+		case <-r.proxy.arrived:
+			read()
+		case err := <-exited:
+			done = true
+			read()
+			return r.ran(args, err, stdout, stderr)
+		}
+	}
+}
+
+// dispatchCommand is the command that runs `bun packages/envoy-client/bin/dispatch.ts args...` in
+// env, from the role's home, and the buffers its standard output and standard error go to.
+func (r *dispatchBrokerRig) dispatchCommand(role *rigRole, env []string, args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
 	command := exec.Command("bun", append([]string{filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
 	command.Dir = role.home
 	command.Env = env
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	err := command.Run()
+	return command, &stdout, &stderr
+}
+
+// ran is the run of the dispatch command with args that ended with err and printed stdout and
+// stderr. An error other than the command's own exit status fails the test.
+func (r *dispatchBrokerRig) ran(args []string, err error, stdout, stderr *bytes.Buffer) rigRun {
+	r.t.Helper()
 	run := rigRun{stdout: stdout.String(), stderr: stderr.String()}
 	if err != nil {
 		var exit *exec.ExitError
@@ -634,9 +696,10 @@ func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 }
 
 // daemonClient is the daemon's Dispatch client of project P as boot builds it under
-// dispatch_token_broker (dispatchCredential): its pod identity, the subject token in the file
-// subject, traded at the rig's broker, read back by Dispatch's whoami through the proxy and
-// checked, and the transport that client presents its token through.
+// dispatch_token_broker (dispatchCredential, daemonDispatchClient): its pod identity, the subject
+// token in the file subject, traded at the rig's broker, read back by Dispatch's whoami through
+// the proxy and checked, and the transport that client presents its token through. Every write
+// names the session that token proves, legion-daemon:P.
 func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, http.RoundTripper) {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
@@ -647,11 +710,12 @@ func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, 
 	if err != nil {
 		r.t.Fatalf("the daemon's boot under dispatch_token_broker: %v", err)
 	}
-	return dispatch.New(cfg.DispatchURL, transport), transport
+	return daemonDispatchClient(cfg, transport), transport
 }
 
 // sharedDaemonClient is the daemon's Dispatch client of project P as boot builds it without
-// dispatch_token_broker: the bearer dispatch_token_file names, the shared agent token.
+// dispatch_token_broker (dispatchCredential, daemonDispatchClient): the bearer dispatch_token_file
+// names, the shared agent token. Each write names the session of the issue's project's daemon.
 func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch.HTTPClient {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenFile: sharedTokenFile}
@@ -659,12 +723,13 @@ func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch
 	if err != nil {
 		r.t.Fatalf("the daemon's boot without dispatch_token_broker: %v", err)
 	}
-	return dispatch.New(cfg.DispatchURL, transport)
+	return daemonDispatchClient(cfg, transport)
 }
 
 // otherProjectDaemonClient is the daemon's client built from the same pieces (cipherclient's
 // client and token transport, dispatch.New) over OtherProjectAccount's pod identity, whose entry
 // fixes the session OtherProjectSession of project Q: K4's control, a token of another project.
+// Every write names that session (dispatch.WritesAs), the one its token proves.
 func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	r.t.Helper()
 	subject := r.file("other-project-daemon-token", r.broker.MintSubjectToken(r.t, ciphertest.OtherProjectAccount, "rig-pod-other-daemon"))
@@ -684,7 +749,7 @@ func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport))
+	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport), dispatch.WritesAs(ciphertest.OtherProjectSession))
 }
 
 // rigClients is scripts/e2e/dispatch-broker-clients.ts running in a role's environment: the
@@ -859,11 +924,16 @@ type recordingProxy struct {
 	// inFlight is the index in records of each request whose handler has not finished.
 	inFlight map[int]struct{}
 	tokens   map[string]string
+	// arrived signals that a request's record has taken its place in records, its token's digest
+	// already set. The handler sends without blocking, and the channel holds one signal, so
+	// signals that come while one is unread fold into it: a reader reads every record from its
+	// own index on (tokensFrom), whatever number of signals it took.
+	arrived chan struct{}
 }
 
 // newRecordingProxy is a proxy with no record, pointed at no Dispatch yet (forward).
 func newRecordingProxy() *recordingProxy {
-	p := &recordingProxy{inFlight: map[int]struct{}{}, tokens: map[string]string{}}
+	p := &recordingProxy{inFlight: map[int]struct{}{}, tokens: map[string]string{}, arrived: make(chan struct{}, 1)}
 	p.landed = sync.NewCond(&p.mu)
 	return p
 }
@@ -899,6 +969,10 @@ func (p *recordingProxy) at(address string) http.Handler {
 		p.records = append(p.records, record)
 		p.inFlight[index] = struct{}{}
 		p.mu.Unlock()
+		select {
+		case p.arrived <- struct{}{}:
+		default:
+		}
 		answer := &answerRecorder{ResponseWriter: w}
 		// The record lands on every way out of this handler. ReverseProxy, under an HTTP server,
 		// aborts the handler with panic(http.ErrAbortHandler) when an answer breaks off part way,
@@ -959,6 +1033,20 @@ func (p *recordingProxy) count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.records)
+}
+
+// tokensFrom is the digest of the token of each DPoP request recorded at index or after it, and
+// how many requests are recorded, the index to read from next.
+func (p *recordingProxy) tokensFrom(index int) ([]string, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var digests []string
+	for _, record := range p.records[index:] {
+		if record.Scheme == "DPoP" {
+			digests = append(digests, record.Token)
+		}
+	}
+	return digests, len(p.records)
 }
 
 // since is every request recorded after the first mark, once each of them has landed. A caller
@@ -1079,6 +1167,20 @@ func (p *rigReport) quote(text string) {
 	fmt.Fprintf(&p.text, "```\n%s\n```\n\n", strings.TrimRight(text, "\n"))
 }
 
+// table adds a table under heading: its columns, then one row for each of rows, each cell
+// escaped as writes escapes one.
+func (p *rigReport) table(heading string, columns []string, rows [][]string) {
+	fmt.Fprintf(&p.text, "## %s\n\n| %s |\n|%s\n", heading, strings.Join(columns, " | "), strings.Repeat(" --- |", len(columns)))
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, cell := range row {
+			cells[i] = strings.ReplaceAll(strings.ReplaceAll(cell, "|", `\|`), "\n", " ")
+		}
+		fmt.Fprintf(&p.text, "| %s |\n", strings.Join(cells, " | "))
+	}
+	p.text.WriteString("\n")
+}
+
 // writes adds a table of writes under heading: one row for each request, beside the write that
 // made it; a write that sent nothing is one row naming no route. start, when it is not the zero
 // time, adds the column of each write's time since it.
@@ -1184,21 +1286,62 @@ func (r *dispatchBrokerRig) namesP(record proxyRecord) bool {
 	return strings.HasSuffix(names, " of "+rigP) || names == "project "+rigP
 }
 
-// TestTheDaemonWritesAsItselfOnlyInItsProject is K2: under dispatch_token_broker the daemon's own
-// client, with the identity of P's daemon account, posts an issue message (PostMessage, its one
-// conversation write) on an issue of P and then on an issue of Q, and `dispatch whoami` runs in a
-// role's environment of P; the result names each request's Authorization scheme and each answer's
-// status, whoami's output, and the names of the role's variables that hold DISPATCH.
+// eventHeader is the sequence and the type of one event of an issue's event log.
+type eventHeader struct {
+	Seq  int64  `json:"seq"`
+	Type string `json:"type"`
+}
+
+// eventAt is the event of an issue's event log (dispatch.HTTPClient.EventsAfter) at sequence seq,
+// nil where the log holds none.
+func eventAt(events []json.RawMessage, seq int64) json.RawMessage {
+	for _, event := range events {
+		var header eventHeader
+		if json.Unmarshal(event, &header) == nil && header.Seq == seq {
+			return event
+		}
+	}
+	return nil
+}
+
+// decodedFact says in words what intake.DecodeDispatchEvent made of an event.
+func decodedFact(fact intake.Fact, err error) string {
+	issue, isIssue := fact.(intake.DispatchIssue)
+	switch {
+	case err != nil:
+		return "an error: " + err.Error()
+	case fact == nil:
+		return "no fact"
+	case isIssue:
+		return fmt.Sprintf("a DispatchIssue with DaemonActor %t and ActorSession %q", issue.DaemonActor, issue.ActorSession)
+	}
+	return fmt.Sprintf("a %T", fact)
+}
+
+// TestTheDaemonWritesAsItselfOnlyInItsProject is K2. "Only in its project" is the name of #4392's
+// check, whose rule held a token that names a project to the writes of that project; it is no
+// longer the rule (dispatch://INFRA-4799's R8), and the name stays because C3's run names it.
+// Under dispatch_token_broker the daemon's own client, with the identity of P's daemon account,
+// posts an issue message (PostMessage, its one conversation write) on an issue of P and on an issue
+// of Q; on that issue of Q it also sets a status and writes a step record, its rating, a plan and
+// the role holders, the writes of a daemon that runs a claim on another project's issue (legion
+// claims spawn); it sets a status on its own issue of P; and the daemon's intake decodes the status
+// events of both issues as the boot catch-up decodes Dispatch's event log
+// (intake.DecodeDispatchEvent over EventsAfter). `dispatch whoami` runs in a role's environment of
+// P. The result names each request's Authorization scheme and each answer's status, the decodes,
+// whoami's output, and the names of the role's variables that hold DISPATCH.
 //
-// Controls: the write to Q is refused 403 PROJECT_SCOPE and the write to P is accepted, so the
-// refusal is the token's scope and not a broken client; a write of the same client whose proof
-// names an origin outside DISPATCH_PROOF_ORIGINS is refused 401 BROKER_TOKEN_PROOF_INVALID; and
-// with the setting off the same two writes carry Bearer and are both accepted, and whoami says it
-// runs under the shared token.
+// Controls: every write on P and on Q is accepted, each checked on its own so that a run shows
+// the answer to every one; a write of the same client whose proof names an origin outside
+// DISPATCH_PROOF_ORIGINS is refused 401 BROKER_TOKEN_PROOF_INVALID, so an accepted write is the
+// token's and not a proof check left open; the status event on P's issue decodes as the daemon's
+// own write, and each event of Q's issue as no fact, since the intake reads no other project's
+// events; whoami names the project the role's token names; and with the setting off the same two
+// messages carry Bearer and are both accepted, and whoami says it runs under the shared token.
 func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	r := newDispatchBrokerRig(t, 15*time.Minute)
 	ctx := context.Background()
-	report := r.report("K2: the daemon writes as itself and only in its project")
+	report := r.report("K2: the daemon writes as itself, on an issue of its project and on an issue of another")
 
 	subject, _ := r.daemonSubject()
 	var client *dispatch.HTTPClient
@@ -1211,8 +1354,48 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	onQ := r.daemonCall("PostMessage on "+r.qIssue, false, func() error {
 		return client.PostMessage(ctx, r.qIssue, "The daemon's notice on an issue of another project.")
 	})
+	// The other writes of a daemon that runs a claim on the issue of Q: its status, and its
+	// records with the values daemonScript writes.
+	var writtenOnQ dispatch.Issue
+	statusOnQ := r.daemonCall("SetStatus on "+r.qIssue, false, func() error {
+		var err error
+		writtenOnQ, err = client.SetStatus(ctx, r.qIssue, "in_progress")
+		return err
+	})
+	stepID, step := uuid.NewString(), daemonStep(r.qIssue, time.Now().UTC())
+	stepOnQ := r.daemonCall("PutStep on "+r.qIssue, false, func() error {
+		return client.PutStep(ctx, r.qIssue, stepID, step)
+	})
+	ratingOnQ := r.daemonCall("PutStepRating on "+r.qIssue, false, func() error {
+		return client.PutStepRating(ctx, r.qIssue, stepID, step, daemonRating)
+	})
+	planOnQ := r.daemonCall("PutPlan on "+r.qIssue, false, func() error {
+		return client.PutPlan(ctx, r.qIssue, uuid.NewString(), daemonPlan())
+	})
+	holdersOnQ := r.daemonCall("PutRoleHolders on "+r.qIssue, false, func() error {
+		return client.PutRoleHolders(ctx, r.qIssue, []dispatch.RoleHolder{})
+	})
+	// A status on the daemon's own issue of P, and the event logs of both issues, which the
+	// daemon's intake decodes below.
+	var writtenOnP dispatch.Issue
+	statusOnP := r.daemonCall("SetStatus on "+r.pDaemon, false, func() error {
+		var err error
+		writtenOnP, err = client.SetStatus(ctx, r.pDaemon, "in_progress")
+		return err
+	})
+	var eventsOfP, eventsOfQ []json.RawMessage
+	readP := r.daemonCall("EventsAfter on "+r.pDaemon, true, func() error {
+		var err error
+		eventsOfP, err = client.EventsAfter(ctx, r.pDaemon, 0)
+		return err
+	})
+	readQ := r.daemonCall("EventsAfter on "+r.qIssue, true, func() error {
+		var err error
+		eventsOfQ, err = client.EventsAfter(ctx, r.qIssue, 0)
+		return err
+	})
 	outside := r.daemonCall("PostMessage on "+r.pIssue+", sent to an origin DISPATCH_PROOF_ORIGINS does not name", false, func() error {
-		return dispatch.New(r.outside, transport).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
+		return dispatch.New(r.outside, transport, dispatch.WritesAs(dispatch.DaemonSession(rigP))).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
 	})
 	role := r.registeredRole("k2")
 	on := r.environment(role, "")
@@ -1229,8 +1412,27 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	off := r.environment(role, shared)
 	whoamiOff := r.command(role, off, "whoami")
 
+	// The daemon's intake decodes each event as the boot catch-up decodes Dispatch's event log: the
+	// status event its write on its own issue of P made, and each event of the issue of Q, the
+	// status event of its write there among them.
+	eventOfP := eventAt(eventsOfP, writtenOnP.LastSeq)
+	factOfP, _, errOfP := intake.DecodeDispatchEvent(rigP, r.pDaemon, eventOfP)
+	var decodesOfQ, factsOfQ []string
+	for _, event := range eventsOfQ {
+		var header eventHeader
+		_ = json.Unmarshal(event, &header)
+		fact, _, err := intake.DecodeDispatchEvent(rigP, r.qIssue, event)
+		decode := fmt.Sprintf("sequence %d, %s: %s", header.Seq, header.Type, decodedFact(fact, err))
+		decodesOfQ = append(decodesOfQ, decode)
+		if fact != nil || err != nil {
+			factsOfQ = append(factsOfQ, decode)
+		}
+	}
+
 	report.say("The daemon's client of project %s, with dispatch_token_broker on: its pod identity is the rig's DaemonExchangeAccount, traded at the broker %s; Dispatch is reached through the proxy %s, which DISPATCH_PROOF_ORIGINS names, and %s, which it does not.", rigP, r.broker.URL, r.url, r.outside)
-	report.writes("The setting on", []rigWrite{boot, onP, onQ, outside}, time.Time{})
+	report.writes("The setting on", []rigWrite{boot, onP, onQ, statusOnQ, stepOnQ, ratingOnQ, planOnQ, holdersOnQ, statusOnP, readP, readQ, outside}, time.Time{})
+	report.say("The daemon's intake, for project %s, decodes the status event at sequence %d of %s, the daemon's own issue, as %s.", rigP, writtenOnP.LastSeq, r.pDaemon, decodedFact(factOfP, errOfP))
+	report.say("It decodes each event of %s, an issue of %s, the status event of the daemon's write at sequence %d among them: %s.", r.qIssue, rigQ, writtenOnQ.LastSeq, strings.Join(decodesOfQ, "; "))
 	report.say("`dispatch whoami` in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s (%s):", role.session, rigP, whoamiOn.outcome())
 	report.quote(whoamiOn.stdout + whoamiOn.stderr)
 	report.say("The variables of that environment whose name holds DISPATCH: %s.", strings.Join(dispatchNames(on), ", "))
@@ -1239,6 +1441,35 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	report.quote(whoamiOff.stdout + whoamiOff.stderr)
 	report.say("The variables of that environment whose name holds DISPATCH: %s.", strings.Join(dispatchNames(off), ", "))
 	report.write("k2")
+
+	// Each write on Q, and the status on P, is checked on its own, so that one refused write
+	// leaves the answers to the others in the run's log.
+	for _, write := range []rigWrite{onQ, statusOnQ, stepOnQ, ratingOnQ, planOnQ, holdersOnQ, statusOnP} {
+		if write.err != nil || len(write.records) != 1 || write.records[0].Scheme != "DPoP" || write.records[0].Status/100 != 2 {
+			t.Errorf("under the setting the daemon's %s = %s; the proxy recorded %+v; want one request under DPoP, answered 2xx", write.write, write.outcome, write.records)
+		}
+	}
+	for _, read := range []rigWrite{readP, readQ} {
+		if read.err != nil {
+			t.Errorf("under the setting the daemon's %s = %s, want the issue's event log", read.write, read.outcome)
+		}
+	}
+	issueOfP, isIssue := factOfP.(intake.DispatchIssue)
+	switch {
+	case eventOfP == nil:
+		t.Errorf("the event log of %s holds no event at sequence %d, the sequence the daemon's status write answered (%s)", r.pDaemon, writtenOnP.LastSeq, statusOnP.outcome)
+	case errOfP != nil || !isIssue || !issueOfP.DaemonActor || issueOfP.ActorSession != "":
+		t.Errorf("the daemon's intake decodes its status event on %s, its own issue, as %s; want a DispatchIssue with DaemonActor true and no ActorSession", r.pDaemon, decodedFact(factOfP, errOfP))
+	}
+	if len(eventsOfQ) == 0 {
+		t.Errorf("the event log of %s holds no event, want at least the issue's creation", r.qIssue)
+	}
+	if writtenOnQ.LastSeq != 0 && eventAt(eventsOfQ, writtenOnQ.LastSeq) == nil {
+		t.Errorf("the event log of %s holds no event at sequence %d, the sequence the daemon's status write answered", r.qIssue, writtenOnQ.LastSeq)
+	}
+	for _, decode := range factsOfQ {
+		t.Errorf("the daemon's intake decodes an event of %s, an issue of %s, as more than no fact (%s); want no fact, since it reads no other project's events", r.qIssue, rigQ, decode)
+	}
 
 	only := func(write rigWrite) proxyRecord {
 		t.Helper()
@@ -1250,9 +1481,6 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	if record := only(onP); onP.err != nil || record.Scheme != "DPoP" || record.Status != http.StatusCreated {
 		t.Errorf("under the setting the daemon's write to its own project %s went %s and was answered %d %s (%v), want DPoP and 201", r.pIssue, record.Scheme, record.Status, record.Code, onP.err)
 	}
-	if status, code := refusal(onQ.err); only(onQ).Scheme != "DPoP" || status != http.StatusForbidden || code != "PROJECT_SCOPE" {
-		t.Errorf("under the setting the daemon's write to %s of %s was answered %d %s (%v), want 403 PROJECT_SCOPE", r.qIssue, rigQ, status, code, onQ.err)
-	}
 	if status, code := refusal(outside.err); only(outside).Address != "outside" || status != http.StatusUnauthorized || code != "BROKER_TOKEN_PROOF_INVALID" {
 		t.Errorf("a write whose proof names %s, an origin DISPATCH_PROOF_ORIGINS does not name, was answered %d %s (%v), want 401 BROKER_TOKEN_PROOF_INVALID", r.outside, status, code, outside.err)
 	}
@@ -1261,8 +1489,8 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 			t.Errorf("without the setting %s went %s and was answered %d %s (%v), want Bearer and 201", write.write, record.Scheme, record.Status, record.Code, write.err)
 		}
 	}
-	if whoamiOn.code != 0 || !strings.Contains(whoamiOn.stdout, "acts for "+r.broker.Operator) || !strings.Contains(whoamiOn.stdout, "may write project "+rigP+" and no other") {
-		t.Errorf("dispatch whoami in the role's environment under the setting = %s, want it acting for %s and writing project %s alone", whoamiOn.outcome(), r.broker.Operator, rigP)
+	if whoamiOn.code != 0 || !strings.Contains(whoamiOn.stdout, "acts for "+r.broker.Operator) || !strings.Contains(whoamiOn.stdout, " Its token names project "+rigP+".") {
+		t.Errorf("dispatch whoami in the role's environment under the setting = %s, want it acting for %s and naming the project %s its token names", whoamiOn.outcome(), r.broker.Operator, rigP)
 	}
 	for _, name := range dispatchNames(on) {
 		if name == "DISPATCH_TOKEN" || name == "DISPATCH_TOKEN_FILE" {
@@ -1446,6 +1674,15 @@ type roleRefs struct {
 	handoff   string
 }
 
+// commandWrite runs the dispatch command with args in env, from the role's home, as the write of
+// a table named write, with the requests the proxy recorded while it ran.
+func (r *dispatchBrokerRig) commandWrite(role *rigRole, env []string, write string, args ...string) rigWrite {
+	r.t.Helper()
+	var out rigRun
+	records := r.during(func() { out = r.command(role, env, args...) })
+	return rigWrite{write: write, client: "the dispatch command", ok: out.code == 0, outcome: out.outcome(), records: records}
+}
+
 // commandScript is K4's script through the dispatch command: one write of each kind R8 names on
 // P's issue, each a process of its own in env. inbox is the person's direct message to the
 // role's session, which the conversation file's reply answers.
@@ -1454,16 +1691,14 @@ func (r *dispatchBrokerRig) commandScript(role *rigRole, env []string, run strin
 	var writes []rigWrite
 	command := func(write string, args ...string) {
 		r.t.Helper()
-		var out rigRun
-		records := r.during(func() { out = r.command(role, env, args...) })
-		writes = append(writes, rigWrite{write: write, client: "the dispatch command", ok: out.code == 0, outcome: out.outcome(), records: records})
+		writes = append(writes, r.commandWrite(role, env, write, args...))
 	}
 	issue := r.pIssue
 	body := r.file("handoff-"+run+".json", fmt.Sprintf(`{"schemaVersion": 1, "phase": "implement", "issue": %q, "summary": "the %s run's handoff through the dispatch command"}`, issue, run))
 	command("handoff-write", "handoff-write", "--issue", issue, "--phase", "implement", "--body-file", body)
 	command("result", "result", "--issue", issue, "--check", rigCheck, "--role", "tester", "--verdict", "pass", "--commit", rigCommit,
 		"--surface", "api", "--run", "bash scripts/e2e/dispatch-broker.sh", "--observed", "the "+run+" run's result through the dispatch command",
-		"--negative-control", "a token of another project is refused 403 PROJECT_SCOPE")
+		"--negative-control", "a token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role")
 	command("comment", "comment", "--issue", issue, "--body", "The "+run+" run's comment through the dispatch command.")
 	command("message", "message", "--issue", issue, "--body", "The "+run+" run's message through the dispatch command.")
 	question := "The " + run + " run asks through the dispatch command: does a person read this ask on " + issue + "?"
@@ -1512,7 +1747,7 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 	call("result", "recordResult", issue, map[string]any{
 		"actor": actor, "check": rigCheck, "role": "tester", "verdict": "pass", "commit": rigCommit, "surface": "api",
 		"run": "bash scripts/e2e/dispatch-broker.sh", "observed": "the " + run + " run's result through the plugin's client",
-		"negative_control": "a token of another project is refused 403 PROJECT_SCOPE",
+		"negative_control": "a token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role",
 	})
 	call("comment", "comment", issue, map[string]any{"actor": actor, "body": "The " + run + " run's comment through the plugin's client."})
 	call("message", "message", issue, map[string]any{"actor": actor, "body": "The " + run + " run's message through the plugin's client."})
@@ -1548,19 +1783,40 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 
 // daemonRefs are the objects the daemon's script reads that its run with a token of P made, or
 // that the role's did: the document it uploads, read back as an approval, the role's handoff
-// record, and the role's document that its plugin's doc-edit gave a second version, whose two
-// versions the script reads the changes between.
+// record, the role's document that its plugin's doc-edit gave a second version, whose two
+// versions the script reads the changes between, and the ask the role's plugin opened, which the
+// script reads by its id.
 type daemonRefs struct {
-	document, handoff, edited string
+	document, handoff, edited, ask string
+}
+
+// daemonStep is the step record the rig's daemon writes on the issue key: a retro's start at
+// started, the first write of a fresh record, so it names the run's whole identity, and a retro's,
+// which daemonRating rates.
+func daemonStep(key string, started time.Time) dispatch.StepWrite {
+	return dispatch.StepWrite{
+		Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-example-" + strings.ToLower(key) + "-implementer", Generation: 1, StartedAt: &started,
+	}
+}
+
+// daemonRating is the rating the rig's daemon gives the retro daemonStep writes.
+var daemonRating = dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."}
+
+// daemonPlan is the plan the rig's daemon writes: a run's default plan.
+func daemonPlan() dispatch.PlanWrite {
+	return dispatch.PlanWrite{Generation: 1, Source: "default",
+		Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
 // internal/dispatch's HTTPClient, its thirteen writes and every read, Whoami among them, on the
-// daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
-// the first write of its run, so it names the run's whole identity; PutStepRating rates that same
-// record, a retro's, PutStepExperiment writes on it the experiment and the variant of its issue,
-// and PutPlan writes a fresh default plan of the run.
-func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
+// daemon's issue of P. The document UploadArtifact writes is named for the run, as the role
+// scripts' documents are, so each run's upload is a first upload, which names no token. The step
+// record PutStep writes is a fresh one at each run of the script, the first write of its run
+// (daemonStep); PutStepRating rates that same record, a retro's, PutStepExperiment writes its
+// issue's experiment and variant onto it, and PutPlan writes a fresh default plan of the run.
+func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, run string, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
 	issueKey := r.pDaemon
@@ -1591,7 +1847,7 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	slug := ""
 	call("UploadArtifact", false, func() error {
 		var err error
-		slug, err = client.UploadArtifact(ctx, issueKey, "rig-daemon.md", "# The daemon's own document\n")
+		slug, err = client.UploadArtifact(ctx, issueKey, "rig-"+run+"-daemon.md", "# The "+run+" run's daemon document\n")
 		return err
 	})
 	if refs.document == "" && slug != "" {
@@ -1600,27 +1856,18 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("PutGatedSteps", false, func() error { return client.PutGatedSteps(ctx, rigP, []string{}) })
 	call("PutDesignGates", false, func() error { return client.PutDesignGates(ctx, issueKey, []dispatch.DesignGateDocument{}) })
 	call("PutRoleHolders", false, func() error { return client.PutRoleHolders(ctx, issueKey, []dispatch.RoleHolder{}) })
-	stepID := uuid.NewString()
-	started := time.Now().UTC()
-	step := dispatch.StepWrite{
-		Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-example-" + strings.ToLower(issueKey) + "-implementer", Generation: 1, StartedAt: &started,
-	}
+	stepID, step := uuid.NewString(), daemonStep(issueKey, time.Now().UTC())
 	call("PutStep", false, func() error { return client.PutStep(ctx, issueKey, stepID, step) })
-	call("PutStepRating", false, func() error {
-		return client.PutStepRating(ctx, issueKey, stepID, step,
-			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
-	})
+	call("PutStepRating", false, func() error { return client.PutStepRating(ctx, issueKey, stepID, step, daemonRating) })
 	call("PutStepExperiment", false, func() error {
-		return client.PutStepExperiment(ctx, issueKey, stepID, step,
-			dispatch.StepExperiment{Experiment: "planning", Variant: "b"})
+		return client.PutStepExperiment(ctx, issueKey, stepID, step, dispatch.StepExperiment{Experiment: "memory", Variant: "off"})
 	})
-	call("PutPlan", false, func() error {
-		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
-	})
+	call("PutPlan", false, func() error { return client.PutPlan(ctx, issueKey, uuid.NewString(), daemonPlan()) })
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
-	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
+	call("Artifacts", true, func() error { _, err := client.Artifacts(ctx, issueKey); return err })
+	call("Ask", true, func() error { _, err := client.Ask(ctx, refs.ask); return err })
+	call("Reviews", true, func() error { _, err := client.Reviews(ctx, refs.document); return err })
+	call("DocumentVersion", true, func() error { _, err := client.DocumentVersion(ctx, refs.edited, 2); return err })
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
 	call("MessageBodiesSince", true, func() error { _, err := client.MessageBodiesSince(ctx, issueKey, since); return err })
 	call("Approval", true, func() error { _, err := client.Approval(ctx, refs.document); return err })
@@ -1636,16 +1883,22 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 // an issue of P - handoff-write, result, comment, message, comment --reply-to-ask on an ask the
 // script opens with ask, artifact and doc-edit, claim and claim --release, and the session's own
 // conversation file, a picture uploaded to /agents/<session>/artifacts through the client's
-// agentArtifact (the call `dispatch message --in-reply-to` makes for a picture); and with the
-// daemon's token for P, one call of each method of internal/dispatch's client. The result is a
-// table: the write, the route, the status. A row of it that is not 2xx fails the test, and is a
-// defect to report.
+// agentArtifact (the call `dispatch message --in-reply-to` makes for a picture); three writes of
+// the dispatch command on objects of Q, which a token that names one project makes as a
+// credential that names none does (dispatch://INFRA-4799's R8): a comment on Q's issue, a
+// blocked_by link from P's issue to Q's, and a new title of Q's issue; and with the daemon's token
+// for P, one call of each method of internal/dispatch's client. The result is a table: the write,
+// the route, the status. A row of it that is not 2xx fails the test, and is a defect to report.
 //
-// Control: the same script with a token of OtherProjectAccount (project Q) is refused 403
-// PROJECT_SCOPE on each write that names an issue or a document of P. The table names each request
-// that names no issue, which this control cannot tell apart: the conversation file's upload to the
-// caller's own session among them, whose upload to the role of P's session a token of another
-// session is refused 403 SESSION_SCOPE instead, which the control shows too.
+// Control: the same scripts with a token of OtherProjectAccount (project Q), whose entry fixes the
+// session other-project-worker. A token that names one project writes another project's objects
+// (INFRA-4799's R8), so each write of the control on P's objects is accepted, but for the records
+// only a Legion daemon's session writes: the daemon's script's step record, its rating and its
+// plan are refused 403 STEP_WRITER, and its role holders 403 ROLE_HOLDER_FORBIDDEN, because
+// other-project-worker is no daemon's session. The table names each request that names no issue,
+// which this control cannot tell apart: the conversation file's upload to the caller's own session
+// among them. Its upload to the role of P's session, another session's conversation, is refused
+// 403 SESSION_SCOPE, which the control shows too.
 func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	r := newDispatchBrokerRig(t, 15*time.Minute)
 	since := time.Now()
@@ -1660,8 +1913,18 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withP []rigWrite
 	withP = append(withP, r.commandScript(role, env, "P", refs, r.directMessage(role.session))...)
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
-	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"]}
-	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
+	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"], ask: refs.asks["plugin"]}
+	withP = append(withP, r.daemonScript(daemonClient, "P", daemon, since)...)
+	// INFRA-4799's R8: the role's token of P writes objects of Q, as a credential that names no
+	// project does.
+	onQ := []rigWrite{
+		r.commandWrite(role, env, "comment on "+r.qIssue, "comment", "--issue", r.qIssue,
+			"--body", "The P run's comment through the dispatch command, on an issue of "+rigQ+"."),
+		r.commandWrite(role, env, "issue-update --blocked-by "+r.qIssue, "issue-update", "--issue", r.pIssue, "--blocked-by", r.qIssue),
+		r.commandWrite(role, env, "issue-update --title of "+r.qIssue, "issue-update", "--issue", r.qIssue,
+			"--title", "An issue of the other project, retitled by a role of "+rigP),
+	}
+	withP = append(withP, onQ...)
 	// K4's words: with the daemon's token for P the script makes one of each kind of write the
 	// daemon's Dispatch client has a method for. A method the client gains and the script does not
 	// call is a write no row of the table proves under the broker, so each exported method of
@@ -1693,7 +1956,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withQ []rigWrite
 	withQ = append(withQ, r.commandScript(other, otherEnv, "Q", refs, r.directMessage(other.session))...)
 	withQ = append(withQ, r.pluginScript(otherClients, other, "Q", refs, other.session)...)
-	withQ = append(withQ, r.daemonScript(r.otherProjectDaemonClient(), daemon, since)...)
+	withQ = append(withQ, r.daemonScript(r.otherProjectDaemonClient(), "Q", daemon, since)...)
 	var intoP clientAnswer
 	scoped := rigWrite{write: "the conversation file, uploaded to the session " + role.session + " of P's role", client: "the plugin's client"}
 	scoped.records = r.during(func() {
@@ -1705,7 +1968,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	scoped.ok, scoped.outcome = intoP.OK, intoP.outcome()
 
 	report := r.report("K4: a role writes every kind with its own token")
-	report.say("Every write on %s, the issue of %s the role %s's session addresses, and on %s, the daemon's issue of %s. The role is a registered session of an ExchangeRolesAccount pod of %s; the daemon's identity is the rig's DaemonExchangeAccount; the control's is OtherProjectAccount, whose entry fixes the session %s of %s. A row whose names column says no issue is one this control cannot tell apart.", r.pIssue, rigP, role.session, r.pDaemon, rigP, rigP, other.session, rigQ)
+	report.say("Every write on %s, the issue of %s the role %s's session addresses, on %s, the daemon's issue of %s, and the role's three writes on %s, an issue of %s. The role is a registered session of an ExchangeRolesAccount pod of %s; the daemon's identity is the rig's DaemonExchangeAccount; the control's is OtherProjectAccount, whose entry fixes the session %s of %s, which writes the objects of %s as a credential that names no project does, but for the four records only a Legion daemon's session writes. A row whose names column says no issue is one this control cannot tell apart.", r.pIssue, rigP, role.session, r.pDaemon, rigP, r.qIssue, rigQ, rigP, other.session, rigQ, rigP)
 	report.writes("With the tokens of "+rigP, withP, time.Time{})
 	report.writes("The control: the same script with tokens of "+rigQ, withQ, time.Time{})
 	report.writes("The control's conversation file in another session's conversation", []rigWrite{scoped}, time.Time{})
@@ -1720,6 +1983,14 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			t.Errorf("with the token of %s, %s's %s = %s; the proxy recorded %+v: every row of the P table must be 2xx, and this one is a defect to report", rigP, write.client, write.write, write.outcome, write.records)
 		}
 	}
+	for _, write := range onQ {
+		if len(write.mutations()) == 0 {
+			t.Errorf("with the token of %s, the role's %s = %s, and the proxy recorded no write (%+v); want it sent to Dispatch and accepted", rigP, write.write, write.outcome, write.records)
+		}
+	}
+	// The control's five records rows, and the code each is refused with: only a Legion daemon's
+	// session writes them, and other-project-worker is none.
+	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutStepExperiment": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
 	for _, write := range withQ {
 		if write.read {
 			continue
@@ -1739,16 +2010,526 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			continue
 		}
 		if len(addressed) == 0 {
-			t.Errorf("the control's %s through %s wrote nothing that names %s (%s; the proxy recorded %+v), want it refused 403 PROJECT_SCOPE", write.write, write.client, rigP, write.outcome, write.records)
+			t.Errorf("the control's %s through %s wrote nothing that names %s (%s; the proxy recorded %+v), want a write on %s's objects", write.write, write.client, rigP, write.outcome, write.records, rigP)
+			continue
 		}
-		for _, record := range addressed {
-			if record.Status != http.StatusForbidden || record.Code != "PROJECT_SCOPE" {
-				t.Errorf("the control's %s through %s: %s %s was answered %d %s, want 403 PROJECT_SCOPE", write.write, write.client, record.Method, record.Route, record.Status, record.Code)
+		if code, refused := refusedRecords[write.write]; refused && write.client == "the daemon's client" {
+			for _, record := range addressed {
+				if record.Status != http.StatusForbidden || record.Code != code {
+					t.Errorf("the control's %s through %s: %s %s was answered %d %s, want 403 %s, since %s is no Legion daemon's session", write.write, write.client, record.Method, record.Route, record.Status, record.Code, code, other.session)
+				}
 			}
+			continue
+		}
+		bad := !write.ok
+		for _, record := range addressed {
+			bad = bad || record.Status/100 != 2
+		}
+		if bad {
+			t.Errorf("the control's %s through %s = %s; the proxy recorded %+v; want each of its writes on %s's objects accepted 2xx, as a credential that names no project writes them", write.write, write.client, write.outcome, write.records, rigP)
 		}
 	}
 	if len(scoped.records) != 1 || scoped.records[0].Status != http.StatusForbidden || scoped.records[0].Code != "SESSION_SCOPE" {
 		t.Errorf("a token of the session %s uploading to the conversation of %s = %s, the proxy recorded %+v; want 403 SESSION_SCOPE", other.session, role.session, scoped.outcome, scoped.records)
+	}
+}
+
+// proxyLifetime is how long an access token of C2's broker lives: L in C2's bound.
+const proxyLifetime = 420 * time.Second
+
+// proxyRenewBefore is DEFAULT_RENEW_BEFORE_MS of packages/cipher-client/src/token-client.ts, the
+// rule dispatch://INFRA-4799's R4 holds the proxy to. The proxy's one client trades again this
+// long before a token's expiry, and never before half of the life the token had when it landed
+// (renewalAt). A 420 s token has less than twice this, so the client renews it at its half life,
+// about 210 s after it landed. C2's bound, 1 + T / (L - 300 s), allows one renewal every 120 s,
+// so a client that renews later than that keeps to it.
+const proxyRenewBefore = 300 * time.Second
+
+// proxyHalfLifeSlack is how far before a token's half life, reckoned from the expiry the broker's
+// introspection names, C2 lets the proxy renew it. The broker writes that expiry and the
+// answer's expires_in in whole seconds, truncated (EXPIRES_IN_STEP_MS of
+// packages/cipher-client/src/token-client.ts), so the life the client reckons from expires_in
+// can be up to a second short, and the half life it renews at up to half a second early.
+const proxyHalfLifeSlack = time.Second / 2
+
+// proxyReads is how long C2's client reads, from its own start: longer than two renewal periods of
+// a 420 s token, 420 s, with 60 s to spare. The proxy renews a token at its half life, 210 s after
+// it landed, so the run presents the token the proxy traded first and the two it renewed with,
+// and makes no third renewal: that comes at the third token's half life, near 630 s.
+const proxyReads = 480 * time.Second
+
+// proxyPace is the least time between the starts of two requests of C2's client: in proxyReads
+// it sends at most 4,801, so it makes the 2,000 C2 asks for while the proxy and Dispatch answer
+// each request within 240 ms.
+const proxyPace = 100 * time.Millisecond
+
+// proxyExitPattern is the last line `dispatch proxy` writes on standard error (proxyExitLine in
+// packages/envoy-client/src/dispatch-proxy-command.ts): the requests it sent to Dispatch, the
+// trades that gave it a token, and those of them that followed a BROKER_TOKEN_NOT_ACTIVE answer.
+var proxyExitPattern = regexp.MustCompile(`^dispatch proxy: (\d+) requests, (\d+) trades, (\d+) after BROKER_TOKEN_NOT_ACTIVE$`)
+
+// proxyClient is the tool C2 runs under `dispatch proxy`: a Python script of the standard library
+// alone, as INFRA-4430's tools are, whose one connection is the proxy's unix socket. It reads its
+// orders from input.json beside it and writes what it was answered to output.json beside it
+// (proxyClientRun). The routes and bodies are Dispatch's own: GET /api/v1/issues pages with limit
+// and offset and answers {issues, total, limit, offset} (issue_page.go, parseIssuePage); GET
+// /api/v1/issues/{key}/events pages with after and limit and answers an array of events, each
+// with its seq (events.go, parseEventListOptions); GET /api/v1/artifacts/{id}/versions/{number}
+// answers a file's version as its bytes (artifacts.go, getArtifactVersion); and POST
+// /api/v1/issues/{key}/comments takes {body}, whose actor the session a broker token proves
+// decides (server.go, bearerSessionActor), and answers a repeat under its Idempotency-Key with the
+// first answer and Idempotency-Replayed: ?1 (request_keys.go).
+const proxyClient = `# The tool run of TestTheProxyServesAToolRunWithOneTradeForEachRenewal
+# (packages/daemon/internal/daemon/dispatch_broker_live_test.go), the command dispatch proxy runs.
+# It holds no credential and imports nothing past Python's standard library: its one connection
+# is an http.client.HTTPConnection whose connect opens an AF_UNIX socket at DISPATCH_PROXY_SOCKET,
+# as dispatch proxy --help shows a tool doing.
+#
+# It reads its orders from input.json beside it and writes what it was answered to output.json
+# beside it. In order: one read of a file's version 1, whose bytes it hashes; one comment POST,
+# sent twice under one Idempotency-Key; then pages of GET /api/v1/issues?project=<project> and of
+# GET /api/v1/issues/<key>/events for each issue those pages list, over and over, until the
+# orders' seconds have passed since its start. It starts at most one request each pace seconds.
+# A request the socket fails is written with status 0 and its error, and is not sent again.
+import hashlib
+import http.client
+import json
+import os
+import socket
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+class ProxyConnection(http.client.HTTPConnection):
+    """A connection to the proxy's unix socket. The host it names is not read: the proxy sends
+    each request to the Dispatch server a dispatch command resolves."""
+
+    def __init__(self):
+        super().__init__("dispatch", timeout=120)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])
+
+
+def main():
+    with open(os.path.join(HERE, "input.json")) as orders_file:
+        orders = json.load(orders_file)
+    connection = ProxyConnection()
+    started = time.monotonic()
+    deadline = started + orders["seconds"]
+    out = {"answers": [], "version": None, "comments": [], "error": None}
+
+    def send(method, path, body=None, headers=None):
+        """Sends one request in its turn, and answers its status, its answer and its body."""
+        wait = started + len(out["answers"]) * orders["pace"] - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            answer = connection.getresponse()
+            data = answer.read()
+        except (OSError, http.client.HTTPException) as error:
+            connection.close()
+            out["answers"].append({"method": method, "path": path, "status": 0, "error": repr(error)})
+            return 0, None, b""
+        out["answers"].append({"method": method, "path": path, "status": answer.status})
+        return answer.status, answer, data
+
+    try:
+        status, answer, data = send("GET", "/api/v1/artifacts/%s/versions/1" % orders["artifact"])
+        out["version"] = {
+            "status": status,
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "content_type": answer.getheader("Content-Type") if answer else None,
+        }
+        comment = json.dumps({"body": orders["comment"]}).encode()
+        for _ in range(2):
+            status, answer, data = send(
+                "POST",
+                "/api/v1/issues/%s/comments" % orders["issue"],
+                body=comment,
+                headers={"Content-Type": "application/json", "Idempotency-Key": orders["key"]},
+            )
+            out["comments"].append({
+                "status": status,
+                "replayed": answer.getheader("Idempotency-Replayed") if answer else None,
+                "id": json.loads(data).get("id") if status == 201 else None,
+            })
+        while time.monotonic() < deadline:
+            keys = []
+            offset = 0
+            while time.monotonic() < deadline:
+                status, _, data = send(
+                    "GET",
+                    "/api/v1/issues?project=%s&limit=%d&offset=%d" % (orders["project"], orders["issue_page"], offset),
+                )
+                if status != 200:
+                    break
+                page = json.loads(data)
+                keys.extend(issue["key"] for issue in page["issues"])
+                offset += len(page["issues"])
+                if not page["issues"] or offset >= page["total"]:
+                    break
+            for key in keys:
+                after = 0
+                while time.monotonic() < deadline:
+                    status, _, data = send(
+                        "GET", "/api/v1/issues/%s/events?after=%d&limit=%d" % (key, after, orders["event_page"])
+                    )
+                    if status != 200:
+                        break
+                    events = json.loads(data)
+                    if events:
+                        after = events[-1]["seq"]
+                    if len(events) < orders["event_page"]:
+                        break
+    except Exception as error:
+        out["error"] = repr(error)
+    out["seconds"] = time.monotonic() - started
+    with open(os.path.join(HERE, "output.json"), "w") as written:
+        json.dump(out, written)
+    return 1 if out["error"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`
+
+// proxyClientRun is what proxyClient wrote to output.json: each request it sent with the status
+// it was answered (0, with the error, for one the socket failed), the file's version it read, its
+// two comment POSTs, how long it ran, and the exception that ended it early, if one did.
+type proxyClientRun struct {
+	Answers []struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Status int    `json:"status"`
+		Error  string `json:"error"`
+	} `json:"answers"`
+	Version struct {
+		Status      int    `json:"status"`
+		Bytes       int    `json:"bytes"`
+		SHA256      string `json:"sha256"`
+		ContentType string `json:"content_type"`
+	} `json:"version"`
+	Comments []struct {
+		Status   int    `json:"status"`
+		Replayed string `json:"replayed"`
+		ID       string `json:"id"`
+	} `json:"comments"`
+	Seconds float64 `json:"seconds"`
+	Error   string  `json:"error"`
+}
+
+// TestTheProxyServesAToolRunWithOneTradeForEachRenewal is dispatch://INFRA-4799's C2. With the
+// broker's access tokens living 420 s, `dispatch proxy` runs in a role's environment of P with
+// proxyClient as its command, which reaches Dispatch through the proxy's unix socket alone. The
+// client reads back 64 KiB of random bytes the role uploaded to P's issue as a file, at GET
+// /api/v1/artifacts/<id>/versions/1; posts one comment on that issue twice under one
+// Idempotency-Key; and for 480 s, longer than two renewal periods of a token of that lifetime,
+// 420 s, since the proxy renews a token at its half life, reads pages of P's issues and of each
+// issue's events, the reads INFRA-4430's work-cost makes, starting one request each 100 ms at
+// most. Each token the run presents is read back at the broker's introspection when it is first
+// presented, while it is live (commandIntrospecting). The result is a table: T, the proxy run's
+// wall time; L, the lifetime; the proxy's exit line; the client's requests and their answers; the
+// requests the recording proxy holds of the role's session from the mark on; and each token
+// presented from the mark on, by its digest, with its session, when it was first and last
+// presented and when it expired. It prints no token.
+//
+// Controls: the run exits 0; every read answers 200 and the client makes at least 2,000
+// requests; the bytes read back hash as the bytes uploaded; both comment POSTs answer 201, the
+// second replayed (Idempotency-Replayed: ?1), and the issue holds the comment once; the run
+// outlives two renewal periods of the first token, T > L; the distinct tokens the role's session
+// presented from the mark on, m′, are exactly 3 and at most 1 + T / (L - 300 s), so the proxy
+// traded for its first token and once for each of its two renewals, and never once for each
+// request; each token after the first was first presented no earlier than the half life of the
+// token before it, that token's expiry less L / 2 (less proxyHalfLifeSlack), and before that
+// token's expiry, so the proxy renewed each of the first two tokens at its half life; each token
+// was presented only before its own expiry; and the exit line's m is m′, its n the requests the
+// recording proxy holds of that session from the mark on, and its r 0. The same proxy in the
+// role's environment without dispatch_token_broker, where DISPATCH_TOKEN_FILE stands in place of
+// DISPATCH_TOKEN_BROKER, exits 2 naming DISPATCH_TOKEN_BROKER, runs no command (touch <marker>),
+// and sends Dispatch nothing.
+//
+// It takes about nine minutes past the rig's start, so it runs only when LEGION_E2E_PROXY=1.
+func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
+	if os.Getenv("LEGION_E2E_PROXY") != "1" {
+		t.Skip("LEGION_E2E_PROXY is not 1: this check reads through the proxy for 480 s, past two renewals of a 420 s token, each at its half life, about nine minutes in all, so it runs only when that variable asks for it")
+	}
+	r := newDispatchBrokerRig(t, proxyLifetime)
+	role := r.registeredRole("proxy")
+	env := r.environment(role, "")
+	// The pages the client reads: P's two issues and 30 more, so a listing of P takes four pages.
+	// Their titles are alike on purpose, so each create is forced past Dispatch's near-copy gate
+	// (409 POSSIBLE_DUPLICATE otherwise).
+	for i := range 30 {
+		r.call(http.MethodPost, "/api/v1/issues", false, map[string]any{
+			"project": rigP, "title": fmt.Sprintf("Issue %d of the pages the proxy's client reads", i+1),
+			"actor": rigSetupActor, "force": true,
+		}, http.StatusCreated, nil)
+	}
+
+	// The file the client reads back: 64 KiB of random bytes the role uploads itself, stored as
+	// its bytes, since its name does not end in .md.
+	uploaded := make([]byte, 64<<10)
+	if _, err := rand.Read(uploaded); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(r.dir, "rig-proxy.bin")
+	if err := os.WriteFile(file, uploaded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if upload := r.command(role, env, "artifact", "--issue", r.pIssue, "--name", "rig-proxy.bin", "--path", file); upload.code != 0 {
+		t.Fatalf("dispatch artifact of rig-proxy.bin in the role's environment = %s, want the file uploaded", upload.outcome())
+	}
+	artifact := r.artifacts(r.pIssue)["rig-proxy.bin"]
+	if artifact == "" {
+		t.Fatalf("%s holds no artifact named rig-proxy.bin after its upload", r.pIssue)
+	}
+	sum := sha256.Sum256(uploaded)
+	uploadedSHA := hex.EncodeToString(sum[:])
+
+	// The client and its orders, in a directory of their own, where it writes what it was answered.
+	clientDir := filepath.Join(r.dir, "proxy-client")
+	if err := os.MkdirAll(clientDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client := filepath.Join(clientDir, "client.py")
+	if err := os.WriteFile(client, []byte(proxyClient), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := "rig-proxy-" + uuid.NewString()
+	comment := "The proxy run's one comment, posted twice under the Idempotency-Key " + key + "."
+	orders, err := json.Marshal(map[string]any{
+		"project": rigP, "issue": r.pIssue, "artifact": artifact, "comment": comment, "key": key,
+		"seconds": proxyReads.Seconds(), "pace": proxyPace.Seconds(), "issue_page": 10, "event_page": 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clientDir, "input.json"), orders, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mark := r.proxy.count()
+	start := time.Now()
+	run := r.commandIntrospecting(mark, role, env, "proxy", "--socket", testtmp.Socket(t, "d.sock"), "--", "python3", client)
+	wall := time.Since(start)
+	after := r.proxy.since(mark)
+
+	var got proxyClientRun
+	if written, err := os.ReadFile(filepath.Join(clientDir, "output.json")); err != nil {
+		t.Errorf("the client wrote no output.json (%v); the proxy run = %s", err, run.outcome())
+	} else if err := json.Unmarshal(written, &got); err != nil {
+		t.Errorf("decode the client's output.json: %v", err)
+	}
+
+	// Each token presented from the mark on, in the order it was first presented, as the broker's
+	// introspection answered it when the token was first presented, while it was live
+	// (commandIntrospecting): the run outlives L, so the first token has expired by now.
+	// sessionTokens are those of the role's session, whose requests are the ones they carried.
+	var tokens, sessionTokens []string
+	presented := map[string][]proxyRecord{}
+	for _, record := range after {
+		if record.Scheme != "DPoP" {
+			continue
+		}
+		if presented[record.Token] == nil {
+			tokens = append(tokens, record.Token)
+		}
+		presented[record.Token] = append(presented[record.Token], record)
+	}
+	requestsOfSession := 0
+	for _, digest := range tokens {
+		if r.introspect(digest).Session == role.session {
+			sessionTokens = append(sessionTokens, digest)
+			requestsOfSession += len(presented[digest])
+		}
+	}
+	bound := 1 + wall.Seconds()/(proxyLifetime-proxyRenewBefore).Seconds()
+
+	stderrLines := strings.Split(strings.TrimRight(run.stderr, "\n"), "\n")
+	exitLine := stderrLines[len(stderrLines)-1]
+	exit := proxyExitPattern.FindStringSubmatch(exitLine)
+	var requests, trades, renewed int
+	if exit != nil {
+		requests, _ = strconv.Atoi(exit[1])
+		trades, _ = strconv.Atoi(exit[2])
+		renewed, _ = strconv.Atoi(exit[3])
+	}
+
+	reads := 0
+	var unread []string
+	for _, answer := range got.Answers {
+		if answer.Method != http.MethodGet {
+			continue
+		}
+		reads++
+		if answer.Status != http.StatusOK {
+			unread = append(unread, strings.TrimSpace(fmt.Sprintf("GET %s = %d %s", answer.Path, answer.Status, answer.Error)))
+		}
+	}
+	posts := make([]string, len(got.Comments))
+	for i, post := range got.Comments {
+		replayed := post.Replayed
+		if replayed == "" {
+			replayed = "absent"
+		}
+		posts[i] = fmt.Sprintf("%d with Idempotency-Replayed %s, comment %s", post.Status, replayed, post.ID)
+	}
+	var onIssue []struct {
+		Body string `json:"body"`
+	}
+	r.call(http.MethodGet, "/api/v1/issues/"+r.pIssue+"/comments", false, nil, http.StatusOK, &onIssue)
+	held := 0
+	for _, each := range onIssue {
+		if strings.TrimSpace(each.Body) == comment {
+			held++
+		}
+	}
+
+	// The control: the same proxy in the role's environment without the setting, with a command
+	// that leaves a marker behind if it runs at all.
+	shared := r.file("dispatch-shared-token", r.dispatch.token)
+	marker := filepath.Join(r.dir, "proxy-control-ran")
+	controlMark := r.proxy.count()
+	control := r.command(role, r.environment(role, shared), "proxy", "--socket", testtmp.Socket(t, "d.sock"), "--", "touch", marker)
+	controlRecords := r.proxy.since(controlMark)
+	_, markerErr := os.Stat(marker)
+	controlRan := !errors.Is(markerErr, os.ErrNotExist)
+
+	report := r.report("C2: a tool run's reads through dispatch proxy, with one trade for each renewal")
+	report.say("`dispatch proxy` ran in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s, with `python3 %s` as its command (proxyClient): a Python standard-library client that reaches Dispatch over the proxy's unix socket alone. The broker's access tokens live %.0f s. The proxy's one client trades again %.0f s before a token's expiry, but never before half the token's life, so it renews a token of that lifetime at its half life, about %.0f s after it landed. The client read back rig-proxy.bin, a file of %d random bytes the role uploaded to %s, posted one comment on %s twice under one Idempotency-Key, and for %.0f s read pages of %s's issues and of each issue's events, starting one request each %d ms at most.",
+		role.session, rigP, client, proxyLifetime.Seconds(), proxyRenewBefore.Seconds(), (proxyLifetime / 2).Seconds(), len(uploaded), r.pIssue, r.pIssue, proxyReads.Seconds(), rigP, proxyPace.Milliseconds())
+	exitCell := exitLine
+	if exit == nil {
+		exitCell = "none: the last line on standard error is " + strconv.Quote(exitLine)
+	}
+	stopped := got.Error
+	if stopped == "" {
+		stopped = "none"
+	}
+	report.table("The run", []string{"quantity", "value"}, [][]string{
+		{"T, the proxy run's wall time", fmt.Sprintf("%.1f s", wall.Seconds())},
+		{"L, an access token's lifetime", fmt.Sprintf("%.0f s", proxyLifetime.Seconds())},
+		{"1 + T / (L - 300 s), the most trades the run may make", fmt.Sprintf("%.2f", bound)},
+		{"the proxy's exit status", strconv.Itoa(run.code)},
+		{"the proxy's exit line", exitCell},
+		{"the client's requests", fmt.Sprintf("%d in %.1f s: %d reads, %d of them answered 200, and %d comment POSTs", len(got.Answers), got.Seconds, reads, reads-len(unread), len(got.Comments))},
+		{"the exception that stopped the client", stopped},
+		{"the recording proxy's requests from the mark on", fmt.Sprintf("%d, %d of them of the session %s", len(after), requestsOfSession, role.session)},
+		{"m′, the distinct tokens that session presented from the mark on", strconv.Itoa(len(sessionTokens))},
+		{"the file's version 1", fmt.Sprintf("%d, %d bytes of %s with SHA-256 %s; the upload's SHA-256 %s", got.Version.Status, got.Version.Bytes, got.Version.ContentType, got.Version.SHA256, uploadedSHA)},
+		{"the comment POSTs", strings.Join(posts, "; ")},
+		{"the comments on " + r.pIssue + " with the client's body", strconv.Itoa(held)},
+	})
+	var tokenRows [][]string
+	for _, digest := range tokens {
+		token, records := r.tokens[digest], presented[digest]
+		expiry := "none named"
+		if at := token.expiry(); !at.IsZero() {
+			expiry = fmt.Sprintf("%s (%.1f s)", at.UTC().Format(time.RFC3339), at.Sub(start).Seconds())
+		}
+		tokenRows = append(tokenRows, []string{
+			digest, token.Session, strconv.FormatBool(token.Active),
+			fmt.Sprintf("%.1f s", records[0].At.Sub(start).Seconds()), fmt.Sprintf("%.1f s", records[len(records)-1].At.Sub(start).Seconds()),
+			strconv.Itoa(len(records)), expiry,
+		})
+	}
+	report.table("Each token presented from the mark on, its times in seconds after the proxy run started",
+		[]string{"token (digest)", "session", "active when first presented", "first presented", "last presented", "requests", "expiry"}, tokenRows)
+	report.say("The proxy run printed (%s):", run.outcome())
+	report.quote(run.stdout + run.stderr)
+	markerState := "was not made"
+	if controlRan {
+		markerState = "exists"
+	}
+	report.say("The control: the same `dispatch proxy` in the role's environment without the setting, DISPATCH_TOKEN_FILE in place of DISPATCH_TOKEN_BROKER, with `touch %s` as its command. It exited %d; the marker %s; the recording proxy holds %d requests from its mark. It printed:", marker, control.code, markerState, len(controlRecords))
+	report.quote(control.stdout + control.stderr)
+	report.write("c2")
+
+	if run.code != 0 {
+		t.Errorf("dispatch proxy with the client = %s, want exit 0, the client's own status", run.outcome())
+	}
+	if got.Error != "" {
+		t.Errorf("the client stopped early: %s", got.Error)
+	}
+	if len(got.Answers) < 2000 {
+		t.Errorf("the client made %d requests in %.1f s, want at least 2,000", len(got.Answers), got.Seconds)
+	}
+	if wall <= proxyLifetime {
+		t.Errorf("the proxy run took %s, want more than %s, two renewal periods of the token the proxy traded first, each half its life", wall, proxyLifetime)
+	}
+	if reads == 0 || len(unread) > 0 {
+		t.Errorf("%d of the client's %d reads were not answered 200, want every one answered 200; the first: %s", len(unread), reads, strings.Join(unread[:min(5, len(unread))], "; "))
+	}
+	if got.Version.Status != http.StatusOK || got.Version.SHA256 != uploadedSHA {
+		t.Errorf("the client's read of version 1 of rig-proxy.bin = %d, %d bytes with SHA-256 %s; want 200 and the %d bytes uploaded, SHA-256 %s", got.Version.Status, got.Version.Bytes, got.Version.SHA256, len(uploaded), uploadedSHA)
+	}
+	if len(got.Comments) != 2 || got.Comments[0].Status != http.StatusCreated || got.Comments[0].Replayed != "" ||
+		got.Comments[1].Status != http.StatusCreated || got.Comments[1].Replayed != "?1" {
+		t.Errorf("the client's two comment POSTs under one Idempotency-Key = %s; want 201, then 201 with Idempotency-Replayed: ?1", strings.Join(posts, "; "))
+	}
+	if held != 1 {
+		t.Errorf("%s holds %d comments with the body the client posted, want exactly 1", r.pIssue, held)
+	}
+	if len(sessionTokens) != 3 {
+		t.Errorf("the session %s presented %d distinct tokens from the mark on, want exactly 3: the token the proxy traded first and the two it renewed with, each at the half life of the token before it", role.session, len(sessionTokens))
+	} else {
+		for i := 1; i < len(sessionTokens); i++ {
+			earlier, later := sessionTokens[i-1], sessionTokens[i]
+			earlierExpiry := r.tokens[earlier].expiry()
+			if earlierExpiry.IsZero() {
+				continue // the loop below reports a zero expiry
+			}
+			halfLife := earlierExpiry.Add(-proxyLifetime / 2)
+			renewed := presented[later][0].At
+			if renewed.Before(halfLife.Add(-proxyHalfLifeSlack)) || !renewed.Before(earlierExpiry) {
+				t.Errorf("the session's token %d, %s, was first presented at %s, %.1f s after the proxy run started; want it no earlier than %s (%.1f s), the half life of token %d, %s, less %s, and before that token's expiry %s (%.1f s)",
+					i+1, later, renewed.UTC().Format(time.RFC3339Nano), renewed.Sub(start).Seconds(),
+					halfLife.UTC().Format(time.RFC3339), halfLife.Sub(start).Seconds(), i, earlier, proxyHalfLifeSlack,
+					earlierExpiry.UTC().Format(time.RFC3339), earlierExpiry.Sub(start).Seconds())
+			}
+		}
+	}
+	// R4's bound, in C2's own words. With exactly 3 tokens and T > L the bound is above 4.5, so
+	// this check fails only where one of the checks above fails too; it stays because C2 states
+	// the bound.
+	if float64(len(sessionTokens)) > bound {
+		t.Errorf("the session %s presented %d distinct tokens in a run of %.1f s, want at most 1 + T / (L - 300 s) = %.2f", role.session, len(sessionTokens), wall.Seconds(), bound)
+	}
+	for _, digest := range sessionTokens {
+		expiry := r.tokens[digest].expiry()
+		if expiry.IsZero() {
+			t.Errorf("the broker's introspection named no expiry for token %s", digest)
+			continue
+		}
+		for _, record := range presented[digest] {
+			if !record.At.Before(expiry) {
+				t.Errorf("token %s was presented at %s, on %s %s, at or after its expiry %s", digest, record.At.UTC().Format(time.RFC3339Nano), record.Method, record.Route, expiry.UTC().Format(time.RFC3339))
+				break
+			}
+		}
+	}
+	switch {
+	case exit == nil:
+		t.Errorf("the last line dispatch proxy wrote on standard error is %q, want its exit line", exitLine)
+	case trades != len(sessionTokens) || requests != requestsOfSession || renewed != 0:
+		t.Errorf("the exit line %q names %d requests, %d trades and %d after BROKER_TOKEN_NOT_ACTIVE; want %d requests, the recording proxy's of %s from the mark on, %d trades, the distinct tokens that session presented, and 0",
+			exitLine, requests, trades, renewed, requestsOfSession, role.session, len(sessionTokens))
+	}
+	if control.code != 2 || !strings.Contains(control.stderr, "DISPATCH_TOKEN_BROKER") {
+		t.Errorf("dispatch proxy without the setting = %s, want exit 2 naming DISPATCH_TOKEN_BROKER, the cause it cannot start for", control.outcome())
+	}
+	if controlRan {
+		t.Errorf("dispatch proxy without the setting ran its command: %s exists (%v)", marker, markerErr)
+	}
+	if len(controlRecords) != 0 {
+		t.Errorf("the recording proxy holds %d requests from the control's mark, want none: %+v", len(controlRecords), controlRecords)
 	}
 }
 

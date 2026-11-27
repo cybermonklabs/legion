@@ -10,9 +10,20 @@
 # the listed models [prober-model], over three issues of one project, plays each role's pane over
 # the daemon's worker stream and its routes, and writes and reads with the real `dispatch` CLI
 # (packages/envoy-client/bin/dispatch.ts under bun): the owner in its own session, the reader as a
-# person of the project with the personal token Dispatch minted for that person. Each check prints
-# `== <name>`, what it observed and `ok <name>`, or `FAIL <name>`; the first that fails ends the run
-# non-zero, naming it:
+# person of the project with the personal token Dispatch minted for that person. Dispatch's block
+# schema stays at version 6 in this release, which reads plan_role and creates it only from version
+# 8, so what ships is the daemon's read of the roles a stored plan defines: the driver has the
+# owner's write of the role block refused first, then writes creatable_since 6 on the plan_role node
+# of Dispatch's database, which models a store whose manifest creates plan_role at version 6, not a
+# real version-8 build, and proves the daemon reads the stored plan's role and runs it. Each check
+# prints `== <name>`, what it observed and `ok <name>`, or `FAIL <name>`; the first that fails ends
+# the run non-zero, naming it:
+#   - plan-role-refused: `dispatch artifact` of plan.md with the role block on the first issue, as
+#     the owner's session, exits non-zero printing INVALID_MARKDOWN and `this Dispatch build reads
+#     typed block "plan_role" but cannot write it yet`, and POST /api/v1/issues/<KEY>/artifacts of
+#     the same text as a person is answered 400 INVALID_MARKDOWN with those words;
+#   - plan-role-creatable: creatable_since 6 is written on the plan_role supertag node of
+#     Dispatch's database, and GET /api/v1/schema/blocks serves plan_role as a type it creates;
 #   - role-block-stored: `dispatch artifact` writes plan.md on the first issue as the owner's
 #     session, and version 1 read with ?blocks=true lists plan_role prober with type=testing,
 #     model=prober-model and the plan's prompt as its body, and plan_task a;

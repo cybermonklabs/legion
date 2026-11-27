@@ -10,16 +10,33 @@
 // spec named. The second boots it over the rig of an earlier release's store
 // (newEarlierReleaseRig, deployment_roles_test.go), stopped below the migration of the roles a plan
 // defines.
+//
+// Dispatch's block schema stays at version 6 in this release: its manifest reads plan_role from
+// version 6 and creates it only from version 8 (pmdoc/schema/blocks.json), so the release ships
+// the daemon's read of the roles a stored plan defines, and Dispatch refuses a write that adds a
+// role block. Each test that writes one first has that write refused (planRoleRefused: 400
+// INVALID_MARKDOWN saying planRoleRefusal), then writes creatable_since 6 on the plan_role node of
+// Dispatch's store and waits until Dispatch serves plan_role as creatable
+// (makePlanRoleCreatable), and runs its own assertions on that store. This models a store whose
+// manifest creates plan_role at version 6, not a real version-8 build. The refusal's control, run
+// by hand: creatable_since 6 on plan_role in migration
+// 20261125115000_graph_supertags_plan_role.up.sql, the node the server installs its schema from;
+// the upload is then taken 201 and planRoleRefused fails naming that answer.
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -51,6 +68,108 @@ func planWithProber(model string, block bool) string {
 	return ":::plan_role{#prober type=\"testing\" model=\"" + model + "\"}\n" + planProberPrompt + "\n:::\n\n" + text
 }
 
+// planRoleRefusal is what this build's Dispatch says of a write that adds a plan_role block to a
+// document that holds none. Its manifest reads plan_role from block schema version 6 and creates
+// it only from version 8 (pmdoc/schema/blocks.json), so the write is refused
+// (pmdoc.refuseUncreatable), and an upload route answers that refusal 400 INVALID_MARKDOWN
+// (docs.uploadedInput).
+const planRoleRefusal = `this Dispatch build reads typed block "plan_role" but cannot write it yet`
+
+// planRoleCreatableAt is the version from which the store's manifest creates plan_role once
+// makePlanRoleCreatable has written it: this build's own version, 6, where blocks.json says 8.
+const planRoleCreatableAt = 6
+
+// planRoleRefused is a person uploading markdown, which adds a plan_role block, as the document
+// name onto the walk's issue through Dispatch's route (POST /api/v1/issues/{key}/artifacts), as
+// document uploads one, and Dispatch refusing it at this build: 400 INVALID_MARKDOWN saying
+// planRoleRefusal. It answers what Dispatch answered.
+func (r *deploymentRolesRig) planRoleRefused(name, markdown string) string {
+	t := r.t
+	t.Helper()
+	encoded, err := json.Marshal(map[string]string{"name": name, "content": markdown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/issues/" + r.key + "/artifacts"
+	request, err := http.NewRequest(http.MethodPost, r.dispatch.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "step-records")
+	status, answer := r.send(request)
+	var refusal struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if status == http.StatusBadRequest {
+		if err := json.Unmarshal(answer, &refusal); err != nil {
+			t.Fatalf("decode Dispatch's refusal of %s on %s %q: %v", name, r.key, answer, err)
+		}
+	}
+	if status != http.StatusBadRequest || refusal.Code != "INVALID_MARKDOWN" || !strings.Contains(refusal.Error, planRoleRefusal) {
+		t.Fatalf("POST %s of %s, which adds a plan_role block, at this build = %d %s, want 400 INVALID_MARKDOWN saying %q",
+			path, name, status, answer, planRoleRefusal)
+	}
+	return string(answer)
+}
+
+// makePlanRoleCreatable writes creatable_since planRoleCreatableAt on the plan_role supertag node
+// of Dispatch's own store, the node the server builds its block schema from
+// (pmdoc/schemanodes.Read), and waits until GET /api/v1/schema/blocks serves plan_role as a type
+// this build creates. The write fires the store's trigger on the channel dispatch_block_schema
+// (migration 20261109051232), on which the server's installer reads the nodes again
+// (schemanodes.Installer) and installs them at version 6 (pmdoc.Install), where a creatable_since
+// of 6 is one this build creates; no restart and no interval is waited for.
+func (r *deploymentRolesRig) makePlanRoleCreatable() {
+	t := r.t
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, r.dispatch.database)
+	if err != nil {
+		t.Fatalf("connect to Dispatch's database: %v", err)
+	}
+	defer conn.Close(ctx)
+	// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+	tag, err := conn.Exec(ctx, `update graph_nodes set attributes = jsonb_set(attributes, '{creatable_since}', to_jsonb($1::int))
+		where kind = 'supertag' and id = 'plan_role'`, planRoleCreatableAt)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write creatable_since %d on Dispatch's plan_role supertag node: %d rows, %v", planRoleCreatableAt, tag.RowsAffected(), err)
+	}
+	waitRead(r.stepRecordsRig, "plan_role created from version "+fmt.Sprint(planRoleCreatableAt), "Dispatch's served block schema",
+		50*time.Millisecond, func() (servedBlockSchema, error) {
+			var served servedBlockSchema
+			err := r.personRead("/api/v1/schema/blocks", &served)
+			return served, err
+		}, servedBlockSchema.planRoleCreatable)
+}
+
+// servedBlockSchema is what GET /api/v1/schema/blocks answers of the schema Dispatch installed:
+// its version and, of each typed block, its name and from which version a build creates it.
+type servedBlockSchema struct {
+	Version int `json:"version"`
+	Types   []struct {
+		Name           string `json:"name"`
+		CreatableSince int    `json:"creatable_since"`
+	} `json:"types"`
+}
+
+// planRoleCreatable says whether served is a schema that creates plan_role: it declares the type,
+// with a creatable_since (1 where it names none, as pmdoc's normalizeVersions reads it) at or
+// below its version. The error names what it serves.
+func (served servedBlockSchema) planRoleCreatable() error {
+	for _, typ := range served.Types {
+		if typ.Name != "plan_role" {
+			continue
+		}
+		if creatable := max(typ.CreatableSince, 1); creatable > served.Version {
+			return fmt.Errorf("the schema at version %d creates plan_role only from version %d", served.Version, creatable)
+		}
+		return nil
+	}
+	return fmt.Errorf("the schema at version %d declares no plan_role", served.Version)
+}
+
 // The deployment lists prober-model; the owner's plan defines prober (type testing,
 // that model, a prompt) and task a with `implementer prober`. The prober starts after the
 // implementer's step passed, with the plan's prompt between Legion's parts and the plan's model; its
@@ -68,6 +187,9 @@ func TestARoleThePlanDefinesRunsWithItsPromptAndModel(t *testing.T) {
 	runs, otherModel, noBlock := r.issues[0].key, r.issues[1].key, r.issues[2].key
 
 	r.on(runs)
+	r.planRoleRefused("plan.md", planWithProber(planProberModel, true))
+	// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+	r.makePlanRoleCreatable()
 	if status, body := r.registerPlan(r.document("plan.md", planWithProber(planProberModel, true)), 1); status != http.StatusOK {
 		t.Fatalf("register_plan of %s's plan with the role block prober = %d %s, want 200", runs, status, body)
 	}
@@ -118,6 +240,9 @@ func TestARoleOfTheDeploymentListsItsModel(t *testing.T) {
 	}
 
 	r.on(listed)
+	r.planRoleRefused("plan.md", critic(deploymentCheckerModel))
+	// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+	r.makePlanRoleCreatable()
 	addressing := lastLaunch(t, r.rt, r.token(claim.RoleArchitect)).Prompt.Addressing
 	if want := ModelsFragment([]string{deploymentCheckerModel}); !strings.Contains(addressing, want) {
 		t.Errorf("the architect of %s is told %q, want it to hold %q", listed, addressing, want)
@@ -156,6 +281,9 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 	kept, other := r.issues[0].key, r.issues[1].key
 
 	r.on(kept)
+	r.planRoleRefused("plan.md", planWithProber(planProberModel, true))
+	// This models a store whose manifest creates plan_role at version 6, not a real version-8 build.
+	r.makePlanRoleCreatable()
 	if status, body := r.registerPlan(r.document("plan.md", planWithProber(planProberModel, true)), 1); status != http.StatusOK {
 		t.Fatalf("register_plan of %s's plan with the role block prober = %d %s, want 200", kept, status, body)
 	}

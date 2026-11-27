@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 var probeNow = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
@@ -107,7 +110,8 @@ func TestProbeSendsNoBearerWithoutAToken(t *testing.T) {
 
 // Gone: nobody claimed the role, its holder reached the gone horizon, another session holds it, or
 // a listener of an earlier release named no state with its 404 — that listener's lapsed holder is
-// no holder at all.
+// no holder at all. Which 404 bodies read as gone and which do not is
+// TestA404IsGoneOnlyWhenItsBodyIsTheListenersRoleRefusal's.
 func TestProbeIsGone(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -119,7 +123,6 @@ func TestProbeIsGone(t *testing.T) {
 			wantLogs: []string{"unclaimed"}},
 		{name: "the holder is gone", status: http.StatusNotFound, body: lapsed("gone"), wantLogs: []string{"holder_lapsed", "gone"}},
 		{name: "an older listener names no state", status: http.StatusNotFound, body: `{"error":"no live holder for role legion-demo-controller"}`},
-		{name: "a 404 whose body is not JSON", status: http.StatusNotFound, body: "<html>"},
 		{name: "another session holds the role", status: http.StatusOK, body: holder("ses_other", probeNow),
 			wantLogs: []string{"ses_other", "ses_ctl"}},
 	} {
@@ -134,6 +137,45 @@ func TestProbeIsGone(t *testing.T) {
 				if !strings.Contains(log.String(), want) {
 					t.Errorf("log %q does not name %q", log.String(), want)
 				}
+			}
+		})
+	}
+}
+
+// A 404 reads as gone only where its body is the Envoy listener's own role refusal
+// (listenerwire.RoleRefusal, a JSON object with a non-empty error) naming no unresponsive holder
+// (dispatch://INFRA-2045 R5). A 404 of anything else — a proxy's page, an empty body, JSON of
+// another shape — says nothing of the role and reads as unknown, which is never a death verdict,
+// and its line says the body was not the listener's refusal. An earlier listener's refusal, an
+// error and no reason, is still the listener's own word, and reads as gone. The control: on main,
+// whose probe ignored the decode's error, the proxy's page, the empty body and the other JSON each
+// read gone.
+func TestA404IsGoneOnlyWhenItsBodyIsTheListenersRoleRefusal(t *testing.T) {
+	const notRefusal = "is not its role refusal"
+	for _, tc := range []struct {
+		name, body string
+		want       Liveness
+		wantLog    string
+	}{
+		{name: "the listener's refusal of a role nobody claimed", want: Gone, wantLog: "the controller is gone",
+			body: `{"error":"no holder for role legion-demo-controller","reason":"unclaimed","claim_revision":0}`},
+		{name: "the listener's refusal naming a gone holder", body: lapsed("gone"), want: Gone, wantLog: "the controller is gone"},
+		{name: "the listener's refusal naming an unresponsive holder", body: lapsed("unresponsive"), want: Unknown, wantLog: "unresponsive, not gone"},
+		{name: "a proxy's HTML page", body: "<html><body><h1>404 Not Found</h1></body></html>", want: Unknown, wantLog: notRefusal},
+		{name: "an empty body", body: "", want: Unknown, wantLog: notRefusal},
+		{name: "JSON of another shape", body: `{"status":404,"message":"route not found"}`, want: Unknown, wantLog: notRefusal},
+		{name: "an earlier listener's refusal, an error and no reason", body: `{"error":"no live holder for role legion-demo-controller"}`,
+			want: Gone, wantLog: "the controller is gone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var log bytes.Buffer
+			l := &listener{status: http.StatusNotFound, body: tc.body}
+			url := l.serve(t)
+			if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != tc.want {
+				t.Fatalf("Probe of a 404 with body %q = %s, want %s; log %s", tc.body, got, tc.want, log.String())
+			}
+			if !strings.Contains(log.String(), tc.wantLog) {
+				t.Errorf("log %q does not say %q", log.String(), tc.wantLog)
 			}
 		})
 	}
@@ -198,9 +240,8 @@ func TestProbeIsUnknown(t *testing.T) {
 	}
 	t.Run("the listener is unreachable", func(t *testing.T) {
 		var log bytes.Buffer
-		server := httptest.NewServer(http.NotFoundHandler())
-		url := server.URL
-		server.Close()
+		// A port the test holds and nothing listens on: every dial to it is refused.
+		url := "http://" + testport.Refused(t)
 		if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 			t.Fatalf("Probe = %s, want unknown", got)
 		}
@@ -208,4 +249,126 @@ func TestProbeIsUnknown(t *testing.T) {
 			t.Errorf("log %q does not say the listener was unreachable", log.String())
 		}
 	})
+}
+
+// Every line the probe logs names the lookup without envoy_url's userinfo, where a deployment
+// writes the listener's credential: a made-up token written as the user, and a made-up password
+// holding a "'", which a text rule stops reading at. The lookup is named as redact.URL shows such a
+// URL, its scheme and the mark of a URL with credentials, then its path; the unreachable one also
+// logs the HTTP client's error, without its quote of the URL. The probe requests the lookup without
+// the userinfo and sends it as Basic auth, as the HTTP client sends a URL's own, when no bearer
+// token is configured. A password holding an "@" and no host after it (`http://u:p@<tail>`) sends
+// the lookup to its tail, which neither the url field nor the resolver's error names.
+func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
+	const userToken, quotedUserinfo = "madeUpEnvoyToken0123", "legion:madeUpEnvoy'Password0123"
+	withUser := func(base, user string) string { return strings.Replace(base, "://", "://"+user+"@", 1) }
+	l := &listener{status: http.StatusInternalServerError, body: `{"error":"kv"}`}
+	served := l.serve(t)
+	unreached := httptest.NewServer(http.NotFoundHandler())
+	gone := unreached.URL
+	unreached.Close()
+	for name, base := range map[string]string{"refused": served, "unreachable": gone} {
+		for _, user := range []string{userToken, quotedUserinfo} {
+			var log bytes.Buffer
+			if got := newTestProber(withUser(base, user), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+				t.Fatalf("%s: Probe = %s, want unknown", name, got)
+			}
+			if !strings.Contains(log.String(), `url="http://[a URL with credentials]/v1/roles/`) {
+				t.Errorf("%s: the log %q does not name the lookup by the mark of a URL with credentials", name, log.String())
+			}
+			// Both made-up credentials begin with this, so it catches either.
+			if strings.Contains(log.String(), "madeUpEnvoy") {
+				t.Errorf("%s: the log names the credential: %s", name, log.String())
+			}
+		}
+	}
+	var tailLog bytes.Buffer
+	tailURL := "http://legion:p" + "@madeUpEnvoyTail0123.invalid"
+	if got := newTestProber(tailURL, "envoy-bearer", &tailLog).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("a password holding an @: Probe = %s, want unknown", got)
+	}
+	if strings.Contains(tailLog.String(), "madeUpEnvoyTail") || !strings.Contains(tailLog.String(), "unreachable") {
+		t.Errorf("a password holding an @: the log %q names the password's tail, or not the unreachable listener", tailLog.String())
+	}
+	// A tail that is not ASCII is dialed by its ASCII form (`xn--…`, its ASCII letters kept and
+	// lower-cased), which the resolver's error names: the error is not printed.
+	var asciiLog bytes.Buffer
+	asciiURL := "http://legion:p" + "@sswmadeuptail0123\u00f6rd.invalid"
+	if got := newTestProber(asciiURL, "envoy-bearer", &asciiLog).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("a password holding an @ and a tail that is not ASCII: Probe = %s, want unknown", got)
+	}
+	if lower := strings.ToLower(asciiLog.String()); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+		t.Errorf("a password holding an @ and a tail that is not ASCII: the log %q names the password's tail", asciiLog.String())
+	}
+	// A password whose part after its "@" ends in ":<digits>" leaves them where the port goes, and
+	// the dialer's refusal of an out-of-range port quotes them: the error is not printed.
+	var portLog bytes.Buffer
+	portURL := "http://legion:p" + "@madeuptail0123.invalid:98765432"
+	if got := newTestProber(portURL, "envoy-bearer", &portLog).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("a password ending in digits read as the port: Probe = %s, want unknown", got)
+	}
+	if strings.Contains(portLog.String(), "98765432") || strings.Contains(portLog.String(), "madeuptail") {
+		t.Errorf("a password ending in digits read as the port: the log %q names part of the password", portLog.String())
+	}
+	var log bytes.Buffer
+	newTestProber(withUser(served, quotedUserinfo), "", &log).Probe(context.Background(), "ses_ctl")
+	if user, password, ok := (&http.Request{Header: http.Header{"Authorization": {l.bearer}}}).BasicAuth(); !ok || user+":"+password != quotedUserinfo {
+		t.Errorf("with no bearer token the lookup carried Authorization %q, want envoy_url's userinfo as Basic auth", l.bearer)
+	}
+}
+
+// An envoy_url with userinfo whose host resolves and whose port is closed: the dial's error names
+// the resolved address and the port (`dial tcp 127.0.0.1:<port>: connect: connection refused`), and
+// the port can be a password's digits, so the line writes it as the mark, as it writes the host.
+// The password is made up.
+func TestProbeLogsNoPortOfAnEnvoyURLWithUserinfo(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	envoyURL := "http://legion:" + "madeuphead0123" + "@127.0.0.1:" + port
+	if got := newTestProber(envoyURL, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("Probe = %s, want unknown", got)
+	}
+	if !strings.Contains(log.String(), "connect: connection refused") {
+		t.Fatalf("the log %q holds no refused dial", log.String())
+	}
+	for _, part := range []string{":" + port, "madeuphead"} {
+		if strings.Contains(log.String(), part) {
+			t.Errorf("the log %q holds %q", log.String(), part)
+		}
+	}
+}
+
+// The probe follows no redirect: its lookup carries the credential in an explicit Authorization
+// header, which Go's client copies to a redirect's target on the same host, so a listener that
+// redirected would hand the credential to another path. A redirect is an answer the probe reads as
+// Unknown, and the target is never asked. The control is a client that follows redirects, which
+// asks the target with the bearer.
+func TestProbeFollowsNoRedirect(t *testing.T) {
+	var targeted, bearer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			targeted, bearer = r.URL.Path, r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	var log bytes.Buffer
+	if got := newTestProber(server.URL, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("Probe = %s, want unknown", got)
+	}
+	if targeted != "" || bearer != "" {
+		t.Fatalf("the probe followed the redirect to %q with Authorization %q", targeted, bearer)
+	}
+	if !strings.Contains(log.String(), "status=302") || !strings.Contains(log.String(), "answered the controller role lookup with a redirect, which the probe does not follow") {
+		t.Errorf("the log %q does not name the redirect, not followed, and its status", log.String())
+	}
 }

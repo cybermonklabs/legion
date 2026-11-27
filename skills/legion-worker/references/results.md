@@ -23,9 +23,29 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   The negative control shows it failing on a deliberately wrong input.
   A documented procedure counts only when it ran: reading it is not a run.
 
-- A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
-  So after a push, record each `before_merge` check with no `ci_check` again.
+- A `before_merge` result stands at a compared open or merged head in that result's repository.
+  The check needs a standing pass at every open head, across all its repositories.
+  When none is open, only the final head of the last pull request to merge is required.
+  An unordered merged set leaves the check not known.
+  A result stands while no part of the check's block has changed.
+  A pass and a fail at one required head read not known until one of them is retracted.
+  Results at a head that is not required do not decide the check.
+  After a push, record each `before_merge` check with no `ci_check` again at the new head.
   Run it again only when the change since its pass can affect what it drives; otherwise record its earlier pass at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`.
+
+- An `after_merge` result counts only at a commit on the branch the issue's pull request merged into, or on the default branch.
+  That commit must also be the merge of the work on that branch, or have it in its history.
+  The merge of the work is the commit that brought the issue's pull request that merged last into that branch.
+  Where work merged into an integration branch, the default branch uses that branch's newest recorded landing whose final head holds the work's merge.
+  The newest counting result chooses the commit whose verdicts decide the check.
+  A pass and a fail at that commit leave the check not known until one is retracted.
+
+## Where a check runs
+
+Every role writes the one workspace, so a file can change under your check.
+Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
+A run whose output you did not capture can be neither confirmed nor cleared.
 
 ## The rules every phase's evidence follows
 

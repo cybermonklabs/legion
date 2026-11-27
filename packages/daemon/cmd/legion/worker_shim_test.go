@@ -489,7 +489,7 @@ ticks=0
 while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
 exit 9
 `
-			command := exec.Command(os.Args[0], "worker-shim",
+			command := exec.Command(legionCopy(t), "worker-shim",
 				"--connect", "unix://"+socket, "--boot-token-file", token,
 				"--", "sh", "-c", agent, "sh", record, running)
 			command.Env = append(os.Environ(), testMainEnv+"=1")
@@ -566,13 +566,13 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 			name:   "the agent's extension_error, summarized on the pane",
 			args:   []string{"--connect", "unix://" + socket, "--boot-token-file", token, "--", "sh", "-c", `printf '%s\n' "$0"; exit 7`, failed},
 			daemon: true, code: 7,
-			shown: "fetch https://daemon.example/legion/v1/claims failed", planted: "planted-query-token-1",
+			shown: "fetch https://[a URL with credentials]/legion/v1/claims failed", planted: "planted-query-token-1",
 		},
 		{
 			name:  "a --connect the shim refuses",
 			args:  []string{"--connect", "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2", "--boot-token-file", token, "--", "true"},
 			code:  1,
-			shown: `got "tcp://127.0.0.1:1/"`, planted: "planted-query-token-2",
+			shown: `got "tcp://[a URL with credentials]/"`, planted: "planted-query-token-2",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

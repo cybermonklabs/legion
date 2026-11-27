@@ -34,7 +34,8 @@ func TestWorkerBackendsTakesARoleOfTheDeployment(t *testing.T) {
 // The check across keys runs once every key it judges is set, so a name no role holds is refused
 // through the daemon's load and through the check's load alike, with a list that names the roles
 // of the deployment beside Legion's; a name outside the role grammar is refused when the key is
-// read, before any other key is.
+// read, before any other key is, and one with no key's shape, such as one holding an upper-case
+// letter, is named by its line alone (unknownKeyAt).
 func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	want := `worker_backends names "ghost", which is not an issue role (architect, planner, implementer, tester, reviewer, merger, checker)`
 	path := rolesFile(t, checkerRole+"worker_backends: {ghost: omp}\n", "checker.md")
@@ -45,7 +46,8 @@ func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	}
 
 	_, err := Load(rolesFile(t, "worker_backends: {Checker: omp}\n"), noEnv)
-	want = `worker_backends names "Checker", which is not an issue role (architect, planner, implementer, tester, reviewer, merger)`
+	want = "unknown key at line 18 under worker_backends, whose name has no key's shape (" + keyShapeWords +
+		"): it must be an issue role (architect, planner, implementer, tester, reviewer, merger)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load of a name outside the grammar = %v, want %q", err, want)
 	}
@@ -78,7 +80,8 @@ func TestTheRoleKeyedSettingsTakeARoleOfTheDeployment(t *testing.T) {
 		{"a backstop of a name no role holds", checkerRole + "worker_stall_backstop_hours: {ghost: 2}\n",
 			`worker_stall_backstop_hours names "ghost", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, controller, checker)`},
 		{"overlays of a name outside the grammar", checkerRole + "role_config_files: {Checker: [/etc/x.yml]}\n",
-			`role_config_files names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, controller)`},
+			"unknown key at line 19 under role_config_files, whose name has no key's shape (" + keyShapeWords +
+				"): it must be a Legion role (architect, planner, implementer, tester, reviewer, merger, controller)"},
 		{"overlays of a role on Claude Code", checkerRole + "worker_backends: {checker: claude}\nrole_config_files: {checker: [/etc/x.yml]}\n",
 			"role_config_files.checker names Oh My Pi overlays, and worker_backends.checker is claude, which reads none: drop the role from one of the two"},
 		{"a backstop below the role's own ladder", checkerRole + "worker_stall_backstop_hours: {checker: 1}\n",

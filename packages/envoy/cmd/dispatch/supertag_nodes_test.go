@@ -79,9 +79,9 @@ var unreleasedVersionsBelowTheBackfill = []int{
 	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
 	20261116085957, 20261116232217, 20261117025900, 20261117025901, 20261117025902, 20261117025903,
 	20261117025904, 20261117025905, 20261117025906, 20261117025907, 20261117025908, 20261117025909,
-	20261117025910, 20261118161237, 20261118181230, 20261119020700, 20261119020800, 20261119020900,
-	20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130, 20261120204136,
-	20261121043859,
+	20261117025910, 20261117100008, 20261117100010, 20261117100015, 20261117100016, 20261118161237,
+	20261118181230, 20261119020700, 20261119020800, 20261119020900, 20261119021000, 20261120020130,
+	20261120023712, 20261120131444, 20261120150130, 20261120204136, 20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -191,6 +191,67 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	putVersionsBack(t, ctx, pool, held)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("apply the migrations after %d over the backfilled store: %v", backfillVersion, err)
+	}
+
+	file := readBlockSchemaFile(t)
+	drift := &schemaDrift{}
+	requireClosedSupertagList(t, ctx, pool)
+	requireAttributeNodesMatchTheFile(t, ctx, pool, file, drift)
+	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
+	drift.report(t)
+	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
+	if after := backfilledRows(t, ctx, pool); !slices.Equal(backfilled, after) {
+		t.Errorf("the migrations after %d moved what the backfill wrote\nbefore: %v\nafter:  %v", backfillVersion, backfilled, after)
+	}
+}
+
+// planRoleTypeMigration and checkSubjectTypeMigration are two type migrations written after the
+// backfill whose order a store does not fix: 20261125115000_graph_supertags_plan_role sorts below
+// 20261125125701_graph_supertags_check_subject, so a store that holds neither runs it first, and a
+// store of legion-envoy-v35.18.0 or later, which holds 20261125125701, runs it after, since the
+// runner applies every version it has not recorded, whatever its number.
+const (
+	planRoleTypeMigration     = 20261125115000
+	checkSubjectTypeMigration = 20261125125701
+)
+
+// TestThePlanRoleTypeMigrationAfterTheCheckSubjectOneLeavesTheFilesSchema runs
+// 20261125115000_graph_supertags_plan_role over a backfilled store that has applied every other
+// migration, 20261125125701_graph_supertags_check_subject among them: the store of
+// legion-envoy-v35.18.0 or later, which meets the two in that order.
+// TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs them in the other
+// order, a store's that holds neither. The census of the one pending migration, at the one-byte
+// limit (censusLimit), must admit it for bounded writes of graph_nodes and graph_tuples, and the
+// store must then build the file's schema and keep what the backfill wrote, as in that test. The
+// control is the 20261125115000 an earlier commit of this branch wrote, which moved every block
+// type to version 10 and check to position 5 and put plan_role at position 4: run last, it leaves
+// the store at a version and in an order the file does not give, and this test fails.
+func TestThePlanRoleTypeMigrationAfterTheCheckSubjectOneLeavesTheFilesSchema(t *testing.T) {
+	t.Parallel()
+	database := openAtTheBackfill(t)
+	ctx := context.Background()
+	pool := database.Pool
+
+	writeRowsBeforeTheStore(t, ctx, pool)
+	runTheBackfill(t, ctx, database)
+	backfilled := backfilledRows(t, ctx, pool)
+	// A version row with no name stands in for the plan-role migration, so the runner passes over
+	// it and applies every other migration, as the releases before it did; the runner fills the
+	// row's name and refuses nothing (pgmigrate.Reconcile).
+	if _, err := pool.Exec(ctx, `insert into schema_migrations (version) values ($1)`, planRoleTypeMigration); err != nil {
+		t.Fatalf("record %d before it runs: %v", planRoleTypeMigration, err)
+	}
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("apply the migrations after %d but %d over the backfilled store: %v", backfillVersion, planRoleTypeMigration, err)
+	}
+	var applied bool
+	if err := pool.QueryRow(ctx, `select exists (select 1 from schema_migrations where version = $1)`, checkSubjectTypeMigration).Scan(&applied); err != nil || !applied {
+		t.Fatalf("the store records %d: %t, %v; want it applied before %d runs", checkSubjectTypeMigration, applied, err, planRoleTypeMigration)
+	}
+	forgetVersions(t, ctx, pool, []int{planRoleTypeMigration})
+	requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("apply %d after %d over the backfilled store: %v", planRoleTypeMigration, checkSubjectTypeMigration, err)
 	}
 
 	file := readBlockSchemaFile(t)

@@ -801,9 +801,11 @@ The token the exchange mints for that identity names it as its service and no pe
 records a daemon's or a workflow's write under its session and its own account, and under no
 person. The token holds no OAuth scope, so a route that needs one refuses it with
 `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A token whose entry names one
-project writes that project, and the project check judges its write to another project as it
-judges a person's `named` token's for the same project: `403 PROJECT_SCOPE` until
-dispatch://INFRA-4799 changes that answer for both. A token whose entry names
+project writes that project. The project check judges its write to another project as it judges
+a person's `named` token's for the same project: it writes another project's objects as a token
+that names no project does, and an object of a private project that the entry does not name gets
+the answer of an object that does not exist. A write that belongs to the deployment, such as a
+project create, is refused `403 PROJECT_SCOPE_DEPLOYMENT`. A token whose entry names
 `public` writes wherever a token that names no project may, and its list limits no write at
 this release. A GitHub Actions job trades its run's token with
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`
@@ -1184,11 +1186,33 @@ provider_keys:
   every pane carries and a key whose `_FILE` pointer every pane carries.
   The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
   `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
+  The variable must be upper case (upper-case letters, digits and underscores, not starting with
+  a digit), as every provider's variable is: one with a lowercase letter refuses the load as
+  `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment
+  variable name …`, so rename it, and the `models.yml` or overlay that reads it, to upper case.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
   `dispatch_url`. A project with no GitHub owner to mint for runs it with gh acting as nobody, its
   gh directory empty.
+- **The daemon replaces its own controller's session** under `controller: daemon`, under either
+  runtime. After two launches of one session in a row end before the session finishes a turn — a
+  death the daemon charges, before or after ready, or a turn the daemon ended — the next launch
+  starts a fresh session. `controller_turn_bound_minutes` (90 by default, `0` off) is how long a
+  controller turn may stay open, steps or none, before the daemon ends that launch and counts the
+  end. `controller_session_max_age_hours` (72 by default, `0` off) is how old the session, read
+  from its id, may grow before a launch the daemon makes of it starts a fresh session instead of
+  resuming it: every launch of the controller that no operator's request raised, a death's, a
+  launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past
+  its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among
+  them. The daemon stops no live controller for its age, and an operator's own resume, or a task
+  an operator delivers to a suspended controller, keeps the session. Each replacement writes one
+  Warn line naming the claim, the old session and the reason, and the fresh session's ready one
+  line naming both sessions; the fresh session's first
+  prompt names the old session and the reason and says that messages sent to the old session may
+  be lost. The old session's transcript stays in the session store. A session that never finished
+  a turn, the controller's first or a fresh one, is not replaced: the keeper retries it with its
+  waits, and one Error line says so and names, as `oldSession`, the session a fresh one replaced.
 
 ## How workspaces are provisioned on the host
 

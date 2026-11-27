@@ -32,7 +32,16 @@ import (
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
 // — its argv, its signal handling, its exit status — so a test can run a command as its own
 // process; workspace-init's tests run several contending for one tree volume, the way two pods'
-// init containers do.
+// init containers do. Only TestMain makes `legion` of a copy a test starts: in a build of these
+// tests without it, such a copy runs the tests, each of which starts copies that run them again.
+// Every copy is started from legionCopy, which refuses to start one in such a process
+// (legionCopyRefusal), and TestACopyStartedAsLegionRunsAsLegion fails in such a build by name.
+// Three tests set testMainEnv=1 in their own process:
+// TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound and
+// TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries, through pushVisibilityReadEnv, and
+// TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential. The `gh` wrapper they put
+// first on PATH must be exactly the script `legion gh` accepts (isGhWrapper), so it cannot set the
+// variable for the copy, which inherits it from the test. Each starts its copies before it sets it.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
@@ -140,6 +149,56 @@ func TestMain(m *testing.M) {
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
 	os.Exit(testpg.Main("legion_cmd_test", func() int { return runWithoutTheOperatorsJJConfig(m) }))
+}
+
+// legionCopy is the path of this test binary, which a test runs as `legion` with testMainEnv=1 in
+// the copy's environment. It fails t where legionCopyRefusal refuses.
+func legionCopy(t testing.TB) string {
+	t.Helper()
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// legionCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has testMainEnv=1 was started as `legion`, and TestMain runs such a process as
+// `legion`, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again. The one other way a test process holds it is a test that set it and
+// then started a copy, which the message names too.
+func legionCopyRefusal() error {
+	if os.Getenv(testMainEnv) == "1" {
+		return fmt.Errorf("this process has %s=1: a test started it as legion, but it runs the tests, so this build of the tests has no TestMain that runs legion and a copy started here would run the tests again; or a test set %s=1 in its own process and then started a copy, which it must start before", testMainEnv, testMainEnv)
+	}
+	return nil
+}
+
+// A copy started with testMainEnv=1 runs as legion: on -h it prints legion's help. In a build
+// without TestMain, the testing package reads -h before any test runs, prints its own flag usage
+// and exits, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(legionCopy(t), "-h")
+	cmd.Env = append(os.Environ(), testMainEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if want := newRoot(io.Discard, io.Discard, processWorkspace()).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
+	}
+}
+
+// legionCopyRefusal, which legionCopy asks before any copy starts, refuses a process that has
+// testMainEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
+	fixtureenv.Unset(t, testMainEnv)
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", testMainEnv, err)
+	}
+	t.Setenv(testMainEnv, "1")
+	if err := legionCopyRefusal(); err == nil || !strings.Contains(err.Error(), testMainEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", testMainEnv, err)
+	}
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
@@ -427,7 +486,7 @@ func heldSocket(t *testing.T) (*os.File, int) {
 // and stderr once it exits. The test's copy of descriptor is closed once the process has started.
 func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, string) {
 	t.Helper()
-	command := exec.Command(os.Args[0], "start", "--config", config)
+	command := exec.Command(legionCopy(t), "start", "--config", config)
 	command.Env = append(os.Environ(), testMainEnv+"=1", "LEGION_LISTEN_FD=3")
 	command.ExtraFiles = []*os.File{descriptor}
 	var stderr bytes.Buffer
@@ -562,7 +621,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}
@@ -1193,7 +1252,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	}{
 		{"a missing operator token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "operator-token")) },
 			func(dir string) string {
-				return "legion config check: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
+				return "legion config check: operator_token_file names a file that could not be read: it does not exist\n"
 			}},
 		{"no operator token file", "", func(t *testing.T, dir string) {
 			rewrite(t, filepath.Join(dir, "legion.yaml"), "operator_token_file: ./operator-token\n", "")
@@ -1203,7 +1262,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			}},
 		{"a missing Dispatch token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "dispatch-token")) },
 			func(dir string) string {
-				return "legion config check: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
+				return "legion config check: dispatch_token_file names a file that could not be read: it does not exist\n"
 			}},
 		{"a missing instructions file", "instructions: ./instructions.md\n", func(*testing.T, string) {},
 			func(dir string) string {
@@ -1232,7 +1291,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
 		},
 			func(string) string {
-				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
+				return "legion config check: connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN\n"
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1317,10 +1376,14 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 		mode     os.FileMode
 		refusal  func(path string) string
 	}{
-		{"a missing Envoy token file", envoyKey, "", 0, func(path string) string { return "envoy_token_file names " + path + ", which could not be read: " }},
+		{"a missing Envoy token file", envoyKey, "", 0, func(string) string {
+			return "envoy_token_file names a file that could not be read: it does not exist\n"
+		}},
 		{"a blank Envoy token file", envoyKey, " \n", 0o600, func(path string) string { return "envoy_token_file names " + path + ", which is empty\n" }},
 		{"an Envoy token file", envoyKey, "envoy-token\n", 0o600, nil},
-		{"a missing seed file", seedKey, "", 0, func(path string) string { return "nats_nkey_seed_file names " + path + ", which could not be read: " }},
+		{"a missing seed file", seedKey, "", 0, func(string) string {
+			return "nats_nkey_seed_file names a file that could not be read: it does not exist\n"
+		}},
 		{"a seed file others can read", seedKey, seed + "\n", 0o644, func(path string) string {
 			return "nats_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
 		}},
@@ -1385,8 +1448,8 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 		mode     os.FileMode
 		refusal  func(path string) string
 	}{
-		{"a missing file", "", 0, func(path string) string {
-			return "nats_daemon_nkey_seed_file names " + path + ", which could not be read: "
+		{"a missing file", "", 0, func(string) string {
+			return "nats_daemon_nkey_seed_file names a file that could not be read: it does not exist\n"
 		}},
 		{"a file others can read", daemonSeed + "\n", 0o644, func(path string) string {
 			return "nats_daemon_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
@@ -1572,14 +1635,47 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
+// `legion config check` names the ServiceAccount the controller's pod runs as when the file names
+// runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
+// namespace's default where service_account is unset — and, while the repository cache's bucket is
+// set, the one a repository cache's pod runs as, just before the repository cache's line, and exits
+// 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as
+// runtime.kubernetes.pod.service_account.
+func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
+	legionState(t)
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"beside the pods' own account", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
+		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+		{"beside the pods' own account and the cache's", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-cache}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod but a repository cache's runs as legion-worker (runtime.kubernetes.pod.service_account); a repository cache's pod runs as legion-cache (runtime.kubernetes.repository_cache.service_account)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			if want := demoCheckConfigOK + secretsGap + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
 // `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
 // test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
 // the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own
 // trade reads set (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY,
 // AGENT_SECRETS_MACHINE_TOKEN_FILE), a file with the setting and no dispatch_token_file prints
 // Config OK and exits 0. The check reads a dispatch_token_transition_file as it reads
-// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
-// control is the same file with dispatch_token_file added, refused naming both keys.
+// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key and
+// why, never the file's path. The control is the same file with dispatch_token_file added,
+// refused naming both keys.
 func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState, fixtureenv.Unset).
 	legionState(t)
@@ -1596,8 +1692,8 @@ func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 	}{
 		{"the setting alone", broker, false, passes},
 		{"the setting with a transition file the check reads", transition, true, passes},
-		{"the setting with a transition file the check cannot read", transition, false, func(dir string) (int, string, string) {
-			return 1, "", "legion config check: dispatch_token_transition_file names " + filepath.Join(dir, "transition-token") + ", which could not be read: "
+		{"the setting with a transition file the check cannot read", transition, false, func(string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_transition_file names a file that could not be read: it does not exist\n"
 		}},
 		{"the setting beside dispatch_token_file", "dispatch_token_file: ./dispatch-token\n" + broker, false, func(string) (int, string, string) {
 			return 1, "", "legion config check: dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both\n"
@@ -1650,10 +1746,12 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 
 // `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
-// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
-// worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install: Legion's phase workers in claim.Roles'
-// order, the order of the default steps, then each role of the deployment in the file's order.
+// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). A source in URL form is
+// printed as the state shows it: a made-up user name, password and signature in a private
+// tarball URL's userinfo and query are not. When worker_backends runs any role on Claude Code, the
+// line gains one sentence naming those roles, whose plugin is the worker image's and never an
+// install: Legion's phase workers in claim.Roles' order, the order of the default steps, then each
+// role of the deployment in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
@@ -1661,9 +1759,14 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
 	const checkerRole = "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
+	// Built from its parts, so that no source line holds a URL with a password.
+	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
+	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
 	for _, tc := range []struct{ name, extra, legion, envoy, roles, want string }{
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "", "",
+			"plugins: @sjawhar/pi-legion https://[a URL with credentials]/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1", "",
@@ -1876,6 +1979,54 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// `legion stop` prints the loader's refusal as `legion start` does (printRefusal): a URL pasted
+// where a key goes, made-up user name and password in its userinfo, is refused as an unknown key
+// by its line alone, since a name of no key's shape is no typo of a key. A password holding a "'",
+// which ends a URL for the URL rule, is the case no rule on the text could cut.
+func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	for name, credential := range map[string]string{
+		"a password and a user name":        "madeUpStopUser0123:madeUpStopPassword0123",
+		"a password holding a single quote": "madeUpStopUser0123:madeUpStop'Password0123",
+	} {
+		t.Run(name, func(t *testing.T) {
+			legionState(t)
+			config, _ := workflowConfig(t, 13370, "\"https://"+credential+"@cache.example\": 1\n")
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
+			if want := "legion stop: unknown key at line "; code != 1 || !strings.HasPrefix(errb.String(), want) ||
+				!strings.HasSuffix(errb.String(), ", whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit)\n") {
+				t.Fatalf("legion stop = %d, stderr %q, want 1 and the unknown key named by its line", code, errb.String())
+			}
+			for i := 0; i+10 <= len(credential); i++ {
+				if strings.Contains(errb.String(), credential[i:i+10]) {
+					t.Fatalf("stderr %q holds %q of the URL's userinfo", errb.String(), credential[i:i+10])
+				}
+			}
+		})
+	}
+}
+
+// The operator's commands print the loader's refusal of `--config` as `legion start` does
+// (printRefusal), and a URL pasted where a key goes, a made-up user name and password in its
+// userinfo, is named by its line alone: `legion state --config` here.
+func TestOperatorCommandsPrintTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	const credential = "madeUpStateUser0123:madeUpStatePassword0123"
+	legionState(t)
+	config, _ := workflowConfig(t, 13370, "\"https://"+credential+"@cache.example\": 1\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "state", "--config", config}, &out, &errb)
+	if want := "legion state: unknown key at line "; code != 1 || !strings.HasPrefix(errb.String(), want) {
+		t.Fatalf("legion state = %d, stderr %q, want 1 and the unknown key named by its line", code, errb.String())
+	}
+	for i := 0; i+10 <= len(credential); i++ {
+		if strings.Contains(errb.String(), credential[i:i+10]) {
+			t.Fatalf("stderr %q holds %q of the URL's userinfo", errb.String(), credential[i:i+10])
+		}
 	}
 }
 
@@ -2375,16 +2526,16 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // daemon does not build, and every root at all against a daemon below contract 58, which
 // serves no place. 0 is the true answer for a caller that cannot see the line.
 //
-// The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
-// the copy of those lines committed beside this package. It is read there and never in the guide
-// itself: a test that reads the guide puts the guide in this job's filter — a declared read
-// applies to every compiled source file of a run — and a documentation edit would then start the
-// whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
-// TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
-// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
-// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
-// out of the source that declares it. (INFRA-1100.)
+// The operator's guide prints this line as its sample, with the `P0:` line under `admission:`, and
+// says what the count is, so the sample is built here from the state the guide describes and read
+// back out of awaiting_summary_extract.txt, the copy of those lines committed beside this package.
+// It is read there and never in the guide itself: a test that reads the guide puts the guide in
+// this job's filter — a declared read applies to every compiled source file of a run — and a
+// documentation edit would then start the whole daemon Go lane. What holds the copy to the guide
+// is internal/textcheck's TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job
+// whose subject is a file's words (INFRA-1413). That the guide also names the words of the wait
+// itself is one rule held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand,
+// which reads each out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	t.Parallel()
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
@@ -2436,6 +2587,15 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	if !strings.Contains(quoted, sample) {
 		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for a "+
 			"state with one unanswered root", extract, sample)
+	}
+	// The `P0:` line the sample prints under `admission:` for the same state: three issues hold a
+	// slot under a cap of 4, none of them P0, and no P0 bound stands in legion.yaml or was set
+	// while the daemon runs.
+	p0Line := p0AdmissionLine(api.Admission{Cap: 4, Active: []string{"WIDGETS-11", "WIDGETS-12", "WIDGETS-13"},
+		P0Holders: new(0), P0Bound: &api.P0BoundView{}})
+	if !strings.Contains(quoted, p0Line) {
+		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for three "+
+			"holders of a slot, none of them P0, and no P0 bound", extract, p0Line)
 	}
 }
 
@@ -2635,6 +2795,151 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "experiments: none") {
 		t.Fatalf("legion state printed %q, want no `experiments: none`: the block declares an experiment", out.String())
+	}
+}
+
+// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo
+// (redact.URL), a made-up password holding a "'" included, in its first line when the daemon
+// answers and in its refusal when the daemon cannot be reached.
+func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
+	const credential = "madeUpStateUser0123:madeUpState'Password0123"
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	holdsNone := func(t *testing.T, text string) {
+		t.Helper()
+		for i := 0; i+10 <= len(credential); i++ {
+			if strings.Contains(text, credential[i:i+10]) {
+				t.Fatalf("legion state printed %q, which holds %q of LEGION_DAEMON_URL's userinfo", text, credential[i:i+10])
+			}
+		}
+	}
+	for name, tc := range map[string]struct {
+		url, want string
+		code      int
+	}{
+		"a daemon that answers":         {server.URL, "legion LEGION on http://[a URL with credentials] — ", 0},
+		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://[a URL with credentials]/legion/v1/state: ", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", strings.Replace(tc.url, "http://", "http://"+credential+"@", 1))
+			t.Setenv("LEGION_ISSUE", "")
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
+			if code != tc.code || !strings.Contains(out.String()+errb.String(), tc.want) {
+				t.Fatalf("legion state = %d, stdout %q, stderr %q; want %d and %q", code, out.String(), errb.String(), tc.code, tc.want)
+			}
+			holdsNone(t, out.String()+errb.String())
+		})
+	}
+}
+
+// A LEGION_DAEMON_URL whose password holds a "/" parses as a host with a port that is the
+// password's head, which url.Parse's error quotes (`invalid port ":<head>"`): `legion state` refuses
+// it in plain words, and `legion claims list`, an operator command, names an unreachable daemon
+// through redact.URL, holding no part of a made-up token written as the user.
+func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
+	t.Run("an address that does not parse", func(t *testing.T) {
+		const head = "madeUpStateHead0123"
+		t.Chdir(t.TempDir())
+		t.Setenv("LEGION_DAEMON_URL", "http://legion:"+head+"/tail@127.0.0.1:1")
+		t.Setenv("LEGION_ISSUE", "")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
+		if want := "legion state: read the daemon: its address does not parse as a URL\n"; code != 1 || errb.String() != want {
+			t.Fatalf("legion state = %d, stderr %q; want 1 and %q", code, errb.String(), want)
+		}
+	})
+	t.Run("an operator command", func(t *testing.T) {
+		const token = "madeUpClaimsToken0123"
+		t.Chdir(t.TempDir())
+		dir := t.TempDir()
+		bearer := filepath.Join(dir, "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("LEGION_DAEMON_URL", "http://"+token+"@127.0.0.1:1")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") || strings.Contains(errb.String(), token[:10]) {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
+		}
+	})
+	t.Run("a password holding an @", func(t *testing.T) {
+		// The password's tail after its unencoded "@" is read as the host, which the resolver's
+		// error names: the host is written as the mark. The password is made up.
+		const head, tail = "madeUpHead0123", "madeUpTail0123.invalid"
+		t.Chdir(t.TempDir())
+		bearer := filepath.Join(t.TempDir(), "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		userinfo := "legion:" + head + "@"
+		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") ||
+			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
+		}
+	})
+	t.Run("a password holding an @ and a tail that is not ASCII", func(t *testing.T) {
+		// The client dials the tail's ASCII form (`xn--…`, its ASCII letters kept, lower-cased),
+		// which the resolver's error names: the error is not printed. The password is made up.
+		const tail = "sswmadeuptail0123\u00f6rd.invalid"
+		t.Chdir(t.TempDir())
+		bearer := filepath.Join(t.TempDir(), "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		userinfo := "legion:p" + "@"
+		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if lower := strings.ToLower(errb.String()); code != 1 || !strings.Contains(errb.String(), "(the request failed; its error is not printed") ||
+			strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the error not printed, and no part of the password", code, errb.String())
+		}
+	})
+	// A daemon that answers its claims with a body that does not decode (a proxy's page, a daemon of
+	// another release): `legion claims retry --failed` and `legion claims suspend` read the list as
+	// `legion claims list` does, and name it through redact.URL, holding no part of a made-up
+	// password in LEGION_DAEMON_URL.
+	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, "{}")
+			return
+		}
+		fmt.Fprint(w, "<html>not the claims</html>")
+	}))
+	t.Cleanup(served.Close)
+	for name, args := range map[string][]string{
+		"claims list":           {"list"},
+		"claims retry --failed": {"retry", "--failed"},
+		"claims suspend":        {"suspend", "--claim", "legion-demo-1-architect"},
+	} {
+		t.Run("an answer that does not decode/"+name, func(t *testing.T) {
+			const secret = "madeUpClaimsPassword0123"
+			t.Chdir(t.TempDir())
+			bearer := filepath.Join(t.TempDir(), "operator-token")
+			if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			userinfo := "legion:" + secret + "@"
+			t.Setenv("LEGION_DAEMON_URL", strings.Replace(served.URL, "://", "://"+userinfo, 1))
+			var out, errb bytes.Buffer
+			code := run(context.Background(), append(append([]string{"legion", "claims"}, args...), "--operator-token-file", bearer), &out, &errb)
+			if code != 1 || !strings.Contains(errb.String(), "read the answer http://[a URL with credentials]/legion/v1/operator/claims served") ||
+				strings.Contains(errb.String(), secret[:10]) {
+				t.Fatalf("legion %s = %d, stderr %q; want 1, the list named by the mark, and no part of the password", name, code, errb.String())
+			}
+		})
 	}
 }
 

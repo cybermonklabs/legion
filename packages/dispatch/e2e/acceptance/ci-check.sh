@@ -9,7 +9,7 @@
 #   the rule, and stores nothing of them; a `ci_check` on a fresh block id is stored, and the old
 #   id used again by a new block is refused again; a check carrying neither `ci_check` nor `run`
 #   is stored as it is today; a document socket that declares an old schema version (3) is
-#   admitted read-only, and one that declares the version the route serves (10) read-write. The live editor's half
+#   admitted read-only, and one that declares the version the route serves (6) read-write. The live editor's half
 #   of k1, a person pasting the four blocks, is the browser row of e2e/verification.e2e.ts.
 # - k2: `dispatch results` derives the result of the check from the named run at the issue's open
 #   pull request head: the run's name, conclusion, output and URL, and the pull-request body line,
@@ -554,7 +554,7 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
-expect k1 "the block schema is version 10" 10 '.version'
+expect k1 "the block schema is version 6" 6 '.version'
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
   2>"$work/curl" || fail k1 "sign $dev_login in" "$(<"$work/curl")"
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' >"$work/cookie"
@@ -573,9 +573,9 @@ socket_scope() {
 socket_scope 3
 [[ "$scope" == readonly ]] || fail k1 "the socket on schema version 3 is read-only" "its scope is $scope"
 pass k1 "the socket on schema version 3 is admitted with scope readonly"
-socket_scope 10
-[[ "$scope" == read-write ]] || fail k1 "the socket on schema version 10 writes" "its scope is $scope"
-pass k1 "the socket on schema version 10 is admitted with scope read-write"
+socket_scope 6
+[[ "$scope" == read-write ]] || fail k1 "the socket on schema version 6 writes" "its scope is $scope"
+pass k1 "the socket on schema version 6 is admitted with scope read-write"
 
 # --- k2: the derived result, the merge, one read for three checks, the newest head --------------
 

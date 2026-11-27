@@ -4,7 +4,9 @@ Part of `skill://legion-architect`, sections 1 and 2.
 Read it before you define a role in an issue's plan.
 The plan itself: `skill://legion-architect/references/plan.md`.
 
-A plan can define a role of its own in a `plan_role` block, which a step names by its name:
+From Dispatch's block schema version 8 on, a plan can define a role of its own in a `plan_role` block, which a step names by its name.
+A Dispatch at an earlier schema version refuses a write that adds the block (`… reads typed block "plan_role" but cannot write it yet`): there a plan defines no role.
+A plan that defines one:
 
 ```markdown
 :::plan_role{#prober type="testing" model="<a listed model>"}

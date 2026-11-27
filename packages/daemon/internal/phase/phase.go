@@ -22,10 +22,18 @@ const (
 	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
-	Planning       Phase = "planning"
-	Implementing   Phase = "implementing"
-	Testing        Phase = "testing"
-	Reviewing      Phase = "reviewing"
+	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
+	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
+	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
+	// work. When no open child is left it comes back as the step its return takes (record's
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting, or a held step
+	// after the implementer's, the first step of its walk after the implementer's. It stands outside
+	// Order, so no move into or out of it is a move back, and outside RoleFor, since no role works it.
+	AwaitingChildren Phase = "awaiting_children"
+	Planning         Phase = "planning"
+	Implementing     Phase = "implementing"
+	Testing          Phase = "testing"
+	Reviewing        Phase = "reviewing"
 	// Step is a step of a role the deployment or the issue's plan defines: none of Legion's own roles works it, and
 	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
 	// names none.
@@ -39,8 +47,8 @@ const (
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Step, Accepting, Retro,
-	Merging, Done, Held,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Step, Accepting,
+	Retro, Merging, Done, Held,
 }
 
 // Order is the line an issue of the default steps walks forward, and the phases a move back is
@@ -53,8 +61,8 @@ var All = []Phase{
 //
 // Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
 // pair of MovePairs (all 42 ordered pairs of the seven, and the 15 pairs of step) that some task's
-// line makes as a move back (plan.MovesBackPairs, 41 of them), since it reads the file with no
-// plan, and refuses the other 16, which would never fire. The engine counts the pair of each
+// line makes as a move back (plan.MovesBackPairs, 44 of them), since it reads the file with no
+// plan, and refuses the other 13, which would never fire. The engine counts the pair of each
 // move back the task's own line reads (Walk.MovesBack), and a pass. It
 // lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
 // Measured with
@@ -198,16 +206,16 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none, and neither has step, whose role is the one the issue's
-// plan names rather than one of the phase's. Admitted and accepting are the architect's, and
-// neither phase starts a worker. On a root both are its own architect's. On a child both are the
-// architect that owns it: its own while that claim holds its role, else the one above. At
-// admitted that is the one above, since the child's own architect has not started yet or a leave
-// suspended or retired it, unless a person set the child back to todo while it ran or was held:
-// that re-entry starts and stops nothing, so a child's own architect that held its role still
-// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
-// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
-// workflow's booted and Stranded).
+// awaiting_person, awaiting_children, done, held — has none, and neither has step, whose role is
+// the one the issue's plan names rather than one of the phase's. Admitted and accepting are the
+// architect's, and neither phase starts a worker. On a root both are its own architect's. On a
+// child both are the architect that owns it: its own while that claim holds its role, else the one
+// above. At admitted that is the one above, since the child's own architect has not started yet or
+// a leave suspended or retired it, unless a person set the child back to todo while it ran or was
+// held: that re-entry starts and stops nothing, so a child's own architect that held its role
+// still holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's
+// worker skips the architect, so it skips both phases (workflow's start, admit's
+// startMidPhaseMembers, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of

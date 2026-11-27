@@ -68,9 +68,11 @@
 # and one line naming the bash it needs and the one it is, while 5.1 and 5.3 are taken, by the
 # gate the driver runs at its top; (q) a --project-access run points the broker at its own
 # Dispatch's access routes with a token of its own account, has Dispatch admit that account, and
-# starts the airlock in a container of its own, while a run without it sets none of it; (r) a
-# --project-access run whose airlock proxy bound another port than the one it picked stops,
-# naming both ports; (s) only --project-access needs the airlock's stands: it builds
+# starts the airlock in a container of its own, with a profiles file of the one kind priv and no
+# profile and that kind in its banner, while a run without it sets none of it; (r) a
+# --project-access run names the airlock's proxy by a front on a port of its own, gives the broker's
+# proxy port 0 and points the front at the address that proxy logged, and stops the front with
+# the rest; (s) only --project-access needs the airlock's stands: it builds
 # dev-airlock-stands beside the eight, given --binaries it needs that ninth binary there, and it
 # needs docker on PATH, refused before anything is created or started without either, while a
 # run without it builds no stands and needs no docker; (t) --callout and --project-access
@@ -227,28 +229,26 @@ exec ${real_env} "\$@"
 EOF
 chmod +x "${fake_bin_dir}/env"
 
-# --- Fake python3, which dev-stack.sh runs as two things. As scripts/e2e/lib/held-port.py:
+# --- Fake python3, which dev-stack.sh runs as scripts/e2e/lib/held-port.py:
 # `keep` writes its own PID to the port file as the port it holds (two concurrent keepers have
 # distinct PIDs, as two kernel-chosen ports are distinct) and stays alive, writing that file last
 # as the real keeper does, which writes it only once it is serving; it writes the same port at
 # its --socket path, which stands in for the socket a server's start is handed. `exec` drops its
 # own options and executes the command after `--`, as the real one does once it has put the held
 # socket on descriptor 3; with --from, it reads the port that socket path holds and puts it for
-# each {port} in the command, as the real one puts the held socket's port. And as `python3 -c`,
-# which asks the kernel for a free port for the airlock's proxy: this one prints its own PID for
-# the same reason, and with DEV_STACK_TEST_PICKED_PORT set prints that instead. The lost port race
-# of (r) does not use it: there the broker's stub reports another address
-# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way.
+# each {port} in the command, as the real one puts the held socket's port. No socket is opened.
+# It answers `-c` with its own PID and nothing else: dev-stack.sh runs no `python3 -c`, and (v)'s
+# control asks `-c` through a shim to see which python3 answered.
 #
 # write_fake_python3 DIR writes that fake to DIR/python3. Its --pass branch runs the real
 # interpreter, which it names by the path that interpreter gives for itself (sys.executable),
 # asked through whatever python3 the PATH in effect finds and checked to be an executable file,
 # never by a lookup of python3 on PATH (command -v). On a developer's box that lookup finds a
 # version manager's shim (mise's), and the shim, run with this fake first on PATH, hands the call
-# to the next python3 on PATH, which is this fake: the fake got its own `-c` back, answered it with
-# its pid as it answers the airlock's port query, and exited, so the listener never started and
-# its log was that one pid (v). The interpreter runs in the environment dev-stack.sh starts
-# held-port.py with, the server's settings alone and no HOME, which a shim may need. ---
+# to the next python3 on PATH, which is this fake: the fake got its own call back in place of the
+# real interpreter, so the listener never started (v). The interpreter runs in the environment
+# dev-stack.sh starts held-port.py with, the server's settings alone and no HOME, which a shim may
+# need. ---
 write_fake_python3() {
   local dir="$1" real_python3
   if ! real_python3="$(python3 -I -c 'import sys; print(sys.executable)')"; then
@@ -267,7 +267,7 @@ script="${1:-}"
 case "$script" in
   */held-port.py) shift ;;
   -c)
-    printf '%s\n' "${DEV_STACK_TEST_PICKED_PORT:-$$}"
+    printf '%s\n' "$$"
     exit 0
     ;;
   *)
@@ -476,20 +476,19 @@ echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BR
 echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
-# The proxy binds the address it was given, as the real one does, and only when a profile of the
-# profiles file has a proxy block, as the real one binds it. dev-stack.sh starts every
-# process with env -i, so nothing of this test's environment reaches the stub: the control for a
-# lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
+echo "fake broker: airlock-listen=${BROKER_AIRLOCK_LISTEN_ADDR:-}" >&2
+# The proxy binds the address it was given, as the real one does, and only when the profiles file
+# declares a kind or holds a dpop block, as the real one binds it (config.AirlockSubjects). Given
+# port 0 it reports a port of its own choosing, which 1 and this stub's PID stand for, as a
+# kernel's choice is one nobody named.
 if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
-  jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
+  jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
+  airlock_addr=$BROKER_AIRLOCK_LISTEN_ADDR
+  [ "${airlock_addr##*:}" != 0 ] || airlock_addr="${airlock_addr%:*}:1$$"
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
-    "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
+    "$airlock_addr" >&2
 fi
 BROKER
-      if [[ -n "${DEV_STACK_TEST_AIRLOCK_BOUND:-}" ]]; then
-        # Written above the stub's own lines, so the proxy line it prints names this address.
-        sed -i "1a AIRLOCK_BOUND_ADDR=${DEV_STACK_TEST_AIRLOCK_BOUND}" "$target"
-      fi
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
 echo "fake broker: refusing to start" >&2
@@ -589,7 +588,35 @@ echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=
 DISPATCH
       unanswered_after dispatch
       ;;
-    cipher | cipher-helper | natsprobe | dev-proxy-stands)
+    dev-proxy-stands)
+      # `front`, as the real one runs: it listens on --listen, which with port 0 is a port of its
+      # own choosing that this stub's PID stands for, prints its URL as JSON on standard output and
+      # its listening line on standard error, names the backends file it reads, and stays up until
+      # it is stopped. Every other subcommand, the stands the fake docker runs, exits 0.
+      cat >"$target" <<'STANDS'
+#!/usr/bin/env bash
+[[ "${1:-}" == front ]] || exit 0
+shift
+listen="" backends=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --listen) listen="$2" ;;
+    --backends-file) backends="$2" ;;
+    *)
+      echo "fake dev-airlock-stands front: unexpected argument $1" >&2
+      exit 2
+      ;;
+  esac
+  shift 2 || exit 2
+done
+port="${listen##*:}"
+[[ "$port" != 0 ]] || port=$$
+echo "fake front: listen=$listen backends-file=$backends" >&2
+printf '{"url":"http://127.0.0.1:%s"}\n' "$port"
+echo "dev-airlock-stands: front listening addr=127.0.0.1:$port" >&2
+STANDS
+      ;;
+    cipher | cipher-helper | natsprobe)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -692,8 +719,6 @@ prepare_instance() {
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}"
     DEV_STACK_TEST_DOCKER_CALL_FILE="${DEV_STACK_TEST_DOCKER_CALL_FILE:-}"
     DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}"
-    DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}"
-    DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}"
     DEV_STACK_TEST_ARGV_FILE="${DEV_STACK_TEST_ARGV_FILE:-}"
     bash "$driver" --database-url "$admin_url")
 }
@@ -1632,7 +1657,8 @@ assert_everything_stopped 'the --binaries run'
 assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
 printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
 
-# (q) --project-access, and (r) the port race it takes: lib/dev-stack-test-project-access.sh's.
+# (q) --project-access, and (r) the front its airlock's proxy is named by:
+# lib/dev-stack-test-project-access.sh's.
 project_access_run_cases
 
 # (i) A --binaries directory that does not hold each of those executable files is refused with
@@ -1702,13 +1728,13 @@ printf 'PASS: a --binaries directory with two unusable binaries names each of th
 # lib/dev-stack-test-project-access.sh's.
 project_access_binaries_cases
 
-# (t) --callout and --project-access together: both of --callout's brokers would take the airlock
-# proxy's one port, so the pair is refused with exit 2 and one line naming it, before anything is
+# (t) --callout and --project-access together: the airlock proxy's front points at the first
+# broker's proxy alone, and --callout starts two, so the pair is refused with exit 2 and one line naming it, before anything is
 # created or started. refuse_run holds it to no work directory and no psql, curl or go call, so no
 # stub is built or run; refuse_pair adds no docker call and nothing printed but that line. Both
 # orders, since the driver refuses the pair once it has read every option. The controls are (q)
 # and (j): each flag alone runs to ready.
-pair_line="dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port"
+pair_line="dev-stack: --callout and --project-access cannot run together: the airlock proxy's front points at the first broker's proxy alone, and --callout starts two"
 pair_docker_calls="${temporary_dir}/docker-calls-pair"
 refuse_pair() { # <dev-stack.sh arguments...>
   local label="a run given $*"
@@ -1743,6 +1769,21 @@ for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; d
   done
 done
 printf 'PASS: a stop grace or readiness bound that is empty or no whole number of seconds from 1 to 9999 is refused with exit 2, naming the variable and the value, before anything is created or started\n'
+# (t2a) --approve beside --callout or --project-access, each of which takes the broker's proxy port,
+# and --approve-allow-all without --approve, whose block it opens: each refused with exit 2 and one
+# line naming it, before anything is created or started. The control is approve-check.sh, which
+# runs --approve and --approve-allow-all to ready against a real Postgres.
+approve_refused() { # <line> <dev-stack.sh arguments...>
+  local line="$1"
+  shift
+  refuse_run "a run given $*" 2 "$@"
+  [[ "$(<"$refusal")" == "$line" ]] || fail "a run given $* printed '$(<"$refusal")', not '$line'"
+}
+approve_pair_line="dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port"
+approve_refused "$approve_pair_line" --approve --callout
+approve_refused "$approve_pair_line" --project-access --approve
+approve_refused "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" --approve-allow-all
+printf 'PASS: --approve beside --callout or --project-access, and --approve-allow-all alone, are refused with exit 2 and one line each, before anything is created or started\n'
 
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer

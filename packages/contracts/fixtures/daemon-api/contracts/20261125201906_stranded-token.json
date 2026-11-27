@@ -31,6 +31,7 @@
       ],
       "addValues": {
         "otherClaims.*.claim.failure.cause": [
+          "cyber_policy",
           "died",
           "launch_refused",
           "never_registered",
@@ -40,6 +41,7 @@
           "unrecorded"
         ],
         "otherClaims.*.claim.pendingCause": [
+          "cyber_policy",
           "died",
           "launch_refused",
           "never_registered",
@@ -51,6 +53,7 @@
         "otherClaims.*.claim.pendingTask.phase": [
           "accepting",
           "admitted",
+          "awaiting_children",
           "awaiting_person",
           "done",
           "held",
@@ -124,6 +127,7 @@
       ],
       "addValues": {
         "issues.*.otherClaims.*.claim.failure.cause": [
+          "cyber_policy",
           "died",
           "launch_refused",
           "never_registered",
@@ -133,6 +137,7 @@
           "unrecorded"
         ],
         "issues.*.otherClaims.*.claim.pendingCause": [
+          "cyber_policy",
           "died",
           "launch_refused",
           "never_registered",
@@ -144,6 +149,7 @@
         "issues.*.otherClaims.*.claim.pendingTask.phase": [
           "accepting",
           "admitted",
+          "awaiting_children",
           "awaiting_person",
           "done",
           "held",
@@ -179,6 +185,30 @@
     }
   ],
   "routes": [
+    {
+      "route": "POST /legion/v1/agents/resume",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/retry",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/stop",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/suspend",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
     {
       "route": "POST /legion/v1/claims/compact",
       "addFieldPaths": [
@@ -225,6 +255,7 @@
       "answer": "state",
       "keyPath": "issues.*.otherClaims.*.claim.failure.cause",
       "values": [
+        "cyber_policy",
         "died",
         "launch_refused",
         "never_registered",
@@ -238,6 +269,7 @@
       "answer": "state",
       "keyPath": "issues.*.otherClaims.*.claim.pendingCause",
       "values": [
+        "cyber_policy",
         "died",
         "launch_refused",
         "never_registered",
@@ -253,6 +285,7 @@
       "values": [
         "accepting",
         "admitted",
+        "awaiting_children",
         "awaiting_person",
         "done",
         "held",
@@ -297,6 +330,7 @@
       "answer": "issue-record",
       "keyPath": "otherClaims.*.claim.failure.cause",
       "values": [
+        "cyber_policy",
         "died",
         "launch_refused",
         "never_registered",
@@ -310,6 +344,7 @@
       "answer": "issue-record",
       "keyPath": "otherClaims.*.claim.pendingCause",
       "values": [
+        "cyber_policy",
         "died",
         "launch_refused",
         "never_registered",
@@ -325,6 +360,7 @@
       "values": [
         "accepting",
         "admitted",
+        "awaiting_children",
         "awaiting_person",
         "done",
         "held",

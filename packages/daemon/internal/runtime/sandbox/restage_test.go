@@ -47,9 +47,7 @@ func secondRuntime(t *testing.T, g *rig, move func(*Options)) (restarted func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
-	}
+	g.startWatched(func() error { return r.start(g.ctx, g.clients) })
 	return func() *Runtime {
 		g.r = r
 		return r

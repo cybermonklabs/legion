@@ -19,8 +19,7 @@ body: |-
   Dispatch answers a member kind the broker does not know, every trade that asks is refused
   `server_error`, never minted unchecked. A 404 from Dispatch is "no such project" only with the
   code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
-  `brokertoken.Caller.Projects` replaces `Caller.Project`; Dispatch still holds only a `named`
-  token's writes to its project. The TypeScript sign-in client sends the projects
+  `brokertoken.Caller.Projects` replaces `Caller.Project`. The TypeScript sign-in client sends the projects
   `AGENT_SECRETS_PROJECTS` lists. The Go client declares that variable and `Config.Projects`, and
   no Go trade of this release sets them.
   **Upgrade order:** a `named` token naming a project fails until every broker replica, Dispatch

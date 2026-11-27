@@ -272,7 +272,10 @@ fi
 
 # --- Codex, pinned: one exact release from npm, its integrity and its binary package's checked
 # against the leg's own record of them before it runs. ---
-real_tools "$work/tools" bun npm node git tmux
+if ! tools_problem=$(real_tools "$work/tools" bun npm node git tmux); then
+  all_unknown "$tools_problem"
+  finish
+fi
 tools_path="$work/tools:$PATH"
 if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
   all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"
@@ -1214,8 +1217,12 @@ else
     *'Your credential names session '*)
       row C7 "$want7" "bun $entry whoami: the credential names another session than $terminal_session: $(cell "${terminal_out:0:300}")" FAIL
       ;;
-    *" acts for $person_lower:"*"may write project $project and no other"*)
-      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, may write project $project and no other" PASS
+    # A release since a token naming a project also writes other projects says "Its token names
+    # project <P>."; a release before it says "It may write project <P> and no other.". The leg
+    # may pin either, and each names the project the token names.
+    *" acts for $person_lower:"*"Its token names project $project."* | \
+      *" acts for $person_lower:"*"may write project $project and no other"*)
+      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, its token names project $project" PASS
       ;;
     *) row C7 "$want7" "bun $entry whoami named another person or project: $(cell "${terminal_out:0:300}")" FAIL ;;
   esac

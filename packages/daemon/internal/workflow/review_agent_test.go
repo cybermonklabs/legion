@@ -242,8 +242,8 @@ func TestAReviewerStepALaterVersionGivesToAnAgentIsNamedItsCommitOfALaterStep(t 
 func wakesClaim(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token) string {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		released, found, err := engine.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(token))
-		if err != nil || !found {
+		released, found, err := engine.cfg.Pods.ClaimByToken(ctx, tx, string(token))
+		if err != nil || !found || !released.Released() {
 			return fmt.Errorf("read the released claim %s: found %t, %v", token, found, err)
 		}
 		woken, err := engine.wakeReleased(ctx, tx, released, pods.WakeAgentMessage, "its detail", engine.now())

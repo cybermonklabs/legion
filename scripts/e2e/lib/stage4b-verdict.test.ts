@@ -74,11 +74,12 @@ const podEvent =
     lastTimestamp: at,
     message,
   });
+// limitMessage is Karpenter's verdict that every instance type exceeds a NodePool's limits; its
+// NodePool is not named legion, so a match on the name alone would miss it.
 const limitMessage =
-  'Failed to schedule pod, incompatible with nodepool "other"; all available instance types exceed limits for nodepool (NodePool=legion)';
-// limitEvent is Karpenter's verdict that every instance type exceeds the legion pool's limits.
+  'Failed to schedule pod, incompatible with nodepool "other"; all available instance types exceed limits for nodepool (NodePool=general)';
 const limitEvent = podEvent("karpenter", "FailedScheduling", limitMessage);
-// affinityEvent is Karpenter's verdict for a genuine scheduling reason other than the pool's
+// affinityEvent is Karpenter's verdict for a genuine scheduling reason other than a NodePool's
 // limits (a topology constraint; no Legion pod carries one, LEGION-632, so it stands for any such
 // reason).
 const affinityEvent = podEvent(
@@ -389,7 +390,7 @@ pass`
       // The line carries the limit event's time and message, the pod's PodScheduled condition and
       // the default scheduler's newest word, so a misclassification can be read off it.
       expect(starved.stdout).toContain(
-        `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod legion-x-t1 (uid uid-now): Karpenter at 2026-10-02T10:00:05Z: ${JSON.stringify(limitMessage)}; PodScheduled Unschedulable since 2026-10-02T10:00:00Z: ${JSON.stringify("0/16 nodes are available: 16 node(s) didn't match Pod's node affinity/selector.")}; default scheduler: ${scheduler}`
+        `CHECK controller: BLOCKED: capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place pod legion-x-t1 (uid uid-now): Karpenter at 2026-10-02T10:00:05Z: ${JSON.stringify(limitMessage)}; PodScheduled Unschedulable since 2026-10-02T10:00:00Z: ${JSON.stringify("0/16 nodes are available: 16 node(s) didn't match Pod's node affinity/selector.")}; default scheduler: ${scheduler}`
       );
       expect(starved.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
       expect(starved.stdout).not.toContain("CHECK controller: FAIL");
@@ -489,7 +490,7 @@ pass`
         events: [limitEvent("legion-x-t-1", "uid-deleted-earlier", "2026-09-30T11:50:05Z")],
       },
     ],
-    ["no pod Pending and no claim failed on the pool's limits", { subject: "T1" }],
+    ["no pod Pending and no claim failed on a NodePool's limits", { subject: "T1" }],
   ] as [string, Capacity][]) {
     test(`still fails a wait that timed out with ${name}`, () => {
       const timedOut = controllerRun("[]", "timeout", capacity);
@@ -519,7 +520,7 @@ pass`
     });
     expect(exhausted.code).toBe(1);
     expect(exhausted.stdout).toContain(
-      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-exhausted, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
+      `CHECK controller: BLOCKED: capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place pod uid uid-exhausted, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
     );
     expect(exhausted.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
     expect(exhausted.stdout).not.toContain("CHECK controller: FAIL");
@@ -550,7 +551,7 @@ pass`
     });
     expect(redone.code).toBe(1);
     expect(redone.stdout).toContain(
-      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-redone, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:10:00Z: ${JSON.stringify(limitMessage)}`
+      `CHECK controller: BLOCKED: capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place pod uid uid-redone, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:10:00Z: ${JSON.stringify(limitMessage)}`
     );
     expect(redone.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
     expect(redone.stdout).not.toContain("CHECK controller: FAIL");
@@ -586,7 +587,7 @@ pass`
       });
       expect(numbered.code).toBe(1);
       expect(numbered.stdout).toContain(
-        `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-agent, issue ACME-12, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
+        `CHECK controller: BLOCKED: capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place pod uid uid-agent, issue ACME-12, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
       );
       expect(numbered.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
     });

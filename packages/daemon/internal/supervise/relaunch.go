@@ -245,8 +245,9 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // the claim holding nothing, so a phase worker is still queued its resume task
 // (workflow's readyWorkerTask), and that task takes this delivery's place while no prompt of it is
 // waiting on a result, or waits for its turn to end (queue, replaceable). It is queued again where
-// sendPending drops the task a claim held and leaves it holding nothing (relaunchAfterDrop), since
-// the task that would have carried the sentence is gone.
+// sendPending drops the task a claim held and leaves it holding nothing, and where the workflow's
+// stop of a phase retires that phase's task (RetireStoppedTask), both through relaunchAfterDrop,
+// since the task that would have carried the sentence is gone.
 //
 // One claim is given none: the daemon-launched controller. Its keeper sends its start message at
 // every ready and only logs a refusal of it (the daemon's controllerKeeper.ready), so a delivery

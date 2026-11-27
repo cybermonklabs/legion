@@ -652,6 +652,399 @@ func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
 	}
 }
 
+// keptRoleMessageRows are the two kinds of row the daemon publishes with keep to a role and no
+// source session, each to a role of rootIssue: a hook prompt to the implementer and a phase-ended
+// message to the tester.
+var keptRoleMessageRows = []struct {
+	kind    string
+	role    claim.Role
+	payload record.OutboxPayload
+}{
+	{kind: "a hook prompt", role: claim.RoleImplementer, payload: record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer,
+		From: "reviewing", To: "implementing", Count: 1, Counts: map[string]int{"reviewing-implementing": 1}, Prompt: "Read the review."}},
+	{kind: "a phase-ended message", role: claim.RoleTester, payload: record.PhaseEnded{Role: claim.RoleTester, From: "testing",
+		To: "awaiting_children", Reason: "the admission pass stopped the tester's testing phase"}},
+}
+
+// queueWaitingKeptRow queues payload's row on rootIssue as a row that has waited three attempts for
+// a session to hold its role (the daemon's publishKeptToRole).
+func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) {
+	t.Helper()
+	row, err := record.NewOutboxRow(rootIssue, payload, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, $2, $3, 3, now() + interval '1 minute', 'no live session holds the role')`,
+		string(row.Kind), rootIssue, row.Payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A hook prompt's or a phase-ended message's row waits up to an hour for a session to hold its role
+// (the daemon's publishKeptToRole), and it holds the issue's pod for that wait, and cancels a
+// release at its boundary, only while its role has a claim this pod answers: one that runs or is
+// starting, or one an idle release suspended, which the row's own first attempt wakes. A role with
+// no claim, or one whose claim failed, was retired or was suspended for another cause, comes back
+// only by a start or a resume, the operator's or the controller's, and either brings a pod of its
+// own, so such a row holds no pod and cancels no release (idleWaitingRow). The rows are each
+// other's control: a term that let every such row go would fail the rows that hold, and the
+// predicate before the term, which held the pod for every such row, fails the rest.
+func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
+	for _, message := range keptRoleMessageRows {
+		for _, tc := range []struct {
+			name      string
+			unclaimed bool
+			state     supervise.ClaimState
+			by        supervise.SuspendSource
+			holds     bool
+		}{
+			{name: "an idle claim", state: supervise.StateIdle, holds: true},
+			{name: "a claim an idle release suspended", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, holds: true},
+			{name: "no claim", unclaimed: true},
+			{name: "a claim the daemon suspended", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
+			{name: "a failed claim", state: supervise.StateFailed},
+			{name: "a retired claim", state: supervise.StateRetired},
+		} {
+			t.Run(message.kind+" to a role with "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				claims := []supervise.Claim{{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue,
+					Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}}
+				if !tc.unclaimed {
+					claims = append(claims, supervise.Claim{Token: claim.Token("legion-legion-legion-208-" + string(message.role)), Project: "legion",
+						Tree: rootIssue, Issue: rootIssue, Role: message.role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+						State: tc.state, SuspendedBy: tc.by})
+				}
+				for _, c := range claims {
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, message.payload)
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s to a %s with %s, want %t", view.Waiting, message.kind, message.role, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s to a %s with %s queued before the mark, want %s", decision.Act, decision.Cause, message.kind, message.role, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
+// A kept row names the claim it is for by its token (record.HookPrompt.Claim,
+// record.PhaseEnded.Claim), and two claims of one issue can hold one role: the agent of a key
+// works a step of another role beside that role's own claim. So the claim the row names and the
+// claim of the row's role are different claims, and only the one the row names decides whether the
+// pod is held (heldMessageForNoClaimThisPodAnswers). This is the case the token match exists for,
+// and the role fallback is what it replaced. The two cases below are each other's control: a
+// predicate that read the role alone would hold the pod in the second and release it in the first,
+// which is the pair of faults the token match stops. A predicate that read the token alone would
+// still pass both, and the row with no claim in
+// TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers is what holds the
+// fallback.
+func TestAKeptRowNamingAClaimIsDecidedByThatClaimAndNotByItsRole(t *testing.T) {
+	for _, message := range keptRoleMessageRows {
+		for _, tc := range []struct {
+			name   string
+			named  supervise.ClaimState
+			byRole supervise.ClaimState
+			holds  bool
+		}{
+			{name: "the claim it names runs and the role's own claim is retired", named: supervise.StateIdle,
+				byRole: supervise.StateRetired, holds: true},
+			{name: "the claim it names is retired and the role's own claim runs", named: supervise.StateRetired,
+				byRole: supervise.StateIdle},
+		} {
+			t.Run(message.kind+" where "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				// Both claims below hold message.role, which is the case the token match exists for:
+				// two claims of one issue holding one role (record.WorkerClaim). The role fallback
+				// would match either of them, so only the claim the row names by its token decides.
+				// named is the key's agent, whose name carries the -2 its second claim takes.
+				named := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
+				for _, c := range []supervise.Claim{
+					{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue,
+						Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle},
+					{Token: named, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: message.role,
+						TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.named},
+					{Token: claim.Token("legion-legion-legion-208-" + string(message.role)), Project: "legion", Tree: rootIssue,
+						Issue: rootIssue, Role: message.role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.byRole},
+				} {
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, namedClaimOf(t, message.payload, named))
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s where %s, want %t",
+						view.Waiting, message.kind, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s where %s, want %s", decision.Act, decision.Cause, message.kind, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
+// namedClaimOf is payload with the claim it is for named by its token. A payload of a kind this
+// test does not know stops the test rather than passing with no claim named, which would read the
+// role and prove nothing.
+func namedClaimOf(t *testing.T, payload record.OutboxPayload, token claim.Token) record.OutboxPayload {
+	t.Helper()
+	switch p := payload.(type) {
+	case record.HookPrompt:
+		p.Claim = token
+		return p
+	case record.PhaseEnded:
+		p.Claim = token
+		return p
+	default:
+		t.Fatalf("namedClaimOf has no case for %T, so the row would name no claim and the test would read the role", payload)
+		return nil
+	}
+}
+
+// The idle rule's two exemptions meet on one role: a tester owed a start of its phase that waits for
+// its issue's admission slot (slotWaitingStart), and a phase-ended message to that tester waiting
+// for a session to hold its role (heldMessageForNoClaimThisPodAnswers). Each term decides its own
+// row. The start holds no pod while no slot stands, whatever the claim, and the phase-ended row
+// holds the pod while the tester's claim is one this pod answers. So with the claim an idle release
+// suspended, the pod is held, by the phase-ended row alone; with the claim the daemon suspended,
+// nothing holds it. Once the slot comes, the start holds the pod too. Each row is the other's
+// control: a predicate that let the slot term exempt the phase-ended row would fail the first, and
+// one that let the claim term hold the start would fail the second.
+func TestAPhaseEndedMessageToARoleWhoseStartWaitsForItsSlotHoldsThePodByItsOwnRule(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		by    supervise.SuspendSource
+		holds bool
+	}{
+		{name: "the tester's claim an idle release suspended", by: supervise.SuspendedByReleased, holds: true},
+		{name: "the tester's claim the daemon suspended", by: supervise.SuspendedByDaemon},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-tester"), Project: "legion",
+				Tree: rootIssue, Issue: rootIssue, Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+				State: supervise.StateSuspended, SuspendedBy: tc.by}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"phase":"testing","task":"Continue.","needsSlot":true}', 0, now(), '')`,
+				rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			if view := idleViewOf(t, st, rootIssue); view.Waiting {
+				t.Fatal("UNKNOWN: the start that waits for its slot alone holds the pod, so the phase-ended row tests nothing")
+			}
+			queueWaitingKeptRow(t, st, keptRoleMessageRows[1].payload)
+
+			if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+				t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s, a start waiting for its slot and a phase-ended message, want %t", view.Waiting, tc.name, tc.holds)
+			}
+			if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+				t.Fatalf("the view reads nothing waiting once the slot came, with %s: the start is due and holds the pod", tc.name)
+			}
+		})
+	}
+}
+
+// A worker start that waits for its issue's admission slot (record.SuperviseRequest.NeedsSlot)
+// holds no pod and cancels no release while no slot of its issue stands (idleWaitingRow). The
+// outbox holds such a start back until then (record's outboxInOrder), and an issue whose work came
+// back waits in the admission line for as long as its blocker stays open or the line is ahead of
+// it: hours, and for a blocked issue days. A pod held for it would stand idle all that time. Once
+// the slot comes the start runs, and it wakes the worker a release suspended as any start does. So
+// with the slot given, the same row holds the pod and cancels a release as any start that carries
+// a task does: at the boundary when the slot comes before it, and at the teardown when it comes
+// after the boundary ran, since a start left out there that has come due since is the pod about
+// to be used again.
+func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
+	t.Parallel()
+	type release struct {
+		st                    *Store
+		ctx                   context.Context
+		worker                supervise.Claim
+		first, boundary, last int64
+	}
+	// setUp is an issue whose one live role is its implementer, idle in the pod, owed a start of
+	// its phase that waits for the issue's admission slot, and the release of that pod marked.
+	setUp := func(t *testing.T) release {
+		st := migratedStore(t)
+		ctx := context.Background()
+		openRunningTree(t, st)
+		worker := supervise.Claim{Token: claim.Token("legion-legion-legion-208-implementer"), Project: "legion",
+			Tree: rootIssue, Issue: rootIssue, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}
+		if err := st.PutClaim(ctx, worker); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"phase":"implementing","task":"Continue.","needsSlot":true}', 0, now(), '')`,
+			rootIssue); err != nil {
+			t.Fatal(err)
+		}
+		if view := idleViewOf(t, st, rootIssue); view.Waiting {
+			t.Fatal("the view reads a row waiting for a role of the pod, though the only one queued is a start that waits for an admission slot the issue does not hold")
+		}
+		first, boundary, last := releaseRoleThroughTheStore(t, st, rootIssue, claim.RoleImplementer)
+		return release{st: st, ctx: ctx, worker: worker, first: first, boundary: boundary, last: last}
+	}
+	// stopRan is the release's check and its role stop having run: the lane finished both rows,
+	// and the stop suspended the worker as released.
+	stopRan := func(t *testing.T, r release) {
+		if _, err := r.st.Pool().Exec(r.ctx, `delete from outbox where id in ($1, $2)`, r.first, r.boundary); err != nil {
+			t.Fatal(err)
+		}
+		r.worker.State, r.worker.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+		if err := r.st.PutClaim(r.ctx, r.worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slotComes := func(t *testing.T, r release) {
+		if _, err := r.st.Pool().Exec(r.ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+			t.Fatal(err)
+		}
+		if view := idleViewOf(t, r.st, rootIssue); !view.Waiting {
+			t.Fatal("the view reads nothing waiting, though the issue now holds its slot and its start is due for a role of the pod")
+		}
+	}
+	boundaryDecides := func(t *testing.T, r release, act ReleaseAct, cause ReleaseCause) {
+		decision, err := r.st.IssueReleaseStop(r.ctx, "legion", rootIssue, r.boundary)
+		if err != nil || decision.Act != act || decision.Cause != cause {
+			t.Fatalf("the boundary = %s for %s, %v; want %s for %s", decision.Act, decision.Cause, err, act, cause)
+		}
+	}
+	teardownDecides := func(t *testing.T, r release, act ReleaseAct, cause ReleaseCause) {
+		decision, err := r.st.IssueRelease(r.ctx, "legion",
+			IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: r.last}, record.OutOfWorkflow)
+		if err != nil || decision.Act != act || decision.Cause != cause {
+			t.Fatalf("the teardown = %s for %s, %v; want %s for %s", decision.Act, decision.Cause, err, act, cause)
+		}
+	}
+
+	t.Run("no slot comes", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		boundaryDecides(t, r, ReleaseActs, ReleaseCauseNone)
+		stopRan(t, r)
+		teardownDecides(t, r, ReleaseActs, ReleaseCauseNone)
+	})
+	t.Run("the slot comes before the boundary runs", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		slotComes(t, r)
+		boundaryDecides(t, r, ReleaseCancel, ReleaseCauseOvertaken)
+	})
+	t.Run("the slot comes after the boundary ran", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		boundaryDecides(t, r, ReleaseActs, ReleaseCauseNone)
+		stopRan(t, r)
+		slotComes(t, r)
+		teardownDecides(t, r, ReleaseCancel, ReleaseCauseOvertaken)
+	})
+}
+
+// The store's rule for a start that waits for its admission slot (slotWaitingStart, read by the
+// idle view and by WaitsForItsSlot) repeats record's outboxInOrder, which holds such a start back
+// until the slot comes. The two must agree about one row encoded as the workflow writes it, or the
+// idle rule holds the pod of an issue waiting in the line again, or releases a pod under a start
+// that is due. For a start marked to wait: without a slot the outbox lists no due start, the idle
+// view reads nothing waiting, and the issue waits for its slot; with a slot the start is due, the
+// view reads it as waiting, and the issue no longer waits. An ordinary start, whose payload carries
+// no `needsSlot`, is due, holds the pod and makes no wait, whether a slot stands or not.
+func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		needsSlot bool
+	}{
+		{name: "a start marked to wait for its slot", needsSlot: true},
+		{name: "an ordinary start", needsSlot: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+				Generation: 1, Phase: phase.Implementing, Task: "Continue.", NeedsSlot: tc.needsSlot}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var id int64
+			if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+				id, err = record.NewStore().EnqueueID(ctx, tx, row)
+				return err
+			}); err != nil {
+				t.Fatalf("queue the start: %v", err)
+			}
+			records, err := st.PodRecordsOf("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(slot bool) {
+				t.Helper()
+				var due, waits bool
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+					rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
+					if err != nil {
+						return err
+					}
+					due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
+					waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
+					return err
+				}); err != nil {
+					t.Fatalf("read the outbox: %v", err)
+				}
+				held := tc.needsSlot && !slot
+				view := idleViewOf(t, st, rootIssue)
+				if due == held || waits != held || view.Waiting == held {
+					t.Fatalf("with a slot %t: due %t, waits for its slot %t, the idle view waiting %t; want due %t, waits %t, waiting %t",
+						slot, due, waits, view.Waiting, !held, held, !held)
+				}
+			}
+
+			check(false)
+			if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			check(true)
+		})
+	}
+}
+
 // A step record is history: its row reaches no session of the pod, so a record Dispatch has not
 // taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
 // standing and cancels no release at its boundary, whether it was queued before the release's rows

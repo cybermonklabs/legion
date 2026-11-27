@@ -1,0 +1,242 @@
+[
+  {
+    "name": "text past the bytes one document holds",
+    "text": [{ "repeat": "word ", "times": 209715 }, { "text": "past\n" }],
+    "sent": ["inline", "file"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type",
+    "scope": "upload"
+  },
+  {
+    "name": "12,000 list items, past the elements one write may make",
+    "text": [{ "repeat": "- a\n", "times": 12000 }],
+    "sent": ["inline", "file"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "more than 65536 elements",
+    "scope": "upload"
+  },
+  {
+    "name": "text at the bytes whose rendering adds a final line feed",
+    "text": [{ "repeat": "word ", "bytes": 1048574 }, { "text": "ss" }],
+    "sent": ["inline", "file"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "this change would make the document's markdown",
+    "scope": "new-document"
+  },
+  {
+    "name": "text whose rendering escapes 1,100 backticks past the bytes",
+    "text": [
+      { "repeat": "word ", "bytes": 1043174 },
+      { "text": "\n\n" },
+      { "repeat": "a`\n\n", "times": 1100 }
+    ],
+    "sent": ["inline", "file"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "this change would make the document's markdown",
+    "scope": "new-document"
+  },
+  {
+    "name": "text strings.TrimSpace empties, past the elements one write may make",
+    "text": [{ "repeat": "\u00a0\n\n", "times": 20000 }],
+    "sent": ["inline", "file"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "more than 65536 elements",
+    "scope": "new-document",
+    "replaced": { "status": 413, "code": "CAP_EXCEEDED", "words": "more than 65536 elements" }
+  },
+  {
+    "name": "text holding U+0000",
+    "text": [{ "text": "# Notes\n\nA\u0000B\n" }],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "NUL_CHARACTER",
+    "words": "holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
+    "scope": "upload"
+  },
+  {
+    "name": "a file holding a byte that is not UTF-8",
+    "text": [{ "text": "# Notes\n\nA" }, { "base64": "/w==" }, { "text": "B\n" }],
+    "sent": ["file"],
+    "command": ["inline"],
+    "status": 400,
+    "code": "INVALID_UTF8",
+    "words": "holds a byte that is not UTF-8 (0xFF) at character 11, which Dispatch cannot store",
+    "scope": "upload"
+  },
+  {
+    "name": "a file holding U+0000 before a byte that is not UTF-8",
+    "text": [{ "text": "A\u0000B" }, { "base64": "/w==" }],
+    "sent": ["file"],
+    "command": ["inline"],
+    "status": 400,
+    "code": "NUL_CHARACTER",
+    "words": "holds a NUL character (U+0000) at character 2, which Dispatch cannot store",
+    "scope": "upload"
+  },
+  {
+    "name": "a file past the bytes one document holds holding a byte that is not UTF-8",
+    "text": [
+      { "text": "# Notes\n\nA" },
+      { "base64": "/w==" },
+      { "repeat": "word ", "bytes": 1048576 }
+    ],
+    "sent": ["file"],
+    "command": ["inline"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type",
+    "scope": "upload"
+  },
+  {
+    "name": "an ask block that breaks its content rule",
+    "text": [
+      {
+        "text": ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich database?\n\n- Postgres\n- SQLite\n\nPick one by Friday.\n:::\n"
+      }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_ASK_BLOCK",
+    "words": "holds a paragraph after its options",
+    "scope": "new-document"
+  },
+  {
+    "name": "markdown the parser refuses",
+    "text": [{ "text": "<details>x</details>" }],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_MARKDOWN",
+    "words": "",
+    "scope": "upload"
+  },
+  {
+    "name": "markdown whose rendering no reader reads back",
+    "text": [{ "text": "2. [^N]:\n       12. *\n       --\n" }],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_MARKDOWN",
+    "words": "cannot be read back",
+    "scope": "upload"
+  },
+  {
+    "name": "an ask that breaks its content rule in markdown whose rendering no reader reads back",
+    "text": [
+      {
+        "text": ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich database?\n\n- Postgres\n- SQLite\n\nPick one by Friday.\n:::\n"
+      },
+      { "text": "\n" },
+      { "text": "2. [^N]:\n       12. *\n       --\n" }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_ASK_BLOCK",
+    "words": "holds a paragraph after its options",
+    "scope": "upload"
+  },
+  {
+    "name": "a block id named on two blocks",
+    "text": [
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      },
+      { "text": "\n" },
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_MARKDOWN",
+    "words": "block id \"c1\" would name two blocks",
+    "scope": "new-document",
+    "replaced": {
+      "rendering": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n\n:::check{#minted when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+    }
+  },
+  {
+    "name": "a block id named on two blocks beside a list the store respells",
+    "text": [
+      { "text": "* a\n\n" },
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      },
+      { "text": "\n" },
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_MARKDOWN",
+    "words": "block id \"c1\" would name two blocks",
+    "scope": "new-document",
+    "replaced": {
+      "rendering": "- a\n\n:::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n\n:::check{#minted when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+    }
+  },
+  {
+    "name": "a block id named on two blocks in markdown whose rendering no reader reads back",
+    "text": [
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      },
+      { "text": "\n" },
+      {
+        "text": ":::check{#c1 when=\"before_merge\" negative_control=\"Break the build and watch the run fail.\"}\nThe server builds at the head.\n:::\n"
+      },
+      { "text": "\n" },
+      { "text": "2. [^N]:\n       12. *\n       --\n" }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_MARKDOWN",
+    "words": "block id \"c1\" would name two blocks",
+    "scope": "new-document",
+    "replaced": { "status": 400, "code": "INVALID_MARKDOWN", "words": "cannot be read back" }
+  },
+  {
+    "name": "a check proved by CI with a run",
+    "text": [
+      { "text": "Intro.\n\n" },
+      {
+        "text": ":::check{#c2 run=\"go test ./...\" negative_control=\"Break the build and watch the run fail.\" ci_check=\"go-test\"}\nThe server builds at the head.\n:::\n"
+      }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_CI_CHECK",
+    "words": "check c2 (ci_check \"go-test\"): a check proved by CI carries no run",
+    "scope": "new-document"
+  },
+  {
+    "name": "a check proved by CI with a when of after_merge",
+    "text": [
+      { "text": "Intro.\n\n" },
+      {
+        "text": ":::check{#c2 when=\"after_merge\" negative_control=\"Break the build and watch the run fail.\" ci_check=\"go-test\"}\nThe server builds at the head.\n:::\n"
+      }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_CI_CHECK",
+    "words": "check c2 (ci_check \"go-test\"): ci_check takes when of before_merge",
+    "scope": "new-document"
+  },
+  {
+    "name": "a check proved by CI with no negative control",
+    "text": [
+      { "text": "Intro.\n\n" },
+      { "text": ":::check{#c2 ci_check=\"go-test\"}\nThe server builds at the head.\n:::\n" }
+    ],
+    "sent": ["inline", "file"],
+    "status": 400,
+    "code": "INVALID_CI_CHECK",
+    "words": "check c2 (ci_check \"go-test\"): a check proved by CI names its negative control",
+    "scope": "new-document"
+  }
+]

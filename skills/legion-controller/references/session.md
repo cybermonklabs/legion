@@ -8,23 +8,28 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 ## Launched by the daemon (`controller: daemon`)
 
-The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
+The daemon runs you in a pod.
+
+## What happened before you started
+
+The start procedure (`skill://legion-controller/SKILL.md`, *What happened before you started*). Every launch opens with a start message. Envoy keeps no wake sent while no controller ran, so on it:
+
+1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it. Take them from the summary's `<KEY> done <status>` lines, ten keys an `issues` read, never from `phase: "done"`.
+2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
+3. Catch up (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
+4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
 
 ## The `legion` tool
 
 - `read_state` with no field: a summary of the daemon's whole state, one line per fact: the project, the pause that stands or the last one, admission (`cap`, `active`, `waiting`, `blocked`), the wakes the pacing holds, each capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's state with its last turn times.
-  With `issue`, `issues` or `phase` it returns those issues' full records, `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `otherClaims`, `tree`, `waitingOn`), and with `settings: true` the resolved `legion.yaml`; it takes one of these at a time.
+  With `issue`, `issues` or `phase` it returns those issues' full records, `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `otherClaims`, `tree`, `waitingOn`), and with `settings: true` the resolved `legion.yaml`; it takes one of these at a time. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
-- `compact` (`issue`, `role`, optional `claim`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
-- `fresh_session` (`issue`, `role`, optional `claim`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
-- `issue` and `role` reach the claim that works the role's step that started last: the step the task stands at, where it is that role's. Two claims of one issue can hold one role; when a notice names a claim by its token, pass that token as `claim` so the call reaches that claim. Both refuse a token of another issue (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
-- Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
+- `stop`, `retry`, `suspend`, `resume_agent`, `compact` and `fresh_session` (`issue`, `role`): the actions on an agent, each naming one agent by its issue and role, and `replace_pod` (`issue`): the update round over one issue's pod (`skill://legion-controller/references/operations.md`).
+- `issue` and `role` reach the agent that works the role's step that started last: the step the task stands at, where it is that role's. Two claims of one issue can hold one role; when a notice names a claim by its token, pass that token to `compact` or `fresh_session`, which take it as `claim` (`issue`, `role`, optional `claim`), so the call reaches that claim. Both refuse a token of another issue (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
 
 ## `gh`
 
 `gh` acts as the review App's bot account (`gh api graphql -f query='{viewer{login}}'` names it). It reads with the token of the owner a command names (`-R owner/repo`, `repos/owner/repo`, a GitHub URL), so always name the repository.
-
-End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`: the daemon reads that footer to tell your review from the reviewer's verdict.
 
 ## Reading a pull request
 

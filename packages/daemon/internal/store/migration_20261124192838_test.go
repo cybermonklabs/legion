@@ -15,7 +15,7 @@ const deploymentRolesVersion = 20261124192838
 // wayBackOpening opens the way back in a migration's header, and wayBackClosing ends it: what
 // stands between them is what psql reads on its standard input.
 const (
-	wayBackOpening = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackOpening = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackClosing = "SQL"
 )
 
@@ -86,14 +86,17 @@ func runWayBack(t *testing.T, store *Store, sql string) error {
 // at the phase step, where such a role works, or is held from it. A name outside the grammar is
 // still refused by the same checks, and the controller's claim keeps its own shape. Before the
 // migration the claim of checker is refused: that refusal is the control which shows each write
-// after it is the migration's to take.
+// after it is the migration's to take. A parent that waits on its open children stands across the
+// migration and its way back, since 20261114232555_awaiting_children wrote that phase into the
+// check before this file: a phase list that left it out would refuse the whole migration.
 //
 // The way back in the header refuses while a row of such a role or such an issue stands, since
 // the restored checks would refuse that row with no word of which it is, and it names the first
-// row it finds: the issue at step, then the issue held from it, then the claim, the phases row
-// and the idle release of checker. With those gone it restores the checks and deletes the
-// migration's version row, leaving the controller's claim and the release of an unowned pod,
-// which name no role of the deployment, standing; and the next Migrate applies the file again.
+// row it finds: the issue at step, then the issue held from it, then the parent that waits on its
+// children to start step, then the claim, the phases row and the idle release of checker. With
+// those gone it restores the checks and deletes the migration's version row, leaving the
+// controller's claim, the release of an unowned pod and the waiting parent, which name no role of
+// the deployment, standing; and the next Migrate applies the file again.
 func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -125,6 +128,12 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 		return `insert into phases (issue, role, claim, handoff_commit, rounds, verdict)
 			values ('` + issue + `', '` + role + `', '', '', 0, '')`
 	}
+	waitingParent := func(key, start string) string {
+		return `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+			children_wait_start, children_wait_task, children_wait_reason, children_wait_since)
+			values ('` + key + `', '` + key + `', 'LEGION', 'a parent', 'awaiting_children', 1, 'in_progress', 'A', 1,
+			'` + start + `', 'the held task', 'a child is open', now())`
+	}
 	releaseOf := func(issue, role, kind string) string {
 		return `insert into issue_releases (project, issue, generation, first_row, boundary_row, last_row, started_row, role, kind)
 			values ('legion', '` + issue + `', 1, 18, 20, 22, 0, '` + role + `', '` + kind + `')`
@@ -144,6 +153,7 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 	mustExec("an issue at work", issueAt("LEGION-208", "implementing", ""))
 	mustExec("an issue of an unowned pod", issueAt("LEGION-210", "implementing", ""))
 	mustExec("the release of an unowned pod", releaseOf("LEGION-210", "", "unowned"))
+	mustExec("a parent that waits on its open children", waitingParent("LEGION-207", "testing"))
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the deployment's roles: %v", err)
@@ -154,6 +164,7 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 	mustExec("the idle release of checker", releaseOf("LEGION-208", "checker", "idle"))
 	mustExec("an issue at step", `update issues set phase = 'step' where key = 'LEGION-208'`)
 	mustExec("an issue held from step", issueAt("LEGION-209", "held", "step"))
+	mustExec("a parent that waits on its children to start step", waitingParent("LEGION-213", "step"))
 
 	long := "c" + strings.Repeat("x", 32)
 	for _, refusal := range []struct{ what, sql, constraint string }{
@@ -174,6 +185,7 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 	}{
 		{"issue LEGION-208", `update issues set phase = 'implementing' where key = 'LEGION-208'`},
 		{"issue LEGION-209", `update issues set held_from = 'implementing' where key = 'LEGION-209'`},
+		{"issue LEGION-213", `update issues set children_wait_start = 'implementing' where key = 'LEGION-213'`},
 		{"claim legion-legion-legion-208-checker", `delete from claims where token = 'legion-legion-legion-208-checker'`},
 		{"checker on LEGION-208", `delete from phases where issue = 'LEGION-208' and role = 'checker'`},
 		{"idle release of LEGION-208", `delete from issue_releases where issue = 'LEGION-208'`},
@@ -189,15 +201,17 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 		t.Fatalf("the way back with no row of a role of the deployment: %v", err)
 	}
 
-	var controllers, unowned, recorded int
+	var controllers, unowned, waiting, recorded int
 	if err := store.Pool().QueryRow(ctx, `select
 		(select count(*) from claims where token = 'legion-legion-controller'),
 		(select count(*) from issue_releases where issue = 'LEGION-210' and kind = 'unowned'),
-		(select count(*) from schema_version where version = $1)`, deploymentRolesVersion).Scan(&controllers, &unowned, &recorded); err != nil {
+		(select count(*) from issues where key = 'LEGION-207' and phase = 'awaiting_children'),
+		(select count(*) from schema_version where version = $1)`, deploymentRolesVersion).Scan(&controllers, &unowned, &waiting, &recorded); err != nil {
 		t.Fatalf("read the store after the way back: %v", err)
 	}
-	if controllers != 1 || unowned != 1 || recorded != 0 {
-		t.Fatalf("after the way back: %d controller claims, %d unowned releases, %d version rows; want 1, 1 and 0", controllers, unowned, recorded)
+	if controllers != 1 || unowned != 1 || waiting != 1 || recorded != 0 {
+		t.Fatalf("after the way back: %d controller claims, %d unowned releases, %d waiting parents, %d version rows; want 1, 1, 1 and 0",
+			controllers, unowned, waiting, recorded)
 	}
 	refusedBy("a claim of checker after the way back", claimOf("legion-legion-legion-208-checker", "LEGION-208", "checker"), "claims_role_check")
 	refusedBy("a phases row of checker after the way back", phasesRowOf("LEGION-208", "checker"), "phases_role_check")

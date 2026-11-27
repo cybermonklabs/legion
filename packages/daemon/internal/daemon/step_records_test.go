@@ -408,22 +408,40 @@ func (r *stepRecordsRig) rollBackStepKey() {
 }
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
-// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
-// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
+// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. The way back of the
 // key of a phases row by its step runs before it (rollBackStepKey), and so do those of two later
-// migrations, newest first, as the guide's list and their headers say. The name of each step's
-// agent (planStepAgentMigration) adds a column to plan_steps: left recorded, its version would
-// keep the roll forward from adding the column to the plan_steps it creates again, and every later
-// write of a plan would fail. The roles a plan defines (planRolesMigration) are a table whose
-// foreign key stands on issue_plans, and the drop of issue_plans is refused while that table
-// stands.
+// migrations, as the guide's list and their headers say. The name of each step's agent
+// (planStepAgentMigration) adds a column to plan_steps: left recorded, its version would keep the
+// roll forward from adding the column to the plan_steps it creates again, and every later write of
+// a plan would fail. The roles a plan defines (planRolesMigration) are a table whose foreign key
+// stands on issue_plans, and the drop of issue_plans is refused while that table stands. Each of
+// the two headers gives its way back as a psql heredoc, which headerTransaction reads. The way back
+// of the givers of a plan version, in the header of the migration whose name ends
+// _plan_earlier_givers.up.sql, runs too, before the plan rows' own (the guide allows either
+// order), so the roll forward adds its column again to the table it creates.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
-	for _, name := range []string{planStepAgentMigration, planRolesMigration, inFlightPlanMigration} {
+	for _, name := range []string{planStepAgentMigration, planRolesMigration} {
 		r.exec(strings.ReplaceAll(r.headerTransaction(name), "<PROJECT>", r.cfg.Project))
+	}
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, suffix := range []string{"_plan_earlier_givers.up.sql", inFlightPlanMigration} {
+		at := slices.IndexFunc(all, func(migration migrations.Migration) bool { return strings.HasSuffix(migration.Name, suffix) })
+		if at < 0 {
+			r.t.Fatalf("no embedded migration ends %s", suffix)
+		}
+		block, err := migrations.WayBack(all[at].Version)
+		if err != nil {
+			r.t.Fatalf("read the way back of %s: %v", all[at].Name, err)
+		}
+		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
 	}
 }
 

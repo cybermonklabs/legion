@@ -39,7 +39,9 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 	withClaim.Claim = named
 
 	row := mustOutboxRow(t, "LEGION-208", withClaim, time.Now())
-	row.ID = 70
+	// The hour a kept row waits runs from its making (keptRoleMessageEnded), and a row this test
+	// builds holds the zero moment until it says otherwise, which is past every hour.
+	row.ID, row.CreatedAt = 70, time.Now()
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("the hook prompt naming %s: %v", named, err)
 	}
@@ -48,7 +50,7 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 	}
 
 	old := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
-	old.ID = 71
+	old.ID, old.CreatedAt = 71, time.Now()
 	if err := runner.execute(ctx, old); err != nil {
 		t.Fatalf("the hook prompt of the release before: %v", err)
 	}

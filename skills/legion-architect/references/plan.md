@@ -27,6 +27,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   The agent of the step whose role your `Production check` line names keeps its session past the close, for that check, and where two steps of the task have that role, the agent of the one that ran last; where no step of the task has that role, the check starts a fresh agent of it.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
+  The issue's one pod holds about one slot per step with no key of each role in its tasks that are not stopped, and one per key, and every slot shares the pod's reservation (2 CPU and 8Gi at the defaults).
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
@@ -65,7 +66,6 @@ The steps of one key, `<role>:<key>`, are one agent.
 So a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses (`… one agent runs on one harness.`).
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
-Among them, a role of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.

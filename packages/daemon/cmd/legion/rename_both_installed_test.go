@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -106,7 +105,7 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 		named []string // what the refusal names
 	}{
 		{"the moved repository beside a sibling", []string{"search", "prs", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"}, "",
-			[]string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+			[]string{"more than one owner", "cybermonklabs (a -R value naming sjawhar/legion)", "sjawhar (a -R value naming sjawhar/ygo)", "sends no token"}},
 		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implement_write_sjawhar", nil},
@@ -151,7 +150,7 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 			t.Fatal(err)
 		}
 	}
-	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
+	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+legionCopy(t)+"' \"$@\"\n")
 	write("gh", "#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n")
 	write("real-gh", "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --help|-h|help|--version) exec '"+gh+"' \"$@\";; esac; done\n"+
 		"case \"$*\" in *'--jq .visibility'*) echo private; exit 0;; esac\n"+

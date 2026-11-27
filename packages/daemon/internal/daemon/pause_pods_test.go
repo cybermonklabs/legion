@@ -421,21 +421,19 @@ func (r *podUpdateRig) wantLaunchKeptForOwed(role, owed claim.Role) {
 func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing.T) {
 	t.Parallel()
 	const first, second = claim.RoleReviewer, pauseStoppedRole
-	// letsOutAtOnce is a wake pacing that lets every paced launch out at the moment it reserves it.
-	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now }}
 	waitsFor := fmt.Sprintf("the held launch of the %s", second)
 	// firstRanSecondWaits is a rig of its own, taken to the moment where first's held launch has
 	// run and first has answered and has been suspended, and second's held start has not run.
 	firstRanSecondWaits := func(t *testing.T) *podUpdateRig {
 		t.Helper()
-		rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: letsOutAtOnce},
+		rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: lettingOutAtOnce},
 			releasedUnasked(first), releasedUnasked(second), answeredThenSuspended(claim.RoleTester))
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 		rig.stampsResumes()
 		rig.recordPause(store.PausePodHoldResumed, first, second)
 
-		// The daemon writes the let-out on a goroutine of its own when it reserves the launch
-		// (projectPause.wakeLetOut), so the write can land on either side of the launch.
+		// The daemon writes the let-out on a goroutine of its own when the pacer lets the launch
+		// out (projectPause.wakeLetOut), so the write can land on either side of the launch.
 		rig.intoRoundPod(first)
 		rig.heldStart(first)
 		rig.writeLetOut(first, podUpdateStart)
@@ -462,7 +460,7 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 		const sibling = claim.RoleTester
 		rig := firstRanSecondWaits(t)
 		rig.intoRoundPod(sibling)
-		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
+		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling], By: supervise.SuspendedByOperator})
 		rig.launchedIntoRoundPod(sibling)
 		rig.wantLaunchKeptForOwed(sibling, second)
 		rig.registerInto(sibling, podUpdatePod)

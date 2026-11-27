@@ -21,6 +21,17 @@ Read this before you write a root spec, before any edit to an approved one, and 
 - Cut each requirement carried over from an earlier issue that no source of this issue states:
   the words a person wrote in it, and what its `Filed for` line cites.
 
+## Requirements, checks and surfaces
+
+These hold for every spec, a root's or a child's.
+
+- Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
+  one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
+  A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
+
+- Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/surface-round.md`).
+  A child's own architect sends such a surface up to the root's architect.
+
 ## A check CI proves
 
 A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): it names
