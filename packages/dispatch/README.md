@@ -325,7 +325,12 @@ DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
-Playwright with `DISPATCH_E2E_PROCESSES=2`: Dispatch A on
+Playwright with `DISPATCH_E2E_PROCESSES=2`.
+Each half is a script you can call on its own: `bun run build:web-b` writes the second bundle,
+and `bun run e2e:multiprocess:run` runs Playwright over bundles that are already built, which
+is what CI's `dispatch-two-builds` job does after one `bun run build:web`, since its B is a
+previous build that brings its own web dist.
+The run is: Dispatch A on
 `DISPATCH_E2E_PORT_A` serving `web/dist`, Dispatch B on `DISPATCH_E2E_PORT_B` serving
 `DISPATCH_E2E_WEB_DIST_B` (here `web/dist-b`; default A's), and `e2e/round-robin-proxy.ts` on
 `DISPATCH_E2E_PORT`, which alternates requests and websockets between them. As every harness
@@ -378,8 +383,8 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess
 ```
 
-It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
-or unset is refused.
+It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess:run` sets and `e2e:multiprocess`
+reaches through it; any value other than `oidc` or unset is refused.
 
 The rules a row follows:
 
