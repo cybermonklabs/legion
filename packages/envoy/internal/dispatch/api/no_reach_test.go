@@ -1020,9 +1020,11 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 //
 //   - the step write, its rating, its experiment and the plan write each record only for the
 //     session of the Legion daemon of the key's project and refuse any other writer 403
-//     STEP_WRITER before they read the id (putIssueStep, the rating's, the experiment's and
-//     putIssuePlan's lockRecordedIssue), so each is sent over the deployment's shared agent
-//     credential, which proves no session, naming the session of the other project's daemon, with
+//     STEP_WRITER before they read the id (requireIssueDaemon, which putIssueStep, the rating's,
+//     the experiment's and putIssuePlan's write each call first; a slice bridge S3c-issues
+//     deletes, where each reads its issue as its caller first), so each is sent over the
+//     deployment's shared agent credential, which proves no session, naming the session of the
+//     other project's daemon, with
 //     a body each accepts: the rating carries one, the experiment write an experiment and its
 //     variant, and the plan write the default plan of a run (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
