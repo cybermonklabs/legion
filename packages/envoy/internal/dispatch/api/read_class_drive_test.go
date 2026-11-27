@@ -203,7 +203,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/broadcasts/{id}":        {target: "/api/v1/broadcasts/$broadcast", statement: statementOf(`\bfrom\s+broadcasts\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/decisions": {target: "/api/v1/issues/$issue/decisions", statement: statementOf(`\bfrom\s+decision_keeps\b`)},
-	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+mine\s+as\b`),
+	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+recursive\s+mine\s+as\b`),
 		volatile: []volatileMember{{"as_of", readTime}, {"asks.*.age_seconds", "each ask's age, counted to the moment of the read"}}},
 	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*\$1\b`)},
 	"GET /api/v1/asks/{id}/followers":   {target: "/api/v1/asks/$followedAsk/followers", statement: statementOf(`\bselect\s+issue_key,\s*artifact_id::text\s+from\s+asks\s+where\s+id\b`)},
