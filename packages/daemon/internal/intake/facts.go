@@ -2147,7 +2147,7 @@ type Result struct {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
-// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
 // code and its sentence, and carries none.
 type Refusal struct {
@@ -2157,17 +2157,19 @@ type Refusal struct {
 	Reasons []plan.Refusal
 }
 
-// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner or a sub-owner gave, with one
-// reason for each cause: register_plan answers it for a plan that plan.Supported or plan.Validate
-// refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), a version of
-// a sub-owner whose task stands at its report, its retro or its merge (PartsOfReportedTask,
-// PartsOfTaskAtAct), one that changes a task its giver does not write (plan.OwnershipRefusals), one
-// of a sub-owner that changes whether a task it does not write merges (MergeOfOwnersTask), one that
-// changes or removes a running or held task (RunningTaskChanged, HeldTaskChanged), one that changes
-// whether the work of a task merges once its retro or its merge has started or is held
-// (MergeOfStartedActChanged), one that leaves a done task whose work did not merge needed by no
-// task (DoneTaskWouldMerge), or one whose agent this release cannot name (AgentUnnamed). The message
-// holds every reason in its order, so a reader of the sentence alone reads every cause.
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner or a sub-owner gave, with its
+// reasons: register_plan answers it for a plan that plan.FromBlocks cannot read, or that
+// plan.Supported or plan.Validate refuses, each naming the first plan.MostReasons causes of each
+// kind and counting the rest, and the workflow for a version of a sub-owner of no task
+// (NoSubOwnedTask), a version of a sub-owner whose task stands at its report, its retro or its
+// merge (PartsOfReportedTask, PartsOfTaskAtAct), one that changes a task its giver does not write
+// (plan.OwnershipRefusals), one of a sub-owner that changes whether a task it does not write merges
+// (MergeOfOwnersTask), one that changes or removes a running or held task (RunningTaskChanged,
+// HeldTaskChanged), one that changes whether the work of a task merges once its retro or its merge
+// has started or is held (MergeOfStartedActChanged), one that leaves a done task whose work did not
+// merge needed by no task (DoneTaskWouldMerge), or one whose agent this release cannot name
+// (AgentUnnamed). The message holds every reason given, in its order, so a reader of the sentence
+// alone reads every reason the list holds.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {

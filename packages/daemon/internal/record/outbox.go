@@ -1551,6 +1551,19 @@ type SuperviseRequest struct {
 	// refuses a row that carries it (DisallowUnknownFields): the way back of
 	// migrations/20261122131321_delivery_branch.up.sql takes it off every supervise row.
 	Branch string `json:"branch,omitempty"`
+	// WakeDetail is the detail of the wake whose kind WakeKind names: the head and what its
+	// settlement came to, the role token or the session a message was sent to, or the backstop
+	// that came due. The task of the start is WakeTask of that kind and detail (workflow's
+	// wakeRow), so a cancel or a release's record that must tell the same wake in other words
+	// renders the task again from the two rather than cutting words out of it (workflow's
+	// retellWakeTask). Every wake the workflow takes names a detail that is not empty. A start
+	// that an earlier daemon queued carries no detail, and the payload of such a start still
+	// decodes, with WakeDetail empty: the store keeps the task of such a start as it is
+	// (store's retellStarts). A pause's owed launch carries no task and no detail. Every other
+	// request carries none. A release before this key refuses a row that carries it
+	// (DisallowUnknownFields), so a rollback strips it from each queued start first
+	// (docs/kubernetes.md, "Rolling back idle release").
+	WakeDetail string `json:"wakeDetail,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -3314,6 +3327,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a supervise %s on %s names the branch %q; only a start with a task names one, and it is the branch of a task of its issue other than the issue's own",
 					value.Op, issue, value.Branch)
 			}
+		}
+		if value.WakeDetail != "" && value.WakeKind == "" {
+			return fmt.Errorf("a supervise %s names a wake detail and no wake kind; only a wake's start names one", value.Op)
 		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)

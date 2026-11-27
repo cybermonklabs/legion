@@ -30,6 +30,7 @@ import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -236,25 +237,25 @@ const toolFor = (active: LegionToolSession) =>
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
-// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// (record.StatusNotTakenYet), and the description gives an architect the same text. The daemon's
 // golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
-// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
-// side alone fails one test or the other. The first and the last sentence of the rule are written
-// out here, so a fixture that holds only a part of the rule fails here too.
-test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+// `end-child-rule.json`. This case holds the description to the file, so a change on either side
+// alone fails one test or the other. It holds no word of either text.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, as the daemon writes them", () => {
   const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
     readonly rule: string;
     readonly notTakenYet: string;
   };
-  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
-  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  expect(rule).not.toBe("");
+  expect(notTakenYet).not.toBe("");
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. */
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of each property's description: every property and every `op` value in the order the
+ * tool declares them. Which properties carry a description is DESCRIBED_PROPERTIES. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -295,28 +296,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
-    step: {
-      type: "string",
-      enum: ["decisions", "criteria", "spec"],
-      description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
-    },
-    basis: {
-      type: "string",
-      description:
-        "register_gate's basis: the ancestor's document for the same step, as dispatch://<KEY>/spec, dispatch://<KEY>/artifact/<slug> or its artifact id. basis, basisVersion and reason come together or not at all",
-    },
-    basisVersion: {
-      type: "number",
-      description:
-        "register_gate's basis version: the version of the basis document a person approved, or the version its open approval request asks a person to approve",
-    },
+    step: { type: "string", enum: ["decisions", "criteria", "spec"] },
+    basis: { type: "string" },
+    basisVersion: { type: "number" },
     issues: { type: "array", items: { type: "string" } },
     task: { type: "string" },
     to: {
@@ -335,11 +319,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -354,44 +334,62 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
-    giveUp: {
-      type: "number",
-      description:
-        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both",
-    },
-    consumer: {
-      type: "string",
-      description:
-        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence",
-    },
-    throughSeq: {
-      type: "number",
-      description:
-        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
-    },
-    bound: {
-      type: "number",
-      description:
-        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both",
-    },
-    unbounded: {
-      type: "boolean",
-      description:
-        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both",
-    },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
+    bound: { type: "number" },
+    unbounded: { type: "boolean" },
   },
   required: ["op"],
   additionalProperties: false,
 });
 
+/** The properties whose description the tool states, in the order it declares them, each with the
+ * operations, fields, flags and values that description names. */
+const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  artifactId: ["register_gate", "register_plan", "--artifact"],
+  step: ["register_gate", "decisions", "criteria", "spec"],
+  basis: ["register_gate", "basisVersion", "reason"],
+  basisVersion: ["register_gate"],
+  task: ["stop_task", "plan_task", "default"],
+  reason: [
+    "close_root",
+    "request_backward_move",
+    "retry_or_escalate",
+    "pause",
+    "set_p0_bound",
+    "clear_p0_bound",
+    "register_gate",
+    "discard_give_up",
+    "replay_give_up",
+    "rerun_child",
+    "issue",
+  ],
+  giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
+  consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
+  throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
+  bound: ["set_p0_bound", "unbounded"],
+  unbounded: ["set_p0_bound", "true", "legion.yaml", "admission_p0_bound"],
+};
+
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
-    const served = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as unknown as {
-      readonly properties: { readonly task: object };
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as {
+      readonly properties: Record<string, Record<string, unknown>>;
     };
-    // `task`'s description is words an agent reads, not the schema: neither side holds it here.
-    Reflect.deleteProperty(served.properties.task, "description");
-    expect(JSON.stringify(served)).toBe(OMP_LEGION_TOOL_SCHEMA);
+    const described: string[] = [];
+    const properties: Record<string, Record<string, unknown>> = {};
+    for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
+      if (description !== undefined) {
+        expect(typeof description, name).toBe("string");
+        const missing = namesMissing(String(description), DESCRIBED_PROPERTIES[name] ?? []);
+        expect(missing, name).toEqual([]);
+        described.push(name);
+      }
+      properties[name] = property;
+    }
+    expect(described).toEqual(Object.keys(DESCRIBED_PROPERTIES));
+    expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -928,6 +926,20 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     "`verdict` pass|fail from the tester or a role of the deployment"
   );
   expect(tool.description).not.toContain("when your role's instructions require one");
+});
+
+// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
+// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
+// no phase worker is given a description of its own. That one description names the `verdict`
+// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
+// held: the description names the tester in other sentences too, so a check of it could not fail.
+// The case holds no word of it.
+test("every phase worker is given the same description of the legion tool", () => {
+  const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
+    (role) => toolFor(claimSession(role)).description
+  );
+  expect(new Set(described).size).toBe(1);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {

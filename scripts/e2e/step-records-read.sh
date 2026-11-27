@@ -91,8 +91,7 @@ printf '%s\n' "${planned%%$'\n'*}"
 # and no such line where they name none; then one run per line, except the line of a task of the
 # issue's plan, which comes before its runs and is no run:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
-#   task <task> needs <tasks|nothing>: <place> <step> <state>, …
-#   task <task> needs are not recorded: <place> <step> <state>, …
+#   task <task> needs <[tasks]|[]|->: <place> <step> <state>, …
 # The line `Experiment …` is read only right after the header; anywhere else it is no run.
 awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }

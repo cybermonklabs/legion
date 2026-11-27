@@ -56,8 +56,8 @@ func TestLoadReadsTheHooks(t *testing.T) {
 
 // A file that names no `hooks:` key runs the one hook the daemon ships (DefaultHooks), and one
 // that writes the empty list runs none: the empty list is the operator switching the shipped hook
-// off, which is why the key is read as a pointer. The default's words are pinned here, since they
-// are what a deployment that configures nothing puts in front of its workers.
+// off, which is why the key is read as a pointer. The shipped hook's words are its constant,
+// DefaultWorkBackPrompt: what they say is prose for the roles, which no unit test holds.
 func TestLoadRunsTheShippedHookWithoutTheKey(t *testing.T) {
 	cfg, err := Load(writeConfigFile(t, minimalFile), noEnv)
 	if err != nil {
@@ -66,10 +66,13 @@ func TestLoadRunsTheShippedHookWithoutTheKey(t *testing.T) {
 	want := []Hook{{
 		Name: "work-back", On: "work_back", Every: 5,
 		Roles:  []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer},
-		Prompt: "We read no progress on this issue: its work has gone back the number of times recorded below. Report to the architect what is in your way, in your own words. The architect takes a step back, reads what each of you says, and decides the path. Carry on with the work while you wait, and say so if you read it as on track.",
+		Prompt: DefaultWorkBackPrompt,
 	}}
 	if !reflect.DeepEqual(cfg.Hooks, want) {
 		t.Errorf("Hooks without the key = %+v, want the shipped hook %+v", cfg.Hooks, want)
+	}
+	if DefaultWorkBackPrompt == "" {
+		t.Error("the shipped hook carries no words, so it would put nothing in front of its roles")
 	}
 
 	off, err := Load(writeConfigFile(t, minimalFile+"hooks: []\n"), noEnv)

@@ -944,9 +944,9 @@ export function createLegionTool(deps: {
         "and the merge itself after such a task's last step. Every other task's work merges with the task that needs it. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first " +
-        "version. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: " +
-        "stop it with stop_task first, and a plan of an issue " +
+        "version. Legion records nothing when it refuses a plan it does not carry out, with a reason for each cause, " +
+        "the first reasons of each kind and one more that counts the rest of that kind " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
         "again is answered as taken, and adds you to its givers), another document than the plan " +

@@ -238,17 +238,22 @@ type outbox struct {
 // that check can record, a finished issue's drop of the record of its pods' disks, a stop's wait
 // for a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open
 // resume that refuses one, a project pause's stop of a role and which pause stopped a role, and
-// the end of a pause's hold of a pod a deletion took.
+// the end of a pause's hold of a pod a deletion took. The delivery wake's take waits for any
+// release of the issue that still stands, not only for one that recorded the role
+// (store.Store.TakeDeliveryWake): the delivery wake resumes its claim in process, and that resume
+// does not wait for the release's teardown, as a workflow wake's `start` does. It takes nothing
+// either while a start that brings the role back is queued, such as a cancel's resume.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
+	CommitIssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
-	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
+	CancelIssueRelease(ctx context.Context, project, issue string, woken store.ReleaseWokenRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
-	DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline, resume store.ReleaseResumeRow,
+	DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline, woken store.ReleaseWokenRow,
 		outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ForgetIdleDecline(ctx context.Context, project, issue string) error
 	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
@@ -261,7 +266,7 @@ type outboxTrees interface {
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
-	TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error)
+	TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, generation uint64, at time.Time, mark int64) (store.DeliveryWake, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role, token claim.Token) (id, pause int64, found bool, err error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string, token claim.Token, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
@@ -2265,7 +2270,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // stays owed until the role holds its topic and the row's publish reaches it. The debt ends
 // undelivered on these events alone:
 //
-//  1. a pod release of the issue recorded after that stop (store.StoppedByAPause);
+//  1. a pod release of the issue recorded after that stop, or a release of it whose teardown gave
+//     up on its record after that stop (store.StoppedByAPause);
 //  2. a takeover suspension: the claim suspended by any source but the release, an operator's,
 //     the daemon's and a root's own exit among them;
 //  3. a failure;
@@ -3976,14 +3982,64 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 // cancelled this release has already resumed what it suspended, and a release that finished
 // left the pod gone.
 //
+// The teardown is one-way from the runtime's read of the store under its pod lock, just before
+// the runtime takes the pod: that read commits the release where it acts
+// (store.Store.CommitIssueRelease). The runtime reads the issue's Sandbox under that lock first,
+// and it asks the store only for a Sandbox of the issue and tree, or for one already gone. It
+// refuses a Sandbox labelled for another project, issue or tree before it asks, so that refusal
+// commits nothing: the row runs again, and a later takeover or queued start can still cancel the
+// release. A step of the runtime after the commit can fail once the pod is gone, and the row then
+// runs again. That attempt reads the mark as committed (store.ReleaseDecision.Committed): it
+// cancels nothing, and it asks the runtime again, whose steps are each done at most once (a
+// Sandbox already gone is done, a Suspended one is not patched again, a Secret already gone
+// counts as deleted). Once the runtime has answered, the release's record is the first step, and
+// it names the release's mark (store.Store.RecordPodRelease). A record that cannot be written is
+// the teardown's error: the mark stands, and the row runs again on the outbox's backoff, until
+// workflow.WakeHeldForRelease after the mark (store.ReleaseDecision.MarkedAt), R3's bound. The
+// attempt at or past that bound gives up on the record (recordGivenUp) and finishes the steps that
+// are left. Its last write, in place of the clear of the mark, settles the wakes taken under the
+// mark in place of the record, writes no pod release and clears the mark, in one transaction
+// (settleGivenUp, store.Store.SettleUnrecordedRelease), so no wake is taken between the settle and
+// the clear. Once that transaction commits, it logs one ERROR line naming the issue, the release
+// and the write's error, and the row finishes. A later step that fails runs the row again too.
+// Where the record was written, that attempt reads the mark as a release that took its pod
+// (store.ReleaseDecision.PodTaken): it asks the runtime nothing, cancels nothing, and finishes the
+// steps that are left. A cancel then would resume roles in a pod that is gone and drop the wakes
+// the record already counted. Where the teardown gave up on the record, no record names the mark:
+// that attempt reads it as committed (store.ReleaseDecision.Committed), cancels nothing, asks the
+// runtime again, and writes the record or gives up on it again. The release line follows the
+// record's first write, so it is logged once, by the attempt whose record lands, and a teardown
+// that gave up on its record logs none.
+//
+// A release whose launcher read the workspace first takes the pod that read found clean or
+// nothing (record.IssueRelease.PodUID), and whether the runtime still holds that pod is read under
+// its pod lock, before the store is. Where the runtime no longer holds it, the store is read
+// without a commit (store.Store.IssueRelease), which cancels a release for two causes only,
+// store.ReleaseCauseOvertaken and store.ReleaseCauseUnauthorized (store.ReleaseCausePaused is the
+// workspace check's alone, IssueReleaseCheck), and the daemon changes one answer of it:
+// store.ReleaseActs for a mark that is neither committed nor recorded (!Committed && !PodTaken)
+// becomes a cancel with store.ReleaseCauseOvertaken, since the pod in the old pod's place is one
+// no read showed clean, and a line says so. Every other answer stands, and a cancel keeps the hold
+// that releaseHold gives its cause:
+//
+//   - store.ReleaseOver, a release whose mark no row holds any more, does nothing and records no
+//     hold;
+//   - a cancel for store.ReleaseCauseOvertaken, where the pod was given work after the mark,
+//     records workflow.IdleHoldOvertaken, the hold the changed answer records too;
+//   - a cancel for store.ReleaseCauseUnauthorized, where the run the release was taken against
+//     moved on, the issue left the workflow, its tree lingers or its cleanup is reserved, records
+//     workflow.IdleHoldUnauthorized;
+//   - store.ReleaseActs for a mark that is committed or recorded acts, since an earlier attempt was
+//     authorized to take that pod, and the teardown finishes the release as above.
+//
 // A teardown of the release of a pod no role can use that took nothing records no pod release and
 // logs no release line, which would count one release twice, and logs instead that it found no
 // Sandbox to release; it still ends the pause's hold on the pod, runs the end of the pod and
 // clears the mark, which are owed whoever took the pod. Whether it took the pod is the runtime's
 // own answer (runtime.IssueReleaser), not a read made before it, together with the mark's note of
 // an earlier attempt that came to the runtime's first write: store.ReleaseTeardown states the rule,
-// the protocol and the window it leaves. The idle release's teardown records its release and logs
-// its line whatever the runtime answered.
+// the protocol and the window it leaves. A release whose record stands took the pod. The idle
+// release's teardown records its release and logs its line whatever the runtime answered.
 func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload record.IssueRelease) error {
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")
@@ -4011,17 +4067,31 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// standing, which is the same release. That read is the teardown's point of no return, so it
+	// commits the release where it acts (store.Store.CommitIssueRelease): the runtime's steps after
+	// it can fail once the pod is gone, and the teardown that runs again then acts and never
+	// cancels.
+	//
+	// Where the runtime no longer holds the pod the launcher read (record.IssueRelease.PodUID),
+	// that read commits nothing, since a committed release cannot be cancelled, and the daemon
+	// changes one answer of it only: store.ReleaseActs for a mark that is neither committed nor
+	// recorded (!Committed && !PodTaken) becomes a cancel with store.ReleaseCauseOvertaken.
+	// store.ReleaseOver, a cancel the store decided (store.ReleaseCauseOvertaken or
+	// store.ReleaseCauseUnauthorized, the only causes this read gives) and store.ReleaseActs for a
+	// committed or recorded mark keep their answers, and a cancel keeps the hold releaseHold gives
+	// its cause. The comment of releaseIssue says what each answer does.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
-		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
+		gone := payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID)
+		read := r.trees.CommitIssueRelease
+		if gone {
+			read = r.trees.IssueRelease
+		}
+		inner, err := read(ctx, r.project, releasing, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
 		}
-		// A release whose launcher read the workspace first takes the pod that read found clean
-		// or nothing (record.IssueRelease.PodUID): read here, under the pod lock, a pod that took
-		// its place is one no read showed clean, and the release is cancelled as one overtaken.
-		if inner.Act == store.ReleaseActs && payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID) {
+		if gone && inner.Act == store.ReleaseActs && !inner.Committed && !inner.PodTaken {
 			r.log.Info("outbox: the pod the release's launcher read is no longer the issue's pod; the teardown takes nothing and the release is cancelled",
 				"issue", row.Issue, "readPod", payload.PodUID)
 			inner.Act, inner.Cause = store.ReleaseCancel, store.ReleaseCauseOvertaken
@@ -4040,34 +4110,86 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 			return err
 		}
 	}
-	// recordsAnyway is whether this teardown records its release whatever the runtime answers: the
-	// idle release always does, and the release of a pod no role can use does where its mark says
-	// an earlier attempt came to the runtime's first write (store.ReleaseTeardown). Where it does
-	// not, the runtime's callback notes that on the mark, just before the runtime's first write,
-	// and once; where it does, there is nothing to note and the runtime is given no callback.
-	recordsAnyway := !decision.SuspendsNoRole || first.Teardown == store.TeardownReached
-	var writing func(context.Context) error
-	if !recordsAnyway {
-		writing = func(ctx context.Context) error {
-			return r.trees.NoteReleaseTeardown(ctx, r.project, row.Issue, decision.Release, store.TeardownReached)
+	// A release whose record stands has taken its pod already: this row is its teardown run
+	// again after a step of its own failed (store.ReleaseDecision.PodTaken). The runtime is not
+	// asked again, and the steps below finish the release; the record answers the row it wrote and
+	// writes nothing. A committed release (store.ReleaseDecision.Committed) asks the runtime again.
+	//
+	// records is whether this teardown records its release: one whose record stands, one that
+	// records it whatever the runtime answers (recordsAnyway), or one whose runtime took the pod
+	// (store.ReleaseTeardown).
+	records := first.PodTaken
+	if !first.PodTaken {
+		// recordsAnyway is whether this teardown records its release whatever the runtime answers:
+		// the idle release always does, and the release of a pod no role can use does where its
+		// mark says an earlier attempt came to the runtime's first write (store.ReleaseTeardown).
+		// Where it does not, the runtime's callback notes that on the mark, just before the
+		// runtime's first write, and once; where it does, there is nothing to note and the runtime
+		// is given no callback.
+		recordsAnyway := !decision.SuspendsNoRole || first.Teardown == store.TeardownReached
+		var writing func(context.Context) error
+		if !recordsAnyway {
+			writing = func(ctx context.Context) error {
+				return r.trees.NoteReleaseTeardown(ctx, r.project, row.Issue, decision.Release, store.TeardownReached)
+			}
+		}
+		released, err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize, writing)
+		if err != nil {
+			return err
+		}
+		switch decision.Act {
+		case store.ReleaseOver:
+			r.log.Info("outbox release teardown finished without acting: the pod's release was over when the runtime asked",
+				"row", row.ID, "issue", row.Issue)
+			return nil
+		case store.ReleaseCancel:
+			hold, why := releaseHold(decision.Cause)
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+		}
+		records = recordsAnyway || released
+	}
+	// The record of the release comes first, before the teardown's own steps that can fail: it
+	// names the release's mark, so a teardown that runs again after one of them failed finishes
+	// the release, does not ask the runtime again and records no second release
+	// (store.Store.RecordPodRelease). A record that cannot be written is the teardown's error: the
+	// mark stands, and the row runs again on the outbox's backoff, until
+	// workflow.WakeHeldForRelease after the mark. The attempt at or past that bound gives up on
+	// the record (recordGivenUp) and finishes the steps below, and its last write is the settle, in
+	// place of the clear of the mark (settleGivenUp). A release that suspended no role records no
+	// roles. The release line follows the record's first write, and a retry whose record was
+	// already written logs it no second time (recordPodRelease).
+	//
+	// unrecorded is the record's error where this teardown gave up on the record, and nil
+	// otherwise: the last write settles the release where it is set and clears the mark where it
+	// is nil (clearOrSettleRelease).
+	var unrecorded error
+	if records {
+		suspended := decision.Suspended
+		if decision.SuspendsNoRole {
+			suspended = nil
+		}
+		wrote, err := r.recordPodRelease(ctx, row.Issue, decision.Release, payload.Generation, suspended)
+		if err != nil {
+			if !r.recordGivenUp(decision) {
+				return err
+			}
+			unrecorded = err
+		}
+		switch {
+		case wrote && decision.SuspendsNoRole:
+			r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
+				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
+				"sandbox", sandboxName, "claims", claims)
+		case wrote:
+			// The check before the role stops read the workspace and found no commit on a working
+			// copy or a local bookmark that origin does not hold and no working-copy change, or
+			// this teardown would not run (store.IssueRelease waits for the check, and a check
+			// that found work cancelled the release): the line says so, which is what tells a
+			// reader of the log what every released pod held.
+			r.log.Info("outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake",
+				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation)
 		}
 	}
-	released, err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize, writing)
-	if err != nil {
-		return err
-	}
-	switch decision.Act {
-	case store.ReleaseOver:
-		r.log.Info("outbox release teardown finished without acting: the pod's release was over when the runtime asked",
-			"row", row.ID, "issue", row.Issue)
-		return nil
-	case store.ReleaseCancel:
-		hold, why := releaseHold(decision.Cause)
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
-	}
-	// records is whether this teardown records its release: whatever the runtime answered, or
-	// because the runtime took the pod (store.ReleaseTeardown).
-	records := recordsAnyway || released
 	// The pod is gone, whichever act took it: the hold a project's pause had on it holds nothing
 	// now (decision 13 of dispatch://INFRA-3759).
 	gone := "a release's teardown deleted the pod"
@@ -4088,28 +4210,11 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// suspended no claim, and a claim an earlier idle release left `released` must keep the
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
-		// The release line follows the record, and a retry whose record was already written logs
-		// it no second time (recordPodRelease).
-		if records {
-			if r.recordPodRelease(ctx, row.Issue, decision.Release, payload.Generation, nil) {
-				r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
-					"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
-					"sandbox", sandboxName, "claims", claims)
-			}
-		} else {
+		if !records {
 			r.log.Info("outbox: the release found no Sandbox of the issue to release and released nothing",
 				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "claims", claims)
 		}
-		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
-	}
-	// The check before the role stops read the workspace and found no commit on a working copy or
-	// a local bookmark that origin does not hold and no working-copy change, or this teardown would
-	// not run (store.IssueRelease waits for the check, and a check that found work cancelled the
-	// release): the line says so, which is what tells a reader of the log what every released pod
-	// held. It follows the record, as the other release's line does.
-	if r.recordPodRelease(ctx, row.Issue, decision.Release, payload.Generation, decision.Suspended) {
-		r.log.Info("outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake",
-			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation)
+		return r.clearOrSettleRelease(ctx, row.Issue, decision.Release, unrecorded)
 	}
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short
 	// left the pod standing and needs none. Arming cancels the previous release's backstops too,
@@ -4121,7 +4226,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if err := r.armBackstops(ctx, issue); err != nil {
 		return err
 	}
-	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+	return r.clearOrSettleRelease(ctx, row.Issue, decision.Release, unrecorded)
 }
 
 // issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is
@@ -4157,7 +4262,18 @@ func (r *outbox) issueSandboxName(issue string) string {
 // had stopped as stopped by the pause, holds the pod, and arms the backstop of the worker of each
 // step that takes work as the stop transaction arms one (decision 12 of dispatch://INFRA-3759).
 // The backstop is the idle release's own (outbox.backstop), and each such worker is the claim the
-// record gives that step (workflow.OpenWorkers, openWorkers), read in the cancel's transaction.
+// record gives that step (workflow.OpenWorkers, openWorkers), read in the cancel's transaction. A
+// wake that a role took after the release recorded it is then left
+// as the launch the pause owes that role, and the pause's resume runs its start. The task of that
+// start becomes the task of a wake of a role the pause stopped (workflow.PausedWakeTask), since the
+// release took no pod. While the project runs, the cancel drops that wake and its start instead,
+// and the role's resume carries what the role must still read of it (releaseResume). Two kinds of
+// role the release stopped keep their wake's start, whose task becomes the task of the same wake
+// in the words of a release that did not finish (workflow.TakenOverWakeTask), paused or not: a
+// role whose claim a close, a linger or an operator took over, which no cancel resumes, and a role
+// whose stop the release's mark does not record, which that start brings back. A role of that
+// second kind with no start queued, as where no wake of it was taken, is resumed, or recorded
+// stopped by the pause, as a role the mark records is (store.CancelIssueRelease).
 //
 // The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
 // which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other
@@ -4168,7 +4284,8 @@ func (r *outbox) issueSandboxName(issue string) string {
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenWorkers: r.openWorkers})
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenWorkers: r.openWorkers, WakeTask: workflow.PausedWakeTask,
+				TakenOverWakeTask: workflow.TakenOverWakeTask})
 		if err != nil {
 			return err
 		}
@@ -4211,15 +4328,26 @@ func (r *outbox) openWorkers(ctx context.Context, tx pgx.Tx, key string) ([]clai
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
 // `start` row a wake writes (workflow's wakeRow), naming the claim by its token, at the generation
-// the cancel read of the issue, naming no phase and carrying no task. It names the claim because
-// two claims can hold one role, and a resume that named the role alone would reach the claim of
-// the worker on that role's step twice and leave the other released. It carries no task because
-// nothing happened to the claim: its process was stopped and is started again in the pod it was
+// the cancel read of the issue, naming no phase. It names the claim because two claims can hold
+// one role, and a resume that named the role alone would reach the claim of the worker on that
+// role's step twice and leave the other released. It carries no task where nothing happened to
+// the claim but the release: its process was stopped and is started again in the pod it was
 // always in, where a wake's task tells a role its pod went and came back.
-func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
-	return func(token claim.Token, role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+//
+// A cancel that dropped a wake of the role, taken after the release recorded it, hands this the
+// kind, the detail and the task of that wake (store.DroppedWake). A CI settlement and the backstop
+// reach the role only through that task, so the resume carries it (workflow.CancelledWakeTask). A
+// task in the release's words is told again in the words of a release that did not finish. A task
+// in a pause's words goes as it is, since the cancel kept the pod those words name. Every other
+// wake leaves the resume no task. A reviewer's wake task ends with the daemon's two sentences of
+// its review round, as every task the workflow queues for the reviewer does (workflow's
+// queuedRow), so a reviewer's resume that carries one says so (RoundNamed), and its send adds no
+// second pair.
+func (r *outbox) releaseResume(issue, tree string) store.ReleaseWokenRow {
+	return func(token claim.Token, role claim.Role, generation uint64, wake store.DroppedWake) (store.IdleReleaseRow, error) {
+		task := workflow.CancelledWakeTask(wake.Kind, wake.Detail, wake.Task)
 		row, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "start", Tree: tree,
-			Role: role, Claim: token, Generation: generation}, r.now())
+			Role: role, Claim: token, Generation: generation, Task: task, RoundNamed: task != "" && role == claim.RoleReviewer}, r.now())
 		if err != nil {
 			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's claim %s: %w", issue, token, err)
 		}

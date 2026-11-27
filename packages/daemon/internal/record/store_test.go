@@ -2305,6 +2305,61 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	}
 }
 
+// A start of an issue's role waits while an older issue_release row of the issue is in the
+// outbox, so no role starts in the pod the release's teardown is about to take: a wake taken after
+// the release recorded its role starts that role in the pod that comes back. Nothing else waits
+// on the teardown: a start queued before it, the release's own role stop (a supervise row of op
+// `release`), a suspend of the same issue, a row of another kind and another issue's start are
+// each due.
+func TestAStartWaitsForItsIssuesReleaseTeardown(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
+		row, err := NewOutboxRow(issue, payload, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	}
+	start := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}
+	inTx(t, st, func(tx pgx.Tx) {
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1})
+		enqueue(tx, "LEGION-208", IssueRelease{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1})
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "in_progress", ""))
+		enqueue(tx, "LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleArchitect, Generation: 1})
+	})
+	// claimed is every row due at at, in claim order, each claimed and finished before the next is
+	// claimed, as a lane runs its rows.
+	claimed := func(at time.Time) []string {
+		var keys []string
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, at)
+			must(t, err)
+			keys = outboxKeys(rows)
+			for _, row := range rows {
+				leased, ok, err := records.ClaimRow(ctx, tx, row.ID, at, time.Minute)
+				must(t, err)
+				if !ok {
+					t.Fatalf("row %d was listed due but not claimed", row.ID)
+				}
+				must(t, records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken))
+			}
+		})
+		return keys
+	}
+
+	if got, want := claimed(now), []string{"supervise:LEGION-208:start", "supervise:LEGION-208:release", "issue_release:LEGION-208",
+		"supervise:LEGION-208:suspend", "dispatch_status:LEGION-208:testing", "supervise:LEGION-209:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed with the teardown in the outbox = %v, want %v", got, want)
+	}
+	if got, want := claimed(now.Add(2*time.Minute)), []string{"supervise:LEGION-208:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed once the teardown finished = %v, want the start that waited for it alone", got)
+	}
+}
+
 // A status write the outbox failed and pushed back is still unwritten, so it stays listed through its
 // backoff; a finished one is deleted and gone, and a row of another kind is never listed. The list
 // runs oldest first, the order an issue's statuses run in, so a newer write queued behind a

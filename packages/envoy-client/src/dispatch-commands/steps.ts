@@ -26,6 +26,21 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
+/** A task of the plan: the tasks it needs, as a list in brackets joined by commas, `[]` for none,
+ *  and `-` where its plan node recorded none, as `orDash` prints a field a record does not hold;
+ *  then each step the plan gives it, at the state Dispatch answers for it from the runs of the
+ *  plan's own run of the issue. A task id is lowercase letters, digits and hyphens, so neither `[]`
+ *  nor `-` is one, and the list holds no space, so it stays one field of the line. */
+function taskLine(
+  task: string,
+  needs: readonly string[] | null,
+  planned: readonly PlannedStep[]
+): string {
+  const states = planned.map((step) => `${step.step} ${step.name} ${step.state}`);
+  const needed = needs === null ? "-" : `[${needs.join(",")}]`;
+  return `task ${task} needs ${needed}: ${states.join(", ")}`;
+}
+
 /** The experiment a draw put the issue in and the variant it drew there, as the records of its
  *  newest run, its highest generation, name them: `Experiment <experiment>: variant <variant>.`,
  *  or nothing where none of those records names one. A Dispatch older than the two fields answers
@@ -36,20 +51,6 @@ function variantLines(records: readonly StepRecord[]): string[] {
     (record) => record.generation === newest && record.experiment != null && record.variant != null
   );
   return named === undefined ? [] : [`Experiment ${named.experiment}: variant ${named.variant}.`];
-}
-
-/** A task of the plan: the tasks it needs - `nothing` for none, and `are not recorded` where its
- *  plan node recorded none - then each step the plan gives it, at the state Dispatch answers for it
- *  from the runs of the plan's own run of the issue. */
-function taskLine(
-  task: string,
-  needs: readonly string[] | null,
-  planned: readonly PlannedStep[]
-): string {
-  const states = planned.map((step) => `${step.step} ${step.name} ${step.state}`);
-  const needed =
-    needs === null ? "are not recorded" : needs.length === 0 ? "nothing" : needs.join(", ");
-  return `task ${task} needs ${needed}: ${states.join(", ")}`;
 }
 
 /** `dispatch steps`: each task of an issue as Dispatch lists them, the tasks of its plan first,

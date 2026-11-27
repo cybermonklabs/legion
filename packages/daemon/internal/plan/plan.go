@@ -275,7 +275,7 @@ func ParseSteps(text string) ([]Step, error) {
 	for _, word := range words {
 		role, key, keyed := strings.Cut(word, ":")
 		if !nameWord.MatchString(role) || keyed && !nameWord.MatchString(key) {
-			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", word)
+			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", quoted(word))
 		}
 		steps = append(steps, Step{Role: role, Key: key})
 	}

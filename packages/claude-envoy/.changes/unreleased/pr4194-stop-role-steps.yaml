@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  A session whose stop has begun sends no registration, removal of topics or role claim, writes
+  no role record, and tells the session and stderr nothing, apart from the stop's own DELETE, the
+  drain and close of its connection, and their failure lines. The stop begins at the server's
+  stop, also while the session still starts. Three gates do this, each in one place: the client's
+  stop gate, the server's tell gate and its write gate. Every stderr line of the server's own goes
+  through the tell gate: the delivery queue's, the live view's, a reopened connection's, the
+  Legion boot's `claims/ready` retries and its lines after a role regain, and the line that stops
+  a Legion pane that cannot run. Once the stop has begun, a Legion boot sends no `claims/ready`
+  again, and the server sends the pane's Claude Code no SIGTERM of its own. Under
+  `ENVOY_INBOUND=listener` the relay socket opens no socket again once the stop has begun, also
+  while the session still starts. A heartbeat that is past its own check when the
+  stop begins sends no claim after that point, takes back no role and runs no regain hook. A
+  `/clear` that the stop overtakes moves nothing more. `envoy_role_set` is refused once the stop
+  has begun, with `this session is stopping, so it claims no role: role <role> is not held here`,
+  also where inbound messages are off, and `envoy_unsubscribe` removes nothing. A Legion claim
+  that still waits for the first turn or its bound when the stop begins is not made. A claim that
+  was on the wire when the stop began is not kept as a hold of the session's and leaves no record,
+  though the listener can still grant it: the listener's role reaper frees it once it finds the
+  holder gone. A relay frame that is being delivered when the stop begins is still shown and
+  answered.
+time: 2026-11-21T22:33:15Z
+custom:
+    Issue: pr4194

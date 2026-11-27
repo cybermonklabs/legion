@@ -31,18 +31,18 @@ func planOfTasksAToE(t *testing.T) Plan {
 }
 
 // FromBlocks gives each task's Needs as the ids of the tasks they name, in the order the block
-// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2E`
-// is a `.`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
+// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2D`
+// is a `-`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
 // needed once. Each word that names no task stays in Unresolved. So no caller holds a plan whose
 // needs are words. The fault is a plan read with the words of its needs, which no reader of a task
 // id can read, and which Validate takes; the control is a FromBlocks that keeps each word whole,
 // under which d needs the words.
 func TestFromBlocksReadsEachNeedAsTheTaskItNames(t *testing.T) {
-	read := planOf(t, 1, taskNeeding("a.b"), taskNeeding("c"),
-		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Eb"), "x", "c"),
+	read := planOf(t, 1, taskNeeding("a-b"), taskNeeding("c"),
+		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Db"), "x", "c"),
 		taskNeeding("e", "d", needWord("d")+"@vx"))
-	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a.b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
-		t.Fatalf("d needs %q and leaves %q unresolved, want [c a.b] and [x]", got.Needs, got.Unresolved)
+	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a-b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
+		t.Fatalf("d needs %q and leaves %q unresolved, want [c a-b] and [x]", got.Needs, got.Unresolved)
 	}
 	// A pin that is no `@v<N>` makes the reference name no block, as Dispatch reads it.
 	if got := read.Tasks[3]; !reflect.DeepEqual(got.Needs, []string{"d"}) || !reflect.DeepEqual(got.Unresolved, []string{needWord("d") + "@vx"}) {

@@ -16,8 +16,8 @@ import { executeDispatchTool } from "../dispatch-execute";
 import { DispatchNoRouteError } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the tasks of an issue and the steps that ran on it, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them: one header line, then, where the records of the
-// issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`,
+// `GET /api/v1/issues/{key}/steps` answers them: one header line; where the records of the
+// issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`;
 // then each task in turn. A task of the plan prints one line of its needs and its planned steps
 // before its runs, and each run prints one line. The format cases drive `executeDispatchTool` over
 // the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the
@@ -508,17 +508,17 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 1 steps in 2 tasks",
-        "task a needs nothing: 1 implementer running, 2 reviewer not started",
+        "task a needs []: 1 implementer running, 2 reviewer not started",
         "a 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer - 2026-11-16T09:00:00Z running running",
-        "task b needs a: 1 tester not started",
+        "task b needs [a]: 1 tester not started",
       ].join("\n")
     );
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
   // A plan node that recorded no needs (a daemon of the release before wrote it, or a Dispatch of
-  // the release before took the write) answers them null: the line says they are not recorded,
-  // never that the task needs nothing.
+  // the release before took the write) answers them null: the line prints `-` for them, as a run's
+  // line prints a field its record does not hold, never `[]`, the list of a task that needs none.
   test("a task whose needs are not recorded says so", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
@@ -534,9 +534,32 @@ describe("dispatch steps", () => {
 
     const { result } = await readSteps(answer);
 
-    expect(result.text.split("\n")[1]).toBe(
-      "task default needs are not recorded: 1 implementer passed"
-    );
+    expect(result.text.split("\n")[1]).toBe("task default needs -: 1 implementer passed");
+  });
+
+  // The variant is the issue's, so its line stands once, right after the header and above the
+  // line of the plan's first task, where step-records-read.sh reads it. The fault is a variant
+  // line printed inside a task, which that reader takes for no run.
+  test("an issue in an experiment prints its variant above the first task's needs", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: [],
+          planned: [{ step: 1, name: "implementer", state: "passed" }],
+          steps: [{ ...implementer, step: 1, experiment: "planning", variant: "b" }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n").slice(0, 3)).toEqual([
+      "LEG-1: 1 steps in 1 tasks",
+      "Experiment planning: variant b.",
+      "task default needs []: 1 implementer passed",
+    ]);
   });
 
   // Dispatch reads where a planned step stands from the runs of the plan's own run of the issue;
@@ -570,7 +593,51 @@ describe("dispatch steps", () => {
     const { result } = await readSteps(answer);
 
     expect(result.text.split("\n")[1]).toBe(
-      "task default needs nothing: 1 implementer passed, 2 reviewer not started"
+      "task default needs []: 1 implementer passed, 2 reviewer not started"
+    );
+  });
+
+  // A task id is lowercase letters, digits and hyphens (STEP_TASK_PATTERN), so `nothing` is one,
+  // and a word for "no need" that a task id can take reads two ways. So the needs print as a list
+  // in brackets, `[]` for none, and `-` where they are not recorded: neither is a task id. The ids
+  // are joined by commas with no space, so the list stays one field of a line split on spaces. The
+  // fault is a word for none that a task id can take; the control is the command that prints
+  // `nothing` for none, under which the task that needs none and the task that needs `nothing`
+  // print the same words.
+  test("a task named nothing is told apart from a task that needs none", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "nothing",
+          needs: [],
+          planned: [{ step: 1, name: "implementer", state: "not started" }],
+          steps: [],
+        },
+        {
+          task: "a",
+          needs: ["nothing"],
+          planned: [{ step: 1, name: "tester", state: "not started" }],
+          steps: [],
+        },
+        {
+          task: "c",
+          needs: ["a", "nothing"],
+          planned: [{ step: 1, name: "reviewer", state: "not started" }],
+          steps: [],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 0 steps in 3 tasks",
+        "task nothing needs []: 1 implementer not started",
+        "task a needs [nothing]: 1 tester not started",
+        "task c needs [a,nothing]: 1 reviewer not started",
+      ].join("\n")
     );
   });
 

@@ -235,7 +235,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Validate: %v", err)
 		}
-		refusals := append(validated, plan.Supported(given, builtinDeployment)...)
+		refusals := append(plan.Supported(given, builtinDeployment), validated...)
 		want := []plan.Refusal{
 			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
 			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."},

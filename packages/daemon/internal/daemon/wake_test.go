@@ -433,7 +433,7 @@ func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.
 		t.Fatalf("backstops armed by the release = %d, want the step's worker's one", got)
 	}
 
-	if taken, err := runner.trees.TakePodWake(ctx, "legion", key, other, checker, pods.WakeAgentMessage, time.Now(), 0); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", key, other, checker, pods.WakeAgentMessage, time.Now(), 0); err != nil || !taken {
 		t.Fatalf("the wake of the checker's own claim = %t, %v; want it taken", taken, err)
 	}
 	if got := due(); got != 1 {

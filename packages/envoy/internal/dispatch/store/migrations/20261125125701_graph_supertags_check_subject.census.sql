@@ -1,12 +1,9 @@
--- This migration inserts the attribute nodes check/subject and check/program and their tuples,
--- and sets the attributes of the five block type supertag nodes (callout, ask, requirement,
--- plan_task and check) to what 20261109051232_graph_supertags,
--- 20261113230000_graph_supertags_check_ci_check, 20261115130000_graph_supertags_element_versions and
--- 20261123080000_graph_supertags_plan_task_steps left on them, the version moved from 5 to 6.
--- Those rows are type nodes, and nothing but a migration writes a type node: no route and no
--- command writes one (cmd/dispatch's requireNoRouteOrCommandWritesAType), and no migration
--- between 20261123080000 and this one writes one. So the five nodes hold what those four left,
--- and the update rewrites only their version; and no node check/subject or check/program exists
--- for the inserts to meet. It reads no row of another table. The number of existing rows this
--- migration would refuse or rewrite is therefore 0.
+-- This migration inserts the attribute nodes check/subject and check/program and their tuples. It
+-- writes no other row: the text main shipped also set the attributes of the five block type
+-- supertag nodes, and the edit its replaces line declares took those writes out, so the version
+-- those nodes carry is the one 20261125034832_graph_supertags_plan_task_owner wrote. No migration
+-- below this one writes a node check/subject or check/program, and no route and no command writes a
+-- type node (cmd/dispatch's requireNoRouteOrCommandWritesAType), so no row exists for the inserts
+-- to meet. It reads no row of another table. The number of existing rows this migration would
+-- refuse or rewrite is therefore 0.
 select 0

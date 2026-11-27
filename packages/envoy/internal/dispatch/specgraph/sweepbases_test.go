@@ -451,40 +451,40 @@ func testCommitOnFailingRuns(id string) treeEdit {
 
 // withSecondCheck is wait-cycle, base, with a-restart-keeps-the-order, a check of the code that
 // passes, under a-message-survives-a-restart beside its failing check: a copy of
-// a-late-session-gets-the-message with its results and its ties. The block of the copy is built
+// a-late-session-gets-the-message with its results and its ties. The document of the copy is built
 // from a decode of base's approved.json of its own, before any writer runs, and written by the
 // writers of the package (nodeCopied, resultsCopied, tiesCopied) and in m1's spec file.
 func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 	t.Helper()
 	const old, added = "a-late-session-gets-the-message", "a-restart-keeps-the-order"
 	fsys := maps.Clone(base)
-	rename := strings.NewReplacer("#"+old, "#"+added, `serves="a-message-reaches-a-late-session"`, `serves="a-message-survives-a-restart"`)
-	var block string
+	rename := strings.NewReplacer("id: "+old, "id: "+added, "serves: a-message-reaches-a-late-session", "serves: a-message-survives-a-restart")
+	var document string
 	for _, n := range fileTree(t, base, "approved.json").(map[string]any)["nodes"].([]any) {
 		if n := n.(map[string]any); n["id"] == old {
-			block = rename.Replace(n["versions"].([]any)[0].(map[string]any)["block"].(string))
+			document = rename.Replace(n["versions"].([]any)[0].(map[string]any)["document"].(string))
 			break
 		}
 	}
-	if block == "" {
-		t.Fatalf("wait-cycle's approved.json holds no block of %s", old)
+	if document == "" {
+		t.Fatalf("wait-cycle's approved.json holds no document of %s", old)
 	}
-	fsys = editTree(t, fsys, "approved.json", nodeCopied(old, added, block))
-	fsys["files/m1/spec.md"] = &fstest.MapFile{Data: append(slices.Clone(fsys["files/m1/spec.md"].Data), "\n"+block...)}
+	fsys = editTree(t, fsys, "approved.json", nodeCopied(old, added, document))
+	fsys["files/m1/spec.yaml"] = &fstest.MapFile{Data: append(slices.Clone(fsys["files/m1/spec.yaml"].Data), document...)}
 	fsys = editTree(t, fsys, "results.json", resultsCopied(old, added))
 	fsys = editTree(t, fsys, "ties.json", tiesCopied(old, added))
 	return fsys
 }
 
 // nodeCopied is the writer of approved.json that adds a copy of the node old, as the node added of
-// one version, its first, with the block block.
-func nodeCopied(old, added, block string) treeEdit {
+// one version, its first, with the document document.
+func nodeCopied(old, added, document string) treeEdit {
 	return func(v any) any {
 		nodes := v.(map[string]any)["nodes"].([]any)
 		for _, n := range nodes {
 			if n := n.(map[string]any); n["id"] == old {
 				version := maps.Clone(n["versions"].([]any)[0].(map[string]any))
-				version["block"] = block
+				version["document"] = document
 				c := maps.Clone(n)
 				c["id"], c["versions"] = added, []any{version}
 				nodes = append(nodes, c)

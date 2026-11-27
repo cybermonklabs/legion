@@ -1,10 +1,13 @@
 kind: Added
 body: |-
     Dispatch's `plan_task` block takes `owner`, the role of the task's sub-owner, a string read and
-    created from block schema version 12. Its migration moves the stored schema from 11 to 12 with
-    the attribute, and a second one writes version 12 again above the migration that adds a check's
-    `subject` and `program`, which sorts after it and writes version 6, so the stored schema ends at
-    12 and the server and editor agree. The issue page labels it "task owner".
+    created from block schema version 12, and the issue page labels it "task owner". Its migration
+    moves the stored schema from 11 to 12 with the attribute. The migration that adds a check's
+    `subject` and `program` (`20261125125701`) sorts after it and moved the schema to 6, so it is
+    edited, under a replaces line naming the text legion-envoy v35.18.0 shipped, to move no version,
+    and the stored schema ends at 12 on every database, so the server and editor agree. A database
+    this release creates from empty is not rolled back to a release from v35.18.0 on, which refuses
+    to boot on it; it is reset instead.
 time: 2026-11-24T08:35:32.037159179Z
 custom:
     Issue: pr5169
