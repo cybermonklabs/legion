@@ -12,6 +12,12 @@ import (
 // and what it checks): what each step does to the run (apply), and which steps a run may take
 // next (enabled).
 
+// cmLaneHead is one lane and the send at its head, as a lock step reads them out.
+type cmLaneHead struct {
+	lane laneKey
+	send mentionSend
+}
+
 func (r *cmRun) apply(s cmStep) {
 	if r.fault != "" {
 		return
@@ -42,18 +48,22 @@ func (r *cmRun) apply(s cmStep) {
 			// The refresh records what its statement answered under this lock.
 			r.refresh.stmt = nil
 		}
-		// next hands the goroutine the head of one lane, which is then the lane it serves.
-		heads := map[laneKey]mentionSend{}
+		// next hands the goroutine the head of one lane, which is then the lane it serves. The
+		// heads go into a buffer this run reuses, filled only where next reads them: a map was
+		// made on every lock step, and a send is a kilobyte to copy into one.
+		r.heads = r.heads[:0]
 		if strings.HasPrefix(g.site, "next:") {
 			r.lock.Mutex.Lock()
 			for lane, sends := range r.sender.lanes {
 				if len(sends) > 0 {
-					heads[lane] = sends[0]
+					r.heads = append(r.heads, cmLaneHead{lane: lane, send: sends[0]})
 				}
 			}
 			r.lock.Mutex.Unlock()
 		}
-		r.log("%s takes the lock at %s", r.gName(g), g.site)
+		if r.tracing {
+			r.log("%s takes the lock at %s", r.gName(g), g.site)
+		}
 		r.release(g)
 		hadTimer := r.timer != nil
 		close(grant)
@@ -61,12 +71,12 @@ func (r *cmRun) apply(s cmStep) {
 		if g.running {
 			break
 		}
-		if len(heads) > 0 {
+		if len(r.heads) > 0 {
 			r.lock.Mutex.Lock()
-			for lane, head := range heads {
-				if sends := r.sender.lanes[lane]; len(sends) == 0 || sends[0].key() != head.key() {
-					head.claimed = r.sender.held[head.key()].claimed
-					g.lane, g.carried, g.givenUp = lane, head, false
+			for _, head := range r.heads {
+				if sends := r.sender.lanes[head.lane]; len(sends) == 0 || sends[0].key() != head.send.key() {
+					head.send.claimed = r.sender.held[head.send.key()].claimed
+					g.lane, g.carried, g.givenUp = head.lane, head.send, false
 				}
 			}
 			r.lock.Mutex.Unlock()

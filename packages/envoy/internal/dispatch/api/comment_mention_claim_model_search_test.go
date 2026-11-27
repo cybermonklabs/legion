@@ -3,9 +3,9 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"runtime"
@@ -311,6 +311,18 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	return result
 }
 
+// cmSilentHandler is a slog handler enabled at no level, so the sender's own log calls cost a
+// comparison and nothing else over the millions of runs the search replays.
+type cmSilentHandler struct{}
+
+func (cmSilentHandler) Enabled(context.Context, slog.Level) bool { return false }
+
+func (cmSilentHandler) Handle(context.Context, slog.Record) error { return nil }
+
+func (h cmSilentHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h cmSilentHandler) WithGroup(string) slog.Handler { return h }
+
 // The sender's claim model: the sender as built must keep every claim it trusts in step with its
 // row, never let a send it holds go with its attempt pending, never report a held send behind no
 // event, and never let s1 take A-2 first or a comment twice - with any refresh's answer lost and
@@ -337,9 +349,10 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 			cmLapsePeriods, model.DeliveryClaimLapse, mentionClaimRefresh)
 	}
 	// The sender logs every lost answer and failed read at ERROR, which the model makes by the
-	// thousand.
+	// thousand. A handler that discards its output still formats every record and its arguments;
+	// one that is enabled at no level has slog.Error return before it builds one.
 	logs := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(cmSilentHandler{}))
 	t.Cleanup(func() { slog.SetDefault(logs) })
 	type modelRun struct {
 		v       cmVariant

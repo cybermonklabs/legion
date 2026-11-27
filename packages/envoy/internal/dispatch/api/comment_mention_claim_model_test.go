@@ -464,6 +464,11 @@ type cmRun struct {
 	sweeps   map[int]*cmSweep
 	// broke is every check the run has broken, in order, and fresh those its last step broke.
 	broke, fresh []string
+	// trusted is checkClaims' buffer of the claims the sender records and trusts, and heads
+	// apply's of each lane's head send: a step's own scratch, kept here so the search's replays
+	// do not make one each.
+	trusted []cmTrusted
+	heads   []cmLaneHead
 	// tracing has the run write its trace: a replay of a run the search found breaking a check,
 	// or failing the model, and no other, since the text is only read then.
 	tracing bool
