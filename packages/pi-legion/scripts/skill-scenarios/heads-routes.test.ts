@@ -806,7 +806,9 @@ test("gh workflow list prints the world's workflows, as gh does", () => {
   const before = failed.routes.filter((route) => !/workflow \(list\|ls\)/.test(route.match));
   expect(failed.routes.slice(0, before.length)).toEqual(before);
   expect(
-    before.filter((route) => new RegExp(route.match, "s").test("gh workflow list --repo example/widgets"))
+    before.filter((route) =>
+      new RegExp(route.match, "s").test("gh workflow list --repo example/widgets")
+    )
   ).toEqual([]);
 });
 
