@@ -238,7 +238,7 @@ Each item below names a script, then what it proves.
   another agent's `dispatch claim` and release are refused naming the state and since when, which `dispatch read --issue` prints with the takeable time;
   a `SIGKILL`ed session is `unresponsive` until a 90-second gone horizon and then `gone`, the latency measured and printed, its role claim released only then, while `/clear` and `new_session` leave the id each replaces `gone` at once and `claude --resume` gets its topics back;
   both hosts show their model the peer's state and `last_seen`;
-  and a listener of the run's own raising `ENVOY_SESSION_MAX_AGE` to 2 h reaches both running listeners' `/healthz`, a session stalled seven minutes after that raise reading `unresponsive` where the shipping five minutes would already have dropped its key, and the rollback reaching both the same way.
+  and a listener of the run's own raising `ENVOY_SESSION_MAX_AGE` to 2 h reaches both running listeners' `/healthz`, a session stalled seven minutes after that raise reading `unresponsive` where the 5 minutes of a bucket an older listener created would already have dropped its key, and the rollback reaching both the same way.
   Legion pod only
 
 - `clean-session-stop-tmux.sh`
@@ -563,10 +563,10 @@ Each item below names a script, then what it proves.
 - `owner-steps.sh`
 
   the plan the owner of an issue gives picks which of today's steps run and in which order, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues of one project:
-  the owner writes `plan.md` with one task `a` whose steps are `implementer reviewer` through the real `dispatch artifact` command and gives it with `register_plan` before the gate opens, and the issue walks implementing, reviewing, retro and merging to done with no planner and no tester launched;
+  the owner writes `plan.md` with one task `a` whose steps are `implementer reviewer` through the real `dispatch artifact` command and gives it with `register_plan` before the gate opens, and the issue walks implementing, reviewing, retro and merging with no planner and no tester launched, and GitHub's merge takes it to `verifying`, where its close waits for its checks, or on through it to `done` once they pass;
   `dispatch steps --issue <KEY>`, run as a person, prints task `a`'s two steps, then the retro and the merge;
   an issue given no plan walks the project's default steps and holds their rows;
-  an issue given `implementer reviewer tester` launches its steps in that order and walks them to done;
+  an issue given `implementer reviewer tester` launches its steps in that order and walks them to its merge;
   its controls delete an issue's plan rows, during its planner's work and before its gate opens, give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`, and give the plan `tester implementer`, which is refused `409 PLAN_REFUSED` too.
   No GitHub, no cluster
 
@@ -760,7 +760,7 @@ Everything the run takes is its own, so two runs on one box
 
 - `XDG_STATE_HOME=<work>/xdg` — so the legions registry the run writes is its own, never the box's `~/.local/state/legion/legions.json`.
 
-- a per-run project key (`E2E<pid><epoch>`), and `E2E<pid><epoch>R` for the daemon behind the proxy
+- a per-run project key (`E2E` and the sum of the pid and the epoch, modulo 1,000,000), and that key with `R` after it for the daemon behind the proxy, each a Dispatch project key of at most ten characters, which is the one shape the loader takes
   — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
@@ -902,7 +902,7 @@ What it stands up, all of it the run's own:
   The daemon resolves the secret at boot and writes it as a daemon-held 0600 file; every pane's shim exports it to OMP alone.
   The run never reads the value; it checks the length in OMP's environment.
 
-- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E<pid><epoch>` — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
+- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E` and the sum of the pid and the epoch, modulo 10,000,000, a Dispatch project key of at most ten characters — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
   the restart keeps it), as the second daemon's is by a keeper of its own, `probe_interval_seconds: 5`, and the operator token file `legion claims` presents.
   `XDG_STATE_HOME` and `TMUX_TMPDIR` point into the work directory, so the legions registry and the private tmux servers are the run's.
 
@@ -926,7 +926,7 @@ The checks, in order, each printing what it observed (`== <check>` … `ok <chec
 | `suspend-keeps-the-session` | `legion claims suspend`: `suspended`, no locator, the pane gone, the session and its file kept |
 | `resume-on-demand` | `legion claims resume`: `ready` at the next generation in a new pane, same session |
 | `stale-generation-hello-refused` | writes a hello carrying generation 1's boot token to `<state_dir>/worker-stream.sock`: the daemon closes it with nothing written and logs `rejected hello (stale worker generation)` |
-| `unregistered-agent-retired-at-the-deadline` | a second daemon whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
+| `unregistered-agent-retired-at-the-deadline` | a second daemon, with a project key of its own built as the first's is (`S2D` in place of `S2E`), whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
 | `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, and a task delivered after the restart runs once — over the connection the shim's reconnect hello opened |
 | `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; the one process below it that runs that exact executable is the pane's OMP ([`launched`](#libprocess-treesh)), and no process on the line up from it to the pane's shell runs the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
 | `stray-pane-reaped-after-the-grace` | opens a window marked as the daemon's (`@legion_owner`) holding no recorded pane, and an unmarked one beside it: the periodic orphan sweep (every 60 s, 120 s grace) reaps the marked one no sooner than 120 s after it opened, and keeps the unmarked window and both claims' panes |
@@ -3195,7 +3195,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
   gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
-  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
+  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, provisioning in `workspace-init` alone, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
   the `boot` row's `issue: { cpu: 2950m, memory: 16Gi }` override, the ephemeral-storage limit and request the daemon's defaults;
   each pod is `Guaranteed`, and none carries an affinity (`lib/stage4b-pods.jq` `reservation_problems`).
@@ -4192,7 +4192,7 @@ node of a hosted runner.
 |`launch`|the driver writes the `legion.yaml` and launches two issue roots on `tmux/tmux` through the runtime's `Spawn` under `runtimeClassName: gvisor`; the first creates the repository cache and the second starts once it is Ready|
 |`provision`|each pod has one `workspace-init=0` init-container status|
 |`no-feed`|each pod lacks `/legion/feed`, and no container mounts that path|
-|`refs`|outside `refs/jj/`, the first clone has `refs/heads/master` and `refs/remotes/origin/master` alone, with no tag|
+|`refs`|outside `refs/jj/`, each pod's clone has its issue's `refs/heads/legion/CLONE-<n>`, `refs/heads/master`, `refs/remotes/origin/HEAD` and `refs/remotes/origin/master` alone, so no tag|
 |`clone-config`|the clone has narrow default-and-issue refspecs, `--no-tags`, `gc.auto=0`, `maintenance.auto=false` and jj's `remotes.origin.fetch-tags=~*`|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
 |`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes|
@@ -5942,10 +5942,10 @@ The owner writes with the real `dispatch` CLI under bun in the architect's sessi
 | :--- | :--- | :--- | :--- |
 | `plan-written` | the owner's session writes `plan.md` on the first issue with one block `:::plan_task{#a steps="implementer reviewer"}` through `dispatch artifact` | the daemon's own client reads version 1 with one `plan_task` block `a` whose `steps` is `implementer reviewer` | Dispatch drops the `steps` attribute of a block, or keeps no blocks for a version |
 | `plan-registered` | `POST /legion/v1/plans/register` with the architect's grant and version 1, while the issue stands at admitted | `200` with the plan at version 1 and one task `a` naming `implementer` and `reviewer` | the route refuses an owner's plan this release carries out, or reads another version |
-| `walk-implementer-reviewer` | the spec approved and registered; the walk of the plan: the implementer's completion, a person's approving review, the retro, GitHub's merge | the issue stands in implementing, reviewing, retro, merging and done in turn, and no planner and no tester was ever launched | the walk runs today's line, or a step the plan does not name |
+| `walk-implementer-reviewer` | the spec approved and registered; the walk of the plan: the implementer's completion, a person's approving review, the retro, GitHub's merge | the issue stands in implementing, reviewing, retro and merging in turn, then leaves merging for `verifying`, where its close waits for its checks, or for `done` once they pass, and no planner and no tester was ever launched | the walk runs today's line, or a step the plan does not name |
 | `steps-read` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 4 steps in 1 tasks`, task `a`'s step 1 implementer and step 2 reviewer, then the retro and the merge, each ended `passed` with an agent | a step record names the task `default` or the place of today's line |
-| `walk-default-steps` | the second issue, given no plan, walked from planning to done, the architect signing off its acceptance | the eight phases in turn; `issue_plans` version 0 of the source `default`, `plan_tasks` task `default` ending `done`, `plan_steps` at places 1 to 5, one start of each step in `step_starts`, and the seven records of task `default` in `dispatch steps` | an issue with no plan gets no rows of the default steps, or its walk drops one |
-| `control-default-rows-deleted` | the third issue, given no plan, with its rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` while its planner works; it walks today's line to done | the check of `walk-default-steps`' rows fails on it, saying its `issue_plans` rows are `[]` | that check passes whatever the store holds |
+| `walk-default-steps` | the second issue, given no plan, walked from planning to its merge, the architect signing off its acceptance | the seven phases from planning to merging in turn, then `verifying` or `done`; `issue_plans` version 0 of the source `default`, `plan_tasks` task `default` ending `done`, `plan_steps` at places 1 to 5, one start of each step in `step_starts`, and the seven records of task `default` in `dispatch steps` | an issue with no plan gets no rows of the default steps, or its walk drops one |
+| `control-default-rows-deleted` | the third issue, given no plan, with its rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` while its planner works; it walks today's line to its merge | the check of `walk-default-steps`' rows fails on it, saying its `issue_plans` rows are `[]` | that check passes whatever the store holds |
 | `control-refused` | `register_plan` of a plan whose task `a` names `implementer checker` | `409 PLAN_REFUSED` with the reason `step 2 of task a names the role checker, which neither the deployment nor the plan defines.`, and no plan rows | the route takes a role nobody defines |
 | `control-no-plan-rows` | the fourth issue given the plan `implementer reviewer`, with its rows deleted before its spec is registered | it starts a planner, and the check of `walk-implementer-reviewer` fails on it, naming planning as its first step | that check passes on an issue that walks today's line |
 | `control-tester-first` | `register_plan` of the fifth issue's plan whose task `a` names `tester implementer`, while it stands at admitted | `409 PLAN_REFUSED` with the one reason `step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet.`, and no plan rows | the route takes a step that reads a pull request no step before it opens |

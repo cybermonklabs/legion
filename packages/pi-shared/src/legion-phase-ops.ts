@@ -284,10 +284,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // `read_build` takes no field: it reports this process's own build and asks the daemon for
     // the contract it states, and names no issue.
     operation("read_build", {}),
-    // A defect in the merged change of `issue`: what is wrong with its evidence, the head the
-    // pull request stood at when the role saw it, and the check it is about where it is about
-    // one. Which roles may report on which issue is the daemon's to hold
-    // (DEFECT_CALLER_NOT_ALLOWED), so the issue is sent as named.
+    // A defect of the change of `issue`, found once its task's last step passed: what is wrong
+    // with its evidence, the head the pull request stood at when the role saw it, and the check it
+    // is about where it is about one. Which roles may report on which issue is the daemon's to
+    // hold (DEFECT_CALLER_NOT_ALLOWED), so the issue is sent as named.
     operation("report_defect", {
       issue: requiredString("report_defect", "issue"),
       defect: requiredString("report_defect", "defect"),
@@ -375,7 +375,7 @@ export const PHASE_OP_SENTENCES = {
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "That move counts no review round: only a review that requests changes counts one. ",
   reportDefect:
-    "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect in the merged change of `issue`: " +
+    "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect of the change of `issue`, found once its task's last step passed: " +
     "`defect` says what is wrong, with its evidence, `head` is the 40-character lower-case commit the pull request's head stood at when you saw it, " +
     "and `check` is the block id of the issue's check it is about; the answer is the defect's id, whether the daemon `recorded` it, found it the " +
     "`same` as one it holds or `joined` it to one, and `nextChange`, the change that will carry it, and the call moves no phase, so go on with your step. ",
@@ -814,8 +814,8 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * role to the first wake of its pod, and to `asOf` for one nothing has woken yet, since that pod
  * is gone now. A pod's roles wake one resume each, so the first of them ends the release. A
  * resume names the release it ended, except a wake a project pause held, which names none
- * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake.go`). A held wake
- * therefore ends every release of its issue that came before it, where no resume that names the
+ * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake_take.go`). A held
+ * wake therefore ends every release of its issue that came before it, where no resume that names the
  * release came sooner: a pod released before a pause and woken during it would otherwise be
  * charged to `asOf` at every read, for ever. The release ends at the wake's own moment, which is
  * when the pod was wanted again. The pod stays gone from there until the project runs again, and

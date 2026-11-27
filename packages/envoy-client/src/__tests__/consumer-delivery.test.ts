@@ -18,10 +18,9 @@ import {
 import { INBOUND_CARD_MAX_BYTES, renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
+import { AGENT, SESSION } from "./consumer-session";
 import { objectChainPastTheEncoder } from "./deep-json";
 
-const SESSION = "ses_a";
-const AGENT = "notifications.agent.ses_a";
 const ISSUE_TOPIC = "notifications.dispatch.issue.INFRA-1.>";
 const ISSUE = "notifications.dispatch.issue.INFRA-1.comment";
 const STREAM = "stream-1";

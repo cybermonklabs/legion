@@ -86,6 +86,31 @@ test("a comment's Retry after Dispatch's refusal is the request the composer sho
   expect(requestFor(undefined, undefined, next).sendKey).not.toBe("send-1");
 });
 
+// The issue page's box anchors a comment on a statement by the document and the statement's whole
+// words alone: the server finds the words and anchors the comment to the block that holds them,
+// so the request names no occurrence and no mark.
+test("a comment on a statement is sent with its quote and no occurrence", async () => {
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  try {
+    const quote = "The box stays at the foot of the screen while the outline scrolls.";
+    const sent: SentRequest = {
+      ...refused,
+      draft: { body: "Even on a phone?", replacement: "" },
+      owner: { issueKey: "CORE-1", kind: "issue" },
+      pickedDelivery: undefined,
+      statement: { artifact: "core-1-spec", quote, row: "core-1-spec#b-r1" },
+    };
+    const bounds = { key: sent.sendKey };
+    await sendAttempt(sent)(bounds);
+
+    expect(createComment.mock.calls).toStrictEqual([
+      ["CORE-1", { anchor: { artifact: "core-1-spec", quote }, body: "Even on a phone?" }, bounds],
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
+});
+
 // A reply under an ask is a comment that names the ask by `ask_id`, the field Dispatch reads for
 // it, and carries no `reply_to`, which Dispatch reads as a comment's id alone. A reply to a
 // comment still names that comment by `reply_to`.

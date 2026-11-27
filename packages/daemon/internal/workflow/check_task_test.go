@@ -153,6 +153,7 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 // own controller, or that kept the ask for a decision alone, would overrule the prompt it comes
 // with.
 func TestTheCheckTaskRoutesADefectAsTheTesterPromptDoes(t *testing.T) {
+	t.Parallel()
 	for _, last := range []bool{false, true} {
 		task := checkTaskFor(wakeMerge, "merge-43", last)
 		for _, want := range []string{

@@ -1,0 +1,24 @@
+kind: Fixed
+body: |-
+  A registration the listener may not have recorded, because its message bus did not answer in
+  time (its 503 begins "envoy: the message bus did not answer"), no longer shows "Envoy inbound
+  unavailable" at once. Such refusals are held for two minutes from the first one, and a
+  registration accepted in that time ends the hold with no notice. After the two minutes, the
+  session is told once that its registration is not recorded for certain. The notice says so,
+  and that Envoy messages may still reach the session, where it said the session had no durable
+  consumer and received none. The stderr line is
+  `envoy-channel: this session's registration is not recorded for certain (<why>), and the session registers again at every heartbeat`,
+  where it said that the session had no inbound messages. When a registration is accepted after
+  that, the notice "Envoy inbound restored" says that the listener recorded a registration of this
+  session, and that a message the stream stored that has not reached the session arrives now. The
+  stderr line is `envoy-channel: the listener recorded a registration of this session`. Neither
+  says that the session receives again. A notice that cannot be written is reported on stderr
+  with the same words. A registration whose first attempt got that 503 and whose retry got no
+  answer, or a 5xx that names no reason, is held and told the same way, since the retry may have
+  landed. A retry the listener refuses with a reason, such as `consumer_limit`, is told at once as
+  a session that receives nothing. A refusal or a lost relay subject after the session was told
+  that its registration is not recorded for certain is told once more, and the restored notice
+  after it says that the session receives again.
+time: 2026-11-20T00:04:52Z
+custom:
+    Issue: pr4194

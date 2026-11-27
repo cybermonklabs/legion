@@ -212,8 +212,8 @@ type Config struct {
 	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
-	// ProductionCheckBound is how long a closed issue's production check stays open after the
-	// close before its last look (`production_check_hours`, 14 days by default): the check's
+	// ProductionCheckBound is how long a merged issue's production check stays open from its
+	// opening before its last look (`production_check_hours`, 14 days by default): the check's
 	// bound_at is its open plus this, and the look that starts there is the last one, told that
 	// the bound is up. Nothing waits on a deploy: a look is due at the moment the checking agent
 	// named for itself, at the retry of a look nobody reported, or at this bound.
@@ -1358,6 +1358,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
+	}
+	// The key's shape is refused before any other setting is resolved (CheckProjectKey says why).
+	if err := CheckProjectKey(*file.Project); err != nil {
+		return Config{}, err
 	}
 	cfg.Project = *file.Project
 

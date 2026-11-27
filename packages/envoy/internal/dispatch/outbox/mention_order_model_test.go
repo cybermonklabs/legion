@@ -494,10 +494,10 @@ func (m *moModel) applyBatch(s moState, p int, choice []int, fails int8) (moStep
 		k := int(be.event.ID) - 1
 		var o outcome
 		if !be.due {
-			o = outcome{id: be.event.ID, state: owedAgain, owed: owedKeys(be, nil)}
+			o = outcome{id: be.event.ID, state: owedAgain, owed: owedKeys(be, nil, nil)}
 		} else {
 			be.outcome = settleEvent(be, false)
-			be.outcome.owed = owedKeys(be, be.outcome.reached)
+			be.outcome.owed = owedKeys(be, be.outcome.reached, be.outcome.refused)
 			o = be.outcome
 		}
 		pend.out[k] = moOut{present: true, state: moOutcomeCode[o.state], reached: moBits(o.reached), owed: moOwedBits(o.owed)}

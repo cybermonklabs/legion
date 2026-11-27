@@ -316,6 +316,7 @@ func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 // queue and the send reads the start back and makes it first. A task that starts nothing reads
 // back with none, also over a delivery that had one.
 func TestADeliveryKeepsItsStartAtBranchThroughARestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-213-implementer")
@@ -1806,6 +1807,7 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 // it, and the next mark is a new one. A retired claim takes no mark, and a claim loses the one it
 // holds as it retires.
 func TestAMessageMarkOutlivesMachineWritesButStandsOnlyUntilTheNextTurn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	st := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

@@ -407,20 +407,18 @@ func (i Issue) TreeRun() uint64 {
 // issue's own generation on a child, whose own architect runs on the child's run. A root's next
 // change raises its Generation alone, so it ends no run of its tree's architect.
 func (i Issue) ArchitectGeneration() uint64 {
-	if i.Key == i.Tree {
-		return i.TreeRun()
-	}
-	return i.Generation
+	return claim.StartGeneration(claim.RoleArchitect, i.Key, i.Tree, i.Generation, i.TreeGeneration)
 }
 
 // GenerationOf is the generation of the issue that a supervise row of op for role serves, the one
 // the outbox's fence holds the row to (internal/daemon's supervise): a start of the architect
 // serves the architect's run (ArchitectGeneration), which a tree root's next change leaves, and
-// every other row serves the issue's own generation. Every writer of a start, the fence and every
-// reader of a role's run (RunKey) read the rule here, so the three agree.
+// every other row serves the issue's own generation. The rule for a start is claim.StartGeneration,
+// which the store reads too; every writer of a start, the fence and every reader of a role's run
+// (RunKey) read it, so they agree.
 func (i Issue) GenerationOf(op SuperviseOp, role claim.Role) uint64 {
-	if op == "start" && role == claim.RoleArchitect {
-		return i.ArchitectGeneration()
+	if op == "start" {
+		return claim.StartGeneration(role, i.Key, i.Tree, i.Generation, i.TreeGeneration)
 	}
 	return i.Generation
 }
@@ -2242,6 +2240,25 @@ type OutboxRow struct {
 	// a row that runs after the resume carries it, so the wake the row takes of a released role
 	// is that pause's held wake (internal/daemon's wakeForDelivery, store.Store.TakePodWake).
 	HeldByPause int64
+	// StateSeq, StateAt and StateTx are a state row's sequence, time and transaction (LaneState),
+	// which the row takes when the transaction that inserted it commits (the commit trigger of
+	// migration 20261126163320_state_events): the project's next sequence, the time every state
+	// row of that transaction shares, and that transaction's id. They are zero on a row of any
+	// other kind, and on a state row read inside the transaction that inserted it.
+	StateSeq int64
+	StateAt  time.Time
+	StateTx  int64
+}
+
+// StatePublication is a project's counter of its state events (state_publication, migration
+// 20261126163320_state_events): Seq, the sequence of the newest state row the project's daemon
+// committed, and StateID, the id of the store those events are counted in. The commit trigger
+// makes StateID once, at the project's first state row, and nothing changes it after; a reader
+// applies only the messages that carry its starting point's id (api.DaemonInfo.StateID). Seq is 0
+// and StateID empty while the project has no state row.
+type StatePublication struct {
+	Seq     int64
+	StateID string
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
@@ -2473,6 +2490,13 @@ type Store interface {
 	// moves it.
 	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+	// AllPhases is the phases rows of project's issues, by issue, read in one statement: each
+	// issue's rows are what Phases answers for it, in the same order, with only the columns the
+	// state route reads (Postgres.AllPhases names them; every other field is zero), and an issue
+	// with no row has no entry. A row of another project's issue is not read. The state route
+	// reads it in place of a Phases read for each issue it lists (projection.Project,
+	// projection.Observe).
+	AllPhases(ctx context.Context, tx pgx.Tx, project string) (map[string][]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
 	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
@@ -2723,6 +2747,13 @@ type Store interface {
 	// Defect is the defect id of issue, of any kind and whether or not it holds still, nil where
 	// issue holds no defect of that id: the one read that tells a withdrawal what it would end.
 	Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error)
+	// ClearWaitWithdrawals takes out of issue's stored wait (issues.close_wait, StoredWait.Withdrawn)
+	// each withdrawal of shown, matched by its defect and its time: the withdrawals a version of
+	// close-wait.md that Dispatch took said, so the next version does not say them again. A
+	// withdrawal the wait gained since that version was rendered stays. The caller holds the lock
+	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
+	// this read and this write.
+	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
 	// WithdrawDefect ends the open reported defect id of issue with reason, at at. It answers false
 	// where issue holds no such defect: none of that id, one of another kind than a reported
 	// defect, one already withdrawn, or one a merged change carried. The reason is required.
@@ -3034,6 +3065,20 @@ type Store interface {
 	// RecentClaimIssues is every issue of the Dispatch project with a claim that holds its role, or
 	// a claim that changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
+	// StatePublished says whether the state events are on (Postgres.PublishState): the switch a
+	// writer reads before it judges an event of its own, the admission pass before its block
+	// (QueueAdmissionBlock).
+	StatePublished() bool
+	// JudgedWrites is how many rows tx has written so far to the tables an admission judgement
+	// reads, and ok, false when Postgres keeps no such counts (Postgres.JudgedWrites): two counts
+	// in one transaction, both ok and equal, say no such row was written between them.
+	JudgedWrites(ctx context.Context, tx pgx.Tx) (count int64, ok bool, err error)
+	// QueueAdmissionBlock writes block as project's admission block where it differs from the
+	// one stored, and when that write changed it queues its state event (StateAdmission, carrying
+	// the run the state events were turned on with); a block equal to the stored one writes and
+	// queues nothing. It answers whether it queued the event. Its caller reads StatePublished
+	// first: a call while the state events are off is refused.
+	QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -3107,6 +3152,15 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// StateRowsAfter is every state row still in the outbox that committed in head's transaction
+	// (OutboxRow.StateTx) with a higher sequence, in sequence order: the rows the state lane
+	// publishes after head, in head's message or, past the message bound, in the next ones
+	// (internal/daemon's stateEvents).
+	StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error)
+	// FinishStateRows finishes head under its lease, and with it the rows of head's transaction
+	// with sequences above head's and at most through; a lease no longer head's is
+	// ErrOutboxLeaseLost and the caller's transaction finishes none of them.
+	FinishStateRows(ctx context.Context, tx pgx.Tx, head OutboxRow, through int64) error
 	// NameUndeliveredHookPrompt names paragraph (HookPrompt.Undelivered) in the message on issue
 	// that names role's undelivered hook prompts, inside tx, and answers when that message posts
 	// and whether this call opened it. It takes tx's lock on that role's window of issue first,
@@ -3121,6 +3175,10 @@ type Store interface {
 	NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (posts time.Time, opened bool, err error)
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
+	// StatePublication is project's counter row (state_publication): the sequence of the newest
+	// state row project's daemon committed, 0 while the project has none, and the store id the
+	// row was made with, empty while there is none.
+	StatePublication(ctx context.Context, tx pgx.Tx, project string) (StatePublication, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
 	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error
 	CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree string, generation uint64) error
@@ -3536,6 +3594,31 @@ func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 // as torn down already.
 func Lingering(issue Issue, now time.Time) bool {
 	return issue.LingerUntil != nil && now.Before(*issue.LingerUntil)
+}
+
+// NextLingerEnd is the earliest linger deadline after now among issues and roots, the zero time
+// where none lies ahead: the next moment Lingering answers false for a record it answers true for
+// at now. An admission block is judged from a pass's live records and the tree roots that read
+// leaves out (LineFacts.Roots, where a lingering root stands, since its phase is done), and the
+// held list's tree_closed word reads such a root's linger against the pass's clock (HeldReasonOf),
+// so this is the next moment the block can change with no write: the daemon runs an admission pass
+// then (admit's queueAdmissionBlock tells it, internal/daemon's wakeAtLingerDeadlines). A record
+// whose linger is not a tree root's is read too, which can only add a wake whose pass finds nothing
+// changed.
+func NextLingerEnd(issues []Issue, roots map[string]Issue, now time.Time) time.Time {
+	var next time.Time
+	earlier := func(issue Issue) {
+		if Lingering(issue, now) && (next.IsZero() || issue.LingerUntil.Before(next)) {
+			next = *issue.LingerUntil
+		}
+	}
+	for _, issue := range issues {
+		earlier(issue)
+	}
+	for _, root := range roots {
+		earlier(root)
+	}
+	return next
 }
 
 // LingersAt says whether the root lingers after the close of its generation: it lingers, and

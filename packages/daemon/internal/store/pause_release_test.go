@@ -255,6 +255,168 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
+// A paused cancel arms the backstop of the open phase's worker whose claim serves the run that
+// role's start serves (stopReleasedForPause, IssueRun.StartOf). For a tree root's architect that is
+// the tree's run, which a next change of the root leaves behind the root's own generation. The
+// workflow's rule names no architect as a phase's worker (workflow.OpenPhaseRole), so each row
+// gives the store a rule that names its role: the store reads the rule it is given, and restates
+// none. The control is the implementer, whose start serves the root's own generation.
+func TestAPausedCancelArmsTheBackstopOfAWorkerServingTheRunItsStartServes(t *testing.T) {
+	t.Parallel()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			st := migratedStore(t)
+			openRunningTree(t, st)
+			root := nextChangeOfTheRoot(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{
+				Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+				Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, ServingGeneration: root.GenerationOf("start", role),
+				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+				t.Fatalf("seed the released %s: %v", role, err)
+			}
+			markRelease(t, st, 18, 20, 22, 0, role)
+			pause, _ := pauseLegion(t, st, pausedAt)
+			at := pausedAt.Add(time.Minute)
+
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: func(phase.Phase) claim.Role { return role }})
+			if err != nil {
+				t.Fatalf("cancel the release while paused: %v", err)
+			}
+			if cancelled.Pause != pause.ID || !slices.Equal(cancelled.Stopped, []claim.Role{role}) {
+				t.Fatalf("the cancel = %+v; want pause %d and the %s stopped", cancelled, pause.ID, role)
+			}
+			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = $2
+				and not fired and due_at = $3`, rootIssue, string(role), at.Add(time.Hour)); n != 1 {
+				t.Errorf("the %s's backstops due an hour after the cancel = %d, want 1: its claim serves the run its start serves", role, n)
+			}
+		})
+	}
+}
+
+// A cancel made while the project is paused keeps a wake that a role of the mark's set took since
+// the mark (decision 12 of dispatch://INFRA-3759), and that wake's start was written for a session
+// a release stopped. The release took no pod, so the cancel rewrites the task of that start
+// through the workflow's rule (ReleaseCancelPause.WakeTask), and only that task: the start keeps
+// the rest of its payload, and no other start changes. A start below the release's last row, a
+// phase's start, and the start of a role with no wake under the mark are no such start.
+func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	servingReleasedClaim(t, st, claim.RoleArchitect)
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
+	last := int64(pauseCount(t, st, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
+	markRelease(t, st, last, last, last, 0, claim.RoleArchitect, claim.RoleImplementer)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	records := podRecords(t, st)
+	inTx(t, st, func(tx pgx.Tx) error {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+			t.Fatalf("take the held wake = %t, %v", taken, err)
+		}
+		return nil
+	})
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
+	queueStart(t, st, claim.RoleImplementer, "implementing")
+	queueWakeStart(t, st, claim.RoleArchitect, pods.WakeChecks)
+	retell := func(kind, detail, task string) string {
+		return "the pause's " + kind + " wake of " + detail + ": " + task
+	}
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker, WakeTask: retell})
+	if err != nil || cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 {
+		t.Fatalf("cancel the release while paused = %+v, %v; want pause %d and no role resumed", cancelled, err, pause.ID)
+	}
+	rows, err := st.Pool().Query(ctx, `select payload->>'role', coalesce(payload->>'phase', ''), coalesce(payload->>'task', ''),
+		payload->>'generation' from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []string
+	for rows.Next() {
+		var role, named, task, generation string
+		if err := rows.Scan(&role, &named, &task, &generation); err != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, role+"|"+named+"|"+task+"|"+generation)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	want := []string{
+		"implementer||the wake's task|1",
+		"implementer||the pause's " + pods.WakeChecks + " wake of the wake's detail: the wake's task|1",
+		"implementer|implementing|the phase's task|1",
+		"architect||the wake's task|1",
+	}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("queued starts after the cancel = %q, want %q: only the kept wake's start is told again", starts, want)
+	}
+	if held, open := heldOpenResume(t, st, claim.RoleImplementer); !open || held != pause.ID {
+		t.Fatalf("the implementer's open resume = pause %d, open %t; want the kept wake, held by pause %d", held, open, pause.ID)
+	}
+}
+
+// A cancel made while the project is paused keeps a wake that a role of the mark's set took since
+// the mark, as the launch the pause owes the role (decision 12 of dispatch://INFRA-3759). A wake
+// taken while the project still ran is no wake of the pause: no pause holds its resume, and the
+// resume names the newest release recorded before the wake, which is not the release the wake
+// waited for. The cancel makes it a held wake of the pause (the reviewer's read-ahead of
+// dispatch://INFRA-3589, finding 3): its resume names the pause and release 0, as the resume of a
+// wake taken while the project is paused does (decision 15, pod_resumes_held_wake_pairs_with_no_release).
+// So the release records count no return of a pod for a release that did not take it. The
+// resume keeps its kind and its seen release.
+func TestACancelWhileThePausedProjectHoldsAWakeTakenWhileTheProjectRan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	earlier, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer"}, At: pausedAt.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("record the earlier release: %v", err)
+	}
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer)
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, pausedAt.Add(-time.Minute), 0); err != nil || !taken {
+		t.Fatalf("take the wake while the project runs = %t, %v; want it taken", taken, err)
+	}
+	resume := func() (release, pause, seen int64, kind string) {
+		t.Helper()
+		if err := st.Pool().QueryRow(ctx, `select release_id, coalesce(pause_id, 0), seen_release, kind from pod_resumes
+			where project = 'legion' and issue = $1 and role = 'implementer'`, rootIssue).Scan(&release, &pause, &seen, &kind); err != nil {
+			t.Fatalf("read the implementer's resume: %v", err)
+		}
+		return release, pause, seen, kind
+	}
+	if release, held, _, _ := resume(); release != earlier || held != 0 {
+		t.Fatalf("the wake taken while the project runs = release %d, pause %d; want release %d and no pause: the case's premise",
+			release, held, earlier)
+	}
+	pause, _ := pauseLegion(t, st, pausedAt)
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+	if err != nil || cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 {
+		t.Fatalf("cancel the release while paused = %+v, %v; want pause %d and no role resumed", cancelled, err, pause.ID)
+	}
+	if release, held, seen, kind := resume(); release != 0 || held != pause.ID || seen != earlier || kind != pods.WakeChecks {
+		t.Errorf("the kept wake's resume = release %d, pause %d, seen release %d, kind %s; want release 0, pause %d, seen release %d and kind %s: the cancel keeps it as the launch the pause owes",
+			release, held, seen, kind, pause.ID, earlier, pods.WakeChecks)
+	}
+	if records, err := st.PodReleaseRecords(ctx, "legion", pausedAt.Add(-3*time.Hour)); err != nil || len(records.Resumes) != 1 ||
+		records.Resumes[0].Release != 0 || records.Resumes[0].Pause != pause.ID {
+		t.Errorf("the release records = %+v, %v; want the kept wake's one resume, paired with no release and held by pause %d",
+			records, err, pause.ID)
+	}
+}
+
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: a cancel of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so while LEGION is paused it records the roles the release stopped as stopped by
@@ -286,7 +448,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		}
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
-	resume := func(role claim.Role, run IssueRun) (IdleReleaseRow, error) {
+	resume := func(role claim.Role, run IssueRun, _ DroppedWake) (IdleReleaseRow, error) {
 		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
 			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, run.Generation))}, nil
 	}
@@ -692,6 +854,7 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 // queue it has no let-out yet (dispatch://INFRA-5682 R1), so the read answers the reader's own
 // now for it, however long ago the project resumed, and the let-out's moment once it has one.
 func TestALaunchWaitingInThePacingReadsAsLetOutAtTheReadersNow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)

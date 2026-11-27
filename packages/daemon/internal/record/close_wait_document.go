@@ -26,8 +26,10 @@ const (
 // twice. Each item says since when it stands. Entered is the time of the issue's newest entry
 // into verifying, after which alone a read of the checks counts. Ended is the change that ended
 // last, said once in the version written when it ended. Withdrawn is each reported defect the
-// owning architect withdrew in the write that stores it, with the reason, said once in the version
-// written for that withdrawal. Closed is when the issue closed, set in the last version only.
+// owning architect withdrew, with the reason, that no version Dispatch took has said yet: every
+// write of the wait keeps it (workflow's heldWithdrawals), and the row that uploads a version
+// holding it takes it out after the upload (Store.ClearWaitWithdrawals), so it is said once.
+// Closed is when the issue closed, set in the last version only.
 //
 // A report of a defect in retro or merging (workflow's defectReport) stores the wait as well, so
 // close-wait.md names the defect before the merge: there the wait holds the reported defects, and
@@ -164,10 +166,10 @@ func CloseWaitDocument(issue Issue) (string, error) {
 	if len(wait.Withdrawn) > 0 {
 		doc.WriteString("\n## Withdrawn defects\n\n")
 		for _, withdrawn := range wait.Withdrawn {
-			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s: %s\n", withdrawn.ID, waitTime(withdrawn.At), strings.TrimSpace(withdrawn.Reason))
-			for line := range strings.SplitSeq(strings.TrimSpace(withdrawn.Text), "\n") {
-				fmt.Fprintf(&doc, "  %s\n", line)
-			}
+			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s, because:\n", withdrawn.ID, waitTime(withdrawn.At))
+			writeIndented(&doc, "  ", withdrawn.Reason)
+			doc.WriteString("  The defect was:\n")
+			writeIndented(&doc, "    ", withdrawn.Text)
 		}
 	}
 	if wait.Closed != nil {
@@ -274,4 +276,12 @@ func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 // waitTime is a moment as close-wait.md writes it: UTC, to the second.
 func waitTime(at time.Time) string {
 	return at.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+// writeIndented writes text trimmed, each of its lines under indent, so no line of a role's text
+// stands at the start of a line of the document, where it could open a heading, a list or a block.
+func writeIndented(doc *strings.Builder, indent, text string) {
+	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
+		fmt.Fprintf(doc, "%s%s\n", indent, strings.TrimRight(line, "\r"))
+	}
 }
