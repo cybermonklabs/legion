@@ -405,14 +405,22 @@ function afterWritten(written: string, x: number, y: number): CaretAt {
 // in Chromium (its `E2E-BOXES` lines) at 1440 and 390 px, pressed where that row presses, with the
 // place the caret goes. A rule that reads one of them right and another wrong fails here. An atom
 // stands on one line as one box as tall as its font, 19 px on a 24 px line, and a picture's caption
-// 25 px. A reference is drawn in two boxes on one line at 1440 px, its key and its title, and its
-// link wraps at 390 px into boxes 25 px tall on 24 px lines, which overlap the line above by 1 px:
-// so a box's line is read from its middle.
+// 25 px. A footnote's reference is the schema's `sup`, raised in a box 14 px tall, as the row's
+// "footnote reference" cells measured it inside the first line at 390 px and ending the words at
+// 1440 px: a press past the end of the words 4.6 px below that box still stands on its 24 px line
+// and goes after it, as the press beside the box does, so neither the last box's top nor its foot
+// bounds its line. Inline HTML that wraps draws one box on each of two lines at 390 px, as the
+// row's "inline HTML that wraps" cell inside it measured it, the first box ending right of the
+// last: a press in the band below the first line's box, right of the last line's end, stands on
+// the first line, since the two lines meet half way between the two boxes and not at the first
+// box's foot, and stays at the atom's start. A reference is drawn in two boxes on one line at
+// 1440 px, its key and its title, and its link wraps at 390 px into boxes 25 px tall on 24 px
+// lines, which overlap the line above by 1 px: so a box's line is read from its middle.
 test("a press around each inline kind is read by the line it is on, in the boxes the Spec view draws", () => {
   const end = "<name>".length;
-  const html = noteAndHtml();
+  const html = NOTE_AND_HTML;
   const picture = `<p>${NOTE}<a data-row-written="" ${PICTURE}><span>shot.png</span></a></p>`;
-  const note = `<p>${NOTE}<span data-row-written="">[^k5]</span></p>`;
+  const note = `<p>${NOTE}<sup data-row-written="" data-type="footnote_reference">k5</sup></p>`;
   const rows: readonly (readonly [
     name: string,
     boxes: readonly DOMRect[],
@@ -438,22 +446,34 @@ test("a press around each inline kind is read by the line it is on, in the boxes
       noteEnd(248, 499, true),
     ],
     [
+      "inline HTML that wraps, in the band below its first line's box, right of its last line's end, at 390 px",
+      [new DOMRect(75, 369.21875, 271, 19), new DOMRect(26, 393.21875, 291, 19)],
+      () => pressInLastMark(html, 2, [330, 389.5]),
+      noteEnd(330, 389.5),
+    ],
+    [
       "a picture's caption, past the end of the words, at 390 px",
       [new DOMRect(170, 486, 60, 25)],
       () => pressInLastMark(picture, "shot.png".length, [250, 499]),
       noteEnd(250, 499, true),
     ],
     [
-      "a footnote's reference drawn as its written text, inside it, at 390 px",
-      [new DOMRect(70, 441, 36, 19)],
-      () => pressInLastMark(note, 2, [88, 451]),
-      noteEnd(88, 451),
+      "a footnote's reference, inside it, at 390 px",
+      [new DOMRect(70, 439.375, 13, 14)],
+      () => pressInLastMark(note, 1, [76, 446]),
+      noteEnd(76, 446),
     ],
     [
-      "a footnote's reference drawn as its written text, past the end of the words, at 1440 px",
-      [new DOMRect(678, 495, 36, 19)],
-      () => pressInLastMark(note, "[^k5]".length, [734, 505]),
-      noteEnd(734, 505, true),
+      "a footnote's reference, past the end of the words, at 1440 px",
+      [new DOMRect(678, 493.375, 13, 14)],
+      () => pressInLastMark(note, "k5".length, [711, 500]),
+      noteEnd(711, 500, true),
+    ],
+    [
+      "a footnote's reference, below its raised box, past the end of the words, at 1440 px",
+      [new DOMRect(678, 493.375, 13, 14)],
+      () => pressInLastMark(note, "k5".length, [711, 512]),
+      noteEnd(711, 512, true),
     ],
     [
       "a reference in two boxes on one line, past the end of the words, at 1440 px",
