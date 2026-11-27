@@ -16,6 +16,7 @@ body: |-
   /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. Change fail rate, failed
   deployment recovery time and the new deployment rework rate read those rows; the pending
   state, the upper bound and change fail rate's `per_pr` series are removed.
+  An after-merge check result stays bound to its failure when a replay finds an earlier deploy.
 time: 2026-11-23T02:13:17Z
 custom:
     Issue: INFRA-978

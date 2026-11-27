@@ -2,9 +2,10 @@
 // R6 to R8): the table production_events (migration 20261123002035) and every read and write of
 // it. A deploy row is one deploy run of a deploy repository, which the GitHub adapter writes under
 // the repository's owner project, or one deploy a system posted. A failure row is one failure
-// signal, which names the deploy it blames. Every write commits in a transaction of its own that
-// takes the delivery change log's lock nowhere: its change rows wait in the outbox (migration
-// 20261123002037), and the write drains them after its commit (delivery.DrainAfterCommit).
+// signal, which names the deploy it blames. Every write commits in a transaction of its own, or
+// in its caller's (WriteIn, SetStateIn), that takes the delivery change log's lock nowhere: its
+// change rows wait in the outbox (migration 20261123002037), and the write, or its caller, drains
+// them after its commit (delivery.DrainAfterCommit).
 package prodevents
 
 import (
@@ -183,16 +184,34 @@ func prepared(event Event) ([]byte, string, error) {
 // row and created false. A failure's blamed deploy must be a deploy row; a deploy names none. The
 // row's id, its creation time and its state are the server's, whatever event carries.
 func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
-	actor, environment, err := prepared(event)
-	if err != nil {
-		return Event{}, false, err
-	}
-	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("begin the write of production event %s: %w", event.SourceRef, err)
 	}
 	defer tx.Rollback(ctx)
+	stored, created, err := WriteIn(ctx, tx, event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
+	}
+	if created {
+		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event write")
+	}
+	return stored, created, nil
+}
+
+// WriteIn is Write's write in tx, the caller's transaction, for a writer that keeps a row of its
+// own beside the event's and commits the two together. It takes the delivery change log's lock
+// nowhere either: the caller commits tx and then, where created, drains the change rows the write
+// left in the outbox (delivery.DrainAfterCommit), as Write does.
+func WriteIn(ctx context.Context, tx pgx.Tx, event Event) (Event, bool, error) {
+	actor, environment, err := prepared(event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	if event.Kind == KindFailure {
 		if err := requireDeploy(ctx, tx, *event.DeployID); err != nil {
 			return Event{}, false, err
@@ -226,12 +245,6 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	}
 	if err != nil {
 		return Event{}, false, fmt.Errorf("write production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Event{}, false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-	}
-	if created {
-		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event write")
 	}
 	return stored, created, nil
 }
@@ -318,6 +331,27 @@ const StateRestored = "restored"
 // state; a reject and a re-count keep the writer, the time and the reason (R8); a restore sets the
 // restore time and its writer, and the restoring deploy where change names one.
 func SetState(ctx context.Context, pool *store.Pool, project, id string, change StateChange) (Event, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Event{}, fmt.Errorf("begin the state write of production event %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	updated, err := SetStateIn(ctx, tx, project, id, change)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, fmt.Errorf("commit production event %s's state: %w", id, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event state write")
+	return updated, nil
+}
+
+// SetStateIn is SetState's write in tx, the caller's transaction, for a writer that decides the
+// change under a lock of its own and commits it with that lock held. It takes the delivery change
+// log's lock nowhere either: the caller commits tx and then drains the change rows the write left
+// in the outbox (delivery.DrainAfterCommit), as SetState does.
+func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change StateChange) (Event, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return Event{}, ErrNotFound
 	}
@@ -325,11 +359,6 @@ func SetState(ctx context.Context, pool *store.Pool, project, id string, change 
 	if err != nil {
 		return Event{}, fmt.Errorf("encode the writer of production event %s's state: %w", id, err)
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return Event{}, fmt.Errorf("begin the state write of production event %s: %w", id, err)
-	}
-	defer tx.Rollback(ctx)
 	current, err := scan(tx.QueryRow(ctx, `select `+columns+` from production_events
 		where project_key = $1 and id = $2 for update`, project, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -370,10 +399,6 @@ func SetState(ctx context.Context, pool *store.Pool, project, id string, change 
 	if err != nil {
 		return Event{}, fmt.Errorf("write production event %s's state: %w", id, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Event{}, fmt.Errorf("commit production event %s's state: %w", id, err)
-	}
-	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event state write")
 	return updated, nil
 }
 

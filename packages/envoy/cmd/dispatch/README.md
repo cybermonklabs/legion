@@ -2915,6 +2915,14 @@ Migration `20261123041501_production_signals` creates the bookkeeping of the pro
 A pass that reads another project or another rule for a repository, or no row for it, derives every GitHub deploy row of that repository again and records the new row once those rows are written, so the first pass of this release writes the rows of every stored run; a repository no rule reads any more loses its row and keeps its deploy rows.
 Two new tables: nothing existing is read, locked or rewritten, the release before this one neither reads nor writes them, and its census answers `0`.
 
+Migration `20261127022136_check_fail_bindings` creates the mapping from an after-merge check result to the failure row it first matched.
+The signal writer commits the failure and its binding together before the deploy feed advances.
+A replay keeps the same binding even when the record later gains an earlier deploy of the same commit.
+A retraction uses the binding and leaves the failure counted if another result still supports it.
+The foreign keys hold `SHARE ROW EXCLUSIVE` on `check_results` and `production_events` during the migration.
+The release before this one has no production event record, so the migration starts with no bindings and rewrites no row.
+Its census answers `0`.
+
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
 The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.

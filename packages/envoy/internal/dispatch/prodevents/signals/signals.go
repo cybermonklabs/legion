@@ -21,10 +21,11 @@
 // Every write is a transaction of its own that takes the delivery change log's lock nowhere
 // (prodevents), after the write that caused it has committed, so no transaction that takes that
 // lock locks a production_events row. A feed's cursor moves after the rows of its page are written,
-// and every write is idempotent by its source_ref, so a page read again after a crash writes
-// nothing twice. The record route's handlers write check_fail and its retraction's reject at once
-// as well (api's recordCheckResult and retractCheckResult); the loop is what a write lost to a
-// crash, or a result that came before its deploy, waits on.
+// and every write is idempotent by its source_ref, a check_fail by its result's binding as well
+// (check_fail_bindings), so a page read again after a crash writes nothing twice. The record
+// route's handlers write check_fail and its retraction's reject at once as well (api's
+// recordCheckResult and retractCheckResult); the loop is what a write lost to a crash, or a result
+// that came before its deploy, waits on.
 package signals
 
 import (
