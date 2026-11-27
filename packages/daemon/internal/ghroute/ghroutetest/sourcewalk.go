@@ -13,91 +13,112 @@ import (
 	"testing"
 )
 
-// Source is the Go files a source walk reads (SourceCalls), a glob whose test files are passed
-// over, and the prefix the functions of those files are named under: none for a test's own
-// package, `ghroute.` for internal/ghroute's read from cmd/legion.
-type Source struct{ Glob, Prefix string }
-
 // SourceCall is one call in the files a source walk reads, as SourceCalls hands it on: the
-// function that holds it (Owner, a method by its receiver's type, under its Source's prefix), the
-// file and line it stands at (At), the call, and Text, which is a node's source.
+// function that holds it (Owner, a method by its receiver's type), the file and line it stands at
+// (At), the call, and Text, which is a node's source.
 type SourceCall struct {
 	Owner, At string
 	Call      *ast.CallExpr
 	Text      func(ast.Node) string
 }
 
-// ShownCallees are how a call of ghroute.Shown reads in the source: by its own name inside
+// shownCallees are how a call of ghroute.Shown reads in the source: by its own name inside
 // internal/ghroute, and by its package's name in cmd/legion.
-var ShownCallees = []string{"Shown", "ghroute.Shown"}
+var shownCallees = []string{"Shown", "ghroute.Shown"}
 
-// SourceCalls is every call in the non-test files sources name, in each function's body. It is
-// the one walk cmd/legion's refusal paths (its ghShownPaths) and every package's formatting
-// places (FormatSites) read, so a file or a receiver form one of them reaches the other reaches
-// too. A source glob matching no non-test file is refused: the walk would have read nothing of it.
-func SourceCalls(t *testing.T, sources ...Source) []SourceCall {
+// SourceCalls is every call in the non-test files glob matches, in each function's body. It is
+// the one walk every package's refusal paths (ShownPaths) and formatting places (FormatSites)
+// read, so a file or a receiver form one of them reaches the other reaches too. A glob matching no
+// non-test file is refused: the walk would have read nothing.
+func SourceCalls(t *testing.T, glob string) []SourceCall {
 	t.Helper()
+	files, err := filepath.Glob(glob)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var calls []SourceCall
 	fset := token.NewFileSet()
-	for _, src := range sources {
-		files, err := filepath.Glob(src.Glob)
+	read := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		read++
+		source, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		read := 0
-		for _, name := range files {
-			if strings.HasSuffix(name, "_test.go") {
+		file, err := parser.ParseFile(fset, name, source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := func(node ast.Node) string {
+			return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
 				continue
 			}
-			read++
-			source, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			file, err := parser.ParseFile(fset, name, source, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			text := func(node ast.Node) string {
-				return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
-			}
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
+			owner := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				recv := fn.Recv.List[0].Type
+				if star, ok := recv.(*ast.StarExpr); ok {
+					recv = star.X
 				}
-				owner := fn.Name.Name
-				if fn.Recv != nil && len(fn.Recv.List) == 1 {
-					recv := fn.Recv.List[0].Type
-					if star, ok := recv.(*ast.StarExpr); ok {
-						recv = star.X
-					}
-					switch generic := recv.(type) {
-					case *ast.IndexExpr:
-						recv = generic.X
-					case *ast.IndexListExpr:
-						recv = generic.X
-					}
-					if ident, ok := recv.(*ast.Ident); ok {
-						owner = ident.Name + "." + owner
-					} else {
-						t.Fatalf("%s: a receiver of a form the walk does not read: %s", fset.Position(fn.Pos()), text(recv))
-					}
+				switch generic := recv.(type) {
+				case *ast.IndexExpr:
+					recv = generic.X
+				case *ast.IndexListExpr:
+					recv = generic.X
 				}
-				owner = src.Prefix + owner
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
-					if call, ok := node.(*ast.CallExpr); ok {
-						calls = append(calls, SourceCall{Owner: owner, At: fset.Position(call.Pos()).String(), Call: call, Text: text})
-					}
-					return true
-				})
+				if ident, ok := recv.(*ast.Ident); ok {
+					owner = ident.Name + "." + owner
+				} else {
+					t.Fatalf("%s: a receiver of a form the walk does not read: %s", fset.Position(fn.Pos()), text(recv))
+				}
 			}
-		}
-		if read == 0 {
-			t.Fatalf("UNKNOWN: no non-test file of %s was read", src.Glob)
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				if call, ok := node.(*ast.CallExpr); ok {
+					calls = append(calls, SourceCall{Owner: owner, At: fset.Position(call.Pos()).String(), Call: call, Text: text})
+				}
+				return true
+			})
 		}
 	}
+	if read == 0 {
+		t.Fatalf("UNKNOWN: no non-test file of %s was read", glob)
+	}
 	return calls
+}
+
+// ShownPaths is every call of ghroute.Shown in the non-test files glob matches (SourceCalls), the
+// refusal paths that put a value a person gave into a refusal, each keyed by the function that
+// makes it (a method by its receiver's type) and the source of its place argument (a literal, or
+// a variable such as repositoryTarget's kind), with the file and line it stands at. It is read
+// from the source, so a call added to the code is a path here without anyone listing it. A place
+// two calls of one function share would key both as one, and is refused; so is a source holding
+// no call at all, since rows held to it would test nothing.
+func ShownPaths(t *testing.T, glob string) map[string]string {
+	t.Helper()
+	paths := map[string]string{}
+	for _, c := range SourceCalls(t, glob) {
+		if !slices.Contains(shownCallees, c.Text(c.Call.Fun)) {
+			continue
+		}
+		if len(c.Call.Args) != 2 {
+			t.Fatalf("%s: ghroute.Shown takes a value and a place, given %d arguments", c.At, len(c.Call.Args))
+		}
+		key := c.Owner + ": " + c.Text(c.Call.Args[1])
+		if prior, seen := paths[key]; seen {
+			t.Fatalf("%s and %s both call ghroute.Shown as %s: give each path a place of its own", prior, c.At, key)
+		}
+		paths[key] = c.At
+	}
+	if len(paths) == 0 {
+		t.Fatalf("UNKNOWN: %s holds no call of ghroute.Shown, so this reads no refusal path", glob)
+	}
+	return paths
 }
 
 // FormatSites is every place among calls that quotes or formats a value without ghroute.Shown,
@@ -135,11 +156,11 @@ func FormatSites(calls []SourceCall) map[string]string {
 				add("errors.New(" + text(call.Args[0]) + ")")
 			}
 		case callee == "cannotPlace" && len(call.Args) > 1:
-			if _, literal := literalString(call.Args[0]); !literal && !calls(call.Args[0], ShownCallees...) {
+			if _, literal := literalString(call.Args[0]); !literal && !calls(call.Args[0], shownCallees...) {
 				add("cannotPlace(" + text(call.Args[0]) + ")")
 			}
 			for _, piece := range sumPieces(call.Args[1]) {
-				if _, literal := literalString(piece); literal || calls(piece, append(slices.Clone(ShownCallees), "fmt.Sprintf")...) {
+				if _, literal := literalString(piece); literal || calls(piece, append(slices.Clone(shownCallees), "fmt.Sprintf")...) {
 					continue
 				}
 				add("cannotPlace why " + text(piece))
@@ -162,7 +183,7 @@ func FormatSites(calls []SourceCall) map[string]string {
 				if arg >= len(call.Args) || !strings.ContainsRune("sqvxXw", verb) {
 					continue
 				}
-				if _, literal := literalString(call.Args[arg]); literal || calls(call.Args[arg], append(slices.Clone(ShownCallees), "ordinalArgument")...) {
+				if _, literal := literalString(call.Args[arg]); literal || calls(call.Args[arg], append(slices.Clone(shownCallees), "ordinalArgument")...) {
 					continue
 				}
 				add("%" + string(verb) + " " + text(call.Args[arg]))

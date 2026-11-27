@@ -14,15 +14,18 @@ import (
 // can be a credential a person put there. value is passed so that each refusal path says which
 // value its words stand for.
 //
-// cmd/legion's TestNoRefusalPathPrintsACanary finds every call of Shown in this package's source
-// and in cmd/legion's gh*.go files, keyed by the function that makes it and the source of its
-// place argument (a literal, or a variable such as repositoryTarget's kind), and drives each with a
-// canary in every slot. Its rows for this package's calls stay in cmd/legion, since the test runs
-// `legion gh` itself for them, so a function here holding a call of Shown that is renamed fails
-// `./cmd/legion` alone. This package's TestNoRefusalFormatsAPersonsValueItself (shown_test.go)
-// holds every other place of its source that formats a value to a reviewed table, each with the
-// reason its value is none a person typed unchecked, as cmd/legion's test of that name holds its
-// gh*.go files' places; both read the source through ghroutetest's walk (SourceCalls).
+// Every call of Shown is a refusal path, read from the source by ghroutetest.ShownPaths and keyed
+// by the function that makes it and the source of its place argument (a literal, or a variable
+// such as repositoryTarget's kind). This package's TestNoRefusalPathPrintsACanary (shown_test.go)
+// holds every call in its source to rows that drive it with a canary in every slot
+// (ghroutetest.CanaryRows, and its own canaryRuns for a path TargetOf does not reach) and prints
+// each refusal through PrintRefusal, so a call added with no rows, or a function here holding one
+// that is renamed, fails `./internal/ghroute`. cmd/legion's test of that name holds its gh*.go
+// files' calls to rows of its own and runs every row of ghroutetest.CanaryRows as `legion gh`
+// itself. This package's TestNoRefusalFormatsAPersonsValueItself holds every other place of its
+// source that formats a value to a reviewed table, each with the reason its value is none a person
+// typed unchecked, as cmd/legion's test of that name holds its gh*.go files' places; all of them
+// read the source through ghroutetest's walk (SourceCalls).
 func Shown(value, place string) string {
 	return place
 }
