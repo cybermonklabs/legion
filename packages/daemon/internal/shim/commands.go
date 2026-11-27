@@ -144,7 +144,9 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	if err != nil {
 		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to %s the workspace with", os.Getenv("PATH"), verb)
 	}
-	ctx, cancel := context.WithTimeout(s.commands, budget)
+	// CONTROL: the regression row 6 must catch: the command's context is not the shim's, so the
+	// shim's stop never reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	started := time.Now()
 	start := s.children.Starter()
 	run := func(stdin []byte, args ...string) (string, error) {
