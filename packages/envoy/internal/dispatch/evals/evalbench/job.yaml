@@ -48,7 +48,8 @@
 #                          the run supplies, so this file names no issue, session or deployment
 #   PAINT_RUNS             (optional) how many times each first paint is measured
 #                          (EVALBENCH_PAINT_RUNS); unset, the head's 8 times, k14's 2 a project
-#                          and the rest once
+#                          and the rest once; at least 2 in mode k14, whose two reads of each project
+#                          are each the first after a restart once, so the render refuses 1
 #   CATCHUP                (optional) how long the consumers' catch-up may take (EVALBENCH_CATCHUP);
 #                          unset, 1h, and 150m in mode k14
 #   OMP_SESSION OMP_SESSION_TITLE      the session that runs it, as the farm's policy reads it

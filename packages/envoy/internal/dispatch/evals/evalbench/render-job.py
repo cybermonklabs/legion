@@ -55,7 +55,10 @@ def main():
     memory = gib("SERVER_MEMORY", values["SERVER_MEMORY"]) + gib("PG_MEMORY", values["PG_MEMORY"]) + gib("DRIVER_MEMORY", values["DRIVER_MEMORY"])
     gib("SCRATCH", values["SCRATCH"])
     if values["PAINT_RUNS"]:
-        count("PAINT_RUNS", values["PAINT_RUNS"], "runs")
+        runs = count("PAINT_RUNS", values["PAINT_RUNS"], "runs")
+        # k14 judges each project's two reads each as the first read after a restart once.
+        if values["MODE"] == "k14" and runs < 2:
+            sys.exit(f"render-job.py: PAINT_RUNS is at least 2 in mode k14, so each project's two reads are each the first after a restart once, not {runs}")
     if values["CATCHUP"] and not re.fullmatch(r"[1-9][0-9]*[hm]", values["CATCHUP"]):
         sys.exit(f"render-job.py: CATCHUP is a whole number of hours or minutes, such as 150m, not {values['CATCHUP']!r}")
     hours = ATTEMPT_HOURS[values["MODE"]]

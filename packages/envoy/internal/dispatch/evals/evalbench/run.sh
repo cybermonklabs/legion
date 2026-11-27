@@ -70,7 +70,7 @@
 #   EVALBENCH_QUIET, EVALBENCH_CATALOG   measure paint's -quiet and -catalog (30s, 65s)
 #   EVALBENCH_PAINT_RUNS  how many times the first paint is measured (8 at this head, 2 for each
 #                         project in mode k14; once in every other mode unless named; fewer for a
-#                         smoke run)
+#                         smoke run, but never under 2 in mode k14, which refuses 1 before it starts)
 #   EVALBENCH_NOW         the UTC midnight the loaded history ends at, measure paint's -now (job.sh
 #                         sets it; the current UTC midnight where unset)
 #   EVALBENCH_TEN_TIMES   1 where the fixture is at ten times the stated run rate, measure's
@@ -111,6 +111,13 @@ case "$command" in
       exit 2
       ;;
     esac
+    # Mode k14 judges each project's two reads each as the first read after a restart once
+    # (`measure k14-paints`), and a run makes one of them first: one run leaves the other never
+    # first, which fails every project.
+    if [ "$mode" = k14 ] && [ "$runs" -lt 2 ]; then
+      echo "run.sh: mode k14 measures each project's first paint at least twice, so each of its two reads is the first after a restart once; EVALBENCH_PAINT_RUNS is $runs" >&2
+      exit 2
+    fi
     recorded=0
     if [ "$mode" = head ] || [ "$runs" -gt 1 ]; then
       recorded=1
