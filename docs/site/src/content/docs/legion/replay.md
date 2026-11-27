@@ -489,16 +489,25 @@ Since the clone holds every blob that it reads, each command that reads it runs 
 Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
 Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
 It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
-Each merge-tree writes the trees and blobs that it merges into an object directory of its own, `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
-The collector makes that directory empty before each merge-tree, whatever a stopped run left there, and removes it once the command ends, however it ended, so the clone does not grow with the merges.
+Each merge-tree writes the trees and blobs that it merges into an object directory of its own, under `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
+Git splits `GIT_ALTERNATE_OBJECT_DIRECTORIES` on `:`, so where the clone's path holds a `:` or a `"`, the collector gives git that path quoted, as `git help git` describes.
+The collector removes each merge-tree's directory once the command ends, however it ended, and `merge-objects` whole before the first merge-tree, whatever a stopped run left there, and after the last, so the clone does not grow with the merges.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
+Under `--parallel`, two pull requests can read the same head at once, and git then gives each the same answer.
 
-Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
+Each git command runs under a memory guard of its own: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
 The guard also kills a command past its time: 15 minutes for the clone, 180 seconds for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
 A `merge-tree --stdin` writes each verdict as it makes it, so its 120 seconds are those of one merge, counted from the last verdict that it wrote, or from its start before the first.
 So a batch that goes on giving verdicts finishes, and a merge that hangs is killed, while the collector keeps the verdicts that its batch gave before it.
 A kill is a `memory-cap` or a `timeout` missing input, any other failure of git a `git-error` one, and the run goes on.
 The guard reads Linux's `/proc`, so the git phase runs on Linux.
+
+`--parallel <n>` runs the git reads and merges of up to n heads at once, 1 by default.
+Each of n workers takes the next head in the file's order, across its pull requests, so a window of many small pull requests and a few large ones keeps all n busy.
+The collector still finishes the pull requests in the file's order: it writes a pull request and prints its line once all its heads are read, never before an earlier one.
+So the file, the lines and a run that goes on after a kill are those of `--parallel 1`, byte for byte.
+Memory grows with `--parallel`: each of the n git commands can hold up to `--memory-cap`, and a merge of a real repository holds about 350 MiB.
+`--github-only` and `--fetch-only` run none of the reads and merges, so they refuse a `--parallel` above 1.
 
 A run on a window whose git file of `--repo` exists asks GitHub and git for nothing that the file holds.
 The GitHub phase keeps each pull request that the file holds and no missing input of GitHub's names.
@@ -546,7 +555,7 @@ tar -C <dir outside the window> -cf clone.tar <owner>__<name>
 tar -C <dir outside the window> -xf clone.tar
 
 legion replay collect-git \
-  --repo <owner>/<name> --branch main --merge-only \
+  --repo <owner>/<name> --branch main --merge-only --parallel 4 \
   --clones <dir outside the window> \
   --out windows/acme-2026-10-05
 ```
@@ -565,6 +574,7 @@ legion replay collect-git \
 | `--out <dir>` | The directory of the window that `collect` wrote (required). |
 | `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default), where `--merge-only` reads the clone and makes none. |
 | `--memory-cap <bytes>` | The memory that one git command's processes may hold before the guard kills them (1610612736, 1.5 GiB, by default). |
+| `--parallel <n>` | The heads whose git reads and merges run at once, each git command under its own `--memory-cap`, with no change to the file written (1 by default; refused below 1, and above 1 with `--github-only` and `--fetch-only`). |
 | `--github-only` | Run the GitHub phase alone. |
 | `--git-only` | Run the git phase alone, from the file that the GitHub phase wrote. |
 | `--fetch-only` | Run the git phase's fetches alone, where your git credential is: fill the clone in `--clones` with every commit that the merges read, and write nothing into the window. |

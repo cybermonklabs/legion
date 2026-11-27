@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -33,14 +34,16 @@ const (
 	gitOtherTime  = 60 * time.Second
 )
 
-// gitGuard runs one command at a time under a memory cap and a time, as the feasibility reading's
-// guard did: the command runs as the leader of a process group of its own, the summed resident
-// memory of that group is read as it starts and every gitPoll after (rss, groupRSS where nil), and
-// the whole group is killed once that memory passes limit or the command outlives its time (run).
-// Peak is the most memory it read of any command it ran. Linux alone holds the /proc it reads.
+// gitGuard runs commands under a memory cap and a time, as the feasibility reading's guard did,
+// each command on its own and any number of them at once: the command runs as the leader of a
+// process group of its own, the summed resident memory of that group is read as it starts and
+// every gitPoll after (rss, groupRSS where nil), and the whole group is killed once that memory
+// passes limit or the command outlives its time (run). Peak is the most memory it read of any
+// command it ran, under mu. Linux alone holds the /proc it reads.
 type gitGuard struct {
 	limit int64
 	rss   func(pgid int) int64
+	mu    sync.Mutex
 	peak  int64
 }
 
@@ -120,7 +123,9 @@ func (g *gitGuard) run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration
 			}
 		}
 	}
+	g.mu.Lock()
 	g.peak = max(g.peak, run.peak)
+	g.mu.Unlock()
 	run.stdout, run.stderr = stdout.Bytes(), stderr.Bytes()
 	run.code = cmd.ProcessState.ExitCode()
 	var exit *exec.ExitError

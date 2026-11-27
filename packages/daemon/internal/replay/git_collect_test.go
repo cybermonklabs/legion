@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -616,10 +617,9 @@ func pictureBeforeMerges(t *testing.T, dir string, calls *gitCalls, before *clon
 }
 
 // checkMergesWroteNothing fails t where the clone in dir, once collect-git has run, is not as
-// before pictured it as its first merge-tree was about to run: where its objects directory gained
-// or lost a file, or the clone holds another entry than it held then, such as a directory of the
-// merges' own objects (gitMergeObjects), which collect-git removes before each merge-tree and after
-// it.
+// before pictured it before its merge-trees: where its objects directory gained or lost a file, or
+// the clone holds another entry than it held then, such as a directory of the merges' own objects
+// (gitMergeObjects), which collect-git removes before its first merge-tree and after its last.
 func checkMergesWroteNothing(t *testing.T, dir string, before clonePicture) {
 	t.Helper()
 	if before.entries == nil {
@@ -1392,6 +1392,343 @@ func TestCollectGitRefusesAWindowWithNoMergesAndClonesInside(t *testing.T) {
 		t.Errorf("the refused runs ran git %q and sent GitHub %v, want nothing", ran, sent)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "git")); !os.IsNotExist(err) {
+		t.Errorf("a refused run left the window's git directory (%v)", err)
+	}
+}
+
+// parallelPulls gives the case's window the git file the GitHub phase writes of five pull requests
+// of several heads each, for the git phase alone: #12, merged as m5, with its heads p1, p1b and p2
+// (gitCase); #13 with unreachableHead, which the remote does not hold, and three heads of its own;
+// and #14, #15 and #16, which ACME-2's events attribute to it too, with three heads each. Each head
+// of #13 to #16 is a commit of its own off c1 or m1 that changes f.txt's fifth line, which m3
+// changes too, so its merges conflict from m3 on, or its seventh, which no commit of main changes,
+// so they are clean; and the third head of each changes other.txt too, which m2 changes. It is the
+// heads of each pull request by its number.
+func (c *gitCase) parallelPulls(t *testing.T) map[int][]string {
+	t.Helper()
+	at := func(minute int) time.Time { return c.window.From.Add(time.Duration(minute) * time.Minute) }
+	heads := map[int][]string{12: {c.p1, c.p1b, c.p2}}
+	pulls := []GitPull{{Number: 12, Merge: c.m5, Base: "main", Heads: []GitHead{{SHA: c.p1, At: at(0), From: GitHeadCommit},
+		{SHA: c.p1b, At: at(1), From: GitHeadRead}, {SHA: c.p2, At: at(2), From: GitHeadForcePush}}}}
+	for number := 13; number <= 16; number++ {
+		if number > 13 {
+			c.window.Events["ACME-2"] = append(c.window.Events["ACME-2"], inputsAttribution(number-9, number-11, "ACME-2", "acme/widgets", number))
+		}
+		pull := GitPull{Number: number, Base: "main"}
+		if number == 13 {
+			pull.Heads = append(pull.Heads, GitHead{SHA: unreachableHead, At: at(0), From: GitHeadCommit})
+		}
+		for k := range 3 {
+			base, first := c.c1, "1"
+			if (number+k)%2 == 1 {
+				base, first = c.m1, "A"
+			}
+			own := fmt.Sprintf("#%d-%d", number, k)
+			files := map[string]string{"f.txt": nineLines(map[int]string{1: first, 5 + 2*(k%2): own})}
+			if k == 2 {
+				files["other.txt"] = own + "\n"
+			}
+			c.remote.git("checkout", "--quiet", "--detach", base)
+			sha := c.remote.commit("head "+own, files)
+			heads[number] = append(heads[number], sha)
+			pull.Heads = append(pull.Heads, GitHead{SHA: sha, At: at(1 + k), From: GitHeadCommit})
+		}
+		pulls = append(pulls, pull)
+	}
+	c.remote.git("checkout", "--quiet", "main")
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: pulls}}
+	return heads
+}
+
+// mergeBarrier is an onGit seam that holds the first merge-tree collect-git runs until a second
+// one starts, so that the two run at once, and that, where no second one starts within bound,
+// fails t and lets the first go on, so a run of one git command at a time ends. Only a run that
+// merges two heads at once passes it.
+type mergeBarrier struct {
+	t       *testing.T
+	bound   time.Duration
+	mu      sync.Mutex
+	started int
+	second  chan struct{}
+}
+
+func newMergeBarrier(t *testing.T, bound time.Duration) *mergeBarrier {
+	return &mergeBarrier{t: t, bound: bound, second: make(chan struct{})}
+}
+
+func (b *mergeBarrier) onGit(args []string) {
+	if args[0] != "merge-tree" {
+		return
+	}
+	b.mu.Lock()
+	b.started++
+	started := b.started
+	b.mu.Unlock()
+	switch started {
+	case 1:
+		select {
+		case <-b.second:
+		case <-time.After(b.bound):
+			b.t.Errorf("no second merge-tree started within %s of the first, which waited for one: the git phase ran one git command at a time", b.bound)
+		}
+	case 2:
+		close(b.second)
+	}
+}
+
+// collect-git's git phase with Parallel 4 runs its reads and merges of four heads at once, and
+// writes what it writes with Parallel 1, byte for byte. Here the git file alone gives five pull
+// requests of several heads each (parallelPulls), with clean and conflicting merges and a head the
+// remote does not hold. The git phase alone with Parallel 4 writes the git file and window.json the
+// git phase alone writes with Parallel 1, and tells Finished of the same pull requests with the same
+// counts in the same order; and two of its merge-trees ran at once, since the first waits for the
+// second to start (mergeBarrier). It fails where the run with Parallel 4 merges one head at a time,
+// writes another file, or finishes the pull requests in another order or with other counts.
+func TestCollectGitInParallelWritesWhatOneAtATimeWrites(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	c.parallelPulls(t)
+	one, four := c.windowDir(t), c.windowDir(t)
+	run := func(dir string, parallel int, onGit func([]string)) (GitCollected, []GitPullFinished) {
+		t.Helper()
+		var finished []GitPullFinished
+		config := c.gitOnly(dir, filepath.Join(t.TempDir(), "clones"), &gitCalls{})
+		config.Parallel, config.Finished = parallel, func(done GitPullFinished) { finished = append(finished, done) }
+		if onGit != nil {
+			config.onGit = onGit
+		}
+		collected, err := CollectGit(context.Background(), config)
+		if err != nil {
+			t.Fatalf("CollectGit --git-only with Parallel %d: %v", parallel, err)
+		}
+		return collected, finished
+	}
+	collected, alone := run(one, 1, nil)
+	if collected.Conflicts == 0 || collected.Verdicts == collected.Conflicts || collected.Missing[GitHeadUnreachable] != 1 || len(alone) != 5 {
+		t.Fatalf("the git phase alone with Parallel 1 counts %+v and finished %+v, want clean and conflicting verdicts, one head-unreachable and five pull requests",
+			collected, alone)
+	}
+	barrier := newMergeBarrier(t, 30*time.Second)
+	_, together := run(four, 4, barrier.onGit)
+	checkSameBytes(t, "the window the git phase alone wrote with Parallel 4", windowBytes(t, four), windowBytes(t, one))
+	if !slices.Equal(together, alone) {
+		t.Errorf("the git phase alone with Parallel 4 finished%s\nwant, as with Parallel 1,%s", describeFinished(together), describeFinished(alone))
+	}
+}
+
+// describeFinished is finished, a pull request to a line, for a failure's message.
+func describeFinished(finished []GitPullFinished) string {
+	lines := make([]string, len(finished))
+	for i, done := range finished {
+		lines[i] = fmt.Sprintf("%+v", done)
+	}
+	return describeLines(lines)
+}
+
+// A run of the git phase with Parallel 4 that stops once the file holds its first pull request
+// leaves the file as it stood then, and a run again with Parallel 4 asks git for nothing that file
+// holds and writes the file one whole run writes. Here (parallelPulls) the first run's context is
+// cancelled as Finished is told of #12, the first pull request: the run ends with the context's
+// error and leaves the file as it was then, #12's heads read and no later pull request's. The run
+// again runs no diff-tree, since the file holds the commits, and no git command that names a head
+// of #12 or its merge m5; and it writes, byte for byte, what one run with Parallel 1 writes. It
+// fails where a stopped run writes a pull request before an earlier one is whole, or where a run
+// again reads a head the file holds or writes another file.
+func TestCollectGitInParallelGoesOnWhereAStoppedRunStopped(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	heads := c.parallelPulls(t)
+	whole, stopped := c.windowDir(t), c.windowDir(t)
+	if _, err := CollectGit(context.Background(), c.gitOnly(whole, filepath.Join(t.TempDir(), "clones"), &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	clones := filepath.Join(t.TempDir(), "clones")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var held map[string][]byte
+	config := c.gitOnly(stopped, clones, &gitCalls{})
+	config.Parallel, config.Finished = 4, func(GitPullFinished) {
+		if held == nil {
+			held = windowBytes(t, stopped)
+			cancel()
+		}
+	}
+	if _, err := CollectGit(ctx, config); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CollectGit --git-only with Parallel 4, cancelled as #12 finished = %v, want the context's cancellation", err)
+	}
+	if held == nil {
+		t.Fatal("the stopped run told Finished of no pull request")
+	}
+	checkSameBytes(t, "the window the stopped run left", windowBytes(t, stopped), held)
+	read, err := ReadWindow(stopped)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window the stopped run left: %v", err)
+	}
+	for _, pull := range read.Git["acme/widgets"].Pulls {
+		for _, h := range pull.Heads {
+			if h.Read() != (pull.Number == 12) {
+				t.Errorf("the stopped run left #%d's head %s read %v, want #12's heads read and no other", pull.Number, h.SHA, h.Read())
+			}
+		}
+	}
+	calls := &gitCalls{}
+	config = c.gitOnly(stopped, clones, calls)
+	config.Parallel = 4
+	if _, err := CollectGit(context.Background(), config); err != nil {
+		t.Fatalf("CollectGit --git-only with Parallel 4 again: %v", err)
+	}
+	ran := calls.take()
+	if trees := countCalls(ran, "diff-tree"); trees != 0 {
+		t.Errorf("the run again ran %d diff-trees, want none: the file holds the commits", trees)
+	}
+	held12 := append(slices.Clone(heads[12]), c.m5)
+	for _, call := range ran {
+		if slices.ContainsFunc(call, func(arg string) bool {
+			return slices.ContainsFunc(held12, func(sha string) bool { return strings.Contains(arg, sha) })
+		}) {
+			t.Errorf("the run again ran git %q, which names a head of #12 or its merge, which the file holds", call)
+		}
+	}
+	checkSameBytes(t, "the window the run again wrote", windowBytes(t, stopped), windowBytes(t, whole))
+}
+
+// collect-git's merges with Parallel 4 leave nothing in the clone: no object a merge-tree wrote and
+// no directory of the merges' objects (gitMergeObjects); and the directory of the merges' objects
+// a stopped run left, with a read-only object in it, goes. Here the fetching alone fills the clone
+// with what the merges of parallelPulls read, as the test pictures it (pictureClone); then the
+// clone gains that left directory, and the merging alone with Parallel 4 merges each head. It fails
+// where a merge-tree wrote into the clone's objects or a directory of the merges' objects is left.
+func TestCollectGitInParallelLeavesNothingOfItsMergesInTheClone(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	c.parallelPulls(t)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	clone := filepath.Join(clones, "acme__widgets")
+	if _, err := CollectGit(context.Background(), c.fetchOnly(dir, clones, &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit --fetch-only: %v", err)
+	}
+	before := pictureClone(t, clone)
+	leftover := filepath.Join(clone, gitMergeObjects, "3", "ab")
+	if err := os.MkdirAll(leftover, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, strings.Repeat("c", 38)), []byte("left by a stopped run\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	calls := &gitCalls{}
+	config := c.mergeOnly(dir, clones, calls)
+	config.Parallel = 4
+	if _, err := CollectGit(context.Background(), config); err != nil {
+		t.Fatalf("CollectGit --merge-only with Parallel 4: %v", err)
+	}
+	if merges := countCalls(calls.take(), "merge-tree"); merges < 2 {
+		t.Errorf("the merging alone ran %d merge-trees, want one for each head the clone holds", merges)
+	}
+	checkMergesWroteNothing(t, clone, before)
+}
+
+// A clones' directory whose path holds a ':', which git splits GIT_ALTERNATE_OBJECT_DIRECTORIES on,
+// and a '"' gets each verdict, from a merge-tree --stdin and from a merge-tree alone: collect-git
+// names the clone's objects to git as a C-quoted path where the path holds either. Here the case
+// (gitCase) runs into clones in such a path twice: once as it stands, each of its three heads
+// merged in a merge-tree --stdin, and once on a window of its own with each merge-tree --stdin
+// killed as it starts, the guard reading its memory past the cap, so that each of the eight
+// verdicts comes from a merge-tree alone. Each run writes the case's file. It fails where a merge
+// in such a clone is a missing input.
+func TestCollectGitMergesInAClonesPathThatHoldsAColon(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	clones := filepath.Join(t.TempDir(), `clo:nes "q"`)
+	batched, alone := c.windowDir(t), c.windowDir(t)
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.config(batched, clones, calls)); err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	if got, want := callsOf(calls.take(), "merge-tree"), slices.Repeat([][]string{batchMergeTree}, 3); !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("git ran the merge-trees %q, want %q, one for each of p1, p1b and p2", got, want)
+	}
+	if got, want := gitFileLines(t, batched, fetchFailed), c.wantLines(true); !slices.Equal(got, want) {
+		t.Errorf("the merges in --stdin in %s wrote%s\nwant%s", clones, describeLines(got), describeLines(want))
+	}
+
+	var batch atomic.Bool
+	config := c.config(alone, clones, calls)
+	config.onGit = func(args []string) {
+		calls.add(args)
+		batch.Store(slices.Equal(args, batchMergeTree))
+	}
+	config.rss = func(pgid int) int64 {
+		if batch.Load() {
+			return DefaultGitMemoryCap + 1
+		}
+		return groupRSS(pgid)
+	}
+	if _, err := CollectGit(context.Background(), config); err != nil {
+		t.Fatalf("CollectGit with each merge-tree --stdin killed: %v", err)
+	}
+	merges := callsOf(calls.take(), "merge-tree")
+	batches := len(slices.DeleteFunc(slices.Clone(merges), func(call []string) bool { return !slices.Equal(call, batchMergeTree) }))
+	if batches != 3 || len(merges)-batches != 8 {
+		t.Errorf("git ran the merge-trees %q, want three --stdin, each killed, and eight alone", merges)
+	}
+	if got, want := gitFileLines(t, alone, fetchFailed), c.wantLines(true); !slices.Equal(got, want) {
+		t.Errorf("the merges alone in %s wrote%s\nwant%s", clones, describeLines(got), describeLines(want))
+	}
+}
+
+// collect-git gives git the clone's objects as an entry of GIT_ALTERNATE_OBJECT_DIRECTORIES
+// (gitAlternate): a plain path as it is, and one that holds a ':', which git splits the variable
+// on, or a '"', in double quotes, as git reads a C-quoted path, a backslash and a double quote each
+// after a backslash and a control character as three octal digits. It fails where a plain path is
+// quoted or a path git would split or misread is not quoted so.
+func TestCollectGitQuotesTheClonesObjectsWhereGitWouldSplitThem(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ dir, want string }{
+		{"/work/clones/acme__widgets/objects", "/work/clones/acme__widgets/objects"},
+		{`/work/back\slash/objects`, `/work/back\slash/objects`},
+		{"/work/clo:nes/objects", `"/work/clo:nes/objects"`},
+		{`/work/clo:nes "q"/objects`, `"/work/clo:nes \"q\"/objects"`},
+		{"/work/a:b\\c\nd/objects", `"/work/a:b\\c\012d/objects"`},
+	} {
+		if got := gitAlternate(test.dir); got != test.want {
+			t.Errorf("gitAlternate(%q) = %q, want %q", test.dir, got, test.want)
+		}
+	}
+}
+
+// collect-git refuses, before any read of GitHub or git and with nothing written, a parallel count
+// below zero, and one above 1 for the GitHub phase alone and for the fetching alone, which run none
+// of the git phase's reads and merges (GitConfig.Parallel).
+func TestCollectGitRefusesAParallelCountWhereNoMergeRuns(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	calls := &gitCalls{}
+	below := c.gitOnly(dir, clones, calls)
+	below.Parallel = -1
+	github := c.config(dir, clones, calls)
+	github.GitHubOnly, github.Parallel = true, 2
+	fetch := c.fetchOnly(dir, clones, calls)
+	fetch.Parallel = 2
+	for _, test := range []struct {
+		name   string
+		config GitConfig
+		want   string
+	}{
+		{"the git phase alone with a parallel count of -1", below, "the parallel count -1 is below zero"},
+		{"the GitHub phase alone with a parallel count of 2", github,
+			"the GitHub phase alone runs none of the git phase's reads and merges, so it takes no parallel count above 1"},
+		{"the fetching alone with a parallel count of 2", fetch,
+			"the git phase's fetching alone runs none of the git phase's reads and merges, so it takes no parallel count above 1"},
+	} {
+		if _, err := CollectGit(context.Background(), test.config); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("CollectGit of %s = %v, want the refusal %q", test.name, err, test.want)
+		}
+	}
+	if ran, sent := calls.take(), c.seen.all(); len(ran) != 0 || len(sent) != 0 {
+		t.Errorf("the refused runs ran git %q and sent GitHub %v, want nothing", ran, sent)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "git")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a refused run left the window's git directory (%v)", err)
 	}
 }

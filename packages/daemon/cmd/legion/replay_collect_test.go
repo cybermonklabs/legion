@@ -67,8 +67,9 @@ func TestReplayCollectPrintsEachAncestorDispatchDoesNotShow(t *testing.T) {
 // `legion replay collect-git` refuses, as a usage error that reads and writes nothing, any two of
 // its four runs of a part alone (--github-only, --git-only, --fetch-only, --merge-only); the git
 // phase alone, its fetching alone and its merging alone each with a GitHub token's variable,
-// GitHub's API, a reserve or a rate; both phases with no token's variable; and a memory cap of no
-// bytes.
+// GitHub's API, a reserve or a rate; both phases with no token's variable; a memory cap of no
+// bytes; a --parallel below 1; and a --parallel above 1 with --github-only or --fetch-only, which
+// read and merge nothing with git.
 func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T) {
 	t.Parallel()
 	window := t.TempDir()
@@ -86,6 +87,10 @@ func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T)
 		{[]string{"--fetch-only", "--merge-only"}, "--fetch-only and --merge-only exclude each other"},
 		{nil, "--github-token-env is required but with --git-only, --fetch-only or --merge-only"},
 		{[]string{"--git-only", "--memory-cap", "0"}, "--memory-cap 0"},
+		{[]string{"--git-only", "--parallel", "0"}, "--parallel 0: at least one git command runs at a time"},
+		{[]string{"--github-token-env", "GITHUB_TOKEN", "--github-only", "--parallel", "2"},
+			"--github-only runs none of the git phase's reads and merges, so it takes no --parallel above 1"},
+		{[]string{"--fetch-only", "--parallel", "2"}, "--fetch-only runs none of the git phase's reads and merges, so it takes no --parallel above 1"},
 	}
 	for _, run := range []string{"--git-only", "--fetch-only", "--merge-only"} {
 		for _, share := range [][]string{{"--github-token-env", "GITHUB_TOKEN"}, {"--github-api", "https://api.github.com"}, {"--github-reserve", "10"},
@@ -107,7 +112,8 @@ func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T)
 
 // `legion replay collect-git --help` names its four runs of a part alone on its usage line, which
 // exclude each other, and says where each half of the git phase runs: the fetching where the git
-// credential is, the clone's directory copied, and the merging where none is.
+// credential is, the clone's directory copied, and the merging where none is; and that the file
+// does not depend on --parallel, though git's memory grows with it.
 func TestReplayCollectGitHelpNamesTheFourRunsAndTheTwoMachines(t *testing.T) {
 	t.Parallel()
 	code, stdout, stderr := legionRun(t, "replay", "collect-git", "--help")
@@ -115,7 +121,7 @@ func TestReplayCollectGitHelpNamesTheFourRunsAndTheTwoMachines(t *testing.T) {
 		t.Fatalf("legion replay collect-git --help = %d, stderr %q", code, stderr)
 	}
 	for _, want := range []string{"[--github-only | --git-only | --fetch-only | --merge-only]", "--fetch-only", "--merge-only",
-		"copy the clone's directory"} {
+		"copy the clone's directory", "do not depend on --parallel", "memory grows with --parallel"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("legion replay collect-git --help prints\n%s\nwant it to hold %q", stdout, want)
 		}

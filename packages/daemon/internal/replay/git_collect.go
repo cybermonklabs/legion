@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,9 +38,10 @@ const (
 	gitMergeBatch = 200
 )
 
-// gitMergeObjects is the directory, in the clone beside its objects, that each merge-tree writes
-// its merged trees and blobs into, and that collect-git removes as the merge-tree ends
-// (gitClone.merge): a name git gives nothing of its own in a repository's directory.
+// gitMergeObjects is the directory, in the clone beside its objects, under which each merge-tree
+// writes its merged trees and blobs into a directory of its own, which collect-git removes as the
+// merge-tree ends (gitClone.merge), and which it removes whole before the git phase's first merge
+// and after its last (readPulls): a name git gives nothing of its own in a repository's directory.
 const gitMergeObjects = "merge-objects"
 
 // GitConfig is one collection of git's reading of a repository's pull requests into a window
@@ -60,6 +63,12 @@ type GitConfig struct {
 	// MemoryCap is the memory guard's cap on git's processes, in bytes (gitGuard); 0 for
 	// DefaultGitMemoryCap.
 	MemoryCap int64
+	// Parallel is how many heads' git reads and merges run at once, the heads taken in the file's
+	// order across its pull requests (readPulls); 0 for 1. The file, and what Finished is told, do
+	// not depend on it; git's memory grows with it, each command up to MemoryCap. The GitHub phase
+	// alone and the fetching alone run none of the git phase's reads and merges, so they take no
+	// Parallel above 1.
+	Parallel int
 	// GitHubOnly runs the GitHub phase alone and GitOnly the git phase alone; with neither set,
 	// CollectGit runs both, the GitHub phase first. FetchOnly runs the git phase's fetching alone,
 	// where the git credential is: it fills the clone with every commit the merges read and writes
@@ -152,10 +161,12 @@ type GitCollected struct {
 // read once in the run however many pull requests hold the head, its verdicts from one git
 // merge-tree --stdin of up to gitMergeBatch base commits (readVerdicts). A merge-tree writes its
 // merged trees and blobs into a directory of its own that the run removes, so the clone does not
-// grow with the merges (gitClone.merge). Every git command runs alone under the memory guard
-// (gitGuard, cfg.MemoryCap) and its time, a merge-tree --stdin's that of one merge, counted from
-// the last record it wrote; a command git fails, or the guard kills, is a missing input, and the
-// run goes on.
+// grow with the merges (gitClone.merge). Every git command runs under the memory guard (gitGuard,
+// cfg.MemoryCap) and a time of its own, a merge-tree --stdin's that of one merge, counted from the
+// last record it wrote; a command git fails, or the guard kills, is a missing input, and the run
+// goes on. The reads and merges of up to cfg.Parallel heads run at once, the heads taken in the
+// file's order across its pull requests, and the run writes what it writes with one at a time,
+// byte for byte (readPulls).
 //
 // The git phase also runs in two halves, each alone, so that a private repository's merges run
 // where no git credential is. The fetching alone (cfg.FetchOnly) makes or opens the clone and
@@ -214,6 +225,10 @@ func CollectGit(ctx context.Context, cfg GitConfig) (GitCollected, error) {
 		return refuse("no GitHub token is given")
 	case cfg.MemoryCap < 0:
 		return refuse("the memory cap of %d bytes is below zero", cfg.MemoryCap)
+	case cfg.Parallel < 0:
+		return refuse("the parallel count %d is below zero", cfg.Parallel)
+	case cfg.Parallel > 1 && (cfg.GitHubOnly || cfg.FetchOnly):
+		return refuse("%s runs none of the git phase's reads and merges, so it takes no parallel count above 1", alone[0])
 	}
 	if err := CheckGitHubShare(cfg.Reserve, cfg.Rate); err != nil {
 		return refuse("%w", err)
@@ -349,6 +364,31 @@ type (
 	commitPair [2]string
 )
 
+// lockedMap is a map that the git phase's workers read and add to at once, each under its lock;
+// the zero lockedMap is empty and ready to use.
+type lockedMap[K comparable, V any] struct {
+	mu sync.Mutex
+	m  map[K]V
+}
+
+// get is the value m holds under key, and whether it holds one.
+func (m *lockedMap[K, V]) get(key K) (V, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	value, held := m.m[key]
+	return value, held
+}
+
+// set has m hold value under key.
+func (m *lockedMap[K, V]) set(key K, value V) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.m == nil {
+		m.m = make(map[K]V)
+	}
+	m.m[key] = value
+}
+
 // gitCollector is one run of collect-git: what it read of the window, the input as it stands (cur),
 // and what the window's git file held before the run (old), by what each reading of git's rests on.
 type gitCollector struct {
@@ -376,11 +416,12 @@ type gitCollector struct {
 
 	cur, old  GitInput
 	holdsFile bool
-	// The readings the old file holds and those the run read, by what each rests on, and each head a
-	// missing input of git's names.
-	mergeBases map[commitPair]string
-	headPaths  map[commitPair][]string
-	verdicts   map[commitPair]GitVerdict
+	// The readings the old file holds and those the run read, by what each rests on, which the git
+	// phase's workers read and add to at once (readPulls), and each head a missing input of git's
+	// names.
+	mergeBases lockedMap[commitPair, string]
+	headPaths  lockedMap[commitPair, []string]
+	verdicts   lockedMap[commitPair, GitVerdict]
 	oldMissing map[headRef]bool
 }
 
@@ -392,8 +433,7 @@ func newGitCollector(cfg GitConfig, owner, name string, head Window, numbers []i
 	c := &gitCollector{cfg: cfg, owner: owner, name: name, head: head, file: path.Join(gitDir, owner+"__"+name+".jsonl"), numbers: numbers,
 		merges: merges, mergeSet: make(map[string]bool), reads: make(map[int][]MergeStateRead), old: held, holdsFile: holdsFile,
 		fetching: !cfg.MergeOnly, merging: !cfg.FetchOnly,
-		guard: &gitGuard{limit: cmp.Or(cfg.MemoryCap, DefaultGitMemoryCap), rss: cfg.rss}, mergeBases: make(map[commitPair]string),
-		headPaths: make(map[commitPair][]string), verdicts: make(map[commitPair]GitVerdict), oldMissing: make(map[headRef]bool)}
+		guard: &gitGuard{limit: cmp.Or(cfg.MemoryCap, DefaultGitMemoryCap), rss: cfg.rss}, oldMissing: make(map[headRef]bool)}
 	for _, merge := range merges {
 		c.mergeSet[merge.SHA] = true
 	}
@@ -419,10 +459,10 @@ func newGitCollector(cfg GitConfig, owner, name string, head Window, numbers []i
 			if !h.Read() {
 				continue
 			}
-			c.mergeBases[commitPair{h.SHA, h.Tip}] = h.MergeBase
-			c.headPaths[commitPair{h.MergeBase, h.SHA}] = h.Paths
+			c.mergeBases.set(commitPair{h.SHA, h.Tip}, h.MergeBase)
+			c.headPaths.set(commitPair{h.MergeBase, h.SHA}, h.Paths)
 			for _, verdict := range h.Verdicts {
-				c.verdicts[commitPair{h.SHA, verdict.Base}] = verdict
+				c.verdicts.set(commitPair{h.SHA, verdict.Base}, verdict)
 			}
 		}
 	}
@@ -666,11 +706,12 @@ func laterHead(a, b timelineHead) bool {
 }
 
 // git is the git phase: the paths of each commit the file holds, then each pull request's heads
-// read against their tip (readHead), the file written once the commits are read and again as each
-// pull request is finished. It opens the clone, and asks git anything, only where the file does not
-// hold all it writes. Where it is not fetching (GitConfig.MergeOnly), each commit the clone lacks
-// is a missing input rather than a fetch; where it is not merging (GitConfig.FetchOnly), it stops
-// once the clone holds what the remote gives, and reads and writes nothing.
+// read against their tip (readHead), up to GitConfig.Parallel heads at once (readPulls), the file
+// written once the commits are read and again as each pull request is finished, in the file's
+// order. It opens the clone, and asks git anything, only where the file does not hold all it
+// writes. Where it is not fetching (GitConfig.MergeOnly), each commit the clone lacks is a missing
+// input rather than a fetch; where it is not merging (GitConfig.FetchOnly), it stops once the clone
+// holds what the remote gives, and reads and writes nothing.
 func (c *gitCollector) git(ctx context.Context, clones string) error {
 	needed := make([]string, 0, len(c.merges)+len(c.readBases))
 	for _, merge := range c.merges {
@@ -809,48 +850,119 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 		return err
 	}
 
-	for i := range c.cur.Pulls {
-		pull := &c.cur.Pulls[i]
-		number := pull.Number
-		missing = nil
-		tip, known := tips[number]
-		if !known {
-			var failure gitFailure
-			if failure, known = unreachable[pull.Merge]; known {
-				for _, h := range pull.Heads {
-					missing = append(missing, c.missingOf(failure, number, h.SHA, pull.Merge, GitBaseUnreachable))
-				}
-				known = false
-			} else {
-				run := clone.git(ctx, gitOtherTime, nil, true, "rev-parse", "--verify", pull.Merge+"^1")
-				tip = strings.TrimSpace(string(run.stdout))
-				if known = run.ok() && commitSHA.MatchString(tip); !known {
-					for _, h := range pull.Heads {
-						missing = append(missing, c.missingOf(gitFailure{run, gitOtherTime, "git rev-parse of the merge's first parent"}, number, h.SHA,
-							pull.Merge, GitError))
-					}
-				}
-			}
+	// What the run writes of each head of each pull request, by their places in the file: no
+	// reading of a head of a pull request whose tip git does not give, the file's reading of one it
+	// holds whole, and of each other one the clone holds git's reading (readHead), which readPulls
+	// reads. Each pull request's tip that the file does not hold, its merge's first parent, is read
+	// here, one at a time, before any head.
+	readings := make([][]headReading, len(c.cur.Pulls))
+	for i, pull := range c.cur.Pulls {
+		readings[i] = make([]headReading, len(pull.Heads))
+		tip, known := tips[pull.Number]
+		failure, lacking := unreachable[pull.Merge]
+		reason := GitBaseUnreachable
+		if !known && !lacking {
+			run := clone.git(ctx, gitOtherTime, nil, true, "rev-parse", "--verify", pull.Merge+"^1")
+			tip = strings.TrimSpace(string(run.stdout))
+			known = run.ok() && commitSHA.MatchString(tip)
+			failure, reason = gitFailure{run, gitOtherTime, "git rev-parse of the merge's first parent"}, GitError
 		}
-		for j := range pull.Heads {
-			h := &pull.Heads[j]
-			h.Tip, h.MergeBase, h.Paths, h.Verdicts = "", "", nil, nil
+		for j, h := range pull.Heads {
+			r := &readings[i][j]
 			if !known {
+				r.missing = []GitMissing{c.missingOf(failure, pull.Number, h.SHA, pull.Merge, reason)}
 				continue
 			}
-			if was, held := whole(number, h.SHA); held {
-				h.Tip, h.MergeBase, h.Paths, h.Verdicts = was.Tip, was.MergeBase, was.Paths, was.Verdicts
+			if was, held := whole(pull.Number, h.SHA); held {
+				r.head = was
 				continue
 			}
 			if failure, lacking := unreachable[h.SHA]; lacking {
-				missing = append(missing, c.missingOf(failure, number, h.SHA, "", GitHeadUnreachable))
+				r.missing = []GitMissing{c.missingOf(failure, pull.Number, h.SHA, "", GitHeadUnreachable)}
 				continue
 			}
-			missing = append(missing, c.readHead(ctx, clone, number, h, tip, commitPaths)...)
+			r.pr, r.tip, r.head.SHA, r.done = pull.Number, tip, h.SHA, make(chan struct{})
+		}
+	}
+	return c.readPulls(ctx, clone, readings, commitPaths)
+}
+
+// headReading is what the git phase writes of a head of a pull request: its reading, the tip,
+// merge base, paths and verdicts of head, and the missing inputs of what git did not give. done is
+// nil where git reads nothing of it; else git reads head, a head of the pull request pr, against
+// tip (readHead), and done is closed once it has.
+type headReading struct {
+	head    GitHead
+	missing []GitMissing
+	pr      int
+	tip     string
+	done    chan struct{}
+}
+
+// readPulls has git read each head of readings, each pull request's heads by their places in the
+// file, that it reads (headReading.done), and finishes each pull request in the file's order once
+// its heads are read: their readings and missing inputs written into the input as it stands, the
+// file written, and cfg.Finished told. Up to cfg.Parallel workers read the heads at once, each
+// taking the next head in the file's order across the pull requests, so that a pull request of
+// many heads keeps every worker busy; the run's readings serve them all. A head the run read
+// already for another pull request may be read again where two workers read it at once, and gives
+// the same reading. So the file, and what cfg.Finished is told, are those of one worker. The
+// directory of the merges' objects (gitMergeObjects) a stopped run left goes before the first
+// merge, and the one the workers' merges leave goes once the workers end, however the run ends.
+func (c *gitCollector) readPulls(ctx context.Context, clone *gitClone, readings [][]headReading, commitPaths map[string][]string) (err error) {
+	var queue []*headReading
+	for i := range readings {
+		for j := range readings[i] {
+			if readings[i][j].done != nil {
+				queue = append(queue, &readings[i][j])
+			}
+		}
+	}
+	if len(queue) > 0 {
+		merges := filepath.Join(clone.dir, gitMergeObjects)
+		if err := os.RemoveAll(merges); err != nil {
+			return fmt.Errorf("replay: collect-git: %w", err)
+		}
+		reading, stop := context.WithCancel(ctx)
+		var workers sync.WaitGroup
+		defer func() {
+			stop()
+			workers.Wait()
+			if removed := os.RemoveAll(merges); removed != nil && err == nil {
+				err = fmt.Errorf("replay: collect-git: %w", removed)
+			}
+		}()
+		var next atomic.Int64
+		for range max(c.cfg.Parallel, 1) {
+			workers.Go(func() {
+				for i := next.Add(1) - 1; i < int64(len(queue)) && reading.Err() == nil; i = next.Add(1) - 1 {
+					r := queue[i]
+					r.missing = c.readHead(reading, clone, r.pr, &r.head, r.tip, commitPaths)
+					close(r.done)
+				}
+			})
+		}
+	}
+	for i := range c.cur.Pulls {
+		pull := &c.cur.Pulls[i]
+		var missing []GitMissing
+		for j := range pull.Heads {
+			r := &readings[i][j]
+			if r.done != nil {
+				select {
+				case <-r.done:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			h := &pull.Heads[j]
+			h.Tip, h.MergeBase, h.Paths, h.Verdicts = r.head.Tip, r.head.MergeBase, r.head.Paths, r.head.Verdicts
+			missing = append(missing, r.missing...)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		number := pull.Number
 		c.dropMissing(func(m GitMissing) bool { return m.PR == number && !githubReason(m.Reason) })
 		c.cur.Missing = append(c.cur.Missing, missing...)
 		if err := c.write(); err != nil {
@@ -871,21 +983,21 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 	failed := func(run guardedRun, timeout time.Duration, base, what string) []GitMissing {
 		return []GitMissing{c.missingOf(gitFailure{run, timeout, what}, pr, h.SHA, base, GitError)}
 	}
-	mergeBase, held := c.mergeBases[commitPair{h.SHA, tip}]
+	mergeBase, held := c.mergeBases.get(commitPair{h.SHA, tip})
 	if !held {
 		run := clone.git(ctx, gitOtherTime, nil, true, "merge-base", h.SHA, tip)
 		if mergeBase = strings.TrimSpace(string(run.stdout)); !run.ok() || !commitSHA.MatchString(mergeBase) {
 			return failed(run, gitOtherTime, tip, "git merge-base of the head and its tip")
 		}
-		c.mergeBases[commitPair{h.SHA, tip}] = mergeBase
+		c.mergeBases.set(commitPair{h.SHA, tip}, mergeBase)
 	}
-	paths, held := c.headPaths[commitPair{mergeBase, h.SHA}]
+	paths, held := c.headPaths.get(commitPair{mergeBase, h.SHA})
 	if !held {
 		run := clone.git(ctx, gitOtherTime, nil, true, "diff", "--no-renames", "--name-only", "-z", mergeBase, h.SHA)
 		if paths, held = gitPaths(run); !held {
 			return failed(run, gitOtherTime, mergeBase, "git diff of the head since its merge base")
 		}
-		c.headPaths[commitPair{mergeBase, h.SHA}] = paths
+		c.headPaths.set(commitPair{mergeBase, h.SHA}, paths)
 	}
 	run := clone.git(ctx, gitOtherTime, nil, true, "rev-list", "--first-parent", "--reverse", tip, "^"+h.SHA)
 	chain := strings.Fields(string(run.stdout))
@@ -901,14 +1013,14 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 			continue
 		}
 		bases = append(bases, base)
-		if _, held := c.verdicts[commitPair{h.SHA, base}]; !held {
+		if _, held := c.verdicts.get(commitPair{h.SHA, base}); !held {
 			unread = append(unread, base)
 		}
 	}
 	missing := c.readVerdicts(ctx, clone, pr, h.SHA, unread)
 	verdicts := []GitVerdict{}
 	for _, base := range bases {
-		verdict, held := c.verdicts[commitPair{h.SHA, base}]
+		verdict, held := c.verdicts.get(commitPair{h.SHA, base})
 		if !held {
 			break
 		}
@@ -934,7 +1046,7 @@ func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int
 		run := clone.merge(ctx, stdin, "--stdin", "--write-tree", "--no-messages", "--name-only", "-z")
 		given := gitVerdicts(run.stdout, batch)
 		for _, verdict := range given {
-			c.verdicts[commitPair{head, verdict.Base}] = verdict
+			c.verdicts.set(commitPair{head, verdict.Base}, verdict)
 		}
 		bases = bases[len(given):]
 		if len(given) < len(batch) {
@@ -947,7 +1059,7 @@ func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int
 		if !given {
 			return []GitMissing{c.missingOf(gitFailure{run, gitMergeTime, "git merge-tree of the base and the head"}, pr, head, base, GitError)}
 		}
-		c.verdicts[commitPair{head, base}] = verdict
+		c.verdicts.set(commitPair{head, base}, verdict)
 	}
 	return nil
 }
@@ -1233,29 +1345,54 @@ func (r *gitClone) command(dir string, stdin []byte, noLazy bool, args ...string
 }
 
 // merge runs git merge-tree args in the clone, with stdin where it is not nil and lazy fetching
-// off, and leaves nothing of it in the clone: GIT_OBJECT_DIRECTORY names the directory of the
-// clone's gitMergeObjects, which git writes the merged trees and blobs into, and
-// GIT_ALTERNATE_OBJECT_DIRECTORIES the clone's objects, which it reads the commits from. That
-// directory is made empty before the command, whatever a stopped run left there, and removed once
-// the command ends, however it ended; an error of either is the run's (guardedRun.err), as one of
-// starting git is. No other command gets the two variables. The guard's time is gitMergeTime, that
-// of one merge: a merge-tree --stdin, whose stdin is not nil, writes the record of each merge as
-// it makes it, so its time is counted from the last output (gitGuard.run's sinceOutput).
+// off, and leaves nothing of it in the clone: GIT_OBJECT_DIRECTORY names a directory of the
+// merge's own, made under the clone's gitMergeObjects, so merges that run at once write apart,
+// which git writes the merged trees and blobs into, and GIT_ALTERNATE_OBJECT_DIRECTORIES the
+// clone's objects (gitAlternate), which it reads the commits from. That directory is removed once
+// the command ends, however it ended; an error of making or removing it is the run's
+// (guardedRun.err), as one of starting git is. No other command gets the two variables. The guard's
+// time is gitMergeTime, that of one merge: a merge-tree --stdin, whose stdin is not nil, writes the
+// record of each merge as it makes it, so its time is counted from the last output (gitGuard.run's
+// sinceOutput).
 func (r *gitClone) merge(ctx context.Context, stdin []byte, args ...string) guardedRun {
-	objects := filepath.Join(r.dir, gitMergeObjects)
-	if err := os.RemoveAll(objects); err != nil {
+	merges := filepath.Join(r.dir, gitMergeObjects)
+	if err := os.MkdirAll(merges, 0o755); err != nil {
 		return guardedRun{code: -1, err: err}
 	}
-	if err := os.Mkdir(objects, 0o755); err != nil {
+	objects, err := os.MkdirTemp(merges, "")
+	if err != nil {
 		return guardedRun{code: -1, err: err}
 	}
 	cmd := r.command(r.dir, stdin, true, append([]string{"merge-tree"}, args...)...)
-	cmd.Env = append(cmd.Env, "GIT_OBJECT_DIRECTORY="+objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+filepath.Join(r.dir, "objects"))
+	cmd.Env = append(cmd.Env, "GIT_OBJECT_DIRECTORY="+objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+gitAlternate(filepath.Join(r.dir, "objects")))
 	run := r.guard.run(ctx, cmd, gitMergeTime, stdin != nil)
 	if err := os.RemoveAll(objects); err != nil && run.err == nil {
 		run.err = err
 	}
 	return run
+}
+
+// gitAlternate is dir, an absolute path, as the one entry of GIT_ALTERNATE_OBJECT_DIRECTORIES,
+// which git splits on ':': dir itself, but where it holds a ':' or a '"' or begins with white space,
+// dir quoted as git reads an entry that begins with a double quote (git help git): in double
+// quotes, a backslash or a double quote each after a backslash, and each control character as a
+// backslash and its three octal digits.
+func gitAlternate(dir string) string {
+	if !strings.ContainsAny(dir, `:"`) && strings.TrimLeft(dir, " \t\n\v\f\r") == dir {
+		return dir
+	}
+	quoted := []byte{'"'}
+	for i := range len(dir) {
+		switch b := dir[i]; {
+		case b == '"' || b == '\\':
+			quoted = append(quoted, '\\', b)
+		case b < ' ' || b == 0x7f:
+			quoted = fmt.Appendf(quoted, `\%03o`, b)
+		default:
+			quoted = append(quoted, b)
+		}
+	}
+	return string(append(quoted, '"'))
 }
 
 // ensure has the clone hold each commit of shas, fetching each it lacks (present): first the head

@@ -361,11 +361,19 @@ each commit of the base branch changes, and for each head the paths it changes s
 base and git's verdict of merging it with the base as it stands at each later commit of the base
 that changes one of those paths, up to the pull request's own merge (git merge-tree --stdin, up to
 200 merges to a command). Each merge-tree writes the objects it merges into a directory of its
-own in the clone, merge-objects, which collect-git removes as the command ends, so the clone does
-not grow with the merges. Each git command runs alone, its process group killed once its memory
-passes --memory-cap or it runs past its time, a merge-tree --stdin's time that of one merge,
-counted from the last verdict it wrote; a kill, and anything git cannot give, is a missing input
-of the file, never a clean verdict, and the run goes on.
+own in the clone, under merge-objects, which collect-git removes as the command ends, so the clone
+does not grow with the merges. Each git command runs under a guard of its own, its process group
+killed once its memory passes --memory-cap or it runs past its time, a merge-tree --stdin's time
+that of one merge, counted from the last verdict it wrote; a kill, and anything git cannot give,
+is a missing input of the file, never a clean verdict, and the run goes on.
+
+--parallel <n> runs the git reads and merges of up to n heads at once, taken in the file's order
+across its pull requests, so the git phase uses n CPUs. The file it writes and the lines it prints
+do not depend on --parallel: they are those of --parallel 1, byte for byte, and a run that was
+killed goes on where it stopped as one of --parallel 1 does. But git's memory grows with --parallel:
+each of the n git commands may hold up to --memory-cap, and a real merge holds about 350 MiB.
+--github-only and --fetch-only run none of the reads and merges, so they refuse a --parallel
+above 1.
 
 --github-only runs the GitHub phase alone, where a GitHub token is and no git credential need be;
 --git-only runs the git phase alone, from the file the GitHub phase wrote, and takes no token: a
@@ -395,6 +403,8 @@ the file --git-only writes.
 	out := flags.String("out", "", "the directory of the window collect wrote (required)")
 	clones := flags.String("clones", "", "the directory the repository is cloned into, outside the window (else clones/ beside the window)")
 	memoryCap := flags.Int64("memory-cap", replay.DefaultGitMemoryCap, "the bytes of resident memory one git command's processes may hold before they are killed")
+	parallel := flags.Int("parallel", 1,
+		"how many heads' git reads and merges run at once, each git command up to --memory-cap; the file written does not depend on it")
 	githubOnly := flags.Bool("github-only", false, "run the GitHub phase alone: the pull requests and their heads")
 	gitOnly := flags.Bool("git-only", false, "run the git phase alone, from the heads the GitHub phase wrote, reading no GitHub API")
 	fetchOnly := flags.Bool("fetch-only", false,
@@ -427,11 +437,15 @@ the file --git-only writes.
 			return refuse(cmd, "--github-token-env is required but with --git-only, --fetch-only or --merge-only")
 		case *memoryCap <= 0:
 			return refuse(cmd, "--memory-cap %d: name the bytes git's processes may hold, above zero", *memoryCap)
+		case *parallel < 1:
+			return refuse(cmd, "--parallel %d: at least one git command runs at a time", *parallel)
+		case *parallel > 1 && (*githubOnly || *fetchOnly):
+			return refuse(cmd, "%s runs none of the git phase's reads and merges, so it takes no --parallel above 1", alone[0])
 		}
 		if err := replay.CheckGitHubShare(*reserve, *rate); err != nil {
 			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
 		}
-		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap,
+		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap, Parallel: *parallel,
 			GitHubOnly: *githubOnly, GitOnly: *gitOnly, FetchOnly: *fetchOnly, MergeOnly: *mergeOnly, Finished: func(done replay.GitPullFinished) {
 				if done.Kept {
 					fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d kept as the window's git file holds it\n", done.Phase, done.PR)
