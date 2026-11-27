@@ -14054,6 +14054,123 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/results": {
+      "get": {
+        "description": "Every result CI jobs wrote for checks of the spec files at ?commit= (40 lowercase hex, else 400 INVALID_QUERY), of ?check= alone when given: {results}, each {id, seq, kind, attestation}, newest first by seq, Dispatch's record order. A results token is refused it.",
+        "operationId": "getApiV1ProjectsByKeyResults",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commit",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "check",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecCheckResults"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the run's repository must be the project's default repository, in any case and under the name the repository has now (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS; 403 CHECK_RUN_NOT_SHOWN when GitHub answers 403 or 404 for it), the graph logic must take the files as spec-check does (409 SPEC_FILES_REFUSED naming the first problem), and the files must hold the check (409 CHECK_NOT_IN_FILES) with its job the check run's job, as the run's workflow file at the commit shows it (409 CHECK_NOT_THIS_JOBS saying why not; 409 WORKFLOW_NOT_SHOWN when GitHub answers 403 or 404 for that file): a check run named exactly the check's job is that job's only where the file has one job of that name, with no matrix, and no matrix job whose leg can make the name; a name that is the job's name and a leg in parentheses is a leg of that job only where the file makes the job a matrix job, no job with no matrix has the name and no other matrix job's leg can make it; a job named by an expression leaves every name unproven. 503 CHECK_RUN_UNREADABLE, FILES_UNREADABLE or WORKFLOW_UNREADABLE when GitHub does not answer. A result keeps 2000 characters of observed: a longer text is its first 500 characters, a line that says the middle was cut, and its last characters. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run whose recorder is the run's session and principal, and no person. Each result is a new row, and none is changed.",
+        "operationId": "postApiV1ProjectsByKeyResults",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecCheckResultInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecCheckResult"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/projects/{key}/settings/delivery": {
       "get": {
         "description": "The project's delivery settings, or null when it has none: delivery (on or off), its deploy sources in order (each github_workflow, with an optional repo, null for the project's default repository, its deploy workflow, production jobs, optional production apply step, optional staging end-to-end and staging deploy jobs, pull-request checks workflow and optional roll-up job, or events, the project's posted deploys), each with its id, its resolved_repo (the repository it reads, null where it names none and the project has no default) and reconciled_through (how far the reconcile has imported that repository's deploy runs, pull-request check runs and merged pull requests; null for an events source, a project with delivery off, and a repository whose import has not finished), the population authors and excluded repositories, the failure sources with failures_measured_since (YYYY-MM-DD), and the targets of deploy-frequency, change-fail-rate, merge-to-production, pr-open-to-merge, deploy-run-success, failed-deploy-recovery and unowned-p0, each a number or \"off\", read from the project's eval rows. Every reader of the project may read them. 404 PROJECT_NOT_FOUND for a project that does not exist.",
@@ -18667,6 +18784,27 @@
           "asked_of",
           "asked_of_by",
           "asked_of_at"
+        ],
+        "type": "object"
+      },
+      "AttestationSubject": {
+        "properties": {
+          "digest": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "digest"
         ],
         "type": "object"
       },
@@ -35285,6 +35423,223 @@
         "required": [
           "method",
           "path"
+        ],
+        "type": "object"
+      },
+      "SpecCheckAttestation": {
+        "properties": {
+          "_type": {
+            "type": "string"
+          },
+          "predicate": {
+            "$ref": "#/components/schemas/SpecCheckPredicate"
+          },
+          "predicateType": {
+            "type": "string"
+          },
+          "subject": {
+            "items": {
+              "$ref": "#/components/schemas/AttestationSubject"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "_type",
+          "subject",
+          "predicateType",
+          "predicate"
+        ],
+        "type": "object"
+      },
+      "SpecCheckPredicate": {
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "leg": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "procedure_digest": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorder": {
+            "$ref": "#/components/schemas/SpecCheckRecorder"
+          },
+          "run": {
+            "$ref": "#/components/schemas/SpecCheckRun"
+          },
+          "test": {
+            "$ref": "#/components/schemas/SpecCheckTest"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "check",
+          "procedure_digest",
+          "test",
+          "verdict",
+          "observed",
+          "job",
+          "leg",
+          "run",
+          "recorder",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "SpecCheckRecorder": {
+        "properties": {
+          "principal": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "principal"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResult": {
+        "properties": {
+          "attestation": {
+            "$ref": "#/components/schemas/SpecCheckAttestation"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "kind",
+          "attestation"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResultInput": {
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit",
+          "check",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResults": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SpecCheckResult"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "SpecCheckRun": {
+        "properties": {
+          "attempt": {
+            "type": "integer"
+          },
+          "check_run_id": {
+            "type": "string"
+          },
+          "event_name": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "runner_environment": {
+            "type": "string"
+          },
+          "workflow_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "workflow_ref",
+          "ref",
+          "event_name",
+          "run_id",
+          "attempt",
+          "check_run_id",
+          "runner_environment"
+        ],
+        "type": "object"
+      },
+      "SpecCheckTest": {
+        "properties": {
+          "job": {
+            "type": "string"
+          },
+          "runner": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runner",
+          "selector",
+          "job"
         ],
         "type": "object"
       },

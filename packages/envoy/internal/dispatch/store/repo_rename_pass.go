@@ -42,12 +42,15 @@ import (
 // moves (markRenamedCuts). It writes no other column, updated_at included, and appends no event.
 // It never writes repo_projects, the event log, the text of documents, comments, asks and
 // messages, the reference tables read from that text (refs, block_refs, graph_edges),
-// architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
-// github_rate_limits, whose scope names no repository. Nor does it write the eval registry's rows
-// built from the fields it writes: the repositories of the day rows and their members (eval_days
-// and eval_day_members, repo), the stored figures (eval_range_figures and eval_day_figures, repo
-// and deploy_repo), the settings the release before records the rows built under
-// (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
+// architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations),
+// the results of spec checks (spec_check_results) or github_rate_limits, whose scope names no
+// repository. A row of spec_check_results is the record of one CI run, with its repository as the
+// run's results token named it, which the row's in-toto statement holds too: nothing updates or
+// deletes such a row, and no read selects or compares by its repository column. Nor does it write
+// the eval registry's rows built from the fields it writes: the repositories of the day rows and
+// their members (eval_days and eval_day_members, repo), the stored figures (eval_range_figures and
+// eval_day_figures, repo and deploy_repo), the settings the release before records the rows built
+// under (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
 // renamed fields once their changes wake it; nor the eval readings' attributes (eval_readings),
 // which hold what their writers sent, and the logged evals' day rows kept from them. The deploy
 // repository of the day rows and their members (deploy_repo) and the repository of the rule they

@@ -60,18 +60,13 @@ function groupReads(project: string) {
  *  the editor was handed it or a read holds it, and `other`, which may be newer - a Rename's
  *  answer, or the group as another read holds it - and wins a tie.
  *
- *  This order can be wrong today, and why: `updated_at` is the transaction's start. Dispatch's
- *  `UpdateSessionGroup` (`packages/envoy/internal/dispatch/delivery/groups.go`) writes it as
- *  `now()`, which Postgres fixes when the transaction begins, before `lockSessionGroups` takes
- *  the groups' lock, so a write that began first and waited for the lock commits last with the
- *  older time. Where that write is another tab's and the newer time is this tab's Rename, this
- *  tab's answer wins here over the group Dispatch holds, in two places: the card shows this tab's
- *  name, and `writeGroup` puts this tab's answer over the other tab's newer delta in the cache's
- *  groups reads where that delta landed first. Both stand until a later version of that group
- *  reaches the editor, or the editor is opened again. A Rename's answer carries no place in
- *  Dispatch's change log, so the card cannot order by that instead. A server change under
- *  INFRA-5200 makes the update time follow commit order (`UpdateSessionGroup`, `groups.go`):
- *  taken after the lock, it makes this rule exact, and the window above goes with it. */
+ *  The order is exact: Dispatch's `UpdateSessionGroup`
+ *  (`packages/envoy/internal/dispatch/delivery/groups.go`) writes `updated_at` under the groups'
+ *  lock, as the later of the stored value and the statement's own clock time, one microsecond
+ *  past the stored value, so a group's versions carry their commit times in order and no two of
+ *  them tie (cybermonklabs/legion#5868, merged b5f564a9ab6a). A server from before that change
+ *  writes the transaction's start instead, and against one of those a version that committed
+ *  last can carry the older time. */
 function laterGroup(
   held: DeliverySessionGroup,
   other: DeliverySessionGroup | undefined

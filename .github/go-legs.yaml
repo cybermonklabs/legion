@@ -260,7 +260,7 @@ packages/envoy:
     # package is first because its tests took 625 s in job 139005257800, longer than cmd/dispatch.
     3:
       - internal/dispatch/evals                 # 625 s
-      - internal/dispatch/legion                # 489 s alone in an issue pod (docs/testing.md)
+      - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)
       - cmd/dispatch                            # 316 s
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
@@ -382,6 +382,7 @@ packages/envoy:
       - internal/stacktest
       - internal/redact
       - natsgrant
+      - awsbody
       - internal/oauthrefusal
       - internal/pgmigrate/pgmigratetest
       - internal/ratelimit

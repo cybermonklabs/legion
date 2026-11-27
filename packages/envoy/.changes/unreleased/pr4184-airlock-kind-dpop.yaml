@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The profile `DISPATCH_RESULTS_TOKEN` is the results capability, which the broker mints for a CI run's result grant and holds: a name and a proxy block of kind `dpop`. The profiles file is refused, naming the profile and the field, when that profile has no proxy block, so no stored secret of its name is ever served through it as a value.
+
+  As every profile of kind `dpop`, the policy serves it as nothing (`profile-minted`): the result grant alone serves it, so it writes no `agent secret policy refused` line, counts in no `refused=` of the `broker: profiles applied` line and exports no `broker_unservable_secrets` series.

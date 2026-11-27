@@ -33,8 +33,11 @@ import (
 
 // intakeRig is one test's intake: its database, the NATS client that publishes as the daemon's
 // listener does, the lease pool reservation the intake takes its durable's hold on, the settings
-// wake, the intake's clock, the log every intake of the test writes, and the admission eval's
-// operations its intakes run.
+// wake, the intake's clock, the log every intake of the test writes, through a logger of the rig's
+// own (Intake.log), so the test reads the lines of its own intakes alone, and the admission eval's
+// operations its intakes run. The logger is what lets the read rule's seeds, the package's only
+// parallel tests, hold a rig each and run at once; the package's other tests have a rig each too
+// and still run alone.
 type intakeRig struct {
 	t          *testing.T
 	database   *store.Store
@@ -43,7 +46,11 @@ type intakeRig struct {
 	wake       chan struct{}
 	clock      *intakeClock
 	logs       *logtest.Buffer
+	logger     *slog.Logger
 	admissions Admissions
+	// stateOptions are the options each intake the rig starts calls its daemons with
+	// (Intake.stateOptions): none, or the window a test gives its daemons' answers (windowed).
+	stateOptions []Option
 	// run is the daemon run the rig's messages name unless a test names another.
 	run string
 	// published numbers the rig's messages, so each has an id and a dedupe key of its own.
@@ -156,12 +163,12 @@ func (c *intakeClock) peek() time.Time {
 	return time.Now().Add(c.offset)
 }
 
-// newIntakeRig opens the test's database and NATS account, and sends the default logger to a
-// buffer the test reads. It starts no intake (start), and its intakes run noAdmissions.
+// newIntakeRig opens the test's database and NATS account, and sends the lines of every intake it
+// starts to a buffer the test reads. It starts no intake (start), and its intakes run noAdmissions.
 func newIntakeRig(t *testing.T) *intakeRig {
 	t.Helper()
 	logs := &logtest.Buffer{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	database := storetest.Open(t)
 	publisher, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
@@ -178,7 +185,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	}
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
-		clock: &intakeClock{done: t.Context().Done()}, logs: logs, admissions: noAdmissions, run: rigRun,
+		clock: &intakeClock{done: t.Context().Done()}, logs: logs, logger: logger, admissions: noAdmissions, run: rigRun,
 	}
 }
 
@@ -201,6 +208,7 @@ func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.admissions, r.leases, r.wake)
 	intake.now, intake.after = now, r.clock.after
+	intake.log, intake.stateOptions = r.logger, r.stateOptions
 	if r.firstRetry != 0 {
 		intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
 	}

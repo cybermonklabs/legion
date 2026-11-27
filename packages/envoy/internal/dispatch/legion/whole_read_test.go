@@ -23,8 +23,14 @@ import (
 )
 
 // TestMain removes the NATS server the package's tests share (testnats.Main), which the intake's
-// tests connect to, and the databases their pools are cloned on (storetest.Run).
-func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
+// tests connect to, and the databases their pools are cloned on (storetest.Run). It runs
+// storetest.DefaultParallel parallel tests at once (SetDefaultParallel), the number that package
+// says why: the read rule's seeds are the package's parallel tests, each on a rig of its own, and
+// each holds a database and a NATS account while it runs.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
+}
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -114,7 +115,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				r.login(t)
 			}
 			if tc.refuse {
-				r.srv.Broker.URL = cipheraddr.New("http://127.0.0.1:1")
+				r.srv.Broker.URL = cipheraddr.New("http://" + testport.Refused(t))
 			}
 			if tc.fail != nil {
 				r.fake.mu.Lock()
