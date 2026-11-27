@@ -72,13 +72,12 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 // judged at.
 func NewIAPVerifierOn(audience string, keys *Keys, c clock.Clock) *IAPVerifier {
 	return &IAPVerifier{verifier: &Verifier{
-		verifier: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
+		byAudience: []audienceVerifier{{audience: audience, verifier: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
 			ClientID:             audience,
 			SupportedSigningAlgs: []string{string(jose.ES256)},
 			SkipExpiryCheck:      true,
-		}),
+		})}},
 		issuer:     IAPIssuer,
-		audience:   audience,
 		skipExpiry: true,
 	}, clock: c}
 }

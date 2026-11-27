@@ -32,7 +32,6 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
-  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -839,10 +838,9 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each successful step completion or backward move, never a look's report. */
-  readonly onPhaseCompleted: (context: SessionContext) => void;
+
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update message on its pod, and its phase stays open. */
+   * update message on its pod, and the turn it answered in is to be continued by no reminder. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
@@ -872,7 +870,6 @@ export function createLegionTool(deps: {
     daemon,
     session,
     controllerGrant,
-    onPhaseCompleted,
     onUpdateAnswered,
     handoffReport,
     branchHead,
@@ -907,7 +904,8 @@ export function createLegionTool(deps: {
         "report_defect answered, saying why. The daemon refuses it from any other caller (DEFECT_WITHDRAW_NOT_OWNER), for a defect it " +
         "does not hold (DEFECT_NOT_FOUND), for a check's own defect (DEFECT_IS_A_CHECK), for one a merged change carries " +
         "(DEFECT_IN_MERGED_CHANGE), with no reason (DEFECT_REASON_REQUIRED) and with a reason close-wait.md cannot carry: one too " +
-        "long (DEFECT_REASON_TOO_LONG) or one that holds a decision block (DEFECT_REASON_DECISION_BLOCK). " +
+        "long (DEFECT_REASON_TOO_LONG) or one that holds a decision block (DEFECT_REASON_DECISION_BLOCK); it refuses both calls for a key " +
+        "that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND). " +
         PHASE_OP_SENTENCES.readBuild +
         "register_gate (issue, artifactId, version, step) may also name a basis, the ancestor's document for the same step, " +
         "with basisVersion and your reason, all three or none: the step then opens on the ancestor's approval, or waits on " +
@@ -1183,18 +1181,10 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A successful phase completion or backward move closes phase input. A report with
-          // check_opened_at leaves it open for this session's phase work.
-          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
-          // then waits for its process to be replaced rather than working, so the turn it ends
-          // after answering earns no reminder (the `update-answered` input of
-          // `@legion/pi-shared/phase-stall`).
-          const effect = phaseInputAfter(operation, parameters);
-          if (effect === "phase-closed") {
-            onPhaseCompleted(context);
-          } else if (effect === "update-answered") {
-            onUpdateAnswered(context);
-          }
+          // `ready_for_update` answers the pod's update message, and the worker then waits for its
+          // process to be replaced rather than working, so the turn it ends after answering earns
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+          if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);

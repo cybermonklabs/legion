@@ -57,7 +57,8 @@ func TestMergeHistoryOfUsesOnlyEvidence(t *testing.T) {
 			HeadSHA: head, State: PullRequestOpen}))
 		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-5", Repo: "acme/widgets", Number: 15, Branch: "legion/ACME-5", Base: "main",
 			HeadSHA: head, HeadUpdatedAt: at, State: PullRequestClosed}))
-		must(t, records.ClearGeneration(ctx, tx, "ACME-5", at))
+		_, err = records.ClearGeneration(ctx, tx, closedIssueFixture("ACME-5", 2), forgetNothing)
+		must(t, err)
 		must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: "ACME-6", Project: "ACME", Tree: "ACME-6", Repo: "acme/widgets",
 			OpenedAt: at, BoundAt: at.Add(time.Hour)}))
 	})
@@ -140,7 +141,12 @@ func TestARenameMovesAClearedClockToAnotherIssue(t *testing.T) {
 			must(t, records.PutIssue(ctx, tx, issue))
 			must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: seed.key, Repo: seed.repo, Number: 42, Branch: "legion/" + seed.key,
 				HeadSHA: "head", HeadUpdatedAt: seed.clock, State: PullRequestClosed}))
-			must(t, records.ClearGeneration(ctx, tx, seed.key, seed.clearedAt))
+			_, err := records.ClearGeneration(ctx, tx, issue, forgetNothing)
+			must(t, err)
+			// The clear stamps its row with its transaction's moment; the seed places each clear
+			// at its own moment, the later of the two being LEGION-2's.
+			_, err = tx.Exec(ctx, `update cleared_pull_requests set cleared_at = $3 where repo = $1 and number = $2`, seed.repo, 42, seed.clearedAt)
+			must(t, err)
 		})
 	}
 	classes := func() map[string]MergeHistoryClass {

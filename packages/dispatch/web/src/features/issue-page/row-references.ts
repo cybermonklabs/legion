@@ -1,8 +1,13 @@
 import { isPartyRoute } from "../refs/party-references";
 import { editedName } from "../refs/post-marks";
-import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import {
+  buildDispatchReference,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
-import { chipName } from "./issue-tree";
+import { chipName } from "./first-line";
 import { documentWord } from "./node-row-chip";
 
 /**
@@ -175,6 +180,18 @@ export function citedReferences(text: string): string[] {
   return [...cited];
 }
 
+/** Adds `reference` to the set `asked` the batched read is given, and beside an issue's whole
+ *  spec the issue's own address: a link titles the spec by the issue's title
+ *  (`issueOrDocumentTitle`), which the read answers only under that address. The tree asks the
+ *  read so (`useIssueTree.ts`'s `treeReferences`), and so does Dashboard (`useDashboardNames`). */
+export function addAskedReference(asked: Set<string>, reference: string): void {
+  asked.add(reference);
+  const route = parseNodeReference(reference);
+  if (route?.kind === "spec" && route.block === undefined) {
+    asked.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+  }
+}
+
 /** An issue's own reference, which is the form the batched read answers a bare key under. */
 const ISSUE_REFERENCE = /^dispatch:\/\/([A-Z][A-Z0-9]*-[1-9][0-9]*)$/u;
 
@@ -235,7 +252,7 @@ export function rowReferences(
  * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
  * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
  * the line the page's store projects beside its name (`KnownReferences.lines`, from
- * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
+ * `target-naming.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
  * address and `issue`, the issue the row belongs to (`node-row-chip.ts`'s `documentWord`); an
  * issue by its key, then its title; a party by the name its own read gives it; anything else as
  * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`), then

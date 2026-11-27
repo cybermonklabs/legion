@@ -6,10 +6,10 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { roleForPhase } from "@legion/contracts";
 import {
   LegionErrorResponse,
   LegionIssueRecordResponse,
+  LegionOwedResponse,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -29,6 +29,7 @@ import {
   refused,
   register,
   SESSION,
+  type Standin,
   withStandin,
 } from "./daemon-standin-harness";
 
@@ -222,7 +223,7 @@ test("the state lists the world's issues with their tree", async () => {
 });
 
 // Catches: an --issues file that would make the claim's own issue stand in another phase or tree
-// than the stand-in's command line gives it, which the run's reminder check and owner read.
+// than the stand-in's command line gives it, which the run's worker and owner read.
 test("an --issues file that gives the claim's issue another phase or tree is refused, naming both", () => {
   const dir = freshDir();
   const issuesFile = path.join(dir, "issues.json");
@@ -302,8 +303,9 @@ test("tasks/stop, release_children's waves/release and gates/register answer {} 
 });
 
 // Catches: a record route that answers the claim's issue in another phase than the one its role
-// works, or moves it, so the phase reminder's record check (pi-shared/src/phase-reminder.ts) drops
-// each reminder a deployment's worker would get while its phase is open.
+// works, or moves it, so a worker's `read_record` reads its phase as another while it is open, and
+// `claims/owed`, which the phase reminder asks and the stand-in answers from that phase, says its
+// work is done.
 test.skipIf(skipGo)(
   "issues/<key>/record keeps the worker's phase while it is open",
   async () => {
@@ -326,7 +328,6 @@ test.skipIf(skipGo)(
           return LegionIssueRecordResponse.parse(await answered.json()).phase;
         };
         expect(await phaseNow()).toBe("testing");
-        expect(roleForPhase(await phaseNow())).toBe("tester");
 
         const claim = await register(standin);
         const report = {
@@ -351,6 +352,46 @@ test.skipIf(skipGo)(
           "HANDOFF_RECORD_REQUIRED"
         );
         expect(await phaseNow()).toBe("testing");
+      }
+    );
+  },
+  GO_BOUND
+);
+
+// Catches: what the claim owes answered 404, or answered from anything but the phase the record
+// holds its issue in. The phase reminder (pi-shared/src/phase-reminder.ts) asks `claims/owed`
+// after each turn, and the stall watch asks it for its notice's owner: unanswered, the reminder
+// names no work and the notice goes to the tree's architect, so the rig's workers would be told
+// what no deployment's worker is. The control is a tester whose issue the record holds in
+// reviewing, a phase its role does not work, which owes nothing.
+test.skipIf(skipGo)(
+  "claims/owed answers that a worker owes its phase while the record holds its issue there",
+  async () => {
+    const owedOf = async (standin: Standin) => {
+      const claim = await register(standin);
+      const ask = { claimToken: claim.claimToken, sessionId: SESSION, secret: claim.secret };
+      const answered = await post(standin, "/legion/v1/claims/owed", ask);
+      expect(answered.status).toBe(200);
+      const foreign = { ...ask, secret: fixtureSecret("other") };
+      expect((await post(standin, "/legion/v1/claims/owed", foreign)).status).toBe(403);
+      return LegionOwedResponse.parse(await answered.json());
+    };
+    await withStandin(freshDir(), [PROJECT, "LWEVAL-4", "tester", ...REPO], async (standin) => {
+      expect(await owedOf(standin)).toEqual({
+        owes: true,
+        work: "the testing phase of LWEVAL-4",
+        architect: "legion-skillsstandin-lweval-4-architect",
+      });
+    });
+    await withStandin(
+      freshDir(),
+      [PROJECT, "LWEVAL-4", "tester", ...REPO, "reviewing"],
+      async (standin) => {
+        expect(await owedOf(standin)).toEqual({
+          owes: false,
+          work: "",
+          architect: "legion-skillsstandin-lweval-4-architect",
+        });
       }
     );
   },

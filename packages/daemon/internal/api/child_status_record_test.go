@@ -48,7 +48,7 @@ func statusHarness(t *testing.T, configure ...func(*Options)) (*harness, []intak
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: handlers, Dispatch: statuses,
+		Handlers: handlers, Dispatch: statuses, PrepareRepository: testRepositories.prepare,
 	}
 	for _, change := range configure {
 		change(&opts)
