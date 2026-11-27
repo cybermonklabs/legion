@@ -125,7 +125,8 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 	return next, !next.IsZero()
 }
 
-// deliveryViewRead is one recompute's read and compute.
+// deliveryViewRead is one recompute's read and compute. p0 is the open P0 issues it read
+// (delivery.OpenP0Keys), nil for a view that shows no unowned P0 list, which reads none.
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
@@ -137,15 +138,19 @@ type deliveryViewRead struct {
 	expiry            time.Time
 	issues, ancestors map[string]struct{}
 	sessions          map[string]string
+	p0                map[string]struct{}
 	prs, runs         int
 	unfetchable       int
 }
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
 // takes over every mark made until then (read), so a change committed during the read lands past
-// it and marks the view again; then the GET route's population read, the ancestors of the issues
-// it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
+// it and marks the view again; then, for a view that shows the unowned P0 list, the open P0
+// issues, which it installs as the generation's set with what the events heard since the
+// position decided applied over them (installP0Locked); then the GET route's population read, the
+// ancestors of the issues it names, and the pure compute. It sends each sub the delta against
+// what it holds (a snapshot to a sub with none), or the refusal its read answered
+// (viewReads.refusal) to a sub not yet told.
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
 	h.mu.Lock()
@@ -162,6 +167,12 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
+	if read.p0 != nil {
+		// The open P0 issues the read found stand whatever its later reads answered, with what
+		// the events heard since its position decided over them; their record ends here either way.
+		g.installP0Locked(read.p0)
+	}
+	g.p0Heard = nil
 	sent := 0
 	switch {
 	case g.views[spec.key] != view:
@@ -230,8 +241,18 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // read's answer by (reading, recheckHeardLocked). A reset of the change log since the recompute
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read.
+//
+// A view that shows the unowned P0 list then reads the open P0 issues (delivery.OpenP0Keys), which
+// recompute installs as the generation's set, so an issue whose priority, or that of an issue
+// above it, a write moved with no event the hub heard (direct SQL, or a process of a build before
+// dispatch://INFRA-5793 while a release rolls) is in the set or out of it from the next fresh read
+// of such a view on, as it is on that view's unowned P0 list. From the position on, the P0 state
+// each issue event decides is recorded (p0Heard) and applied over what the read finds, since the
+// read may have passed an issue's row before its event committed. A view that shows no such list
+// reads none: the set decides the marks of those views alone (showsIssue).
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	classes := spec.classes()
 	var read deliveryViewRead
 	var err error
 	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
@@ -246,14 +267,22 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		// the position may name the old log, and the reset's own mark recomputes the view again.
 		view.dirty, view.immediate = false, false
 	}
+	if classes.unownedP0 {
+		g.p0Heard = map[string]bool{}
+	}
 	h.mu.Unlock()
 	if read.seq > 0 {
 		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
 			return read, err
 		}
 	}
+	if classes.unownedP0 {
+		if read.p0, err = delivery.OpenP0Keys(ctx, pool); err != nil {
+			return read, err
+		}
+	}
 	now := h.clock.Now()
-	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	body, err := classes.read(h, ctx, spec, now, &read)
 	if err != nil {
 		return read, err
 	}

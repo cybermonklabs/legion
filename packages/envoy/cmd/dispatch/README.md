@@ -2972,14 +2972,19 @@ Migration `20261117100008_session_titles` creates `session_titles`, one row for 
 A session with no row is named by its id, as one with no titled event was.
 The table is new and declares no foreign key, so the migration locks only it and commits in milliseconds; the release before it neither reads nor writes it, and its census answers `0`.
 
-Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open P0 issues alone (161 rows in production on 2026-11-23, of 13,279 issues).
-`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, repeat the predicate, so the planner reads the index and no other row of `issues`: the whole index for every project's read, one range of `project_key` for one project's.
-No index of `issues` held `priority` before it, so the read of every project, `ListUnownedP0`'s and `OpenP0Keys`', scanned every issue of every project.
-A read of one project, which this change adds, would without it read every issue of that project, through `issues_project_key_number_key`, the unique key on `(project_key, number)`.
+Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open issues whose own priority is 0 (161 rows in production on 2026-11-23, of 13,279 issues).
+No index of `issues` held `priority` before it, so a read of the open P0 issues scanned every issue of every project.
 The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every issue write, claim, route and status change writes `issues`:
 a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of an issue waits for.
 A failed build leaves an INVALID index of that name on `issues`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
+
+Migration `20261127112234_issues_done_p0` builds `issues_done_p0` on `issues (key) where priority = 0 and status = 'done'`, the done issues whose own priority is 0, `concurrently` and recovered from a failed build as `20261117100010` is.
+Its census answers `0` (`select 0;`) for the same reason: an ordinary, non-unique index refuses and rewrites no row, where a count of the rows it will hold, hundreds of done issues with an own P0 in production, is a census the deploy would refuse to apply.
+An issue with no priority of its own takes the priority of the nearest issue above it that has one, at any status and in any project, within `refs.IssueDepthCap` links (dispatch://INFRA-5793), so the open P0 issues are the issues not done whose resolved priority is 0, and a done P0 passes P0 to an open child.
+`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, read them by one descent (`openP0Descent` in `internal/dispatch/delivery/unowned.go`): from every issue whose own priority is 0, the open ones through `issues_open_p0` and the done ones through `issues_done_p0`, each read repeating its index's predicate so the planner reads the whole of each and no other row of `issues` for them, then through `issues_parent_key` to the children whose own priority is null, their children whose own priority is null, and so on, at most `refs.IssueDepthCap` links, keeping what is not done and, for the unowned reads, has no claim and no route.
+A read of one project starts from every project's P0 issues too, since an issue of the project can take P0 from an issue of another, and keeps that project's issues of what the descent reaches.
+The live hub reads `OpenP0Keys` as it takes its event feed and in each recompute of a timeline or measures view, and between those reads applies the `resolved_priority` of each `issue.created`, `issue.updated` and `issue.closed` payload, the quiet ones included (`api/delivery_live_hub_intake.go`, `applyEventLocked`).
 
 Migration `20261117100015_events_session_titles` creates `events_session_title`, the function and the constraint trigger `after insert on events`, `deferrable initially deferred`, that writes each titled event of a session actor into `20261117100008`'s table under `on conflict (session_id) do update … where excluded.titled_at > session_titles.titled_at`.
 So the newest titled event keeps the title, and an event that carries no title takes none away.

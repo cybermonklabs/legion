@@ -1864,7 +1864,11 @@ func TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView(t *testing.T) {
 // only on what the relay publishes, and the relay publishes only up to the safe horizon, which a's
 // open transaction holds below a: so the hub acts on neither while a is open (acting on b would
 // leave a to a feed that will never carry it), and on both once a commits. Each event makes its
-// own issue a P0 in the hub's view, which is what shows it was acted on.
+// own issue a P0 in the hub's view, which is what shows it was acted on. Each issue's priority is
+// written in its event's transaction, as a route writes it, so the database agrees with the events
+// from their commit on: each recompute of a view that shows the unowned P0 list reads the open P0
+// issues afresh (deliveryHub.read), and one that read after the hub applied both events would take
+// out of its set an issue the database did not hold at P0.
 func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -1879,22 +1883,40 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	ctx := t.Context()
+	raise := func(tx pgx.Tx, key string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `update issues set priority = 0 where key = $1`, key); err != nil {
+			t.Fatalf("write %s's priority 0 in its event's transaction: %v", key, err)
+		}
+	}
 	open, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the lower id's transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = open.Rollback(context.Background()) })
+	raise(open, first)
 	low, err := rig.deps.Events.Append(ctx, open, issueOwner(first).event("issue.updated", alice,
 		map[string]any{"key": first, "priority": 0, "status": "open"}))
 	if err != nil {
 		t.Fatalf("append the lower id: %v", err)
 	}
-	high := appendHubEvent(t, rig, issueOwner(second).event("issue.updated", alice,
+	committed, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the higher id's transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = committed.Rollback(context.Background()) })
+	raise(committed, second)
+	high, err := rig.deps.Events.Append(ctx, committed, issueOwner(second).event("issue.updated", alice,
 		map[string]any{"key": second, "priority": 0, "status": "open"}))
+	if err != nil {
+		t.Fatalf("append the higher id: %v", err)
+	}
+	if err := committed.Commit(ctx); err != nil {
+		t.Fatalf("commit the higher id: %v", err)
+	}
 	if high.ID <= low.ID {
 		t.Fatalf("event ids %d (open) and %d (committed) are not out of commit order, so this test proves nothing", low.ID, high.ID)
 	}
-
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower id: %v", err)
 	}
