@@ -41,6 +41,7 @@ import type { Actor } from "../web/src/api/types";
 import { type FakeSession, setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
+  baseUrl,
   claimIssue,
   createAsk,
   createComment,
@@ -57,6 +58,7 @@ import {
   replyToCommentDelivery,
   syncArchitectureSource,
   uploadAgentPicture,
+  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -136,8 +138,9 @@ const MACHINE = workspaceSessions[0]?.machine_id ?? "";
  *  a Legion lane writes. The first holds the claim, the next five subscribe to the issue, the
  *  seventh replies in the Inbox, and the eighth is the live session the agent pages open. The
  *  first also holds thirteen roles no other session holds, fourteen in all, past the cap of ten
- *  a marked `roles` list holds while closed: the Agents row requires that mark, and main's page
- *  draws the fourteen unmarked (a `group-missing` entry of `e2e/layout-breaches.ts`). */
+ *  a marked `roles` list holds while closed, which the Agents row requires it to mark. The last
+ *  sits in a window whose name, with no space in it, is wider than a phone's strip of picks, so
+ *  the machine page's pick must end it in an ellipsis inside the strip. */
 const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => ({
   capabilities: ["aside", "btw", "steer"],
   dir: `/workspaces/legion/INFRA-5200-layout-rule-worktree-${index + 1}`,
@@ -162,10 +165,30 @@ const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => (
     socket: "/tmp/tmux-1000/default",
     window_id: `@${index + 1}`,
     window_index: index + 1,
-    window_name: `infra-${5200 + index}-layout-rule-lane`,
+    window_name:
+      index === 11
+        ? "infra-5211-layout-rule-lane-with-a-window-name-wider-than-a-phone-strip-of-picks"
+        : `infra-${5200 + index}-layout-rule-lane`,
     zoomed: false,
   },
 }));
+
+/** A session that takes only Steer, which no broadcast defaults to, so selecting every agent
+ *  excludes it, and whose title is as long as a lane's gets: the composer's chip for it carries
+ *  the title and the reason it is left out, which must wrap or shrink inside the composer at
+ *  every width rather than scroll it sideways. It runs on a machine of its own, in no pane:
+ *  `/machines` lists that machine (`machines/MachinesPage.tsx` lists every host of the agent
+ *  list), so a re-recorded `machines` row draws one machine more, and no machine page draws it
+ *  in a pane. */
+const excludedLongSession: FakeSession = {
+  capabilities: ["steer"],
+  dir: "/workspaces/legion/INFRA-5200-layout-rule-excluded",
+  machine_id: "layout-stress-steer-host",
+  roles: [],
+  session_id: stressSessionId(13),
+  title:
+    "Legion reviewer · INFRA-5200 · a session whose title runs long enough to fill the broadcast composer's chip at a tablet width",
+};
 
 function sessionActor(session: FakeSession): { actor: Actor; as: "agent" } {
   return {
@@ -180,6 +203,26 @@ function stressSession(index: number): FakeSession {
   return session;
 }
 
+/** A Delivery session group of eleven stress sessions, created as alice, so the session-groups
+ *  editor draws a group's chips past their cap of ten. Its name is no session's title, which the
+ *  server refuses (`409`). */
+async function seedSessionGroup(): Promise<void> {
+  const response = await fetch(new URL("/api/v1/delivery/session-groups", baseUrl), {
+    body: JSON.stringify({
+      name: "Layout stress crew",
+      sessions: stressSessions.slice(0, 11).map((session) => session.session_id),
+    }),
+    headers: {
+      ...(await userHeaders("alice")),
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`session group: ${response.status} ${await response.text()}`);
+  }
+}
 /** The pull requests, their checks and the architecture model, in the fake GitHub's one seed:
  *  a seed replaces every installation, so both repositories are written together. Every third
  *  pull request has a failing check, so the header draws both states. */
@@ -240,7 +283,8 @@ export async function seedLayoutStress({
 }): Promise<LayoutSeed> {
   const review = await seedReviewRoutes({ boundMs });
   const issue = review.issue;
-  await setLiveSessions([...workspaceSessions, ...stressSessions]);
+  await setLiveSessions([...workspaceSessions, ...stressSessions, excludedLongSession]);
+  await seedSessionGroup();
   await seedGithub(issue);
   await putArchitectureSource("CORE", { branch: "main", repo: ARCHITECTURE_REPO });
   const source = await syncArchitectureSource("CORE", ARCHITECTURE_REPO);

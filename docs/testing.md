@@ -114,7 +114,11 @@ itself, whose tests import its sources by relative path.
   `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
   `describe`, never inside a test body. It reserves the path at the call and returns it, and
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
-  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
+  called; with `{ removeInBackground: true }` the `afterAll` hands the directory to a removal in a
+  process of its own and does not wait for it, so no removal runs under Bun's 5 s default hook
+  limit, which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
+  directory per test is
+  `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
   its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
   makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
@@ -708,11 +712,12 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Five packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+Six packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
 the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each
-`TestMain` sets how many run at once (`daemonTestParallelism`, `workflowTestParallelism` and
-`storeTestParallelism` 4, `sandboxTestParallelism` and `cmdTestParallelism` 8).
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and
+`cmd/legion`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
+`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
+`workspaceTestParallelism` and `cmdTestParallelism` 8).
 The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
 `internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
 check below reads only the default build. Each test of `internal/daemon` already has a database of
@@ -732,9 +737,9 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 `TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
 the comment runs alone for no reason.
 
-So each of the five packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
-in its `main_test.go`, runs `packages/daemon/internal/testparallel`'s `Require` over the package's
-own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
+So each of the six packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
+over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
 does, whatever name the file imported `testing` under. The reason goes on the comment's first
 line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
 is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
@@ -748,13 +753,26 @@ the rule holds it the same way, with a test of its own that calls `Require` on i
 `internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
 needs no comment there.
 
+## A test in `packages/daemon/internal/workspace` keeps its runner's state local
+
+The package's `TestMain` runs eight parallel tests at once (`workspaceTestParallelism`); an
+explicit `go test -parallel` overrides it. Tests that change the process environment, stderr or a
+package variable stay serial. The stalled-download row also runs alone because it changes
+`downloadWindow`; its sibling rows call `t.Parallel()`.
+
+Each recording runner supplies its own jj identity and tool wrappers to `NewRunnerIn`. The
+GitHub stand-in supplies its own certificate and proxy there too, without changing the process
+environment. Tests share one temporary home: jj stores repository and workspace configuration
+under their own random ids. A test that plants such configuration must use a fresh id. A seeded
+remote is copied from a template built once per default branch; the template itself is not changed.
+
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`), a test writes a file it or its
-program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH) with
-`packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or
-an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
+writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
+with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
+or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
@@ -799,6 +817,14 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
 resolver tests that replace the default logger.
 
+`internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`.
+Each harness has its own database, GitHub stand-in and NATS account on the package's shared
+server. Tests of a pass ending on its bound give the reconciler a `clocktest.Fake` through its
+unexported `clock.Clock` field. The harness's clock wrapper checks the configured `PassTimeout`;
+the fake preserves `context.DeadlineExceeded`. Outside the pacing tests, one deadline control keeps the real timer.
+Pacing tests also retain real pass bounds. They and the settlement quiet-window tests stay
+serial, with a comment naming the wall-clock span.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
@@ -806,7 +832,8 @@ variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `Heart
 `PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
 `syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
 bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
-on a correct product or pass with the defect present; the comment names the span. A wait for an
+on a correct product or pass with the defect present; the comment names the span. A seam that
+takes the deciding clock out lets the test run beside the others. A wait for an
 event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
 and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
 marker in these packages: a new test with neither the call nor the comment runs alone for no

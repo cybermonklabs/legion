@@ -50,6 +50,7 @@ func (w *unansweringWriter) RecordRuns(ctx context.Context, observations []contr
 // head green. The head's runs are one write, so neither lands; the next pass, with the bus
 // answering, writes both and the head settles with its failure.
 func TestAPassWhoseWriteOfOneFinishedRunFailedSettlesNothing(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -99,6 +100,7 @@ func (h *harness) answerNoRunWriteCarrying(check string, failures int) {
 // alone, and the listener would settle the head again while GitHub runs the queued one. The next
 // pass, with the bus answering, writes the queued run, and the head waits for it.
 func TestAPassWhoseRunWriteFailedWritesNothingMoreOfTheHead(t *testing.T) {
+	// Not parallel: it holds two 2 s quiet windows (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -152,6 +154,7 @@ func TestAPassWhoseRunWriteFailedWritesNothingMoreOfTheHead(t *testing.T) {
 // the head's CI done while two of its jobs had not started. Once GitHub finishes them, the next
 // pass records the ends and the head settles again, superseding the first settlement.
 func TestAPassOverRunsNoWebhookCarriedSettlesNothingWhileGitHubStillRunsSome(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -223,6 +226,7 @@ func TestAPassOverRunsNoWebhookCarriedSettlesNothingWhileGitHubStillRunsSome(t *
 // not finished re-arms the head, which settles again once that run ends and supersedes the
 // settlement before it.
 func TestAPassWritesAnUnfinishedRunOnlyWhereItIsGitHubsNewest(t *testing.T) {
+	// Not parallel: each row holds a 2 s quiet window (noSettlement), which load could make it miss.
 	t.Run("a queued run never replaces the same run completed", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
 		h.seedProjectDefault(rowRepository)
