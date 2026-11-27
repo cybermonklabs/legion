@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { invalidateWaitingForPaused } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { useListReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
 import { pressOfWrite, type WritePress } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
@@ -101,11 +101,15 @@ const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
  *  again, since either answer says what the broker now holds. Dismiss is held (`heldPress`), not
  *  disabled, while its write is out and through the read that takes the row away, so it keeps the
  *  focus until the row goes; the submit guard drops a second press that lands before the hold is
- *  drawn. */
+ *  drawn. Every expired row's dismissal reads the one list again, so every row takes that list's
+ *  one hold (`useListReadBound`): a later dismissal forgets why an earlier one's read had not
+ *  settled, whichever row's it was, and a row says why that read has not settled only where its
+ *  own dismissal made the latest one. */
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [unsettled, holdThrough] = useReadBound();
+  const [unsettledOf, holdThrough] = useListReadBound(credentialPendingQuery().queryKey);
+  const unsettled = unsettledOf(row.record_id);
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
   // The row shows a refused dismissal itself, under its own line. The press carries the request
@@ -121,13 +125,15 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     // Pending, and Dismiss held, through the read of the list that takes the row away. That read
     // settles either way, and a failed one lets the button go. A read that has not settled by the
     // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
-    // it go then, and the row says why the list is not read yet (`useReadBound`).
+    // it go then, and the row says why the list is not read yet (`useListReadBound`), until it
+    // settles or another row's dismissal makes the next one.
     // The read waits on a fetch the network had already paused, which that deadline ends too
     // (`invalidateWaitingForPaused`). The hold is the press's the dismissal began under
     // (`pressOfWrite`).
     onMutate: pressOfWrite,
-    onSuccess: (_result, _dismissed, press: WritePress) =>
+    onSuccess: (_result, { recordId }, press: WritePress) =>
       holdThrough(
+        recordId,
         invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey),
         press
       ),
