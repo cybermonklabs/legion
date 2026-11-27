@@ -2445,3 +2445,23 @@ func liveRoots(issues []Issue, facts LineFacts, queued []Issue) map[string]struc
 	}
 	return live
 }
+
+// OwnSlots is the slots among slots whose issue is one of issues, in slots' order: the project's
+// own slots, where issues are the project's records. The slots table is shared by every project's
+// daemon, and a slot's index is unique across it (0004_record), so admission chooses the next index
+// over every slot while its cap counts this project's alone, and the admission block's `active`
+// names this project's alone. Every issue of the project that holds a slot is among its live
+// records (Store.LiveIssues), a done one included, so the live records find every one of them.
+func OwnSlots(issues []Issue, slots []Slot) []Slot {
+	known := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		known[issue.Key] = struct{}{}
+	}
+	own := make([]Slot, 0, len(slots))
+	for _, slot := range slots {
+		if _, ok := known[slot.Issue]; ok {
+			own = append(own, slot)
+		}
+	}
+	return own
+}

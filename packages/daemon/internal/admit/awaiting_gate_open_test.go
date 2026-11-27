@@ -349,7 +349,7 @@ func TestAnAnsweredRootIsNotReportedAsBlocked(t *testing.T) {
 	seedMirror(t, pool, "LEGION-208", "in_progress", "LEGION-777")
 	seedMirror(t, pool, "LEGION-777", "in_progress")
 	inTx(t, pool, func(tx pgx.Tx) {
-		read, err := admission.tickRead(context.Background(), tx)
+		read, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 		if err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}

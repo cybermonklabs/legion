@@ -59,6 +59,12 @@ func (s slotsStateSource) State(ctx context.Context, tx pgx.Tx) (api.State, []su
 	return state, claims, nil
 }
 
+// ObservedState answers the empty state for the observed view: `legion state` reads the whole
+// state.
+func (slotsStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
+}
+
 // slotsLinePattern is the slots line as the spec writes it (R6), with a group for every number
 // and every oldest time it prints, the number of P0 holders after the slots in use included. A
 // count with no known time prints no oldest, and the last sentence names the first issue that

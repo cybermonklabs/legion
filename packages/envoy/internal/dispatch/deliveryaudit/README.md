@@ -7,7 +7,10 @@ sessions they were owed to (sjawhar/legion#2366):
   ask-thread replies included, with each agent session or role the comment was owed or was
   addressed to: one row per (comment, target). Its output, `comments.csv`, is the input of
   `tq receipts` (example-org/deployment `transcript-store/`).
-- `trace.sql` shows everything Dispatch recorded about one comment's delivery.
+- `trace.sql` shows everything Dispatch recorded about one comment's delivery. Its
+  `transaction_events` rows give each event's `published_destinations`, the subjects the outbox
+  sent it to, and its `refused_destinations`, the subjects NATS refused for good, each with its
+  error.
 
 Neither script writes. Each run below is one read-only transaction anyway, so a mistake cannot
 write, and `-q` keeps psql's `SET` line out of the CSV. The package's test
@@ -57,7 +60,9 @@ are the union of two sets:
     the role's target, and `mention_session_id` names the session the role resolved to.
 - **Addressed.** These are the targets the comment did reach: every `notifications.agent.<id>`
   subject (target `session:<id>`) and every `notifications.role.<token>` subject (target
-  `role:<token>`) in the `published_destinations` of the comment's `comment.created` event.
+  `role:<token>`) in the `published_destinations` of the comment's `comment.created` event. A
+  subject in the event's `refused_destinations` was not reached: NATS refused it for good, and
+  `trace.sql` prints it with its error.
 
 "At the time" means when the outbox published the event: its `published_at`, or its `created_at`
 while it is unpublished. The outbox reads the route and the followers at that moment. The route and
@@ -91,7 +96,7 @@ for `report.ts` (`scripts/dispatch/comment-delivery/`) and for people.
 | `reopened` | `true` when the comment's own transaction reopened its resolved thread, that is, when it also wrote `comment.reopened` for the thread's root. That event has the same owner and the same `created_at`, and it comes one sequence number before. Otherwise `false`. |
 | `target` | A target the comment was owed or addressed to: `session:<id>` or `role:<token>`. Empty on the one row of a comment that has no target. (`comment_id`, `target`) is unique. |
 | `owed_reasons` | Why the comment was owed to the target: `route`, `claimant`, `follower`, `asker` and `mention`, sorted and joined with `;`. `addressed-only` when the comment reached the target without being owed to it. Empty when `target` is empty. |
-| `addressed` | `true` when the target's subject is in the event's `published_destinations`, that is, when the outbox sent the comment to it. Otherwise `false`. A mention is not sent by the outbox, so a mention's target can be `false` here and still have a sent or queued attempt. |
+| `addressed` | `true` when the target's subject is in the event's `published_destinations`, that is, when the outbox sent the comment to it. Otherwise `false`. A subject NATS refused for good is in the event's `refused_destinations` instead, so its target is `false`; `trace.sql` prints that column with each refusal's error. A mention is not sent by the outbox, so a mention's target can be `false` here and still have a sent or queued attempt. |
 | `mention_session_id` | When a mention named this target: the session the mention resolved to when the comment was created (`comment_mentions.resolved_session_id`). Empty when no mention named the target, or when the mention did not resolve to a session Envoy knows. |
 | `mention_envelope_ids` | When a mention named this target: the envelope id of each of its delivery attempts, by attempt number, joined with `,`. The envelope id is the id the Envoy listener minted when it accepted the send. An attempt that has none (it failed, it is pending, or the stream already held the message) is an empty element, so this column always has one element per element of `mention_modes`: `,abc` means attempt 1 has no envelope id and attempt 2 has `abc`. Empty when no mention named the target. |
 | `mention_btw_reply_id` | The `reply_id` of the newest `btw` attempt that has one: the comment the session's side turn posted as its answer. Empty when there is none. |

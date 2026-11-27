@@ -292,18 +292,21 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	}
 
 	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
-	// above it, and below each entry's band, so it is told of each of those rows, in the table's
-	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
-	// found its keys on the golden (narrowingsExpected), which holds no entry to be the newest. The
-	// slots reading's band (slotsReadingContract) is among them.
-	golden := populatedState(t)
-	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// above it, so its log holds the cause times' line first and the Dispatch credential's second,
+	// then the line of each band above them (narrowingsExpected), which is that band's test's to
+	// name; the slots reading's band (slotsReadingContract) is among them. It reads carriedState, as
+	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	carried := carriedState(t)
+	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	const droppedSlotsReading = "admission.slots, the issues' rank and rootRank, and the slots' state and since"
-	want := narrowingsExpected(golden, causeTimesContract-1)
-	if len(want) < 3 || want[0] != dropped || want[1] != "dispatchCredential" || !slices.Contains(want[2:], droppedSlotsReading) {
-		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first, and one that dropped %q after them",
-			causeTimesContract-1, want, dropped, "dispatchCredential", droppedSlotsReading)
+	if want := narrowingsExpected(carried, causeTimesContract-1); !slices.Contains(want, droppedSlotsReading) {
+		t.Errorf("a caller at %d expects the lines %v, want one that dropped %q among them",
+			causeTimesContract-1, want, droppedSlotsReading)
 	}
-	wantNarrowings(t, narrowings, causeTimesContract-1, want)
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and one that dropped %q first",
+			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
+	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(carried, causeTimesContract-1))
 }

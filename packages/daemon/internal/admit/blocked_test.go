@@ -644,7 +644,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				read, err := admission.tickRead(context.Background(), tx)
+				read, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -775,7 +775,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string, want []record.BlockedIssue) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			read, err := admission.tickRead(context.Background(), tx)
+			read, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
@@ -821,10 +821,10 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
 // the waiting line holds: the rows are read before the loop, not inside it. The tick the test
-// drives judges the line twice and no more — promotion's own pass, and the one pass that builds
-// both lists the notice carries (Admission.tickRead) — whether or not a controller is registered
-// to be told, so it reads the mirror once for each judgement it makes and never once for each
-// candidate, which three blocked roots would show.
+// drives judges the line once and no more — promotion's own pass, whose judgement the tick's wake
+// reads at the pass's end (Admission.tickRead, finalJudgement) since the pass wrote nothing a
+// judgement reads after it — whether or not a controller is registered to be told, so it reads
+// the mirror once and never once for each candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}
@@ -841,9 +841,9 @@ func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T
 		t.Fatalf("ApplyFact tick: %v", err)
 	}
 
-	const judgements = 2
+	const judgements = 1
 	if store.mirrorReads != judgements {
-		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once per judgement the tick makes", store.mirrorReads, judgements)
+		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once for the one judgement the tick makes", store.mirrorReads, judgements)
 	}
 	assertSlots(t, pool, nil)
 }

@@ -3269,7 +3269,7 @@ In the daemon's log, read each notice that the daemon sent a worker, and the sta
 Turns that start soon after a notice more often than at other moments show that notices move work.
 Compare the rows that `run.json` counts under this assumption between rules, because a rule that sends many more notices rests more on it.
 
-### Assumption 27: What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders and the step and plan records, is read back by no decision a replay runs
+### Assumption 27: What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders, the step and plan records and the state events, is read back by no decision a replay runs
 
 The tool's own.
 Sound: the daemon decides from its own record and from Dispatch's events.
@@ -3281,6 +3281,7 @@ The workflow can attach an experiment and variant from a simulated assignment to
 Collected windows do not supply prior experiment assignments.
 `run.json` counts them under `divergence.finished`.
 A person's act after a publication is a Dispatch event of the window.
+The state events (the daemon's `state` lane, which Dispatch takes its board from) never reach a replay's outbox: only a daemon with a workflow turns them on, and a replay's store never does, so the replay queues none and applies no linger deadline, whose pass only writes the admission block's event.
 
 **If it is wrong.**
 If a decision of the daemon read a publication back, the replay moves the measures so.

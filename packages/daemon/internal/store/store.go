@@ -72,6 +72,9 @@ type Store struct {
 	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
 	// daemon turns the publication on, and while it is nil no claim write queues one.
 	roleHoldersQueued atomic.Pointer[func(issue string)]
+	// stateQueued is PublishState's switch, read at each claim write. It is nil until the daemon
+	// turns the state events on, and while it is nil no claim write queues one.
+	stateQueued atomic.Pointer[statePublication]
 	// clock is the time the store's claim and tree-lifecycle writes are stamped and bounded with
 	// (UseClock), nil for the daemon's own store, which stamps with Postgres's now() and bounds
 	// with the wall clock.

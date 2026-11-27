@@ -10,7 +10,9 @@ body: |-
     in use as `(<p0> P0)`. Each slot carries its holder's `state` and
     `since`, and each issue carries its own Dispatch `rank` and its tree root's `rootRank`. Every
     new field is optional, because the daemon serves none of them to a caller below that entry.
-    The entry's fixture records the added fields.
+    The entry's fixture records the added fields. The observed view
+    (`LegionObservedStateResponse`, `GET /legion/v1/state?view=observed`) carries no
+    `admission.slots`: only the whole state serves the slots reading.
 time: 2026-11-22T10:01:00.000000000Z
 custom:
     Issue: pr4771

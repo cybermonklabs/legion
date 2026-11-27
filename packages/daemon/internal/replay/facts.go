@@ -316,4 +316,10 @@ var FactSources = map[string]FactSource{
 	// window holds the project's issue events alone, and the fact only tells the architects in
 	// accepting and the mergers in merging, so none comes to it.
 	"MergeHoldsChanged": {Way: FactLeftOut, Assumption: assumeNoticesChangeNothing},
+
+	// The daemon's pass at a linger deadline the admission block reads (internal/daemon's
+	// wakeAtLingerDeadlines, cybermonklabs/legion#4432), whose whole work is to write that block and
+	// queue its state event: only a daemon whose state events are on runs it, and a replay publishes
+	// no state event, so none comes to it.
+	"LingerDeadline": {Way: FactLeftOut, Assumption: assumePublicationsDecideNothing},
 }

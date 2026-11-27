@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +155,18 @@ func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID strin
 	}
 }
 
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+var notStateRows = func() string {
+	var kinds []string
+	for _, kind := range record.LaneKinds(record.LaneState) {
+		kinds = append(kinds, "'"+string(kind)+"'")
+	}
+	return "kind not in (" + strings.Join(kinds, ", ") + ")"
+}()
+
 type effect struct {
 	kind    record.OutboxKind
 	issue   string
@@ -183,9 +196,12 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // which the transition raised on the role's phases row: the record counts the entries a role has
 // been handed, so two runs of the same events write the same number and a comparison of two runs
 // reads it like any other field.
+//
+// The state lane's rows are left out too (notStateRows): these tests assert the effects of the
+// other lanes, and the state events are asserted where they are written.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
+	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("list outbox: %v", err)
 	}

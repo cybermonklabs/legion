@@ -1644,7 +1644,7 @@ func lineUnderStore(t *testing.T, pool *pgxpool.Pool, records record.Store, rule
 				t.Fatalf("read what the rule records: %v", err)
 			}
 		}
-		if _, facts, line, held, err = blockers.JudgeLine(ctx, tx, records, acmeProject, issues, ownSlots(issues, slots), facts, nil, fixedNow); err != nil {
+		if _, facts, line, held, err = blockers.JudgeLine(ctx, tx, records, acmeProject, issues, record.OwnSlots(issues, slots), facts, nil, fixedNow); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})

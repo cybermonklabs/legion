@@ -243,7 +243,7 @@ func (a *Admission) settleCovers(ctx context.Context, tx pgx.Tx, issues []record
 	if a.engine.SlotRule().Take != record.TakeCover {
 		return false, nil, nil
 	}
-	own := ownSlots(issues, slots)
+	own := record.OwnSlots(issues, slots)
 	waits := newCoverWaits(issues, own, rows, facts)
 	live := record.LiveRoots(issues, facts)
 	needsSlot := func(key string) bool {
@@ -282,7 +282,7 @@ func (a *Admission) settleCovers(ctx context.Context, tx pgx.Tx, issues []record
 		a.log.Info("admission gives a slot back to an issue whose cover ended", "issue", waiter, "holder", holder)
 	}
 	var freed []string
-	for _, slot := range ownSlots(issues, slots) {
+	for _, slot := range record.OwnSlots(issues, slots) {
 		waiter := slot.Issue
 		if _, holds := standing.holding[waiter]; holds {
 			continue

@@ -119,7 +119,7 @@ var Assumptions = []Assumption{
 		Text:      "A notice, a message or a prompt the daemon sends a worker or posts on Dispatch changes nothing the record's workers did after it: their work is the record's segments.",
 		Direction: "A notice that changed what a worker did, or how soon, would move that work by the replay's own timing of the notice; under the recorded rule each notice falls where the record's did, and under another rule the work it would have moved stays where the record put it, which favours the recorded rule's timing."},
 	{Number: assumePublicationsDecideNothing,
-		Text:      "What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders and the step and plan records, is read back by no decision a replay runs.",
+		Text:      "What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders, the step and plan records and the state events, is read back by no decision a replay runs.",
 		Direction: "Sound: the daemon decides from its own record and Dispatch's events, and a person who acted on a publication did so in a recorded event the replay applies."},
 	{Number: assumeWorkspaceInSegment,
 		Text:      "The work of a pod or a workspace, a branch made, a pod stopped, bundled, released or removed, and a role that a pause or an idle pod's release stops, lies inside the recorded work segments and the record's own pause.",

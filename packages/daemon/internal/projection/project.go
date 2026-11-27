@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -39,6 +38,10 @@ type Inputs struct {
 	// Project is the Dispatch project whose pending status writes, held lifecycle rows and open
 	// intake give-ups the state lists.
 	Project string
+	// Cap is the deployment's admission cap (config.Config.AdmissionCap), which the admission
+	// block carries beside the lists judged under it (blockers.JudgeAdmission), and which the slots
+	// reading names beside the slots in use (record.SlotsReadingOf, api.Admission.Slots).
+	Cap int
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
 	// view answers the steps its tree is gated on, which these steps and the root's gate rows
 	// make (record.TreeSteps); the empty list gates none.
@@ -73,15 +76,28 @@ type Inputs struct {
 	// name each issue by the rule that placed it. The zero value is the daemon's own rule
 	// (record.SlotRule.OrMain).
 	SlotRule record.SlotRule
-	// Cap is the project's admission cap, which the slots reading names beside the slots in use
-	// (record.SlotsReadingOf, api.Admission.Slots).
-	Cap int
 	// HolderClaims are the project's claims as a slot holder's state reads them, read by the
 	// caller in this transaction through the statement the admission pass's tick reads them
 	// through (record.Store.HolderClaims), which is the one that holds when a suspended or a
 	// retired claim stopped. Nil is Claims as record.HolderClaimsOf reads them, which date a
 	// stranded claim by its failure alone: what a caller holding only whole claims gives.
 	HolderClaims []record.HolderClaim
+}
+
+// ObservedInputs are the facts the observed view's part of the state is built from (Observe): the
+// fields of Inputs that it reads, each the same fact as the field of Inputs of the same name. They
+// are a value of their own so that the parameter's type says what Observe reads, and the facts of
+// the full state alone (Inputs' Experiments, Stranded, Reports, Wakes and HolderClaims) cannot
+// reach it. It names no slot rule: the observed view is the daemon's alone, read under the
+// daemon's own rule (Inputs.SlotRule's zero value).
+type ObservedInputs struct {
+	Tx      pgx.Tx
+	Store   record.Store
+	Project string
+	Cap     int
+	Steps   []record.DesignStep
+	Claims  []supervise.Claim
+	Now     time.Time
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -159,11 +175,26 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, check := range openChecks {
 		checks[check.Issue] = check
 	}
-	// Every issue's pull request, by issue key, in one statement for the whole state rather than a
-	// read an issue (record.Store.PullRequestsOf). It loads none of what each pull request
-	// remembers of its settled heads: the state shows none of it, a read of one pull request would
-	// load up to 32 rows of it for every issue, and the state writes no record back.
+	// The three facts each issue's view reads of its own rows — its phase rows, its pull request and
+	// its design gates — are each read once for every issue the state lists, before the loop below,
+	// which looks each issue up in the answers and makes no statement of its own. Each bulk read
+	// answers an issue what its read by key answers it of what this state reads
+	// (record.Store.AllPhases beside Phases, PullRequestsOf beside PullRequest, Gates beside
+	// GatesOf), and leaves the rest out: the phase rows are read for the issues of project alone,
+	// as the assignments above are, with only the columns this state reads of them
+	// (record.Store.AllPhases), and PullRequestsOf loads none of what each pull request remembers
+	// of its settled heads, since the state shows none of it and writes no record back. An issue
+	// holding no row has no entry, which reads as the empty list, the nil pull request and the
+	// empty gates.
+	phases, err := in.Store.AllPhases(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
 	pullRequests, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
+	if err != nil {
+		return api.State{}, err
+	}
+	gatesOf, err := in.Store.Gates(ctx, in.Tx, keys)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -207,28 +238,24 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		claimViews[current.Token] = view
 	}
 
-	slotViews := make(map[string]api.SlotView, len(slots))
-	active := make([]string, 0, len(slots))
-	for _, slot := range slots {
-		if _, known := knownIssues[slot.Issue]; !known {
-			continue
-		}
-		slotViews[slot.Issue] = api.SlotView{Index: slot.Index, AdmittedAt: slot.AdmittedAt}
-		active = append(active, slot.Issue)
-	}
+	// Which claim each issue's `architect` and each role of its `workers` show, the slot each issue
+	// holds and what Dispatch observes of each issue's own record are decided once, for this view
+	// and for the observed view of the state (Observe) alike, by the one definition both read
+	// (listIssues), and put on both views' issues by one function (putListed): the two views cannot
+	// disagree about what Dispatch observes.
+	listed, unrecorded := listIssues(issues, phases, slots, in.Claims)
 
 	// The wakes the pacing holds, as the state names them beside the claim views that name
 	// their own: one list, set here, so the two readings come from one place.
-	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: in.Wakes}
+	projected := api.State{Issues: make(map[string]api.Issue, len(issues)+len(unrecorded)), WakesWaiting: in.Wakes}
 	for _, issue := range issues {
+		entry := listed[issue.Key]
 		// The issue's own Dispatch priority, null on the wire for none (api.Issue.Priority).
 		priority := api.PriorityView(issue.Priority)
 		view := api.Issue{
 			Key:           issue.Key,
 			Generation:    issue.Generation,
-			Phase:         issue.Phase,
 			Status:        issue.Status,
-			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
 			// When this root's linger runs out, nil for every issue that is not a lingering
@@ -248,6 +275,19 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if issue.Resolved.Known {
 			resolved := api.PriorityView(issue.Resolved.Priority)
 			view.ResolvedPriority, view.PriorityFrom = &resolved, issue.Resolved.From
+		}
+		// The phase, the tree, the slot, the claims, and what the root waits on from a person,
+		// which is present only while it is in awaiting_person.
+		entry.putListed(&view, claimViews)
+		// The implementer's counts of the moves back are its phases row's (putClaims), or its
+		// issue's task's where the issue has plan rows (record.ReturnCounts). They ride with the
+		// claim as the row's do, so they replace the row's only where a row showed the worker.
+		if planned, ok := taskCounts[issue.Key]; ok {
+			if shown, live := entry.workers[claim.RoleImplementer]; live && shown.row != nil {
+				worker := view.Workers[claim.RoleImplementer]
+				worker.Pass, worker.Rounds, worker.BackwardMoves = planned.Pass, planned.Rounds, planned.BackwardMoves
+				view.Workers[claim.RoleImplementer] = worker
+			}
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
@@ -269,57 +309,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
 		}
-		if slot, ok := slotViews[issue.Key]; ok {
-			view.Slot = &slot
-		}
-		if issue.AwaitingPerson() {
-			view.WaitingOn = waitingOn(*issue.Awaiting)
-		}
 
-		phases, err := in.Store.Phases(ctx, in.Tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
-		}
+		rows := phases[issue.Key]
 		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
 		// and role): the round's decision is read from it, and so is what the round waits on from
 		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
-		var reviewer record.PhaseRow
-		for _, item := range phases {
-			if item.Role == claim.RoleReviewer {
-				reviewer = item
-			}
-			claimView, live := claimViews[item.Claim]
-			if !live {
-				continue
-			}
-			// The architect is the issue's architect and no worker of its `workers` map, so no
-			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
-			if item.Role == claim.RoleArchitect {
-				view.Architect = &claimView
-				continue
-			}
-			// The worker's view exists only while its claim is live, so its counts of the moves
-			// back ride with the claim exactly as `rounds` does: a role whose process has gone
-			// shows neither, and the record keeps both for the role's next claim. The counts are
-			// the implementer's row's, or its issue's task's where the issue has plan rows.
-			counts := record.ReturnCounts{Pass: item.Pass, Rounds: item.Rounds, BackwardMoves: item.BackwardMoves}
-			if planned, ok := taskCounts[issue.Key]; ok && item.Role == claim.RoleImplementer {
-				counts = planned
-			}
-			worker := api.PhaseView{
-				Claim:         claimView,
-				HandoffCommit: item.HandoffCommit,
-				Pass:          counts.Pass,
-				Rounds:        counts.Rounds,
-				BackwardMoves: counts.BackwardMoves,
-			}
-			if item.HandoffRecord != "" {
-				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
-			}
-			view.Workers[item.Role] = worker
-		}
+		reviewer := record.PhaseRowOf(rows, claim.RoleReviewer)
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
@@ -332,7 +327,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := phase.RoleFor(issue.Phase)
 		if role != "" {
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(rows, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
 		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
@@ -373,10 +368,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		}
 		view.MergeWait = mergeWaitView(issue, reviewer, pr)
 
-		gates, err := in.Store.GatesOf(ctx, in.Tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
-		}
+		gates := gatesOf[issue.Key]
 		gate := record.SpecGate(gates)
 		if gate != nil {
 			view.DesignGate = &api.GateView{
@@ -403,93 +395,55 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		projected.Issues[issue.Key] = view
 	}
 
-	for _, current := range in.Claims {
-		// The daemon's own controller (`controller: daemon`) holds a claim on no issue: the state
-		// shows it as the project's controller (controllerLocator), never as an issue's worker,
-		// since an issue keyed "" refuses the whole document at every client, which reads an
-		// issue's `key` as a non-empty string.
-		if claim.IsController(current.Role, current.Issue, current.Tree) {
-			continue
+	// A claim on an issue the workflow does not record — an operator's spawn, which is what Stage 2
+	// makes and what the merge-queue holder is — is listed for the claim's sake, and says so
+	// (listIssues): an empty phase is no value of the phase enum and an empty status is refused
+	// too, so the whole document would be refused over a row that is a legitimate state.
+	for _, key := range unrecorded {
+		entry := listed[key]
+		view := api.Issue{
+			Key:     key,
+			Status:  string(api.Unrecorded),
+			Workers: map[claim.Role]api.PhaseView{},
 		}
-		claimView := claimViews[current.Token]
-		view, known := projected.Issues[current.Issue]
-		if !known {
-			// A claim on an issue the workflow does not record — an operator's spawn, which is
-			// what Stage 2 makes and what the merge-queue holder is — is listed for the claim's
-			// sake, and says so: an empty phase is no value of the phase enum and an empty status
-			// is refused too, so the whole document would be refused over a row that is a
-			// legitimate state.
-			view = api.Issue{
-				Key:     current.Issue,
-				Phase:   api.Unrecorded,
-				Status:  string(api.Unrecorded),
-				Workers: map[claim.Role]api.PhaseView{},
-			}
-		}
-		if current.Role == claim.RoleArchitect {
-			if view.Architect == nil {
-				view.Architect = &claimView
-			}
-		} else if _, known := view.Workers[current.Role]; !known {
-			view.Workers[current.Role] = api.PhaseView{Claim: claimView}
-		}
-		projected.Issues[current.Issue] = view
+		entry.putListed(&view, claimViews)
+		projected.Issues[key] = view
 	}
 
-	// Everything admission is judged from is judged over this project's own records. The state
-	// lists every project's issues, for the sake of a claim on an issue of another, while the
-	// cap, the waiting line and the tick read the project's own live records alone
-	// (record.Store.LiveIssues, admit's pass): another project's queued root, and its root a
-	// person has answered, would otherwise stand in this project's `admission.waiting`, and
-	// whatever either waits on in its `blocked`, as work this daemon neither runs nor admits.
-	// They reach one read at all because the issues table is one table shared by every daemon of
-	// the database (the issue slots migration, "shared by every daemon of the database").
+	// Each issue's own reading of admission — its place in the waiting line and why it is not
+	// working now — is read over this project's own records. The state lists every project's
+	// issues, for the sake of a claim on an issue of another, while admission reads the project's
+	// own records alone: another project's queued root, and its root a person has answered, would
+	// otherwise read as work this daemon neither runs nor admits. They reach one read at all
+	// because the issues table is one table shared by every daemon of the database (the issue
+	// slots migration, "shared by every daemon of the database").
 	own := make([]record.Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issue.Project == in.Project {
 			own = append(own, issue)
 		}
 	}
-	// The facts are read under the rule the state is read under (Inputs.SlotRule, the daemon's own
-	// unless a replay names another), so the line, the held words and the answer of `why` below
-	// place each issue by the rule that placed it in the pass (record.ReadLineFactsUnder).
-	facts, err := record.ReadLineFactsUnder(ctx, in.Tx, in.Store, in.Project, own, in.Steps, in.SlotRule)
+	// The admission block is the one judgement of it (blockers.JudgeAdmissionUnder, which builds it
+	// with blockers.AdmissionOf), read in this transaction's snapshot like every other fact here,
+	// under the rule the state is read under (Inputs.SlotRule, the daemon's own unless a replay
+	// names another), so the line, the held words and the answer of `why` below place each issue by
+	// the rule that placed it in the pass. The line it judged, the mirror rows it judged the links
+	// from and the facts it read are what each issue's view below is read from, so a member's place
+	// and every issue's `why` come from the judgement whose lists the block serves. The block
+	// carries the P0 holders as well, the count admission's cap readers make (record.HoldersOf), so
+	// the number the state gives is the number the pass admitted under.
+	judged, err := blockers.JudgeAdmissionUnder(ctx, in.Tx, in.Store, in.Project, in.Steps, in.SlotRule, slots, in.Cap, in.Now)
 	if err != nil {
 		return api.State{}, err
 	}
-	// What Legion is waiting for, judged from the mirror of what Dispatch says the issues it
-	// judges wait on, read in this transaction's snapshot like every other fact here, through the
-	// one judgement admission itself promotes from (blockers.JudgeLine): the rows of every issue
-	// a blocker can hold, the children-first wait, the line those two leave, and the rows of the
-	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
-	// the roots admission skips, the issues it holds back, the parents whose children go first
-	// and the parents waiting in awaiting_children on their open children (blockers.ChildRows).
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, in.Tx, in.Store, in.Project, own, slots, facts, nil, in.Now)
-	if err != nil {
-		return api.State{}, err
-	}
-	projected.Admission.Active = active
-	// The holders the cap does not count (R10 of dispatch://INFRA-3199): the project's own holders
-	// that admission treats as P0 (record.Issue.StartsNow), counted by the one count admission's
-	// cap readers make (record.HoldersOf), so the number the state gives is the number the pass
-	// admitted under.
-	projected.Admission.P0Holders = new(record.HoldersOf(own, slots).P0)
-	// The roots of the live trees, which no slot says any more: a slot counts one issue the
-	// daemon has started, and a tree is live before the daemon has started anything of it — a
-	// root waiting in the line for its tree to be opened holds no row, and neither does a child
-	// of it. The pass's own facts already name every lifecycle, so this costs no further read. A
-	// lifecycle is keyed by the project token (record.ReadLifecycles) and this pass reads them
-	// all under this daemon's, so another project's root would be judged against a lifecycle
-	// that is not its own.
-	trees := record.LiveRoots(own, facts)
-	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
-	projected.Admission.Waiting = make([]string, len(line))
+	projected.Admission = api.AdmissionOf(judged.Block)
+	rows, facts, line, trees := judged.Rows, judged.Facts, judged.Line, judged.Live
 	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
 	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
-	// already, so the place is set where the key is listed: the line is built from `own`, the
-	// issues of this project among the issues the loop above gave a view to, each of them.
+	// already, so the place is set where the key is listed: the line is built from the project's
+	// live records, each of them an issue of `own` the loop above gave a view to.
 	//
 	// Beside the place, each member carries the line's own fields for a program to read
 	// (api.WaitingLineView): the priority that placed it, the part it waits in within that
@@ -512,7 +466,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	banded := in.SlotRule.OrMain().PriorityFirst
 	for i, entry := range line {
 		key := entry.Issue.Key
-		projected.Admission.Waiting[i] = key
 		holds := entry.Holds
 		placed := api.PriorityView(entry.Priority)
 		standsIn := bandPart{entry.Priority, entry.Part}
@@ -555,27 +508,19 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		view.WaitingLine.Reason = waitingLineReasonUnder(banded, entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)
-	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
-	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
-	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
-	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
-	// no drop site saw, over the same facts and the same line these lists are built from, so one
-	// issue reads one word here and in the controller's tick.
-	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	// What the slots in use are spent on: each holder counted by what it is doing, the two
 	// readings of started work that waits without a slot, and the holders that rank below the
 	// first issue that waits for one, with the sentence `legion state` prints for them. It is read
 	// by the one assembly the admission pass's tick reads it by (blockers.SlotsReading), over the
-	// judgement, the line and the two lists above, so the body, its line and the tick notice give
-	// one reading of one project. Each holder's `slot` carries the state it was counted under and
-	// when it entered it.
+	// judgement, the line and the block's `blocked` and `held`, so the body, its line and the tick
+	// notice give one reading of one project. Each holder's `slot` carries the state it was counted
+	// under and when it entered it.
 	holderClaims := in.HolderClaims
 	if holderClaims == nil {
 		holderClaims = record.HolderClaimsOf(in.Claims)
 	}
 	reading, holders := blockers.SlotsReading(blockers.SlotsInputs{
-		Cap: in.Cap, Issues: own, Slots: slots, Rows: rows, Facts: facts, Line: line,
+		Cap: in.Cap, Issues: judged.Issues, Slots: slots, Rows: rows, Facts: facts, Line: line,
 		Blocked: projected.Admission.Blocked, Held: projected.Admission.Held, Claims: holderClaims, Stranded: in.Stranded,
 	})
 	projected.Admission.Slots = &reading
@@ -622,8 +567,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
 	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
-	// are the same roots record.LiveRoots is read from above — live is wider than running,
-	// and a parked root's tree is neither.
+	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
+	// wider than running, and a parked root's tree is neither.
 	running := record.RunningRoots(own, facts)
 	whyStates(&projected, own, running, in.Stranded, rows, facts)
 	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
@@ -691,6 +636,200 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	}
 	projected.IntakeGiveUps = intakeGiveUpsView(giveUps)
 	return projected, nil
+}
+
+// Observe is the part of the state that the observed view of the state route reads
+// (api.StateSource.ObservedState), read through in.Tx, the caller's repeatable-read transaction:
+// all of that part but its daemon block and its settings, which the caller sets as it sets them on
+// the full state (Project). The admission block is the full state's own: the same judgement
+// (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order, but for the
+// slots reading (api.Admission.Slots), which only the full state serves, since it is for `legion
+// state` alone and reads the holders' claims and the stranded judgement, which this read leaves
+// out. The issues are every issue the full state lists, each with the members the definition of
+// the full state's views decides (listIssues), put on by the function that puts them on the full
+// state's issues (putListed), and each claim view as api.ClaimViewOf builds it. Every other member
+// of an issue is empty. It reads the issues, the project's phase rows in one statement, the slots
+// and what the admission judgement reads, and it makes no statement for any one issue.
+func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
+	issues, err := in.Store.Issues(ctx, in.Tx)
+	if err != nil {
+		return api.State{}, err
+	}
+	phases, err := in.Store.AllPhases(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	slots, err := in.Store.Slots(ctx, in.Tx)
+	if err != nil {
+		return api.State{}, err
+	}
+	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
+	if err != nil {
+		return api.State{}, err
+	}
+	listed, _ := listIssues(issues, phases, slots, in.Claims)
+	views := make(map[claim.Token]api.ClaimView, len(in.Claims))
+	for _, current := range in.Claims {
+		views[current.Token] = api.ClaimViewOf(current)
+	}
+	observed := api.State{Admission: api.AdmissionOf(judged.Block), Issues: make(map[string]api.Issue, len(listed))}
+	for key, entry := range listed {
+		view := api.Issue{Key: key}
+		entry.putListed(&view, views)
+		observed.Issues[key] = view
+	}
+	return observed, nil
+}
+
+// listedIssue is one issue the state lists, as both views of the state show what Dispatch observes
+// of it (listIssues): its own record's observation, the slot it holds, and the claims its
+// `architect` and its `workers` show.
+type listedIssue struct {
+	// observed is what Dispatch observes of the issue's own record (record.ObservationOf), and for
+	// an issue the workflow does not record its phase alone, api.Unrecorded.
+	observed record.IssueObservation
+	// slot is the admission slot the issue holds, nil where it holds none. Only an issue the record
+	// holds is given one.
+	slot *record.Slot
+	// architect is the claim the issue's `architect` shows, nil where it shows none.
+	architect *supervise.Claim
+	// workers is the claim each role of the issue's `workers` shows, by role; nil where it shows
+	// none.
+	workers map[claim.Role]shownWorker
+}
+
+// shownWorker is the claim one role of an issue's `workers` shows, and the phases row the claim was
+// found through, which the full view reads the role's counts from; row is nil for a claim shown
+// without one.
+type shownWorker struct {
+	claim *supervise.Claim
+	row   *record.PhaseRow
+}
+
+// listIssues is the one definition of what both views of the state show of each issue Dispatch
+// observes (Project, Observe): every issue of issues, by key, and every issue a claim names that
+// issues does not hold, whose keys unrecorded lists in the order of their first claim. phases is
+// each issue's phases rows (record.Store.AllPhases), slots every slot the store holds and claims the
+// project's claims, all read in the caller's one snapshot.
+//
+// The rule, in the order it is applied:
+//
+//   - an issue's own record decides its phase, its tree and its wait (record.ObservationOf);
+//   - an issue the record holds shows the slot it holds, and a slot of a key the record does not
+//     hold is shown nowhere;
+//   - a phases row whose claim token names a claim of claims shows that claim: the architect's row
+//     as the issue's `architect`, which is no worker of its `workers`, and every other role's row as
+//     that role's entry of `workers`. A row whose claim is not among claims shows nothing, so a
+//     worker's view, and the counts its row carries, exist only while its claim does;
+//   - then each claim, in claims' order, that no row showed: on its issue's `architect` where that
+//     is empty, and on its role's entry of `workers` where that is empty. The daemon's own
+//     controller (`controller: daemon`) holds a claim on no issue and is skipped: the state shows it
+//     as the project's controller, never as an issue's worker, since an issue keyed "" refuses the
+//     whole document at every client;
+//   - a claim on an issue the record does not hold lists that issue at api.Unrecorded, with no
+//     tree, no slot and no wait.
+func listIssues(issues []record.Issue, phases map[string][]record.PhaseRow, slots []record.Slot, claims []supervise.Claim) (map[string]listedIssue, []string) {
+	byToken := make(map[claim.Token]*supervise.Claim, len(claims))
+	for i := range claims {
+		byToken[claims[i].Token] = &claims[i]
+	}
+	listed := make(map[string]listedIssue, len(issues))
+	for _, issue := range issues {
+		entry := listedIssue{observed: record.ObservationOf(issue)}
+		rows := phases[issue.Key]
+		for i := range rows {
+			row := &rows[i]
+			shown, live := byToken[row.Claim]
+			if !live {
+				continue
+			}
+			if row.Role == claim.RoleArchitect {
+				entry.architect = shown
+				continue
+			}
+			entry.showWorker(row.Role, shownWorker{claim: shown, row: row})
+		}
+		listed[issue.Key] = entry
+	}
+	for i := range slots {
+		entry, known := listed[slots[i].Issue]
+		if !known {
+			continue
+		}
+		entry.slot = &slots[i]
+		listed[slots[i].Issue] = entry
+	}
+	var unrecorded []string
+	for i := range claims {
+		current := &claims[i]
+		if claim.IsController(current.Role, current.Issue, current.Tree) {
+			continue
+		}
+		entry, known := listed[current.Issue]
+		if !known {
+			unrecorded = append(unrecorded, current.Issue)
+			entry = listedIssue{observed: record.IssueObservation{Phase: api.Unrecorded}}
+		}
+		if current.Role == claim.RoleArchitect {
+			if entry.architect == nil {
+				entry.architect = current
+			}
+		} else if _, shown := entry.workers[current.Role]; !shown {
+			entry.showWorker(current.Role, shownWorker{claim: current})
+		}
+		listed[current.Issue] = entry
+	}
+	return listed, unrecorded
+}
+
+// showWorker makes worker the claim role shows in the issue's `workers`.
+func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
+	if l.workers == nil {
+		l.workers = make(map[claim.Role]shownWorker, 1)
+	}
+	l.workers[role] = worker
+}
+
+// putListed puts onto view, an issue of either view of the state (Project, Observe), what
+// listIssues decided of it: the phase, the tree and the wait its own record decides, the slot it
+// holds, and the claims its `architect` and its `workers` show (putClaims). It is the one place
+// those members are built from the records, so each member the observed view reads (api's
+// observedOf) is the full view's.
+func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimView) {
+	view.Phase, view.WaitingOn = l.observed.Phase, l.observed.WaitingOn
+	if l.observed.Tree != nil {
+		view.Tree = *l.observed.Tree
+	}
+	if l.slot != nil {
+		view.Slot = &api.SlotView{Index: l.slot.Index, AdmittedAt: l.slot.AdmittedAt}
+	}
+	l.putClaims(view, views)
+}
+
+// putClaims puts the claims l shows onto view, each as its claim view (views, by token): the
+// architect as `architect`, and each worker with the counts of the phases row it was found through,
+// its handoff, its pass, its rounds and its counts of the moves back. Those counts ride with the
+// claim: a role whose claim has gone shows none of them, and the record keeps them for the role's
+// next claim. The architect's own row is read all the same by Project, for the entry of a root at
+// admitted (phase.RoleFor). view's `workers` is made here where it is nil and a worker is shown.
+func (l listedIssue) putClaims(view *api.Issue, views map[claim.Token]api.ClaimView) {
+	if l.architect != nil {
+		architect := views[l.architect.Token]
+		view.Architect = &architect
+	}
+	if len(l.workers) > 0 && view.Workers == nil {
+		view.Workers = make(map[claim.Role]api.PhaseView, len(l.workers))
+	}
+	for role, worker := range l.workers {
+		shown := api.PhaseView{Claim: views[worker.claim.Token]}
+		if row := worker.row; row != nil {
+			shown.HandoffCommit, shown.Pass, shown.Rounds, shown.BackwardMoves = row.HandoffCommit, row.Pass, row.Rounds, row.BackwardMoves
+			if row.HandoffRecord != "" {
+				shown.HandoffRecord = &api.HandoffRecordView{ID: row.HandoffRecord, Version: row.HandoffVersion}
+			}
+		}
+		view.Workers[role] = shown
+	}
 }
 
 // stateNewestGiveUps is how many open give-ups the state lists (api.IntakeGiveUpsView.Newest).
@@ -964,28 +1103,6 @@ func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.Pull
 	view.CheckRuns = len(classify.HeadRuns(*pr))
 	if reviewer.Decision != nil {
 		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
-	}
-	return view
-}
-
-// waitingOn is the view of what a root in awaiting_person waits on: the gate shape when the wait
-// names a spec version, otherwise the question; the answer only once a person gave one. The act
-// that answered travels as the record's own word for it (record.Answer), `declined` for a person
-// who closed an ask of the root rather than answer it among them, so a value the record gains is
-// served as it stands and the contract number is what holds a plugin to the list it parses
-// (api.DaemonAPIVersion).
-func waitingOn(w record.Awaiting) *api.WaitingOnView {
-	view := &api.WaitingOnView{Kind: "ask", Ask: w.Ask}
-	if w.GateVersion != 0 {
-		view = &api.WaitingOnView{Kind: "gate", GateVersion: w.GateVersion, ArtifactID: w.Artifact}
-	}
-	if !w.Since.At.IsZero() {
-		since := w.Since.At
-		view.Since = &since
-	}
-	if w.AnsweredAt != nil {
-		answeredAt := *w.AnsweredAt
-		view.AnsweredAt, view.AnsweredBy = &answeredAt, w.AnsweredBy
 	}
 	return view
 }

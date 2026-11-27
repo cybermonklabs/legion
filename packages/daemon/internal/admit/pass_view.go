@@ -72,7 +72,7 @@ func (a *Admission) View(ctx context.Context, tx pgx.Tx) (PassView, error) {
 	if err != nil {
 		return PassView{}, err
 	}
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, record.OwnSlots(issues, slots), facts, nil, a.now())
 	if err != nil {
 		return PassView{}, fmt.Errorf("judge the line of %s: %w", a.project, err)
 	}

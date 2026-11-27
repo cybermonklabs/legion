@@ -133,6 +133,12 @@ func clockRows() []clockRow {
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).EnqueueID"}, check: checkEnqueuedIDCreated},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).OwedStarts"}, check: checkOwedLease},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).RoleRuns"}, check: checkRoleRunAge},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).PutIssue"}, check: checkIssueStateDue},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).PutSlot"}, check: checkSlotGrantStateDue},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).ReleaseSlot"}, check: checkSlotReleaseStateDue},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).ReleaseSlotForWait"}, check: checkSlotWaitReleaseStateDue},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).ReleaseTreeSlots"}, check: checkTreeSlotsReleaseStateDue},
+		{statement: nowStatement{"internal/record/admission_block.go", "(*Postgres).QueueAdmissionBlock"}, check: checkAdmissionBlockDue},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimActivity"}, check: checkClaimActivity},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimStep"}, check: checkClaimStep},
 		{statement: nowStatement{"internal/store/claims.go", "upsertClaim"}, check: checkClaimWrite},
@@ -143,7 +149,7 @@ func clockRows() []clockRow {
 			never: "the Sandbox runtime's orphan sweep (internal/runtime/sandbox); a replay runs no runtime"},
 		{statement: nowStatement{"internal/store/wake.go", "CloseOpenResumes"},
 			never: "the close of a pod's open resumes inside the idle release (ReleaseIdleIssue); a replay releases no pod"},
-		{statement: nowStatement{"internal/store/wake.go", "(*PodRecords).ClosePodGoneResume"},
+		{statement: nowStatement{"internal/store/wake_take.go", "(*PodRecords).ClosePodGoneResume"},
 			never: "reached only through workflow.Config.Pods, the engine's wake of a claim whose pod a release took (workflow's wakeReleased); a replay's engine runs with no Pods, since a replay releases no pod"},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "ReserveCleanup"},
 			never: "the outbox's close of a tree after its fact commits (store.Store.ReserveWorkflowTreeCleanup, ReserveOperatorTreeCleanup); a replay finishes a close row without releasing a tree"},
@@ -519,4 +525,102 @@ func checkPauseRows(t *testing.T) {
 	must(t, err)
 	// The resume deleted the stop row no lane ran, and queued its own notice beside the pause's.
 	queued("after the resume", 2)
+}
+
+// clockRun is the run id the publishing stores of the state-row checks below stamp on their rows.
+const clockRun = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+
+// publishingClockStore is a store built with the clock whose state events are on (PublishState),
+// so each write the checks below make queues the state row whose due time it reads with the write.
+// Only the daemon turns the events on, on a store with no clock, so a replay queues none of these
+// rows; the checks hold the due time to the store's clock all the same, so that no statement of a
+// store built with one reads Postgres's.
+func publishingClockStore() *Postgres {
+	records := NewStoreWithClock(clockAt)
+	records.PublishState(clockRun, nil)
+	return records
+}
+
+// stateRowDue is the next_at of the one outbox row of kind on project's state lane, whose issue
+// column is the bare project key.
+func stateRowDue(t *testing.T, tx pgx.Tx, kind OutboxKind, project string) time.Time {
+	t.Helper()
+	var due time.Time
+	must(t, tx.QueryRow(context.Background(), `select next_at from outbox where kind = $1 and issue = $2`, string(kind), project).Scan(&due))
+	return due
+}
+
+// clockSlotted records ACME-7 holding slot 0 through a store built with the clock whose state
+// events are off, so it queues no state row of its own.
+func clockSlotted(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	ctx := context.Background()
+	records := NewStoreWithClock(clockAt)
+	must(t, records.PutIssue(ctx, tx, clockIssue("ACME-7")))
+	must(t, records.PutSlot(ctx, tx, Slot{Issue: "ACME-7", Index: 0, AdmittedAt: clockTime}))
+}
+
+// An issue's first write with the state events on queues its state change due at the store's
+// clock.
+func checkIssueStateDue(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		must(t, publishingClockStore().PutIssue(context.Background(), tx, clockIssue("ACME-7")))
+		wantClock(t, "the issue's state change's next_at", stateRowDue(t, tx, OutboxKindStateChange, "ACME"))
+	})
+}
+
+// A slot's grant with the state events on queues its state change due at the store's clock.
+func checkSlotGrantStateDue(t *testing.T) {
+	ctx := context.Background()
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		must(t, NewStoreWithClock(clockAt).PutIssue(ctx, tx, clockIssue("ACME-7")))
+		must(t, publishingClockStore().PutSlot(ctx, tx, Slot{Issue: "ACME-7", Index: 0, AdmittedAt: clockTime}))
+		wantClock(t, "the slot grant's state change's next_at", stateRowDue(t, tx, OutboxKindStateChange, "ACME"))
+	})
+}
+
+// A slot's release with the state events on queues its state change due at the store's clock.
+func checkSlotReleaseStateDue(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		clockSlotted(t, tx)
+		must(t, publishingClockStore().ReleaseSlot(context.Background(), tx, "ACME-7"))
+		wantClock(t, "the slot release's state change's next_at", stateRowDue(t, tx, OutboxKindStateChange, "ACME"))
+	})
+}
+
+// A slot's release for a wait with the state events on queues its state change due at the store's
+// clock.
+func checkSlotWaitReleaseStateDue(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		clockSlotted(t, tx)
+		must(t, publishingClockStore().ReleaseSlotForWait(context.Background(), tx, "ACME-7", clockTime))
+		wantClock(t, "the wait release's state change's next_at", stateRowDue(t, tx, OutboxKindStateChange, "ACME"))
+	})
+}
+
+// The release of a tree's slots with the state events on queues each slot's state change due at
+// the store's clock.
+func checkTreeSlotsReleaseStateDue(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		clockSlotted(t, tx)
+		released, err := publishingClockStore().ReleaseTreeSlots(context.Background(), tx, "ACME-7")
+		must(t, err)
+		if len(released) != 1 {
+			t.Fatalf("the tree's release took the slots of %v, want ACME-7's alone", released)
+		}
+		wantClock(t, "the tree release's state change's next_at", stateRowDue(t, tx, OutboxKindStateChange, "ACME"))
+	})
+}
+
+// A project's admission block written with the state events on queues its state event due at the
+// store's clock.
+func checkAdmissionBlockDue(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		queued, err := publishingClockStore().QueueAdmissionBlock(context.Background(), tx, "ACME", AdmissionBlock{Cap: 1})
+		must(t, err)
+		if !queued {
+			t.Fatal("the block queued no state event, though ACME had no block stored")
+		}
+		wantClock(t, "the admission block's state event's next_at", stateRowDue(t, tx, OutboxKindStateAdmission, "ACME"))
+	})
 }
