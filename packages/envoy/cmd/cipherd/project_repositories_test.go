@@ -23,6 +23,10 @@ import (
 // PRIV.
 const edgeListenerAccount = "system:serviceaccount:example-ns:example-edge-listener"
 
+// edgeGoogleAccount is the Google service account BROKER_NATS_SERVICES lists as the edge listener
+// of PRIV on a VM.
+const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
+
 // TestTheBrokerBinaryRelaysAnEdgeListenersRepositories: the edge listener BROKER_NATS_SERVICES
 // lists for PRIV is answered PRIV's list as the Dispatch at BROKER_PROJECT_ACCESS_URL answers it,
 // presenting the bearer of BROKER_PROJECT_ACCESS_TOKEN_FILE (the stand-in refuses any other, which
@@ -82,7 +86,6 @@ func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
 // verifier through its own boot, and answers that edge listener's identity token PRIV's list; a
 // Google account no entry names is 403 NOT_AN_EDGE_LISTENER.
 func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
-	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
 	rig := newEdgeRig(t)
@@ -90,23 +93,40 @@ func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
 		"BROKER_NATS_SERVICES=edge-listener/edge-g/PRIV=google:" + edgeGoogleAccount,
 		"BROKER_GOOGLE_OIDC_ISSUER=" + google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE=" + machineAudience,
 	})}).Addr)
-	identity := func(account string) string {
-		t.Helper()
-		claims := google.Claims(account, machineAudience)
-		claims["email"] = account
-		claims["email_verified"] = true
-		claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
-		return google.Mint(t, googleKey, claims)
-	}
-	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", identity(edgeGoogleAccount), "", "")
+	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", edgeIdentityToken(t, google, googleKey, edgeGoogleAccount), "", "")
 	requirePRIVsRepositories(t, "the Google edge listener of PRIV", status, answer)
-	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", identity("example-stranger@example-project.iam.gserviceaccount.com"), "", "")
+	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", edgeIdentityToken(t, google, googleKey, "example-stranger@example-project.iam.gserviceaccount.com"), "", "")
 	if status != http.StatusForbidden || answer["code"] != "NOT_AN_EDGE_LISTENER" {
 		t.Fatalf("a Google account no entry names was answered %d %v, want 403 NOT_AN_EDGE_LISTENER", status, answer)
 	}
 	if calls := rig.dispatch.Calls(); calls != 1 {
 		t.Fatalf("Dispatch was asked %d times, want 1", calls)
 	}
+}
+
+// TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList: the broker of
+// TestTheBrokerBinaryAnswersAGoogleEdgeListener, with a Kubernetes edge listener's entry beside
+// the Google one and BROKER_K8S_OIDC_AUDIENCE listing two audiences. The Kubernetes edge listener's
+// token of the second listed audience is answered PRIV's list, and so is the Google edge
+// listener's identity token: the list's verifier finds that token of another issuer
+// (oidc.ErrIssuer), which is the one answer on which the broker hands a token on to its Google
+// verifier, as it does beside one audience.
+func TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList(t *testing.T) {
+	google := oidctest.New(t)
+	googleKey := google.PublishKey(t, "google-key")
+	rig := newEdgeRig(t)
+	live := newPlainBroker(startBroker(t, brokerOptions{Env: rig.env(rig.access, []string{
+		// After the rig's own, one audience: os/exec keeps the last copy of a variable.
+		"BROKER_K8S_OIDC_AUDIENCE=" + podAudienceList,
+		"BROKER_NATS_SERVICES=edge-listener/edge-g/PRIV=google:" + edgeGoogleAccount + " edge-listener/edge-a/PRIV=" + edgeListenerAccount,
+		"BROKER_GOOGLE_OIDC_ISSUER=" + google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE=" + machineAudience,
+	})}).Addr)
+	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
+		clusterToken(t, rig.cluster, rig.key, edgeListenerAccount, podAudienceOld, "", false), "", "")
+	requirePRIVsRepositories(t, "the Kubernetes edge listener of PRIV, with its token of the second listed audience", status, answer)
+	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
+		edgeIdentityToken(t, google, googleKey, edgeGoogleAccount), "", "")
+	requirePRIVsRepositories(t, "the Google edge listener of PRIV", status, answer)
 }
 
 // requirePRIVsRepositories fails unless the answer is 200 about PRIV with its list, acme/pub and
@@ -117,6 +137,20 @@ func requirePRIVsRepositories(t *testing.T, who string, status int, answer map[s
 	if status != http.StatusOK || answer["project"] != "PRIV" || len(repositories) != 2 || repositories[0] != "acme/pub" || repositories[1] != "acme/two" {
 		t.Fatalf("%s: answered %d %v, want 200 about PRIV with acme/pub and acme/two", who, status, answer)
 	}
+}
+
+// edgeIdentityToken is the Google identity token an edge listener on a VM presents as account,
+// minted for the broker's machine audience with its address verified. It was issued five seconds
+// ago, so it lives about an hour and five seconds from its issue, well inside the hour and the
+// proof skew the broker allows an identity token; the iat of oidctest's Claims, a minute ago,
+// would put it on that bound.
+func edgeIdentityToken(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, account string) string {
+	t.Helper()
+	claims := google.Claims(account, machineAudience)
+	claims["email"] = account
+	claims["email_verified"] = true
+	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
+	return google.Mint(t, key, claims)
 }
 
 // edgeRig is what the brokers of these tests read: a stand-in of Dispatch's access routes where

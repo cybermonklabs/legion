@@ -67,7 +67,15 @@ fi
 src=$root/packages/$package
 manifest=$src/package.json
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
-trap 'rm -rf "$work"' EXIT
+# cleanup is the EXIT trap. It keeps the run's status: a stage it cannot remove (a copied
+# directory without owner write, say) must not turn a pack that succeeded into a failure, which
+# every caller would read as a failed pack.
+cleanup() {
+  local st=$?
+  rm -rf "$work" || true
+  exit "$st"
+}
+trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
