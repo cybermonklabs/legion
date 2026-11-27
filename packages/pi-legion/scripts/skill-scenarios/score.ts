@@ -4033,7 +4033,6 @@ function forwardClauses(
         ),
         clause("b", goalCheck || (moved.length === 0 && !failedRetro), goalCheck ? `the goal check's return: ${reasons(moved).join(" | ")}` : backEvidence),
         clause("c", goalCheck || (completed.length > 0 && later), `${completed.length} completions, phase ${record.phase}`),
-        m,
       ];
       break;
     case "merge-defect":
