@@ -147,7 +147,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[4] }
   ),
   ...answers(
-    "Margin | MarginSheet | conditional | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
+    "Margin | MarginSheet | conditional | <div hidden={!isCompactViewport && !columnShown}>",
     { reason: REASONS[4] },
     { reason: REASONS[5] }
   ),
@@ -294,10 +294,9 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[12] }
   ),
   ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),
-  ...answers(
-    "Margin | MarginSheet | form | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
-    { reason: REASONS[4] }
-  ),
+  ...answers("Margin | MarginSheet | form | <div hidden={!isCompactViewport && !columnShown}>", {
+    reason: REASONS[4],
+  }),
   ...answers("Margin | MarginSheet | form | if (!isCompactViewport && !hasMargin) return …", {
     reason: REASONS[5],
   }),
@@ -329,7 +328,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers("Margin | - | form | (railShown) ? …", { reason: REASONS[4] }),
-  ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
+  ...answers("Margin | - | form | !isCompactViewport && …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
   ...answers(
