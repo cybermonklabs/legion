@@ -70,12 +70,6 @@ type childrenHold struct {
 	// that worked that phase (record.PhaseEnded, its Claim): the worker the admission pass stops in
 	// the middle of its phase, and "" for a move the transition's guard holds.
 	Ended claim.Role
-	// EndedClaim is the claim of the agent that worked Ended's phase, read once by the admission
-	// pass's stop before anything of the move is written (StopForChildren, workerClaim), and named
-	// by both rows of that move: the retirement of its task and its phase-ended message. A row
-	// resolved when it runs would reach whichever agent a later entry of the role's step names by
-	// then. It is "" where Ended is "".
-	EndedClaim claim.Token
 	// Back is the phase the return starts for Start where the pull request has not merged
 	// (record.ReturnStep on the walk of the issue's run), which the notice names; the move fills
 	// it (awaitChildren), and "" reads as Start.
@@ -142,6 +136,18 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 			issue.Key, hold.Start, len(hold.Task), hold.Cause, len(hold.Open))
 	}
 	_, hold.Back, _ = w.returnPlace(hold.Start)
+	// The role whose phase the move ends is told so on the topic of the agent that worked it, read
+	// before anything of the move is written (workerClaim), as the transition reads a phase-ended
+	// row's claim before its start writes the next step's agent: a row resolved when it runs would
+	// reach whichever agent a later entry of the role's step names by then.
+	var endedWorker claim.Token
+	if hold.Ended != "" {
+		worker, err := e.workerClaim(ctx, tx, issue, hold.Ended)
+		if err != nil {
+			return err
+		}
+		endedWorker = worker
+	}
 	from, now := issue.Phase, e.now()
 	reason := childrenWaitReason(issue.Key, hold)
 	status := PhaseStatus(phase.AwaitingChildren)
@@ -199,7 +205,7 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if hold.Ended == "" {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, Claim: hold.EndedClaim, From: from, To: phase.AwaitingChildren, Reason: reason,
+	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, Claim: endedWorker, From: from, To: phase.AwaitingChildren, Reason: reason,
 		MergeForward: dropped})
 }
 
@@ -450,14 +456,8 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		if undeliveredStart(issue, owed) {
 			hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
 		} else {
-			// The stopped worker is read once, before anything of the move is written, and both rows
-			// of the move name it: this retirement and the phase-ended message (EndedClaim).
-			worker, err := e.workerClaim(ctx, tx, issue, role)
-			if err != nil {
-				return false, err
-			}
-			hold.Cause, hold.Ended, hold.EndedClaim = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role, worker
-			if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role, Claim: worker,
+			hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
+			if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
 				Generation: issue.Generation, Phase: issue.Phase, Entry: entry.Entry}); err != nil {
 				return false, err
 			}

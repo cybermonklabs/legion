@@ -170,11 +170,17 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 			roleList(), op.invalidRole))
 		return claimTarget{}, false
 	}
-	// The claim the body names is judged by its form here, with the body's other fields: that form
-	// reads nothing of any claim. The record is read only below the controller's grant.
+	worker, err := s.workerToken(r.Context(), req.Issue, role)
+	if err != nil {
+		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
+		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
+		return claimTarget{}, false
+	}
+	token := worker
 	if req.Claim != "" {
-		_, agent, cut := claim.Token(req.Claim).Cut()
-		if of, err := claim.AgentToken(s.project, req.Issue, agent); !cut || err != nil || of != claim.Token(req.Claim) {
+		token = claim.Token(req.Claim)
+		_, agent, cut := token.Cut()
+		if of, err := claim.AgentToken(s.project, req.Issue, agent); !cut || err != nil || of != token {
 			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_CLAIM", fmt.Sprintf(
 				"claim %s is no claim of %s: name the token of an agent of the issue, as a notice names it, or leave claim out to reach the claim that works the %s's step",
 				req.Claim, req.Issue, role))
@@ -188,16 +194,6 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 	if !grant.Controller {
 		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", op.name+" requires a controller grant")
 		return claimTarget{}, false
-	}
-	worker, err := s.workerToken(r.Context(), req.Issue, role)
-	if err != nil {
-		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
-		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
-		return claimTarget{}, false
-	}
-	token := worker
-	if req.Claim != "" {
-		token = claim.Token(req.Claim)
 	}
 	by := supervise.SuspendedByController
 	m, supervised := s.supervisor.Machine(token)
