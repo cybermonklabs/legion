@@ -153,8 +153,9 @@ const recordedClients = new WeakSet<QueryClient>();
  *  sets its reason and each success removes it, as the query takes them, so the reason kept is the
  *  latest failure's whichever views were mounted when it came. One listener per client, never
  *  removed: the client's cache holds it, so it lives as long as the client. The shell's poller and
- *  each registry view install it, so a page or a case without the poller has it too; a failure
- *  the query already holds when the listener is installed is kept as well. */
+ *  each view that reads the reason (`useAgentListFailure`: each registry view and each `useAgents`
+ *  caller) install it, so a page or a case without the poller has it too; a failure the query
+ *  already holds when the listener is installed is kept as well. */
 function recordFailures(client: QueryClient): void {
   if (recordedClients.has(client)) return;
   recordedClients.add(client);
@@ -176,6 +177,16 @@ function recordFailures(client: QueryClient): void {
 function keptFailure(client: QueryClient): Error | undefined {
   const query = client.getQueryCache().get(AGENT_LIST_HASH);
   return query === undefined ? undefined : failures.get(query);
+}
+
+/** Why the agent list's latest failed read failed, for a reader of the list whose query holds
+ *  `error` now: that error, else - while a later read is out and the query holds none - the reason
+ *  the reader's client keeps (`recordFailures`), until a read of the list succeeds. Every view of
+ *  the list reads the reason here, so each names the same one throughout. */
+export function useAgentListFailure(error: Error | null): Error | undefined {
+  const client = useQueryClient();
+  useEffect(() => recordFailures(client), [client]);
+  return error ?? keptFailure(client);
 }
 
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
@@ -246,13 +257,9 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   const isError = !known && errorUpdateCount > 0;
   // Why that failure came, which the query clears while its next read is out although the failure
   // still stands: a view that says what it could not check names the same reason throughout, and
-  // never Envoy as unreachable while it is the agent list refilling. This render reads the failure
-  // and writes nothing; the client's cache keeps it with the query (`recordFailures`) until a read
-  // of that query succeeds, for a view that mounts or draws while a later read is out and sees no
-  // error of its own.
-  const client = useQueryClient();
-  useEffect(() => recordFailures(client), [client]);
-  const refilling = isError && isAgentListRefilling(error ?? keptFailure(client));
+  // never Envoy as unreachable while it is the agent list refilling (`useAgentListFailure`).
+  const failure = useAgentListFailure(error);
+  const refilling = isError && isAgentListRefilling(failure);
   return useMemo(
     () => ({
       isError,
