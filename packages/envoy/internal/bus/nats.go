@@ -17,6 +17,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -63,8 +64,8 @@ type connectOpts struct {
 	logger          *slog.Logger
 	keeperStepGuard time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
-	// reports, startClock the clock that start reads and waits on (WithStartClock; wallStartClock
-	// by default), and startCheck WithStartCheck's check.
+	// reports, startClock the clock that start reads and waits on (WithStartClock; clock.Real by
+	// default), and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
 	credentialRefused  func(error)
 	credentialAdmitted func()
@@ -97,7 +98,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: wallStartClock}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: clock.Real()}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -355,14 +356,15 @@ func WithCredentialWait(bound time.Duration, refused func(error), admitted func(
 }
 
 // WithStartClock replaces the clock that WithCredentialWait's start reads its bound by and waits
-// on, the process's (wallStartClock), with now and sleep: each wait after a refusal, and after a
-// dial that failed otherwise, is one call of sleep (waitOutCredentialRefusals). A test of a program
-// that connects through this package takes it to read each wait the start asks for, and to move
-// the start's time past it without waiting it out; the schedule itself is this package's, and a
-// try takes on that clock only what sleep moves it. It is exported for those tests, as
-// WithKeepInterval is: no deployment sets it, and no caller outside a test may.
-func WithStartClock(now func() time.Time, sleep func(time.Duration)) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.startClock = startClock{now: now, sleep: sleep} })
+// on, the process's (clock.Real), with c: each wait after a refusal, and after a dial that failed
+// otherwise, is one wait on c's After (waitOutCredentialRefusals). A test of a program that
+// connects through this package hands it a clocktest.Fake, which reports each wait the start arms
+// (Armed), so the test reads the wait the start asks for and moves the start's time past it
+// without waiting it out; the schedule itself is this package's, and a try takes on that clock
+// only what the test moves it. It is exported for those tests, as WithKeepInterval is: no
+// deployment sets it, and no caller outside a test may.
+func WithStartClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.startClock = c })
 }
 
 // WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)

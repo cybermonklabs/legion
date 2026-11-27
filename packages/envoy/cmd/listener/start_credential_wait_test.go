@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -125,7 +126,7 @@ func probe(t *testing.T, base, path string) (int, map[string]any) {
 }
 
 // startOutcome is what one run of the listener's start returned, and when: at on the wall clock,
-// took on the start's own (natsStart.now), from its first try.
+// took on the start's own (natsStart.clock), from its first try.
 type startOutcome struct {
 	client *bus.Client
 	err    error
@@ -166,13 +167,19 @@ func newListenerStartRun(t *testing.T) *listenerStartRun {
 }
 
 // begin starts the run: the listener's start over cfg, as an edge listener of edge's grant when
-// edge is not nil, reporting to start.
-func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *natsStart) {
+// edge is not nil, reporting to start, on a goroutine of held's (goStart) when the start's clock is
+// held (heldStart), held nil when it runs on the wall clock.
+func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *natsStart, held *heldWaits) {
 	r.began = time.Now()
-	go func() {
+	run := func() {
 		client, err := connectListenerBus(cfg, edge, start)
-		r.outcome <- startOutcome{client: client, err: err, at: time.Now(), took: start.now().Sub(start.began)}
-	}()
+		r.outcome <- startOutcome{client: client, err: err, at: time.Now(), took: start.clock.Now().Sub(start.began)}
+	}
+	if held == nil {
+		go run()
+		return
+	}
+	held.goStart(run)
 }
 
 // await waits for the start's outcome until the test-local watchdog, watchdog after the run began,
@@ -199,9 +206,9 @@ func (r *listenerStartRun) settle(t *testing.T, got startOutcome) {
 	}
 }
 
-// next answers the next wait the start asks clock for, its start's heldClock, or, when the start
+// next answers the next wait the start asks clock for, its start's held clock, or, when the start
 // returns first, its outcome (heldNext).
-func (r *listenerStartRun) next(t *testing.T, clock *heldClock) (*heldWait, *startOutcome) {
+func (r *listenerStartRun) next(t *testing.T, clock *heldWaits) (*heldWait, *startOutcome) {
 	t.Helper()
 	w, got, returned := heldNext(t, clock, r.outcome, "the listener's start")
 	if !returned {
@@ -216,7 +223,7 @@ func (r *listenerStartRun) next(t *testing.T, clock *heldClock) (*heldWait, *sta
 // start asked for, that one last. Before it lets a wait end, and before it answers the one it
 // holds, it calls each with the wait's place among them, when each is not nil. It fails the test
 // when the start returns first: every case holds the start's credential refused until mark.
-func (r *listenerStartRun) waitsUntil(t *testing.T, clock *heldClock, mark time.Duration, each func(i int, w *heldWait)) (*heldWait, []time.Duration) {
+func (r *listenerStartRun) waitsUntil(t *testing.T, clock *heldWaits, mark time.Duration, each func(i int, w *heldWait)) (*heldWait, []time.Duration) {
 	t.Helper()
 	var waits []time.Duration
 	for {
@@ -239,7 +246,7 @@ func (r *listenerStartRun) waitsUntil(t *testing.T, clock *heldClock, mark time.
 // answers its outcome and those waits. It fails the test when the start's clock would read past
 // watchdog, counted from its first try, before the start has returned: a wait that would end past
 // it, or a return past it, as a wait the test let end before it called finish can carry the start.
-func (r *listenerStartRun) finish(t *testing.T, clock *heldClock, watchdog time.Duration) (startOutcome, []time.Duration) {
+func (r *listenerStartRun) finish(t *testing.T, clock *heldWaits, watchdog time.Duration) (startOutcome, []time.Duration) {
 	t.Helper()
 	var waits []time.Duration
 	for {
@@ -261,7 +268,7 @@ func (r *listenerStartRun) finish(t *testing.T, clock *heldClock, watchdog time.
 // untilLogged waits until records holds a record matching holds, and answers it, failing the test,
 // naming what it waited for, when the start returns or asks clock for a wait first, or when
 // heldStepWatchdog passes.
-func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, clock *heldClock, what string, holds func(slog.Record) bool) slog.Record {
+func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, clock *heldWaits, what string, holds func(slog.Record) bool) slog.Record {
 	t.Helper()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
@@ -272,12 +279,13 @@ func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, 
 				return record
 			}
 		}
+		if w := clock.armed(); w != nil {
+			t.Fatalf("the listener's start asked for a wait of %s at %s on its clock, before a log line showed %s", w.wait, w.at, what)
+		}
 		select {
 		case got := <-r.outcome:
 			r.settle(t, got)
 			t.Fatalf("the listener's start returned %s after its first try, before a log line showed %s: error %v", got.at.Sub(r.began), what, got.err)
-		case w := <-clock.waits:
-			t.Fatalf("the listener's start asked for a wait of %s at %s on its clock, before a log line showed %s", w.wait, w.at, what)
 		case <-deadline:
 			t.Fatalf("watchdog: no log line showed %s within %s", what, heldStepWatchdog)
 		case <-tick.C:
@@ -286,79 +294,95 @@ func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, 
 }
 
 // heldStepWatchdog bounds each wait of a test on a step of a start whose waits are held
-// (heldClock): a try of the start, which takes milliseconds against a server on this host and
+// (heldStart): a try of the start, which takes milliseconds against a server on this host and
 // waits on nothing on the wall clock but its dial (connectTimeout, 5 s) and its reads. It bites
 // only on a hang.
 const heldStepWatchdog = time.Minute
 
-// heldClock is a start's clock (heldStart) that moves only as the test lets the start's waits end:
-// it reads its first reading plus every wait that has ended, so a try takes no time on it. Each
-// wait the start asks for (sleep) reaches the test on waits and holds the start until the test
-// ends it (heldWait.end). A test so reads the exact wait the production schedule asks for, and
-// does what one of its offsets calls for, a reload of the server, while the start waits across
-// that offset on its clock, with no wait on the wall clock. Once the test has ended, every wait
-// ends at once (freed), so a start the test stopped following runs to its end on its own.
-type heldClock struct {
-	origin time.Time
-	waits  chan *heldWait
-	freed  chan struct{}
+// heldOrigin is where the clock of every held start begins (heldStart), the reading of the
+// start's first try, from which a held test counts each reading.
+var heldOrigin = time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
 
-	mu      sync.Mutex
-	elapsed time.Duration
+// heldWaits is a held start's clock and the goroutines a test runs the start's connects on. The
+// clock is a clocktest.Fake that only the test moves, so a try takes no time on it, and each wait
+// the start asks for is a timer the fake reports armed (Armed), on which the start waits until the
+// test moves the fake to its deadline (heldWait.end). A test so reads the exact wait the production
+// schedule asks for, and does what one of its offsets calls for, a reload of the server, while the
+// start waits across that offset on its clock, with no wait on the wall clock. The goroutines are
+// counted (goStart), and once the test has ended its release moves the fake past each wait they arm
+// until every one has returned: a start the test stopped following, as a test that failed mid-run
+// does, runs to its end and leaves no goroutine waiting on the clock.
+type heldWaits struct {
+	fake    *clocktest.Fake
+	running sync.WaitGroup
 }
 
-// newHeldClock is a heldClock that frees its waits when t ends, before the cleanups t registered
-// earlier run: the servers' stops, and the drain of a listenerStartRun.
-func newHeldClock(t *testing.T) *heldClock {
-	t.Helper()
-	clock := &heldClock{origin: time.Now(), waits: make(chan *heldWait), freed: make(chan struct{})}
-	t.Cleanup(func() { close(clock.freed) })
-	return clock
+// since is the clock's reading, counted from heldOrigin.
+func (h *heldWaits) since() time.Duration { return h.fake.Now().Sub(heldOrigin) }
+
+// goStart runs f, a connect of the held start, on a goroutine of its own, which the release waits
+// for once the test has ended.
+func (h *heldWaits) goStart(f func()) {
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		f()
+	}()
 }
 
-// since is the clock's reading, counted from its first.
-func (c *heldClock) since() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.elapsed
-}
-
-// now is the clock's reading as a time, for the start (natsStart.now, bus.WithStartClock).
-func (c *heldClock) now() time.Time { return c.origin.Add(c.since()) }
-
-// sleep is the start's wait (bus.WithStartClock): it hands the test the wait and returns once the
-// test has ended it, or at once when the clock is freed.
-func (c *heldClock) sleep(wait time.Duration) {
-	w := &heldWait{at: c.since(), wait: wait, clock: c, ended: make(chan struct{})}
-	select {
-	case c.waits <- w:
-		select {
-		case <-w.ended:
-		case <-c.freed:
-		}
-	case <-c.freed:
+// armed is the wait the start has asked for and the test has not ended, the earliest when it
+// asked for more than one, or nil when it waits on none.
+func (h *heldWaits) armed() *heldWait {
+	now, armed := h.fake.Now(), h.fake.Armed()
+	if len(armed) == 0 {
+		return nil
 	}
-	w.end()
+	return &heldWait{at: now.Sub(heldOrigin), wait: armed[0].Sub(now), fake: h.fake, deadline: armed[0]}
 }
 
-// heldWait is a wait the start asked its heldClock for: at, the clock's reading then, counted from
-// its first, and wait, what the start asked for.
+// release moves the fake to each wait the test's goroutines on the start arm, earliest first,
+// until every one of them has returned (goStart). A start that waits out refusals then ends at its
+// bound on the fake, and one whose dials fail otherwise after its ten tries, each within
+// milliseconds of the wall clock once nothing holds its waits. heldStart registers it after the
+// test's servers, so it runs before they stop. It fails the test when a goroutine still runs
+// startDrainBound after the test ended.
+func (h *heldWaits) release(t *testing.T) {
+	returned := make(chan struct{})
+	go func() {
+		h.running.Wait()
+		close(returned)
+	}()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	bound := time.After(startDrainBound)
+	for {
+		h.fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return now, false
+			}
+			return armed[0], true
+		})
+		select {
+		case <-returned:
+			return
+		case <-bound:
+			t.Errorf("a connect of the held start still ran %s after the test ended, with waits %v armed on its clock", startDrainBound, h.fake.Armed())
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// heldWait is a wait the start asked its held clock for: at, the clock's reading then, counted from
+// heldOrigin, and wait, what the start asked for, which ends at deadline on the fake.
 type heldWait struct {
 	at, wait time.Duration
-	clock    *heldClock
-	once     sync.Once
-	ended    chan struct{}
+	fake     *clocktest.Fake
+	deadline time.Time
 }
 
-// end moves the clock on by the wait and lets the start go on, once.
-func (w *heldWait) end() {
-	w.once.Do(func() {
-		w.clock.mu.Lock()
-		w.clock.elapsed += w.wait
-		w.clock.mu.Unlock()
-		close(w.ended)
-	})
-}
+// end moves the fake to the wait's deadline, which ends the wait and lets the start go on.
+func (w *heldWait) end() { w.fake.Set(w.deadline) }
 
 // endsPast reports whether the wait ends past mark on its clock: whether the moment mark names
 // falls inside it, or before it, as a moment the start waits across.
@@ -367,25 +391,32 @@ func (w *heldWait) endsPast(mark time.Duration) bool { return w.at+w.wait > mark
 // heldNext answers the next wait the start asks clock for, or what returned receives when the
 // start returns first (returnedFirst). It fails the test, naming what it waited on, when neither
 // comes within heldStepWatchdog.
-func heldNext[T any](t *testing.T, clock *heldClock, returned <-chan T, what string) (w *heldWait, got T, returnedFirst bool) {
+func heldNext[T any](t *testing.T, clock *heldWaits, returned <-chan T, what string) (w *heldWait, got T, returnedFirst bool) {
 	t.Helper()
-	select {
-	case w = <-clock.waits:
-		return w, got, false
-	case got = <-returned:
-		return nil, got, true
-	case <-time.After(heldStepWatchdog):
-		t.Fatalf("watchdog: %s neither asked for a wait nor returned within %s, at %s on its clock", what, heldStepWatchdog, clock.since())
-		return nil, got, false
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(heldStepWatchdog)
+	for {
+		if w = clock.armed(); w != nil {
+			return w, got, false
+		}
+		select {
+		case got = <-returned:
+			return nil, got, true
+		case <-deadline:
+			t.Fatalf("watchdog: %s neither asked for a wait nor returned within %s, at %s on its clock", what, heldStepWatchdog, clock.since())
+			return nil, got, false
+		case <-tick.C:
+		}
 	}
 }
 
 // heldFinish lets each further wait the start asks clock for end at once until returned receives,
 // and answers what it received and those waits. It fails the test, naming what it waited on, when
-// the start's clock would read past by, a reading counted from the clock's first, before returned
+// the start's clock would read past by, a reading counted from heldOrigin, before returned
 // receives: a wait that would end past it, or a return past it, as a wait the test let end before
 // it called heldFinish can carry the start.
-func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what string, by time.Duration) (T, []time.Duration) {
+func heldFinish[T any](t *testing.T, clock *heldWaits, returned <-chan T, what string, by time.Duration) (T, []time.Duration) {
 	t.Helper()
 	var waits []time.Duration
 	for {
@@ -405,16 +436,19 @@ func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what s
 }
 
 // heldStart is the listener's start as main makes it (newNATSStart, with listenerCredentialWait),
-// on a clock of the test's (heldClock), whose connects also read their nkey seed, seed, from an
-// environment of their own (testnats.SeedOnly, bus.WithEnvironment) and not from the process's,
-// which only a test that runs alone may change. A test of the start so runs beside the others, and
-// none of its waits takes time on the wall clock.
-func heldStart(t *testing.T, seed string) (*natsStart, *heldClock) {
+// on a clocktest.Fake (heldWaits) that the start counts its bound by and each of its connects waits
+// on (bus.WithStartClock), and whose connects also read their nkey seed, seed, from an environment
+// of their own (testnats.SeedOnly, bus.WithEnvironment) and not from the process's, which only a
+// test that runs alone may change. A test of the start so runs beside the others, and none of its
+// waits takes time on the wall clock. It registers the release of the clock's waits (heldWaits)
+// as a cleanup, so it runs before the cleanups the test registered earlier: its servers' stops.
+func heldStart(t *testing.T, seed string) (*natsStart, *heldWaits) {
 	t.Helper()
-	clock := newHeldClock(t)
+	clock := &heldWaits{fake: clocktest.New(heldOrigin)}
+	t.Cleanup(func() { clock.release(t) })
 	start := newNATSStart(listenerCredentialWait)
-	start.now = clock.now
-	start.extra = append(start.extra, bus.WithEnvironment(testnats.SeedOnly(seed)), bus.WithStartClock(clock.now, clock.sleep))
+	start.clock = clock.fake
+	start.extra = append(start.extra, bus.WithEnvironment(testnats.SeedOnly(seed)), bus.WithStartClock(clock.fake))
 	return start, clock
 }
 
@@ -540,7 +574,7 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 				t.Fatalf("/healthz before the start = %d %v, want main's 200 starting", status, fields)
 			}
 
-			run.begin(config.Service{MachineID: "start-credential-wait", NATSURLs: []string{uri}, NATSReplicas: 1}, nil, start)
+			run.begin(config.Service{MachineID: "start-credential-wait", NATSURLs: []string{uri}, NATSReplicas: 1}, nil, start, clock)
 			held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
 				awaitClosedTries(t, server, i+1)
 				if i > 0 {
@@ -640,7 +674,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	start, clock := heldStart(t, rig.seed)
 	base := serveStartRoutes(t, start)
 
-	run.begin(cfg, edge, start)
+	run.begin(cfg, edge, start, clock)
 	held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
 		awaitClosedTries(t, rig.server, i+1)
 		if i > 0 {
@@ -702,7 +736,7 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		start, clock := heldStart(t, rig.seed)
 		base := serveStartRoutes(t, start)
 
-		run.begin(cfg, edge, start)
+		run.begin(cfg, edge, start, clock)
 		held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
 			if i > 0 {
 				return
@@ -760,7 +794,7 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		_, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
 		cfg, edge := edgeStartRun(t, uri)
 		start, clock := heldStart(t, seed)
-		run.begin(cfg, edge, start)
+		run.begin(cfg, edge, start, clock)
 		w, got := run.next(t, clock)
 		if w != nil {
 			t.Fatalf("the edge listener's start on a server with no stream asked for a wait of %s at %s on its clock, want it to end at its first try", w.wait, w.at)
@@ -803,7 +837,7 @@ func TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConne
 	start, clock := heldStart(t, rig.seed)
 	base := serveStartRoutes(t, start)
 
-	run.begin(cfg, edge, start)
+	run.begin(cfg, edge, start, clock)
 	// The connect's read of the deployed subjects has waited out the answer the server dropped, so
 	// the start's read of the stream is next, and meets the same silence.
 	run.untilLogged(t, &records, clock, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
@@ -1014,7 +1048,7 @@ func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
 				}
 			}
 
-			run.begin(config.Service{MachineID: "start-cluster-reload", NATSURLs: []string{forwarder.url()}, NATSReplicas: 1}, nil, start)
+			run.begin(config.Service{MachineID: "start-cluster-reload", NATSURLs: []string{forwarder.url()}, NATSReplicas: 1}, nil, start, clock)
 			pending := row.reloads
 			var got *startOutcome
 			var waits []time.Duration
@@ -1211,7 +1245,7 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 		start := newNATSStart(listenerCredentialWait)
 		cfg := config.Service{MachineID: "start-refused-port", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
 		mains := mainsConnect(cfg.NATSURLs)
-		run.begin(cfg, nil, start)
+		run.begin(cfg, nil, start, nil)
 		got := run.await(t, watchdog)
 		took := got.at.Sub(run.began)
 		if got.err == nil {

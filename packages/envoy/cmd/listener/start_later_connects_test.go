@@ -148,10 +148,10 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 		err  error
 	}
 	returned := make(chan outcome, 1)
-	go func() {
+	clock.goStart(func() {
 		lane, err := startRoleLane(cfg, nil, func(*nats.Msg) {}, nil, metrics.New(), logging.NewWithWriter("test", io.Discard), start)
 		returned <- outcome{lane, err}
-	}()
+	})
 	w, early, first := heldNext(t, clock, returned, "the role lane's step")
 	if first {
 		t.Fatalf("the role lane's step returned before the server admitted its nkey: %v", early.err)
@@ -239,10 +239,11 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			// The main client connects on a goroutine of its own: were it to ask the held clock for
-			// a wait, nothing on the test's goroutine would end it. Its drain is registered first,
-			// so it runs once the clock has freed its waits (heldStart) and the server has stopped,
-			// and it closes a client that connected after the test stopped waiting for it.
+			// The main client connects on a goroutine of its own (goStart): were it to ask the held
+			// clock for a wait, nothing on the test's goroutine would end it. Its drain is registered
+			// first, so it runs once the clock's release has let it return (heldStart) and the server
+			// has stopped, and it closes a client that connected after the test stopped waiting for
+			// it.
 			type connected struct {
 				client *bus.Client
 				err    error
@@ -269,10 +270,10 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			start, clock := heldStart(t, seed)
 			base := serveStartRoutes(t, start)
 			mainBegun = true
-			go func() {
+			clock.goStart(func() {
 				client, err := connectListenerBus(cfg, nil, start)
 				mainClient <- connected{client, err}
-			}()
+			})
 			held, opened, connectedFirst := heldNext(t, clock, mainClient, "the start's main client")
 			if !connectedFirst {
 				t.Fatalf("the start's main client asked for a wait of %s at %s on its clock while the server admitted its nkey, want it to connect at its first try", held.wait, held.at)
@@ -293,10 +294,10 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			}
 			began := clock.since()
 			returned := make(chan outcome, 1)
-			go func() {
+			clock.goStart(func() {
 				closer, err := row.connect(cfg, client, start)
 				returned <- outcome{closer, err}
-			}()
+			})
 			what := row.name + "'s connect"
 			for {
 				w, got, first := heldNext(t, clock, returned, what)

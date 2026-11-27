@@ -71,7 +71,7 @@ func TestACredentialWaitThatMetNoRefusalEndsWithItsLastTrysOwnError(t *testing.T
 	other := errors.New("nats: no servers available for connection")
 	clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
 	tries := 0
-	_, err := waitOutCredentialRefusals(3*time.Second, nil, clock.clock(), func() (*Client, error) {
+	_, err := waitOutCredentialRefusals(3*time.Second, nil, clock, func() (*Client, error) {
 		tries++
 		return nil, other
 	})

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -36,22 +37,25 @@ const listenerCredentialWait = 180 * time.Second
 // wait is the credential wait of the whole start, counted from began, the first connect's first
 // try (options), and refusal the last refusal of the credential a connect is waiting out: nil
 // before the first refusal and from the moment that connect gets in (admitted), whatever the step
-// it belongs to does after. now is the clock the start counts its bound by, and extra the options
-// each of its connects takes after its wait: time.Now and none in main's start (newNATSStart). A
-// test of the start gives it a clock whose waits it holds and the environment its nkey seed is in
-// (heldStart), so the clock reaches each connect's waits too (bus.WithStartClock).
+// it belongs to does after. clock is the clock the start counts its bound by, and extra the
+// options each of its connects takes after its wait: clock.Real and none in main's start
+// (newNATSStart). A test of the start gives it a clocktest.Fake and the environment its nkey seed
+// is in (heldStart), and hands the same fake to each connect (bus.WithStartClock), so it reads and
+// moves past each wait the start asks for.
 type natsStart struct {
 	wait    time.Duration
 	once    sync.Once
 	began   time.Time
 	refusal atomic.Pointer[string]
-	now     func() time.Time
+	clock   clock.Clock
 	extra   []bus.ConnectOption
 }
 
 // newNATSStart is a start that waits out a refusal of the credential for up to wait, on the
 // process's clock.
-func newNATSStart(wait time.Duration) *natsStart { return &natsStart{wait: wait, now: time.Now} }
+func newNATSStart(wait time.Duration) *natsStart {
+	return &natsStart{wait: wait, clock: clock.Real()}
+}
 
 // options are the options each connect of the start takes: what is left of the start's wait,
 // counted from the first connect's first try, which the first call marks, handing each refusal to
@@ -64,8 +68,8 @@ func newNATSStart(wait time.Duration) *natsStart { return &natsStart{wait: wait,
 // dial that fails for another reason than a refusal gets those ten tries whatever is left of the
 // bound.
 func (s *natsStart) options() []bus.ConnectOption {
-	s.once.Do(func() { s.began = s.now() })
-	return append([]bus.ConnectOption{bus.WithCredentialWait(s.wait-s.now().Sub(s.began), s.refused, s.admitted)}, s.extra...)
+	s.once.Do(func() { s.began = s.clock.Now() })
+	return append([]bus.ConnectOption{bus.WithCredentialWait(s.wait-s.clock.Now().Sub(s.began), s.refused, s.admitted)}, s.extra...)
 }
 
 // refused records err as the last refusal of the credential.

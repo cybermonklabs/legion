@@ -38,16 +38,13 @@ type endsStart struct{ err error }
 func (e endsStart) Error() string { return e.err.Error() }
 func (e endsStart) Unwrap() error { return e.err }
 
-// startClock is the clock a start that waits out refusals reads and waits on: wallStartClock, or a
-// test's own (WithStartClock, and this package's fakeStartClock), which moves only as the test
-// moves it.
-type startClock struct {
-	now   func() time.Time
-	sleep func(time.Duration)
+// startClock is the clock a start that waits out refusals reads and waits on: a narrowing of
+// clock.Clock, so clock.Real (the default, parseConnectOptions), a test's clocktest.Fake
+// (WithStartClock) and this package's fakeStartClock each fit it.
+type startClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
 }
-
-// wallStartClock is the process's clock.
-var wallStartClock = startClock{now: time.Now, sleep: time.Sleep}
 
 // startTryLateness is how late past its bound a start that waits out refusals of its credential
 // may begin the try at the bound, the one the wait after a refusal, cut to end at the bound, leads
@@ -82,7 +79,7 @@ const startTryLateness = time.Second
 // due, or zero when the start ends on it at once. A wait that ends past the bound ends the start
 // after refused was told of its wait.
 func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next time.Duration), clock startClock, try func() (*Client, error)) (*Client, error) {
-	end := clock.now().Add(bound)
+	end := clock.Now().Add(bound)
 	retry := credentialRetryFirst
 	var lastRefusal error
 	others := 0
@@ -97,7 +94,7 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 		}
 		if !credentialRefusal(err) {
 			others++
-			clock.sleep(connectRetryWait)
+			<-clock.After(connectRetryWait)
 			if others == connectTries {
 				return nil, withLastRefusal(err, lastRefusal)
 			}
@@ -106,7 +103,7 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 		lastRefusal, others = err, 0
 		next := retry
 		retry = min(retry*2, credentialRetryCap)
-		left := end.Sub(clock.now())
+		left := end.Sub(clock.Now())
 		if left <= 0 {
 			if refused != nil {
 				refused(err, 0)
@@ -118,8 +115,8 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 		if refused != nil {
 			refused(err, next)
 		}
-		clock.sleep(next)
-		if late := clock.now().Sub(end); late > 0 && (!atBound || late > startTryLateness) {
+		<-clock.After(next)
+		if late := clock.Now().Sub(end); late > 0 && (!atBound || late > startTryLateness) {
 			return nil, credentialWaitEnded(bound, err)
 		}
 	}
