@@ -29,6 +29,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue): a message whose p
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({
       event_id: "evt-deep",
@@ -63,6 +64,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue, list): a copy of a
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier: new FakeNotifier(),
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({
       event_id: "evt-again",

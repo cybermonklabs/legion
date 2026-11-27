@@ -1186,16 +1186,16 @@ const textRefusal = (status: number, code: string): Kind => ({
 // status. `storedStatus` keeps no 408 and no 429 under the key (request_keys.go:1473-1475), so such
 // a refusal after a possible landing is no stored answer and the write stays unsettled, where a
 // 400 text refusal is stored and settles as Dispatch's refusal.
-test.each([
-  textRefusal(408, "REQUEST_TIMEOUT"),
-  textRefusal(429, "EDIT_QUEUE_FULL"),
-])("after a gateway page, $name leaves the write unsettled", async (answer) => {
-  const { run, error } = await drive([kind("502 page"), answer]);
+test.each([textRefusal(408, "REQUEST_TIMEOUT"), textRefusal(429, "EDIT_QUEUE_FULL")])(
+  "after a gateway page, $name leaves the write unsettled",
+  async (answer) => {
+    const { run, error } = await drive([kind("502 page"), answer]);
 
-  expect(run.keys).toHaveLength(2);
-  expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-  expect((error as DispatchWriteUnsettledError).key).toBe(run.keys[0] as string);
-});
+    expect(run.keys).toHaveLength(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(run.keys[0] as string);
+  }
+);
 
 test("after a gateway page, a 400 text refusal echoing the key settles as Dispatch's refusal", async () => {
   const { run, error } = await drive([kind("502 page"), textRefusal(400, "INVALID_MARKDOWN")]);

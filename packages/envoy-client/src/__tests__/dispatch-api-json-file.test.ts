@@ -105,30 +105,32 @@ const RUNS = [
 ] as const;
 
 describe("a file version stored as JSON", () => {
-  test.each(
-    RUNS
-  )("its bytes go to standard output unchanged, and it exits 0: %s", async (_, environment) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", DATA_VERSION],
-      environment(broker.url, server.url)
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.stdout).toBe(new TextDecoder().decode(DATA_JSON));
-    expect(ran.bytes).toEqual(DATA_JSON);
-  });
+  test.each(RUNS)(
+    "its bytes go to standard output unchanged, and it exits 0: %s",
+    async (_, environment) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const ran = await dispatch(
+        ["api", "--path", DATA_VERSION],
+        environment(broker.url, server.url)
+      );
+      expect(ran.code, ran.stdout).toBe(0);
+      expect(ran.stdout).toBe(new TextDecoder().decode(DATA_JSON));
+      expect(ran.bytes).toEqual(DATA_JSON);
+    }
+  );
 
-  test.each(
-    RUNS
-  )("a file that holds one JSON string keeps its quotes: %s", async (_, environment) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", `${STRING_VERSION}?download=true`],
-      environment(broker.url, server.url)
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.bytes).toEqual(STRING_JSON);
-  });
+  test.each(RUNS)(
+    "a file that holds one JSON string keeps its quotes: %s",
+    async (_, environment) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const ran = await dispatch(
+        ["api", "--path", `${STRING_VERSION}?download=true`],
+        environment(broker.url, server.url)
+      );
+      expect(ran.code, ran.stdout).toBe(0);
+      expect(ran.bytes).toEqual(STRING_JSON);
+    }
+  );
 });
