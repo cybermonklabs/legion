@@ -1,14 +1,16 @@
 kind: Fixed
 body: |-
     A person's move of an ancestor to retro or done on Dispatch's board ends every step that waits
-    on that ancestor's approval request, in the move's own transaction, whatever the outbox runs
-    first. Before, the end waited for the step's pending-basis seed to read Dispatch, and when the
-    daemon's own status write had put the ancestor back over a person's retro first (a parent's
-    move to awaiting its children, the status repair, or the boot's release of a held parent), the
-    seed read the ancestor's old status and ended nothing: the step waited with no line logged, as
-    a CI run did for 29 minutes. The daemon still writes the ancestor's phase status back over a
-    person's retro, as before. A session's write of retro or done still waits for the seed, since
-    the daemon may set it back. A seed whose read finds nothing new now logs one line saying so.
+    on that ancestor's approval request in the move's own transaction, while the daemon's copy of
+    Dispatch shows the move. Before, when the ancestor was already waiting on its children, the end
+    waited for the step's pending-basis seed to read Dispatch, and the status repair (on its tick,
+    or at boot after a restart) could write the ancestor's phase status back over the person's
+    retro first: the seed then read the old status and ended nothing, and the step waited with no
+    line logged, as a CI run did for 29 minutes. A parent's move to awaiting its children was
+    already covered by an earlier fix. The seed's own reading now follows the copy and takes no
+    status the daemon set back as the ancestor's acceptance. The daemon still writes the ancestor's
+    phase status back over a person's retro, as before. A seed whose read finds nothing new now logs
+    one line saying so.
 time: 2026-11-27T13:02:12Z
 custom:
     Issue: pending-basis-retro-race

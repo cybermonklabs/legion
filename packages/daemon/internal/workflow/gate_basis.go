@@ -323,9 +323,10 @@ const (
 // version the step rests or waits on, and its reason is what (what happened, naming the root and
 // its step) and the ancestor's requirements the root's checks serve (basis.Serves). A
 // registration (tellRegisteredBasis), the end of a pending wait, and a resting root's close or its
-// leaving the workflow each call it with the event it tells; the end of a pending wait that the
-// pending-basis seed's read made calls it through queueRestingEnded, the one caller that tells an
-// ancestor outside a live tree.
+// leaving the workflow each call it with the event it tells; the end of a pending wait that
+// Dispatch's state made (endedByRead: the pending-basis seed's read, or an event of the ancestor's
+// issue while the copy shows it accepted) calls it through queueRestingEnded, the one caller that
+// tells an ancestor outside a live tree.
 //
 // Where the daemon records the ancestor in no live tree (ancestorInLiveTree) it queues nothing
 // and records nothing as told: no architect of the ancestor would hear it, and the ancestor's start
@@ -344,8 +345,8 @@ func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Is
 	return e.tellRestingRoot(ctx, tx, root, step, basis, event, what)
 }
 
-// queueRestingEnded tells the architect of basis's ancestor that the pending-basis seed's read of
-// Dispatch ended root's step's wait on the ancestor's request (pendingBasisRead), as
+// queueRestingEnded tells the architect of basis's ancestor that Dispatch's state ended root's
+// step's wait on the ancestor's request (endedByRead: pendingBasisRead or endPendingOnLeave), as
 // queueRestingRoot tells it, and in one case more (dispatch://INFRA-3320, open-items item 43):
 // the daemon records the ancestor as the root of its own tree, and that tree lingers after its
 // close (record.TreeLingers, asked of the tree the ancestor is the root of, since a linger
@@ -403,7 +404,7 @@ func servesOpening(root, ancestor string) string {
 // ancestorInLiveTree says whether the daemon records key in a live tree: key is recorded, and the
 // root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
 // reaches an architect, and every notice of a root's rest on key asks it (queueRestingRoot,
-// tellBasisChanges) but the end of a pending wait the pending-basis seed's read made, which
+// tellBasisChanges) but the end of a pending wait that Dispatch's state made (endedByRead), which
 // reaches an ancestor root whose tree lingers as well (queueRestingEnded).
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	ancestor, err := e.store.Issue(ctx, tx, key)
@@ -581,10 +582,13 @@ func stepsPhrase(steps []record.DesignStep) string {
 // closed, on the ancestor's open approval request opens or ends that wait on Dispatch's state as
 // Dispatch shows it now, which the step's pending-basis seed reads and the workflow judges by one
 // verdict (pendingBasisRead, judgeBasisRead): each event that can change that state
-// (pendingBasisCue) queues the seed. One event ends the wait itself: an event of the ancestor's
-// issue, not a session's, while the copy of Dispatch shows the ancestor accepted
-// (endPendingOnLeave), which queues no seed. The person's approval of the version, as the latest
-// review of the latest version, opens the step, as a registration on that approval would; a
+// (pendingBasisCue) queues the seed. Three ends happen at an event itself, in its own
+// transaction, and queue no seed: an event of the ancestor's issue, not a session's, while the copy
+// of Dispatch shows the ancestor accepted (endPendingOnLeave); a parent's move to awaiting its
+// children over an accepting status, which ends the waits on it before its write
+// (awaiting_children.go's endsAcceptedBases); and an act on the root's own document (applyArtifact,
+// below). The person's approval of the version, as the latest review of the latest version, opens
+// the step, as a registration on that approval would; a
 // changes request on that version, a newer version of the ancestor's document, the request closed
 // with no approval of that version, and the ancestor leaving R1's first condition end the wait,
 // and so do a newer version or review of the root's own document (applyArtifact) and the daemon's
@@ -867,9 +871,9 @@ func RequestClosed(approval dispatch.Approval, version int, ask string) bool {
 // readBasisLater queues the pending-basis seed of gate, a step of root that waits, closed, on an
 // ancestor's request, for an event that is a cue for it (pendingBasisCue). The seed reads Dispatch,
 // and that read opens or ends the wait (pendingBasisRead), so an event delivered late or replayed
-// is judged by what Dispatch shows when the seed runs. The one event that ends a wait itself is an
-// event of the ancestor's issue while the copy of Dispatch shows the ancestor accepted
-// (endPendingOnLeave), and it queues no seed.
+// is judged by what Dispatch shows when the seed runs. An event of the ancestor's issue while the
+// copy of Dispatch shows the ancestor accepted ends the wait itself instead (endPendingOnLeave),
+// as a parent's move to awaiting_children does (endsAcceptedBases), and queues no seed.
 func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate) error {
 	basis := *gate.Basis
 	e.logOnCommit(ctx, "workflow: an event is a cue for a step waiting on an ancestor's request, so the step's pending-basis seed reads Dispatch",
@@ -1157,50 +1161,41 @@ func (e *Engine) readBasisOnCue(ctx context.Context, tx pgx.Tx, fact intake.Fact
 // endPendingOnLeave ends gates, the steps that wait, closed, on a request of fact's issue, when
 // fact, an event of that issue that shows it leaving R1's first condition, comes while the daemon's
 // copy of Dispatch shows the issue accepted, and answers whether it ended them. It reads the copy
-// alone, with the status test the seed's verdict applies to it first (record.AcceptedStatus, as
-// record.BasisAcceptance does), and ends each wait with the act that verdict names ("Dispatch
-// shows LEGION-100 retro, so LEGION-100 is accepted."), told as that verdict's end is
-// (endedByRead). The daemon's own acceptance of the ancestor, which BasisAcceptance also reads from
-// the record, already ended these waits when the daemon made it (endPendingOn).
+// alone (record.CopyAcceptance) and ends each wait with the act the seed's verdict names for that
+// status ("Dispatch shows LEGION-100 retro, so LEGION-100 is accepted."), told as that verdict's end
+// is (endedByRead). The daemon's own acceptance of the ancestor already ended these waits when the
+// daemon made it (endPendingOn).
 //
 // The copy is the first handler of every fact, so in this transaction it already holds the event's
 // status where the event is the newest reading of the issue; each of its values is the one its
 // newest reading carried (record.DispatchIssueRow). That is the freshness check this end needs,
 // since this handler runs before the engine's sequence fence (dispatchIssue): an event delivered
 // late or replayed, after the issue moved on, finds the copy showing the newer status, ends
-// nothing, and leaves the wait to the seed's read of Dispatch, as before. The record is not read:
-// its Dispatch status can be older than the copy's, since admission writes it only past the
-// record's own sequence fence.
+// nothing, and leaves the wait to the seed, whose verdict reads the same copy first
+// (record.SeedAcceptance). The record's Dispatch status, which can be older than the copy's, is not
+// read by either.
 //
 // It ends nothing on a session's write (intake.DispatchIssue.ActorSession), which the daemon may
-// set back (sessionStatusWrite) later in this transaction: a move the daemon refuses accepts
-// nothing. A person's move and the daemon's own write carry no session, and a session's write
-// stays with the seed, as before.
+// set back (sessionStatusWrite) later in this transaction, and the seed then takes no status the
+// daemon queued a re-assert over as acceptance (record.ReassertedStatuses): a move the daemon
+// refuses accepts nothing. A person's move and the daemon's own write carry no session.
 //
-// Ending here takes the order out of the person's move: the same move's settle can queue a status
-// write of the daemon's own over the ancestor (a parent's move to awaiting_children, or the status
-// repair on its tick), and a seed the outbox ran after that write read the ancestor back in its
-// phase's status, found what the registration's seed had found, and ended nothing; nothing then
-// cued the step again (dispatch://INFRA-3904). A leave by the label alone, which no write of the
-// daemon's own undoes, stays with the seed.
+// Ending here takes the order out of the person's move. The same move, or a later boot or tick,
+// can queue a status write of the daemon's own over the ancestor: the status repair, at boot or on
+// its tick, writes the phase's status over a person's retro the record holds (and the move to
+// awaiting_children, whose waits #3712's endsAcceptedBases ends first). A seed the outbox ran after
+// that write read the ancestor back in its phase's status, found what the registration's seed had
+// found, and ended nothing; nothing then cued the step again (dispatch://INFRA-3904). A leave by
+// the label alone, which no write of the daemon's own undoes, stays with the seed.
 func (e *Engine) endPendingOnLeave(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue, gates []record.DesignGate) (bool, error) {
 	if fact.ActorSession != "" {
 		return false, nil
 	}
-	copied, err := e.store.DispatchIssuesOf(ctx, tx, []string{fact.Key})
-	if err != nil {
-		return false, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", fact.Key, err)
+	shown, _, err := record.CopyAcceptance(ctx, e.store, tx, fact.Key)
+	if err != nil || shown == "" {
+		return false, err
 	}
-	shown := ""
-	for _, row := range copied {
-		if row.Key == fact.Key && record.AcceptedStatus(row.Status) {
-			shown = row.Status
-		}
-	}
-	if shown == "" {
-		return false, nil
-	}
-	act := ancestorLeft(fact.Key, fmt.Sprintf("Dispatch shows %s %s", fact.Key, shown), "", true)
+	act := ancestorLeft(fact.Key, "", shown, true)
 	ended := 0
 	if err := e.eachWaitingRoot(ctx, tx, gates, func(root record.Issue, gate record.DesignGate) error {
 		ended++
@@ -1208,8 +1203,10 @@ func (e *Engine) endPendingOnLeave(ctx context.Context, tx pgx.Tx, fact intake.D
 	}); err != nil {
 		return true, err
 	}
-	e.logOnCommit(ctx, "workflow: an event of an ancestor the copy of Dispatch shows accepted ended the steps waiting on its requests at once",
-		"ancestor", fact.Key, "seq", fact.Seq, "status", fact.Status, "shown", shown, "ended", ended)
+	if ended > 0 {
+		e.logOnCommit(ctx, "workflow: an event of an ancestor the copy of Dispatch shows accepted ended the steps waiting on its requests at once",
+			"ancestor", fact.Key, "seq", fact.Seq, "status", fact.Status, "shown", shown, "ended", ended)
+	}
 	return true, nil
 }
 
@@ -1268,9 +1265,10 @@ func (e *Engine) eachWaitingRoot(ctx context.Context, tx pgx.Tx, gates []record.
 
 // pendingBasisRead applies the pending-basis seed's read of Dispatch for a step waiting on an
 // ancestor's request (intake.PendingBasisRead), the one place that opens such a wait on what
-// Dispatch shows, and one of the two that end it so (the other: an event of the ancestor's issue
-// while the copy of Dispatch shows it accepted, endPendingOnLeave): by the one verdict
-// (judgeBasisRead), it opens the step on the person's approval the read shows (openPendingBasis),
+// Dispatch shows, and one of the ends of such a wait on what Dispatch shows (another: an event of
+// the ancestor's issue while the copy of Dispatch shows it accepted, endPendingOnLeave): by the one
+// verdict (judgeBasisRead), it opens the step on the person's approval the read shows
+// (openPendingBasis),
 // whose place in the ancestor's event log the open step keeps as its approval, so a changes
 // request older than it passes nothing on (BasisChangesRequest); it ends the wait
 // (endPendingBasis), and the end reaches the ancestor's architect even where the ancestor is a
@@ -1301,9 +1299,18 @@ func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.Pe
 		return intake.Result{}, nil
 	}
 	basis := *gate.Basis
-	verdict, err := judgeBasisRead(gate, fact.Read, func() (string, error) {
-		why, _, err := record.BasisAcceptance(ctx, e.store, tx, basis.Issue)
-		return why, err
+	// A status the daemon has queued a re-assert of its own over accepts nothing, as Dispatch's read
+	// of it or as the copy's: the daemon refused that move (sessionStatusWrite).
+	reasserted, err := record.ReassertedStatuses(ctx, e.store, tx, e.cfg.Project, basis.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	read := fact.Read
+	if reasserted[read.Ancestor.Status] {
+		read.Ancestor.Status = ""
+	}
+	verdict, err := judgeBasisRead(gate, read, func() (string, error) {
+		return record.SeedAcceptance(ctx, e.store, tx, basis.Issue, reasserted)
 	})
 	if err != nil {
 		return intake.Result{}, err

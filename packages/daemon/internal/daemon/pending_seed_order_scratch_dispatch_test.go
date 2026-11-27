@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -59,6 +60,15 @@ import (
 // a seed's fact and the wait it ends are one transaction, so once the outbox holds none of R's
 // seeds the outcome is decided, and a wait that did not end is said at once rather than at the
 // test's deadline. The "before" verdict is the wait's end, read while P's status write is held.
+//
+// These three reach P's status write through the move to awaiting_children. Since #3712
+// (da1b3f82), main's awaitChildren ends the waits on P before that write (awaiting_children.go's
+// endsAcceptedBases), so none of the three can fail at main: they are #3712's proofs as much as
+// this change's. The writer main does not cover is the status repair, and the two proofs below
+// it are this change's (TestAPersonsRetroOnAWaitingParentEndsTheWaitBeforeTheStatusRepairsTick
+// and TestAPersonsRetroOnAWaitingParentEndsTheWaitBeforeTheBootsStatusRepair). Both strand R at
+// main with gate_basis.go as main has it (branch control/infra-3904-no-fix-at-main). The
+// independent tester of INFRA-3904 wrote both as probes and measured the boot one there first.
 
 // refuseSignOff writes P into accepting by hand and has its architect's sign-off refused while R
 // waits on P's approval request (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), so P stands at accepting with
@@ -237,4 +247,76 @@ func TestAPersonsRetroWhileTheDaemonIsDownEndsTheWaitAfterTheBoot(t *testing.T) 
 	})
 	r.seedRanAfterStatusWrite(held, run)
 	t.Logf("the person's retro of %s, given while no daemon ran, ended the wait of %s after the boot", run.parent.Key, run.root.Key)
+}
+
+// awaitChildrenByHand writes key's record in awaiting_children, holding its start of accepting for
+// its open child, as awaitChildren writes it (phase, status, the children wait; the task stays where
+// it stood), so a person's retro then moves no phase and awaitChildren does not run: the state a
+// parent reaches when it entered the wait before its child's step registered on its request.
+func (r *personHandoverRig) awaitChildrenByHand(key, child string) {
+	t := r.t
+	t.Helper()
+	r.dispatchRowsDone(key)
+	r.quiet(key)
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		issue, err := records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read the record of %s: %v", key, err)
+		}
+		now := time.Now().UTC()
+		issue.Phase, issue.Hold, issue.Status = phase.AwaitingChildren, nil, "in_progress"
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Accepting, Task: "The accepting work of " + key + ", held.",
+			Reason: key + " waits on its open child " + child + ".", Since: now, Children: []string{child}}
+		issue.ChildrenWaitedAt = &now
+		return records.PutIssue(ctx, tx, *issue)
+	}); err != nil {
+		t.Fatalf("record %s in awaiting_children: %v", key, err)
+	}
+}
+
+// retroOnAWaitingParent puts P in awaiting_children by hand, holds R's pending-basis seeds, and has
+// the running daemon apply the person's retro on P, which writes no status of its own there.
+func (r *personHandoverRig) retroOnAWaitingParent(held *outboxHold, run pendingRun) {
+	r.t.Helper()
+	r.awaitChildrenByHand(run.parent.Key, run.root.Key)
+	held.hold(run.root.Key, record.OutboxKindPendingBasisSeed)
+	r.setStatus(run.parent.Key, "retro")
+	r.applied(r.newestEvent(run.parent.Key, "issue.updated", func(e scratchEvent) bool { return e.status() == "retro" }))
+}
+
+// A person's retro on a parent already awaiting its children ends the wait of its child's step
+// before the status repair's tick writes the parent's phase status over the retro
+// (status_repair.go:77 and :92): R's seeds are held until that write has landed and its echo is
+// applied. With gate_basis.go as main has it (control/infra-3904-no-fix-at-main) R stays waiting:
+// the seed reads P back in in_progress, what the registration's seed read. Written first as a probe
+// by the independent tester of INFRA-3904.
+func TestAPersonsRetroOnAWaitingParentEndsTheWaitBeforeTheStatusRepairsTick(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
+	held := &outboxHold{}
+	r, run := retroWorld(t, held, []string{"Weir gauge logger", "River flow survey"})
+	r.retroOnAWaitingParent(held, run)
+	r.applyAsTheDaemon("controller", "tick-"+run.parent.Key, intake.ControllerTick{})
+	r.seedRanAfterStatusWrite(held, run)
+	t.Logf("the person's retro of %s, awaiting its children, ended the wait of %s before the status repair's tick wrote over it", run.parent.Key, run.root.Key)
+}
+
+// A person's retro on a parent already awaiting its children, applied by the running daemon, ends
+// the wait of its child's step before a restart's status repair (resume.go:77, status_repair.go:92)
+// writes the parent's phase status over the retro, while R's seeds are still held in the outbox.
+// With gate_basis.go as main has it R stays waiting, 3 of 3 in the tester's runs: on boot the
+// repair's row and R's seed are in the outbox together in no fixed order, the order of the CI hang
+// of job 140311446907. Written first as a probe by the independent tester of INFRA-3904.
+func TestAPersonsRetroOnAWaitingParentEndsTheWaitBeforeTheBootsStatusRepair(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
+	held := &outboxHold{}
+	r, run := retroWorld(t, held, []string{"Sluice gate timer", "Canal lock renewal"})
+	r.retroOnAWaitingParent(held, run)
+	booted := r.bootFacts()
+	r.d.stop()
+	rebindHeldPorts(t, &r.cfg)
+	r.boot()
+	testwait.Eventually(t, "the daemon to apply its boot fact", func() bool { return r.bootFacts() == booted+1 })
+	r.seedRanAfterStatusWrite(held, run)
+	t.Logf("the person's retro of %s, awaiting its children, ended the wait of %s before the boot's status repair wrote over it", run.parent.Key, run.root.Key)
 }

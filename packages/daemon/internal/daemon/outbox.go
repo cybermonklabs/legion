@@ -4685,9 +4685,10 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // issue, and of the request's close where the document's approval shows it closed (readBasis),
 // and applies the read as a fact of its own (intake.PendingBasisRead), never the gate seed's, so
 // the read reaches the root's step alone and not the ancestor's own gate. It is the one read that
-// opens such a wait, and it ends one on what Dispatch shows; the one other end of that kind is an
-// event of the ancestor's issue while the copy of Dispatch shows it accepted (workflow's
-// endPendingOnLeave), which queues no seed. The registration queues it, the boot queues it for
+// opens such a wait, and it ends one on what Dispatch shows; an event of the ancestor's issue
+// while the copy of Dispatch shows it accepted (workflow's endPendingOnLeave), and a parent's move
+// to awaiting_children (workflow's endsAcceptedBases), end one at the event instead and queue no
+// seed. The registration queues it, the boot queues it for
 // every such step, and every other event that is a cue for the step queues it (workflow's
 // pendingBasisCue). The workflow judges it by its one verdict (workflow's judgeBasisRead): the
 // person's approval of the version, as the document's latest review of its latest version, opens
