@@ -38,7 +38,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listing, projectArguments } from "../__tests__/playwright-listing";
-import { clockProjectNames, rowsOfListing, stubProjectNames } from "../configurations";
+import {
+  busProjectNames,
+  clockProjectNames,
+  rowsOfListing,
+  stubProjectNames,
+} from "../configurations";
 import { movedRowNotes, newInTheStubbedLayer, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
 import {
@@ -88,20 +93,26 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // says. Each is a bounded child, so what it cost is in the line this generation prints on its
 // own stderr when that child ends (`e2e/__tests__/bounded-subprocess.ts`).
 //
-// The second names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts).
-// They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
-// holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
-// `nested-directive.e2e.ts` - 51 rows of those three files in this head's `-alone` listing,
-// which holds 59 with the five rows of the three `large-documents` files the wall-clock
-// projects run whole and the three of `large-documents-long-build.e2e.ts`'s phone half - and with
-// the default listing alone this generation refused outright: "the listing names no real-stack
-// row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running the tool
-// before the second listing was added, when those two were the whole of the set. Neither
-// listing names a process count, so both run one Dispatch process, which is
-// the only mode whose project list declares the wall-clock projects at all.
+// The second names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts) and
+// the bus project (`busProjectNames`, the same module), in one listing.
+// They carry `default: false`, the six since dispatch://INFRA-1280, so a listing that names no
+// project holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`,
+// `nested-directive.e2e.ts` or `answer-parties.bus.e2e.ts` - 51 rows of the first three files in
+// this head's `-alone` listing, which holds 59 with the five rows of the three `large-documents`
+// files the wall-clock projects run whole and the three of `large-documents-long-build.e2e.ts`'s
+// phone half - and with the default listing alone this generation refused outright: "the
+// listing names no real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts",
+// measured by running the tool before the second listing was added, when those two were the
+// whole of the set. Neither listing names a process count, so both run one Dispatch process,
+// which is the only mode whose project list declares these projects at all.
 const [defaultListing, clockListing] = await Promise.all([
   listing(import.meta.url, "e2e/playwright.config.ts", {}),
-  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
+  listing(
+    import.meta.url,
+    "e2e/playwright.config.ts",
+    {},
+    projectArguments([...clockProjectNames, ...busProjectNames])
+  ),
 ]);
 const rows = [...rowsOfListing(defaultListing), ...rowsOfListing(clockListing)];
 const moved = rows.filter((row) => stubProjectNames.includes(row.project));

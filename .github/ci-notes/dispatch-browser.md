@@ -20,10 +20,10 @@ lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
-over five shard machines, the six `-alone` projects get a machine each, the two-process job,
-the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+over five shard machines, the six `-alone` projects and the bus project `chromium-bus` get a
+machine each, the two-process job, the fake-embedder job and the containerised visual review
+take one each, and one merge job joins what the shard and alone legs wrote into a single report
+and publishes the run's flake rate.
 
 Three of those six legs are the phone, where there was one until dispatch://INFRA-341: the two
 rows that measure a first editable block take three
@@ -133,9 +133,9 @@ check.
 
 ## Why the binaries job builds what the suite runs
 
-The Go binaries the browser suite's stacks run: the Dispatch server and the real broker's
-three commands, built once here and handed to the shard, alone and visual jobs in one
-artifact.
+The Go binaries the browser suite's stacks run: the Dispatch server, the real broker's
+three commands and natsd, the bus of the alone job's `chromium-bus` leg, built once here and
+handed to the shard, alone and visual jobs in one artifact.
 
 Why the build is a job of this file rather than of each caller: an artifact is visible only
 inside the run that uploaded it, and every caller runs this file - ci.yaml's dispatch-browser,
@@ -192,7 +192,7 @@ here saves either one.
 ## What the binaries build writes, and why it is static
 
 One `go build -o <directory>/` writes one binary per package, each named after it:
-dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, from
+dispatch, dev-oidc-issuer, requestseed and natsd; a second build names the broker's, from
 ./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
@@ -855,7 +855,9 @@ whose rows read no clock but are three builds too costly for a shard (its budget
 what they cost). Each leg runs one worker and names one project, and such a project takes
 nothing else with it - it names no `dependencies` since dispatch://INFRA-1280 - so nothing
 else is on the machine while it measures. The full lane alone: a pull request runs no clock
-row, since a shard job's machine cannot hold one still enough to measure.
+row, since a shard job's machine cannot hold one still enough to measure. A seventh leg,
+`chromium-bus`, is a leg of this job for a reason of its own, which
+.github/ci-notes/dispatch-browser.md#the-bus-leg-chromium-bus gives.
 
 Its steps are the shard job's, with three differences - one worker rather than four, the
 Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, and no file store on the machine - and their commands are kept
@@ -1037,6 +1039,66 @@ job budget is. The two steps that carry a budget read `matrix.project` for it ra
 taking a matrix column of their own, which would put the number into each leg's name
 (`alone (chromium-alone, 4, 16)`) and so into the leg capture the merge job's row
 accounting reads.
+
+## The bus leg, chromium-bus
+
+The seventh entry of the alone job's matrix is the Playwright project
+`packages/dispatch/e2e/configurations.ts#busProjectNames` names, `chromium-bus`
+(`packages/dispatch/e2e/playwright.config.ts#busProjects`): the rows whose claim is a delivery
+Dispatch's outbox makes, which are check c-a14's browser part of R14 (dispatch://INFRA-341). An
+answer goes to each agent its text names, an agent the answer named that replies in the ask's
+thread gets the next reply there, and the writing list's answer box holds its answer to the
+copy its party gets. They are the rows of the one file
+`packages/dispatch/e2e/configurations.ts#busSpecPattern` selects, answer-parties.bus.e2e.ts,
+whose box rows run the driver writing-surfaces.e2e.ts runs every other box with.
+
+Why a project of its own. The outbox runs only for a server that has NATS
+(`packages/envoy/cmd/dispatch/main.go#OutboxPublishes`), and a server with NATS is another
+server for every row of its stack: a mention's send waits for the events before it
+(`packages/envoy/internal/dispatch/api/comment_delivery.go#mentionCopyHolderFor`), and
+`GET /api/v1/messages/_test/queued` answers 404. So no other row may share the stack, and
+`packages/dispatch/e2e/global-setup.ts#globalSetup` refuses a run that selects the bus project
+beside any other (`packages/dispatch/e2e/configurations.ts#busRunOf`); every default project
+that would see the file ignores it, and the project carries `default: false`.
+
+Why a leg of this job and not a shard leg. A shard leg runs a lane's ten projects in one run,
+which that refusal turns down, and its four stacks would need four buses; a leg of this job
+runs one project, `--project="$project" --workers=1`, on one stack
+(`.github/scripts/dispatch-browser-alone-suite.sh#DISPATCH_E2E_BROKER_BIN_DIR`), which is the
+whole of what the bus project asks. Its rows read no clock, so the quiet machine is not what
+puts them here, but nothing of this job's rules works against them: they need the binaries
+download, the contracts and dashboard builds, one stack's Postgres and no file store, as the
+six other legs do. `packages/dispatch/e2e/__tests__/shard-split.test.ts#shardSuiteScript`
+holds the shard job's lanes to naming no bus project, and the shard split places none of its
+rows. The merge job reads the leg as it reads every alone leg, `alone (chromium-bus)` becoming
+`alone-chromium-bus`, so no reading of it changes.
+
+Where its bus comes from. Each stack of a bus run starts one natsd of its own before its
+harness (`packages/dispatch/e2e/harness-pool.ts#startPool`), the nats-server of
+`packages/envoy/internal/testnats/cmd/natsd/main.go#run`, JetStream on and 127.0.0.1 alone, on
+ports the kernel chooses and read back from its log; the starter is the new module
+harness-bus.ts beside harness-postgres.ts. Its address reaches both readers as the stack's
+`DISPATCH_E2E_NATS_URLS`: `packages/dispatch/e2e/run-server.sh#nats_urls` hands it to the
+server as its NATS_URLS, and `packages/dispatch/e2e/fake-envoy.ts#readBusFrames` reads the
+frames the outbox publishes on `notifications.agent.>` off it, which the rows read through
+`GET /__fixture/bus-frames`; a listener started with no bus answers that read 409, and a row
+fails on it. The binary is the one the binaries job builds beside the server
+(`.github/scripts/ci_job_reads.py#BUS_PKGS` in `.github/scripts/ci_job_reads.py#BROWSER_BINARIES_SCRIPT`),
+from the go-envoy-test objects that job restores, which hold natsd's: this job runs no Go, for
+the container reason the binaries job's head gives, and no second build of nats-server is made.
+It lands in the directory the leg's script exports as DISPATCH_E2E_BROKER_BIN_DIR, made
+executable with the rest. A run outside CI builds natsd once itself, with the caller's
+toolchain, into packages/envoy/out.
+
+What it costs. It has no reading of this job yet. Three rows on one stack: the two c-a14 rows,
+each an answer through the Inbox and the outbox's publish and record of it, and the answer
+box's row, a walk of the writing list's box with a question back and an answer, so 10 to 20 s
+each for the first two and 30 to 60 s for the third is the expectation, with natsd's start of
+well under a second added to the stack's. The leg takes the pooled 4 minutes of the browser
+step and the 16 of the job until its first full-lane run measures it, and that reading - the
+jobs API's time for the browser step of `alone (chromium-bus)`, and the list reporter's time
+for each row - replaces this estimate. Either way it is well under one shard leg, whose browser
+step is derived from a 534 s leg.
 
 ## What the alone job downloads in place of a Go build
 

@@ -1066,9 +1066,10 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has eighteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-seven the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
-stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
+The suite has nineteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+seven the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`), the one
+`chromium-bus` takes (below) and the stubbed layer's own ("The stubbed layer" above), which the
+last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
 only where the phone can change what it asserts: its layout, touch (`e2e/touch.ts`), a surface
@@ -1080,9 +1081,9 @@ that loses its tag drops out of them with no failure: read a project's rows with
 `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
-same projects but the two stubbed ones and the six `-alone` ones, so its `iphone` project also
-runs only the `@phone` tests, and it holds no `-alone` row: that command names no project, and
-the six `-alone` projects are out of the default selection. Listed at 77471f15, a deployed
+same projects but the two stubbed ones, the six `-alone` ones and `chromium-bus`, so its `iphone`
+project also runs only the `@phone` tests, and it holds no `-alone` row: that command names no
+project, and the six `-alone` projects are out of the default selection. Listed at 77471f15, a deployed
 run holds 1,511 rows in 190 files, and the other 59 are an `-alone` run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`,
@@ -1156,6 +1157,19 @@ projects, and it names
 e2e/heavy-bodies.e2e.ts --workers=1`, which names that worker count itself rather than taking
 the configuration's default, and which writes the project as `--project=<name>`, since the
 option is variadic and would read the file after a space as a second project name.
+`chromium-bus` runs `e2e/answer-parties.bus.e2e.ts`, the rows whose claim is a delivery the
+server's outbox makes, which runs only for a server that has NATS: an answer reaching each agent
+its text names, an agent the answer named getting the next reply in the ask's thread, and the
+writing list's answer box (`BUS_BOXES`, `e2e/writing-boxes.ts`), whose answer is held to the copy
+its party gets and which `e2e/writing-surfaces.e2e.ts` therefore leaves out. A run of that
+project is a bus run: `globalSetup` gives each stack a natsd of its own before its harness
+(`e2e/harness-bus.ts`; `natsd` of `DISPATCH_E2E_BROKER_BIN_DIR` where that is set, otherwise one
+it builds into `packages/envoy/out/dispatch-e2e-bus`), whose address the stack carries as
+`DISPATCH_E2E_NATS_URLS` for its server and its fake Envoy, which reads the frames the outbox
+publishes (`GET /__fixture/bus-frames`, 409 on a listener started with no bus). A bus changes the
+server for every row of its stack, so the project sets `default: false`, `workers: 1` and
+`retries: 0`, and a run that names it beside another project is refused before anything starts.
+`bun run e2e:bus` runs it; CI runs it as a leg of the alone job.
 `bun run e2e:install` installs all three browsers.
 
 ## Accessibility and visual review

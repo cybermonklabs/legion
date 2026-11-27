@@ -2370,11 +2370,14 @@ DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e .
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
 BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciphertest/requestseed"]
+# The bus the alone job's chromium-bus leg starts for its stack (packages/dispatch/e2e/harness-bus.ts),
+# built in the same job for the same reason.
+BUS_PKGS = ["./internal/testnats/cmd/natsd"]
 # The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed ./internal/testnats/cmd/natsd
 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
@@ -2556,7 +2559,7 @@ def browser_gate(filter, job):
     of it, the jobs a lane skips by its `lane` input among them: which jobs run is a literal each
     caller passes, not a gate."""
     # The browser suite, every row of it: the binaries job, the shard legs, the six `-alone`
-    # projects, the two-process job, the visual job and the merge job, all in
+    # projects and the bus project's leg, the two-process job, the visual job and the merge job, all in
     # dispatch-browser.yaml, which ci.yaml's dispatch-browser, dispatch-browser-pr and
     # dispatch-references jobs and the nightly call (at_browser cites their steps).
     #
@@ -2584,15 +2587,16 @@ def browser_gate(filter, job):
     # first entry names. No job's e2e/harness-postgres.ts runs a go command in CI: each job that
     # starts stacks there hands it the connection limit that a pinned step below reads.
     gate_ = gate(filter, job, exact=[
-        # The four commands the shard and alone jobs' scripts built before those jobs moved
-        # into a container, built once in the binaries job and downloaded by both and by the
-        # visual job: this is the closure that build compiles and no other. The step names an
+        # The five commands the shard and alone jobs' scripts run, built once in the binaries
+        # job and downloaded by both and by the visual job: the four the shard and alone jobs
+        # built before those jobs moved into a container, and natsd, the bus of the alone job's
+        # chromium-bus leg. This is the closure that build compiles and no other. The step names an
         # output (-o) and pins CGO_ENABLED on the line, neither of which the simple form
         # reduces, so the step is pinned whole; the Run carries that CGO_ENABLED, since the
         # closure go lists without cgo is the one this build compiles.
         pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ENVOY, BROWSER_BINARIES_SCRIPT, [
-            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
-             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS + BUS_PKGS,
+             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer, the seeding step and natsd",
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read in the binaries job for the shard, alone and visual

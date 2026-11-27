@@ -389,6 +389,59 @@ export const phoneAloneSpecNames: readonly string[] = ["large-documents-long-bui
  *  `phoneAloneSpecNames` rather than written a second time. */
 export const phoneAloneSpecPattern = new RegExp(`(${phoneAloneSpecNames.join("|")})\\.e2e\\.ts`);
 
+/** The projects whose stack runs a bus: a JetStream server of its own (`natsd`, started by
+ *  e2e/harness-bus.ts), which the stack's Dispatch server publishes its events through and its
+ *  fake listener reads (`GET /__fixture/bus-frames`, e2e/fake-envoy.ts). Their rows are the ones
+ *  whose claim is a delivery the outbox makes - an answer reaching each agent its text names, and
+ *  a later reply in the ask's thread reaching the agent that replied there (dispatch://INFRA-341,
+ *  R14) - and the outbox runs only with a bus (`OutboxPublishes`, packages/envoy/cmd/dispatch).
+ *  A bus changes the server for every row of a run: a mention's send waits for the events before
+ *  it, and `GET /api/v1/messages/_test/queued` answers 404. So these rows are projects of their
+ *  own, out of the default selection, and `e2e/global-setup.ts` refuses a run that selects one of
+ *  them beside a project of any other kind (`busRunOf` below).
+ *
+ *  A list of their own rather than entries of `clockProjectNames` above: their rows read no
+ *  clock, and the readers of that list hold it to the wall-clock files and to `bun run
+ *  e2e:clock`. The accountings that read the projects out of the default selection - the
+ *  duplicate-row and ownership guard (`e2e/__tests__/row-configurations.test.ts`), the
+ *  browser-row scan (`e2e/__tests__/no-browser-rows.test.ts`) and the row map
+ *  (`e2e/tools/row-map.ts`) - name both lists in one listing. */
+export const busProjectNames: readonly string[] = ["chromium-bus"];
+
+/** The specs the bus projects run, each by the part of its file name that is its own. Every row
+ *  of these files reads what the fake listener took off the bus, and a bus project selects whole
+ *  files, so the file a row is written in is what decides that it runs with a bus. */
+export const busSpecNames: readonly string[] = ["answer-parties.bus"];
+
+/** The files no project but a bus project may run: the `testIgnore` of `chromium`, `iphone`,
+ *  `webkit` and `firefox`, which would otherwise see them, and the `testMatch` of `chromium-bus`,
+ *  both this one value built from `busSpecNames`, so the files the one drops are the files the
+ *  other takes. A row of such a file on a stack with no bus reads the fake listener's 409 and
+ *  fails, so a default project that took one would fail it rather than skip it. */
+export const busSpecPattern = new RegExp(`(${busSpecNames.join("|")})\\.e2e\\.ts`);
+
+/** Whether a run of `projects` - the names of Playwright's `config.filteredProjects`, the
+ *  projects the run selected - is a bus run: true when every one of them is a bus project
+ *  (`busProjectNames`), false when none is. A run that selects both kinds is refused, naming
+ *  both: the bus is the stack's, and the stack is every row's, so the other rows would run
+ *  against a server the outbox publishes for, which is not the server they are written for. */
+export function busRunOf(projects: readonly string[]): boolean {
+  const bus = projects.filter((name) => busProjectNames.includes(name));
+  if (bus.length === 0) return false;
+  const others = projects.filter((name) => !busProjectNames.includes(name));
+  if (others.length > 0) {
+    throw new Error(
+      `This run selects the bus project ${bus.join(", ")} beside ${others.join(", ")}, which ` +
+        "run without a bus. A bus project's stack runs a JetStream server its Dispatch server " +
+        "publishes every event through, and that changes the server for every row of the run: a " +
+        "mention's send waits for the events before it, and GET /api/v1/messages/_test/queued " +
+        "answers 404. Run the bus projects in a run of their own (`bun run e2e:bus` in " +
+        "packages/dispatch), and the others without them."
+    );
+  }
+  return true;
+}
+
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
  *  the five wall-clock projects are out of the default selection, so no run that names no

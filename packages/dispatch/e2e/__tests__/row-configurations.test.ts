@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  busProjectNames,
+  busSpecPattern,
   clockProjectNames,
   clockSpecNames,
   clockSpecPattern,
@@ -40,13 +42,16 @@ const ambientProcessCount: Record<string, string> =
 // two-core runner.
 //
 // The third names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts),
-// which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
+// which carry `default: false` since dispatch://INFRA-1280, and the bus project beside them
+// (`busProjectNames`, the same module), which carries it too. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
 // `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts`,
 // `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
-// `large-documents-build-serves.the-decision.e2e.ts`, `large-documents-desktop-build.e2e.ts`
-// and the phone half of `large-documents-long-build.e2e.ts` missing: 59 rows in 8 files, which
-// is what this head's `-alone` listing holds.
+// `large-documents-build-serves.the-decision.e2e.ts`, `large-documents-desktop-build.e2e.ts`,
+// the phone half of `large-documents-long-build.e2e.ts` and `answer-parties.bus.e2e.ts`
+// missing: the 59 rows of 8 files this head's `-alone` listing holds, and the bus project's.
+// One listing for both lists rather than one each, since a listing of the full config is a
+// `node` of 300 to 500 MiB (e2e/__tests__/shard-split.test.ts).
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
@@ -65,14 +70,14 @@ const realListing = retained(
 const doubledListing = retained(
   listing(import.meta.url, "e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
 );
-const clockListing =
+const outOfDefaultListing =
   harnessProcessCount === 1
     ? retained(
         listing(
           import.meta.url,
           "e2e/playwright.config.ts",
           ambientProcessCount,
-          projectArguments(clockProjectNames)
+          projectArguments([...clockProjectNames, ...busProjectNames])
         )
       )
     : undefined;
@@ -125,14 +130,13 @@ test(
   "no row runs twice in one configuration, and every project has a configuration and rows",
   async () => {
     const report = await realListing;
-    // The wall-clock rows are read beside the default listing's, because the two together are
-    // the suite: those projects are out of the default selection, so a listing that names no
-    // project holds no row of them.
+    // The rows of the projects out of the default selection are read beside the default
+    // listing's, because the two together are the suite: a listing that names no project holds
+    // no row of those projects.
     const rows = [
       ...rowsOfListing(report),
-      ...(clockListing === undefined ? [] : rowsOfListing(await clockListing)),
+      ...(outOfDefaultListing === undefined ? [] : rowsOfListing(await outOfDefaultListing)),
     ];
-    expect(rows.length).toBeGreaterThan(0);
     const configurations = projectConfigurations(realConfig, harnessProcessCount);
 
     // A project whose configuration cannot be read fails here rather than passing quietly: its
@@ -156,8 +160,8 @@ test(
       "These projects of the configuration own no row of the listings this file reads, so " +
         "nothing here accounts for what they run. A project out of the default selection " +
         "(`default: false`) is listed only where a command names it, and the names this file " +
-        "passes are `clockProjectNames`' (e2e/configurations.ts): write the project's name " +
-        "there if its rows are read from the wall clock. Otherwise its selectors match no file."
+        "passes are `clockProjectNames`' and `busProjectNames`' (e2e/configurations.ts): write " +
+        "the project's name in the one its rows belong to. Otherwise its selectors match no file."
     ).toEqual([]);
 
     // The config as it stands has no repeat - that is what this run found when it was first
@@ -241,7 +245,12 @@ test(
     // by project and not by the test's own pattern, which would hold a pattern that matches no
     // file to the rows of no file, that is to none.
     const listed = rowsOfListing(await realListing);
-    const clockRows = clockListing === undefined ? undefined : rowsOfListing(await clockListing);
+    const clockRows =
+      outOfDefaultListing === undefined
+        ? undefined
+        : rowsOfListing(await outOfDefaultListing).filter((row) =>
+            clockProjectNames.includes(row.project)
+          );
     const configurations = projectConfigurations(realConfig, harnessProcessCount);
     const phoneLeg = configurations.get(phoneLegProject);
     const inAClockFile = (row: ListedRow) => clockSpecPattern.test(row.file);
@@ -423,4 +432,80 @@ test("`bun run e2e:clock` names every wall-clock project, in the list's order", 
       "run. Write each name of the list in packages/dispatch/package.json as " +
       "`--project=<name>`, in the list's order."
   ).toEqual([...clockProjectNames]);
+});
+
+// What a bus row's verdict rests on: that it runs where its stack has a bus, and nowhere else.
+// A project of the default selection that listed one would run it on a stack with no bus, where
+// the fake listener refuses the read of the frames and the row fails; and a bus project that
+// listed a row of any other file would run that row against a server whose outbox publishes,
+// which no other row is written for. Read of the listings rather than of the config's
+// `testIgnore`, as the wall-clock files are above, so a project added later with selectors of
+// its own is caught by the rows it lists.
+test(
+  "the bus project runs the rows of the bus files, and no other project runs one",
+  async () => {
+    const inABusFile = (row: ListedRow) => busSpecPattern.test(row.file);
+    const named = (rows: readonly ListedRow[]) =>
+      rows.map((row) => `${row.project} runs ${row.file} › ${row.title}`).sort();
+    const listed = rowsOfListing(await realListing);
+    expect(listed.length, "the default selection's listing holds no row").toBeGreaterThan(0);
+    expect(
+      named(listed.filter(inABusFile)),
+      "A project of the default selection lists a row of a bus file (`busSpecPattern`, " +
+        "e2e/configurations.ts). Those rows read the frames a stack's bus carried, and only a " +
+        "bus project's stack has one: name `busSpecPattern` in that project's `testIgnore`."
+    ).toEqual([]);
+    if (outOfDefaultListing === undefined) return;
+    const outOfDefault = rowsOfListing(await outOfDefaultListing);
+    const busRows = outOfDefault.filter((row) => busProjectNames.includes(row.project));
+    expect(busRows.length, "the bus projects' rows in their own listing").toBeGreaterThan(0);
+    expect(
+      named(busRows.filter((row) => !inABusFile(row))),
+      "A bus project lists a row of a file that is no bus file: it would run against a server " +
+        "whose outbox publishes, which that row is not written for."
+    ).toEqual([]);
+    expect(
+      named(
+        outOfDefault.filter((row) => inABusFile(row) && !busProjectNames.includes(row.project))
+      ),
+      "A project out of the default selection that is no bus project lists a row of a bus file."
+    ).toEqual([]);
+  },
+  rowLimit({ atOnce: ["listing", "listing"] })
+);
+
+// The fields that keep the bus project's rows on a stack of their own and out of a bare run:
+// `default: false`, since a bus run is one the hook refuses to mix with any other project
+// (`busRunOf`, e2e/configurations.ts); `workers: 1`, one stack and one bus; and `retries: 0`, so
+// a copy the outbox lost once is a failure and not a flake (e2e/playwright.config.ts, above
+// `busProjects`). Two-process mode declares the multiprocess project alone, and so no bus
+// project.
+test("each bus project is out of the default selection and runs one row at a time", () => {
+  for (const name of busProjectNames) {
+    const project = (realConfig.projects ?? []).find((candidate) => candidate.name === name);
+    if (harnessProcessCount !== 1) {
+      expect(project, `${name} in two-process mode`).toBeUndefined();
+      continue;
+    }
+    expect(project, `${name} is no project of e2e/playwright.config.ts`).toBeDefined();
+    expect(project?.default, `${name}'s \`default\``).toBe(false);
+    expect(project?.workers, `${name}'s \`workers\``).toBe(1);
+    expect(project?.retries, `${name}'s \`retries\``).toBe(0);
+  }
+});
+
+// `bun run e2e:bus` is the command that runs every bus row, and it spells the projects out on its
+// own command line, read here as the `e2e:clock` row above reads that script.
+test("`bun run e2e:bus` names every bus project", () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  const named = projectsOnCommandLine(manifest.scripts["e2e:bus"]?.split(" ") ?? []);
+  expect(
+    named,
+    `\`e2e:bus\` names ${JSON.stringify(named)} and \`busProjectNames\` (e2e/configurations.ts) ` +
+      `holds ${JSON.stringify([...busProjectNames])}. Write each name of the list in ` +
+      "packages/dispatch/package.json as `--project=<name>`, in the list's order."
+  ).toEqual([...busProjectNames]);
 });

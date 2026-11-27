@@ -78,7 +78,7 @@ jobs:
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed ./internal/testnats/cmd/natsd
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go and the visual job keeps none, so
@@ -233,6 +233,8 @@ jobs:
           - iphone-alone
           - iphone-measure-alone
           - iphone-long-build-alone
+          # why: .github/ci-notes/dispatch-browser.md#the-bus-leg-chromium-bus
+          - chromium-bus
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

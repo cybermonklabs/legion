@@ -419,6 +419,13 @@ test("a role claim on the bus names the live holder the role lookup answers, and
     const release = await claim("shared", "DELETE");
     expect(release.status).toBe(409);
     expect(await release.json()).toEqual(noBus);
+    // The read of what the outbox published is refused the same way, whatever it narrows to: a
+    // bus row on a stack with no bus must fail on it, never read it as nothing sent.
+    for (const path of ["/__fixture/bus-frames", "/__fixture/bus-frames?session=first"]) {
+      const frames = await Bun.fetch(`${origin}${path}`);
+      expect(frames.status).toBe(409);
+      expect(await frames.json()).toEqual(noBus);
+    }
   } finally {
     await stop();
   }

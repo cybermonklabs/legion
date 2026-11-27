@@ -50,6 +50,14 @@
  *      --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone \
  *      --project=iphone-long-build-alone --workers=1 --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/clock-report.json
+ *
+ *  The bus project, `chromium-bus` (`busProjectNames`, e2e/configurations.ts), is out of the
+ *  default selection too, and a run that names it names no other project (e2e/global-setup.ts
+ *  refuses one that does), so its rows are a third report:
+ *
+ *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/bus-report.json bunx playwright test \
+ *      --config e2e/playwright.config.ts --project=chromium-bus --reporter=list,json
+ *    bun e2e/tools/check-slow-rows.ts /tmp/bus-report.json
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";

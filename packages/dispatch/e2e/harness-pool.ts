@@ -14,6 +14,12 @@
  *  `stopStacks` removes. A run of one stack with `DATABASE_URL` set uses that database and starts
  *  no Postgres, as this harness always has.
  *
+ *  A bus run (`StackPoolOptions.bus`) gives each stack a JetStream server of its own as well
+ *  (`e2e/harness-bus.ts`), started after its Postgres and before its harness, whose address the
+ *  stack carries as `DISPATCH_E2E_NATS_URLS`: e2e/run-server.sh hands it to the server and
+ *  e2e/fake-envoy.ts reads its frames off it. A bus run of one stack with `DISPATCH_E2E_NATS_URLS`
+ *  set uses that bus and starts none, as it uses a `DATABASE_URL` it was given.
+ *
  *  WHY NO CHECK COMPARES THE STACKS' PORTS WITH EACH OTHER. The wrapper this replaced held every
  *  lane itself and started the Playwright command afterwards, so it could compare every lane's
  *  ports once they were all up and refuse a port two lanes had been handed. The check that
@@ -27,6 +33,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { type StackBus, stackBus } from "./harness-bus";
 import {
   pgBinVariable,
   pgImageVariable,
@@ -41,7 +48,8 @@ import { armsStopListener } from "./signal-ignores";
 const named = "e2e/harness-pool.ts";
 
 /** One started stack as its callers read it: the index a worker selects it by, and every variable
- *  it carries - its ports, its `DATABASE_URL`, its file-store bucket. */
+ *  it carries - its ports, its `DATABASE_URL`, its file-store bucket and, in a bus run, its
+ *  `DISPATCH_E2E_NATS_URLS`. */
 export interface Stack {
   readonly index: number;
   readonly env: Readonly<Record<string, string>>;
@@ -54,11 +62,15 @@ export interface StackPoolOptions {
    *  runs on has. The harness itself always starts from this process's environment with the
    *  stack's own variables on top (`e2e/harness-start.ts`). */
   readonly env?: NodeJS.ProcessEnv;
+  /** Whether each stack runs a bus (`e2e/harness-bus.ts`): the run's projects are all bus
+   *  projects (`busRunOf`, e2e/configurations.ts), which `e2e/global-setup.ts` reads. */
+  readonly bus?: boolean;
 }
 
 /** One stack and what it takes to stop it. */
 interface Running extends Stack {
   readonly database: StackDatabase | undefined;
+  readonly bus: StackBus | undefined;
   readonly harness: Harness;
   /** Where its processes write their output, unset for a run of one stack, which writes to this
    *  process's stderr as it always has. */
@@ -230,8 +242,9 @@ async function stackBucket(
 
 /** Removes the run's own directory, which holds every stack's data directory. `keepLogs` keeps
  *  the stacks' logs, the only record of what their servers said, and loses the data directories,
- *  which are the bulk of it; a directory a stack's Postgres made as another user (the image
- *  provider's container) can outlive the run rather than fail its exit status. */
+ *  which are the bulk of it - each stack's Postgres data and, in a bus run, its bus's JetStream
+ *  store; a directory a stack's Postgres made as another user (the image provider's container)
+ *  can outlive the run rather than fail its exit status. */
 function clearRunDir(keepLogs: boolean): void {
   if (runDir === "") return;
   const root = runDir;
@@ -240,7 +253,12 @@ function clearRunDir(keepLogs: boolean): void {
   // Every data directory under the run's own, named from that directory rather than from the
   // stacks that started: a stack that failed to start left a copy of the template there and no
   // entry among them, and those copies are the bulk this branch is here to lose.
-  const removed = keep ? readdirSync(root).map((entry) => join(root, entry, "pgdata")) : [root];
+  const removed = keep
+    ? readdirSync(root).flatMap((entry) => [
+        join(root, entry, "pgdata"),
+        join(root, entry, "nats-store"),
+      ])
+    : [root];
   for (const path of removed) {
     try {
       rmSync(path, { force: true, recursive: true });
@@ -295,13 +313,24 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
           `${pgBinVariable} (a directory holding initdb and pg_ctl) must name one.`
       );
     }
+    // A bus run of one stack against the bus the caller named starts none, as one against the
+    // database it named starts no Postgres; a run of more stacks that names one is refused
+    // before it gets here (`refuseStackConflicts`, e2e/harness-ports.ts).
+    const givenBus = (env.DISPATCH_E2E_NATS_URLS ?? "").trim();
+    const bus =
+      options.bus === true && !(count === 1 && givenBus !== "")
+        ? stackBus({ dir: runDir, env })
+        : undefined;
     const startStack = async (index: number): Promise<void> => {
       const logDir = count === 1 ? undefined : join(runDir, `worker-${index}`, "log");
       const database =
         postgres === undefined ? undefined : await postgres.start(index, stopping.signal);
-      // Everything from here on runs with a server of this stack's own up, so each of them — the
-      // bucket the file store makes as much as the harness — stops it rather than leave it behind.
+      // Everything from here on runs with a server of this stack's own up, so each of them - the
+      // bus, the bucket the file store makes and the harness - stops it rather than leave it
+      // behind, and stops the bus too once that is up.
+      let stackOwnBus: StackBus | undefined;
       try {
+        stackOwnBus = await bus?.start(index, logDir, stopping.signal);
         const own: Record<string, string> = {};
         // How many stacks share this machine, which each stack's own server reads: it divides the
         // machine's CPUs by this for its GOMAXPROCS, so four servers on a four-vCPU runner take
@@ -310,11 +339,22 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         own.DISPATCH_E2E_STACK_COUNT = String(count);
         const url = database?.url ?? given;
         if (url !== "") own.DATABASE_URL = url;
+        // The stack's own bus, which e2e/run-server.sh hands the server as its NATS_URLS and
+        // e2e/fake-envoy.ts reads its frames off, both inheriting it from the harness.
+        if (stackOwnBus !== undefined) own.DISPATCH_E2E_NATS_URLS = stackOwnBus.url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
         const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
-        stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
+        stacks.push({
+          bus: stackOwnBus,
+          database,
+          env: { ...own, ...harness.env },
+          harness,
+          index,
+          logDir,
+        });
       } catch (error) {
+        await stackOwnBus?.stop();
         await database?.stop(true);
         throw error;
       }
@@ -329,14 +369,18 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 
     if (postgres !== undefined)
       console.error(`${named}: each stack's Postgres is ${postgres.name}`);
+    if (bus !== undefined) console.error(`${named}: each stack's bus is ${bus.name}`);
     for (const stack of stacks) {
       const ports = Object.entries(stack.harness.env)
         .map(([variable, port]) => `${variable}=${port}`)
         .join(" ");
       const postgresSocket =
         stack.database === undefined ? "" : `POSTGRES_SOCKET=${stack.database.socketDirectory} `;
+      const busUrl = stack.bus === undefined ? "" : `DISPATCH_E2E_NATS_URLS=${stack.bus.url} `;
       const output = stack.logDir ?? "its output is on this process's stderr";
-      console.error(`${named}: stack ${stack.index}: ${postgresSocket}${ports} (${output})`);
+      console.error(
+        `${named}: stack ${stack.index}: ${postgresSocket}${busUrl}${ports} (${output})`
+      );
     }
     // The two numbers a reader of a CI log reads this line for. One stack per worker is the
     // invariant: a start that could not give a worker its own stack throws above rather than
@@ -365,10 +409,10 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 /** The stop under way, which a second call of `stopStacks` waits for. */
 let stoppingStacks: Promise<void> | undefined;
 
-/** Stops every harness and every database, clears the run's directory and takes the pool's
- *  signal listeners off again. `keepLogs` is the one decision this cannot make for itself: the
- *  logs are what a failed run is read from, and this module never learns whether the run passed
- *  (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said otherwise, is
+/** Stops every harness, every bus and every database, clears the run's directory and takes the
+ *  pool's signal listeners off again. `keepLogs` is the one decision this cannot make for itself:
+ *  the logs are what a failed run is read from, and this module never learns whether the run
+ *  passed (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said otherwise, is
  *  whether each stack's Postgres container prints its log before it goes (`StackDatabase.stop`).
  *
  *  A call while a stop is under way waits for that stop, whatever it is given, and stops nothing
@@ -391,6 +435,8 @@ export function stopStacks(
 async function stopEveryStack(keepLogs: boolean, printContainerLogs: boolean): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
+  // After the harnesses, whose server and fake listener are the bus's clients.
+  await Promise.allSettled(stacks.map((stack) => stack.bus?.stop()));
   await Promise.allSettled(stacks.map((stack) => stack.database?.stop(printContainerLogs)));
   clearRunDir(keepLogs);
   stacks.length = 0;

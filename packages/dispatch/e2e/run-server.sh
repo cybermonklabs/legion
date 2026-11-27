@@ -354,19 +354,20 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
-# The events outbox publishes through NATS, and this rig has none, so the server runs with
-# DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
-# reach one would log a reconnect loop for every run. The publisher is the only writer of what a
-# delivery states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's
-# and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
-# so a driver that proves those writes starts a NATS of its own (`go build
-# github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
-# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
-# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
-# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
-# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
-# variable a shell exported is still swept below, and a caller that names none gets exactly the
-# server every spec has always run against.
+# The events outbox publishes through NATS, which this script starts none of, so the server runs
+# with DISPATCH_NATS_DISABLED=1 unless it is named one: a server that kept trying to reach a bus
+# would log a reconnect loop for every run. The publisher is the only writer of what a delivery
+# states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's and a
+# page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) - and
+# the only sender of what it publishes to each session's subject, so a run that proves those
+# starts a NATS and names it in DISPATCH_E2E_NATS_URLS, which this script hands the server as its
+# NATS_URLS and which turns the publisher on: the `chromium-bus` project's stacks each run a natsd
+# of their own for it (e2e/harness-bus.ts), and a driver of its own may name a `nats-server -js`.
+# It is a variable of this rig's own rather than NATS_URLS itself because a developer's shell
+# exports NATS_URLS for the Envoy listener, and a server that took it would publish test
+# notifications to the bus that listener delivers to real sessions. Every NATS_* variable a shell
+# exported is still swept below, and a caller that names none gets exactly the server every spec
+# but the bus project's has always run against.
 nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
 if [ -n "$nats_urls" ]; then
   nats_env=(NATS_URLS="$nats_urls")

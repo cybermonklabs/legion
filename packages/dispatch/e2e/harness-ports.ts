@@ -263,6 +263,10 @@ export function harnessPorts(
 const stackConflictReasons: Record<string, string> = {
   DATABASE_URL:
     "each stack runs its own Postgres, whose URL the harness hands its servers and its psql",
+  DISPATCH_E2E_NATS_URLS:
+    "each stack of a bus run runs its own JetStream server (e2e/harness-bus.ts), whose stream " +
+    "and buckets that stack's Dispatch server and fake listener read, so one bus would hand " +
+    "every stack's listener the other stacks' frames",
   DISPATCH_E2E_PROCESSES:
     "two-process mode is two servers on one stack's database, which one stack runs",
   DISPATCH_E2E_REUSE_SERVERS:

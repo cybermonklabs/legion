@@ -9,7 +9,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { BOX_PICKER_LINES, CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
+import { type FakeSession, getBusEvents, getSentMessages, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -18,10 +18,12 @@ import {
   createMessage,
   createProject,
   getComment,
+  listSessionAnswers,
   putArchitectureSource,
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { expectNoneOf } from "./none-of";
 import { openRefPicker, pickerRows, refPicker } from "./ref-picker";
 import { sessionIds } from "./session-ids";
 
@@ -39,7 +41,10 @@ import { sessionIds } from "./session-ids";
  * A box whose write delivers is held to its delivery as well (the check that delivery is
  * unchanged): the party picked in it reaches the write, and the fake Envoy listener
  * takes one frame for that party, carrying the body the box held, once the box's own send control
- * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in.
+ * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in. An answer's
+ * delivery is the outbox's alone, so a box that answers is held to the copies the fake listener
+ * read off its stack's bus instead (`BUS_WRITES`, `expectBusSend`), and its test runs in the one
+ * project whose stack has a bus (`BUS_BOXES`).
  *
  * The rows the picker finds are the world's own, and the query that finds them (`QUERY`) is a
  * word no party, person or component holds: so every box lists the same three rows whatever it
@@ -109,8 +114,16 @@ export interface BoxWorld {
  * The world: the host every box writes on, the three nodes the one query finds (an issue, its
  * document and the live session), the person the host's people hold, and the comment and
  * message the reply boxes answer.
+ *
+ * `askedBy` is the session whose open ask the world holds, `SESSION` unless a caller names
+ * another: a box whose answer goes by the bus (`BUS_BOXES`) is driven over an ask some other
+ * session asked, so the copy of the answer `SESSION` gets is the one the answer's text names it
+ * for, never the one the ask's follower route sends its asker. That other session is in no
+ * listener's list and holds no word the query finds, so every box lists the same rows.
  */
-export async function seedWritingBoxes(): Promise<BoxWorld> {
+export async function seedWritingBoxes(
+  options: { readonly askedBy?: string } = {}
+): Promise<BoxWorld> {
   await createProject({ key: "CORE", name: "Core" });
   const host = await createIssue({
     project: "CORE",
@@ -157,7 +170,9 @@ export async function seedWritingBoxes(): Promise<BoxWorld> {
   const ask = await createAsk(
     host.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which way does it go?" },
-    AGENT
+    options.askedBy === undefined
+      ? AGENT
+      : { actor: { id: options.askedBy, kind: "session" }, as: "agent" }
   );
   return {
     anchored: anchored.id,
@@ -206,6 +221,23 @@ export function rowsOfBox(box: DispatchWritingBox): DispatchWritingBoxRow[] {
 export function coveredBoxes(): DispatchWritingBox[] {
   return [...new Set(DISPATCH_WRITING_BOXES.filter((row) => row.covered).map((row) => row.box))];
 }
+
+/** The writes whose delivery leaves by the outbox and by nothing else, so only a stack with a bus
+ *  delivers them: an answer, which goes to each agent its text names on that agent's own subject
+ *  (`addAnswerParties`, packages/envoy/internal/dispatch/outbox/publisher.go), where a comment's
+ *  mention is a send through the listener that `expectSend` reads. A box that makes one is
+ *  driven where its stack has a bus (`BUS_BOXES`), and its send is held to the frames the fake
+ *  listener read off that bus (`expectBusSend`). */
+export const BUS_WRITES: readonly DispatchWriting[] = ["ask-answer"];
+
+/** The covered boxes one of whose writes is a `BUS_WRITES` write: the ask card's box, today. Each
+ *  one's test runs in `chromium-bus` (e2e/answer-parties.bus.e2e.ts), with the driver every other
+ *  box's test runs with (e2e/writing-drivers.ts), and `e2e/writing-surfaces.e2e.ts` leaves it out,
+ *  since on a stack with no bus its write's delivery reaches nobody and its row could only fail.
+ *  Read from the list, so a box the list gives such a write moves with it. */
+export const BUS_BOXES: readonly DispatchWritingBox[] = coveredBoxes().filter((box) =>
+  rowsOfBox(box).some((row) => BUS_WRITES.includes(row.write))
+);
 
 /** The doors line every hint opens with. */
 const HINT_DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
@@ -516,6 +548,91 @@ export async function expectSend(
   held.add(`${box}/${write}`);
 }
 
+/** The copies of the answer carrying `body` that the fake listener read off the bus, for
+ *  `session` alone when one is named: each `ask.answered` frame whose answer's text is that body,
+ *  as the session it reached and whether its envelope names the event it carries. */
+async function answerCopies(
+  body: string,
+  session?: string
+): Promise<{ sameEvent: boolean; session: string }[]> {
+  return (await getBusEvents(session))
+    .filter(
+      (event) =>
+        event.type === "ask.answered" &&
+        (event.payload?.answer as { text?: unknown } | null | undefined)?.text === body
+    )
+    .map((event) => ({
+      sameEvent: event.envelopeEventId === `dispatch-${String(event.id)}`,
+      session: event.session,
+    }));
+}
+
+/** Whether `session`'s record of what people wrote to it (`listSessionAnswers`) holds the answer
+ *  carrying `body`: the outbox's record of having published that answer on the session's own
+ *  subject, written in the one statement that records its batch, once NATS acknowledged every
+ *  publish of it (`recordBatch`, packages/envoy/internal/dispatch/outbox/publisher.go). */
+async function answerRecordedFor(session: string, body: string): Promise<boolean> {
+  return ((await listSessionAnswers(session)).items ?? []).some(
+    (item) => item.kind === "answer" && item.text === body
+  );
+}
+
+/** Sends a box's `BUS_WRITES` write with `send`, its own control, and holds what the list says of
+ *  it (`delivers`) to the bus, as `expectSend` holds a comment to the listener's sends.
+ *
+ *  A write that delivers reaches the session picked in one copy, carrying `body`. The first poll
+ *  waits for that copy; the session's record (`answerRecordedFor`) is then read until the outbox
+ *  has recorded publishing it, and only then are the frames read once more, so a duplicate that
+ *  lands after the first copy fails too.
+ *
+ *  A write the list says tells nobody it names is sent all the same, and held to that: the
+ *  session picked gets no copy. That is read once the answer has reached the bus at all - a copy
+ *  for some session, the asker's, which the world's ask follows - and the outbox has recorded the
+ *  batch that copy went out in, so every copy of that batch was on the bus before the read. A list
+ *  that says "tells nobody" of a write the server delivers to the party fails here, where a box
+ *  that draws no party list would otherwise pass for one that tells nobody. */
+async function expectBusSend(
+  box: DispatchWritingBox,
+  write: DispatchWriting,
+  body: string,
+  send: SendBox,
+  delivers: boolean
+): Promise<void> {
+  const message = `${box} writing ${write}: the copies of its answer the bus carried`;
+  await send();
+  if (delivers) {
+    const one = [{ sameEvent: true, session: SESSION.session_id }];
+    await expect.poll(() => answerCopies(body, SESSION.session_id), { message }).toEqual(one);
+    await expect
+      .poll(() => answerRecordedFor(SESSION.session_id, body), {
+        message: `${box} writing ${write}: the outbox's record of the copy ${SESSION.session_id} got`,
+      })
+      .toBe(true);
+    expect(
+      await answerCopies(body, SESSION.session_id),
+      `${message} to ${SESSION.session_id}, read again once the outbox recorded it`
+    ).toEqual(one);
+  } else {
+    await expect
+      .poll(async () => (await answerCopies(body)).length, { message })
+      .toBeGreaterThan(0);
+    const [first] = await answerCopies(body);
+    const reached = first?.session ?? "";
+    await expect
+      .poll(() => answerRecordedFor(reached, body), {
+        message: `${box} writing ${write}: the outbox's record of the copy ${reached} got`,
+      })
+      .toBe(true);
+    expectNoneOf(await answerCopies(body), {
+      amongAtLeast: 1,
+      are: (copy) => copy.session === SESSION.session_id,
+      matched: `copies for ${SESSION.session_id}, the session picked in a box whose list says it tells nobody`,
+      measured: `copies of the answer ${box} writing ${write} sent`,
+    });
+  }
+  held.add(`${box}/${write}`);
+}
+
 /** What a box does with a picked party, which is its row's own `delivers`. A box that does not
  *  deliver lists nobody under the field. A box that delivers lists the party there, and its own
  *  send then reaches that party: the fake Envoy listener takes one frame, for the session picked,
@@ -527,16 +644,28 @@ export async function expectSend(
  *  needs `send`, and a delivering row the list gains with a driver that hands none fails here
  *  rather than passing unsent. A delivering box's send may close it, so the box is left as the
  *  send leaves it, and its driver goes on from there. A row is held once its claim is checked
- *  (`heldRows`). */
+ *  (`heldRows`).
+ *
+ *  A write that goes by the bus (`BUS_WRITES`) is held to the bus whichever its list says, and
+ *  needs `send` either way (`expectBusSend`): the copies of its answer are what say whether it
+ *  told the party, where a party list drawn or left out says only what the box reads off the
+ *  list. */
 export async function expectDeliveryClaim(
   field: Locator,
   box: DispatchWritingBox,
   write: DispatchWriting,
   send?: SendBox
 ): Promise<void> {
-  const sends = dispatchWritingBox(box, write).delivers ? send : null;
+  const delivers = dispatchWritingBox(box, write).delivers;
+  const sends = delivers ? send : null;
   if (sends === undefined) {
     throw new Error(`${box} writing ${write} delivers, and its driver passes no send to prove it`);
+  }
+  const bus = BUS_WRITES.includes(write);
+  if (bus && send === undefined) {
+    throw new Error(
+      `${box} writing ${write} goes by the bus, and its driver passes no send to hold it there`
+    );
   }
   const page = field.page();
   await keyboardOnly(field);
@@ -567,6 +696,14 @@ export async function expectDeliveryClaim(
   const targets = page.getByRole("list", { name: "Mention targets" });
   if (sends === null) {
     await expect(targets).toHaveCount(0);
+    if (bus && send !== undefined) {
+      await field.press("End");
+      await field.pressSequentially(DELIVERED_WORDS);
+      const quietBody = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+      await expect(field).toHaveValue(quietBody);
+      await expectBusSend(box, write, quietBody, send, false);
+      return;
+    }
     await field.fill("");
     held.add(`${box}/${write}`);
     return;
@@ -576,7 +713,8 @@ export async function expectDeliveryClaim(
   await field.pressSequentially(DELIVERED_WORDS);
   const body = `${SESSION_MENTION}${DELIVERED_WORDS}`;
   await expect(field).toHaveValue(body);
-  await expectSend(box, write, body, sends);
+  if (bus) await expectBusSend(box, write, body, sends, true);
+  else await expectSend(box, write, body, sends);
 }
 
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,

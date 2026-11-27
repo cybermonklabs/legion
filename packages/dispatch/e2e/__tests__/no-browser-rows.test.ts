@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-import { clockProjectNames, type Listing, rowsOfListing } from "../configurations";
+import { busProjectNames, clockProjectNames, type Listing, rowsOfListing } from "../configurations";
 import {
   type Exemption,
   exemptions,
@@ -25,15 +25,16 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2
 // lists that last spec, whose servers sign people in through the dev OIDC issuer alone
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
-// six `-alone` projects (`clockProjectNames`, e2e/configurations.ts): they carry
-// `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
-// of theirs, and every row of this head's `-alone` listing - 59 of them, the 47 of
+// six `-alone` projects (`clockProjectNames`, e2e/configurations.ts) and the bus project
+// (`busProjectNames`, the same module): they carry `default: false`, the first six since
+// dispatch://INFRA-1280, so a listing that names no project holds no row of theirs, and every
+// row of this head's `-alone` listing - 59 of them, the 47 of
 // `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, the four of
 // `agent-workspace-timing.e2e.ts`, the five of `large-documents-measured.e2e.ts`,
 // `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`
 // and `large-documents-desktop-build.e2e.ts`, and the three of
-// `large-documents-long-build.e2e.ts`'s phone half - reaches the union below from it
-// alone.
+// `large-documents-long-build.e2e.ts`'s phone half - and every row of `answer-parties.bus.e2e.ts`
+// reaches the union below from it alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
 // ambient ones, so this file reads the same suite wherever it runs. That is also what lets the
@@ -53,7 +54,12 @@ const signInListing = retained(
   })
 );
 const clockListing = retained(
-  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
+  listing(
+    import.meta.url,
+    "e2e/playwright.config.ts",
+    {},
+    projectArguments([...clockProjectNames, ...busProjectNames])
+  )
 );
 
 const scannedFiles = specFiles(e2eDirectory);
@@ -156,7 +162,7 @@ test(
     if (realUnexplained.length === 0 && realStale.length === 0) {
       console.log(
         "no-browser rows: read the default, DISPATCH_E2E_PROCESSES=2, DISPATCH_E2E_SIGNIN=oidc " +
-          "DISPATCH_E2E_PROCESSES=2 and wall-clock-project listings " +
+          "DISPATCH_E2E_PROCESSES=2 and wall-clock- and bus-project listings " +
           `(${plainFiles.length}, ${multiprocessFiles.length}, ${signInFiles.length} and ` +
           `${clockFiles.length} files, ${listed.length} together); scanned ` +
           `${scannedFiles.length} files and ${realRows.length} rows; found no unexplained ` +

@@ -19,6 +19,12 @@
  *  (`e2e/harness-postgres.ts`). The preflight then checks the deployed server against this run's
  *  own fake Envoy, which is the whole point of running it.
  *
+ *  A run whose projects are all bus projects is a bus run (`busRunOf`, `e2e/configurations.ts`):
+ *  the pool gives each of its stacks a JetStream server of its own (`e2e/harness-bus.ts`), whose
+ *  address the stack carries as `DISPATCH_E2E_NATS_URLS`. A run that selects a bus project beside
+ *  a project of another kind is refused before anything starts, since the bus changes the server
+ *  for every row of the stack it runs in.
+ *
  *  What a stack is, and why there is one per worker, is in `e2e/harness-pool.ts`. The pool
  *  reports its stacks on stderr, and this file's own line comes after those, so the log reads in
  *  the order the work happened: the stacks, then the preflight against them.
@@ -47,7 +53,7 @@ import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@p
 
 import { resetFakeEnvoy, setLiveSessions } from "./agents";
 import { baseUrlOf, devSignInPath, listAgents, sessionCookieFrom } from "./api";
-import { stubProjectNames } from "./configurations";
+import { busRunOf, stubProjectNames } from "./configurations";
 import { type Stack, startStacks } from "./harness-pool";
 import { harnessPorts, refuseStackConflicts, stacksVariable } from "./harness-ports";
 import {
@@ -230,6 +236,11 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // database and no listener of this harness, so no number of workers can make two of its rows
   // share anything, and a `DATABASE_URL` in the caller's environment is nothing to do with it.
   if (stub.onlyStub) return;
+  // Whether this run's stacks run a bus, read from the projects it selected - which a user-
+  // interface session's hook reads as the default selection, where no bus project is - and
+  // refused here, naming both kinds, when it selects a bus project beside another kind. Before
+  // the reuse return below, since a run against servers a person started mixes them all the same.
+  const bus = busRunOf(config.filteredProjects.map((project) => project.name));
   // Every other run of more than one worker is refused here if the caller set a variable one
   // stack owns, BEFORE the return below and before anything starts. `DISPATCH_E2E_REUSE_SERVERS`
   // is why the order matters: it would otherwise return from this hook and leave every worker
@@ -244,7 +255,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // `config.workers` is this run's resolved worker count, a `--workers` on the command line
   // included, and under `--shard` it is this process's own.
   const count = config.workers;
-  const stacks = await startStacks(count);
+  const stacks = await startStacks(count, { bus });
   // Every worker inherits what this writes (Playwright carries the environment `globalSetup`
   // leaves behind into each worker process), and resolves its own stack out of the manifest
   // through `TEST_PARALLEL_INDEX`; a process with no index of its own, this one included, reads

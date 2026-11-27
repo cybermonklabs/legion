@@ -647,6 +647,14 @@ export function listAgentMessages(sessionID: string, options: ApiOptions = {}) {
   );
 }
 
+/** What people wrote that Dispatch delivered to one session (`GET
+ *  /api/v1/agents/{session_id}/answers`): read from the events whose published_destinations hold
+ *  the session's own topic, so an item is there once the outbox has recorded the batch that
+ *  published it there. */
+export function listSessionAnswers(sessionID: string, options: ApiOptions = {}) {
+  return get("/api/v1/agents/{session_id}/answers", { params: { session_id: sessionID } }, options);
+}
+
 export function createIssue(input: Body<"/api/v1/issues", "post">, options: ApiOptions = {}) {
   return post("/api/v1/issues", { body: input }, options);
 }

@@ -43,8 +43,9 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
      f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
     (".github/scripts/dispatch-browser-shard-suite.sh",
      "`packages/dispatch/e2e/__tests__/shard-split.test.ts#legs` reads the leg count from the "
-     "script's `--shard` denominator at a new URL and holds each row to one leg at that count, and "
-     f"{at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
+     "script's `--shard` denominator at a new URL and holds each row to one leg at that count, "
+     "and `packages/dispatch/e2e/__tests__/shard-split.test.ts#shardSuiteScript` holds it to "
+     f"naming no bus project, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/__tests__/psql-password.test.ts#../../envoy/scripts/lib/pg-url.sh` sources it, and "
                                        "`packages/dispatch/e2e/acceptance/replace-blocks.sh#pg-url.sh` does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                        f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

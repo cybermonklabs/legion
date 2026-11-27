@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
 import {
+  busSpecPattern,
   clockFileOnCommandLine,
   clockProjectNames,
   clockSpecPattern,
@@ -338,14 +339,22 @@ const visualSpecs = /visual\.e2e\.ts$/;
 
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
-  // The desktop half of the pair: every row of the suite except the three kinds this project is
+  // The desktop half of the pair: every row of the suite except the four kinds this project is
   // not the one for. A `@phone-only` row has no desktop case to make, the one row of
-  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either, and a row read from the
+  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either, a row read from the
   // wall clock is in a file of its own that this project's `testIgnore` holds
-  // (`clockSpecPattern`, e2e/configurations.ts).
+  // (`clockSpecPattern`, e2e/configurations.ts), and so is a row whose claim is a delivery the
+  // outbox makes over a bus (`busSpecPattern`, the same module), which `chromium-bus` runs.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      busSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
@@ -360,6 +369,7 @@ const parallelProjects = [
       multiprocessSpecs,
       clockSpecPattern,
       phoneAloneSpecPattern,
+      busSpecPattern,
       visualSpecs,
       stubSpecs,
     ],
@@ -410,15 +420,22 @@ const parallelProjects = [
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
-  // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
-  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
-  // what keeps the six clock-read files to the `-alone` projects at the end of this list and
+  // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess,
+  // clock-read or bus spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore
+  // is what keeps the six clock-read files to the `-alone` projects at the end of this list and
   // out of every project above them (sjawhar/legion#2612), here and in the three other projects
   // that name it - a tag written on a wall-clock row included, since what this project sees is
   // decided by the file and never by the row.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      busSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -488,7 +505,14 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      busSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -706,6 +730,36 @@ const aloneProjects = [
 ] satisfies Project[];
 
 /**
+ * The project whose stack runs a bus (`busProjectNames`, e2e/configurations.ts): the rows whose
+ * claim is a delivery Dispatch's outbox makes, which runs only where the server has NATS
+ * (dispatch://INFRA-341, R14). `e2e/global-setup.ts` sees it among the run's projects and has
+ * the pool start a JetStream server for each stack before its harness (e2e/harness-bus.ts), and
+ * hands the stack its address as `DISPATCH_E2E_NATS_URLS`, which e2e/run-server.sh gives the
+ * server as its `NATS_URLS` and e2e/fake-envoy.ts reads its frames from. A bus changes the server
+ * for every row of the run, so that hook refuses a run that selects this project beside any
+ * other, and every project above that would otherwise see its files ignores them
+ * (`busSpecPattern`).
+ *
+ * `default: false`, so a run that names no project holds no row of it, and `bun run e2e:bus`
+ * names it; Desktop Chrome, the configuration `chromium` runs the rest of the suite in. `workers:
+ * 1`, which is one stack and one bus: each row reads the frames of one fake listener, and two
+ * rows on one stack would empty each other's frames as they empty each other's database.
+ * `retries: 0`, against the one retry the run takes on CI: a delivery these rows read missing
+ * once and present on a second attempt is a copy the outbox lost or sent late, which is the
+ * defect they exist to find, and a retry would report it `flaky` and leave the run green.
+ */
+const busProjects = [
+  {
+    name: "chromium-bus",
+    default: false,
+    testMatch: busSpecPattern,
+    use: { ...devices["Desktop Chrome"] },
+    workers: 1,
+    retries: 0,
+  },
+] satisfies Project[];
+
+/**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
  * comparing that page against a committed baseline in light and in dark, and the pages a phone
  * width rearranges once more in that viewport (e2e/visual.e2e.ts).
@@ -861,8 +915,9 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the six `-alone` projects, the two `visual` ones, the two stubbed ones
-  // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
+  // none of its own: the six `-alone` projects, `chromium-bus`, the two `visual` ones, the two
+  // stubbed ones and the multiprocess one each set `retries: 0`, each for a reason its own
+  // comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
   // learns how this run's rows ended, which is what decides whether its stack logs are kept
@@ -956,6 +1011,7 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
+          ...busProjects,
           // Both are declared in every run, as their comment says.
           ...visualProjects,
           ...(stub.declared ? stubProjects : []),

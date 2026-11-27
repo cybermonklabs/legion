@@ -19,7 +19,14 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { type ListedRow, pullRequestLaneProjects, rowsOfListing, tagged } from "../configurations";
+import {
+  busProjectNames,
+  busSpecPattern,
+  type ListedRow,
+  pullRequestLaneProjects,
+  rowsOfListing,
+  tagged,
+} from "../configurations";
 import { legRowFaults } from "../leg-rows";
 import {
   dependencyProjects,
@@ -124,15 +131,20 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
+/** The shard job's browser step's script, which this file reads the leg count out of and holds
+ *  to the projects it may name. */
+const shardSuiteScript = readFileSync(
+  new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url),
+  "utf8"
+);
+
 /** The shard job's leg count, read from the `--shard` denominator of its browser step, so this
  *  file holds the split the job runs and is no third place the count is written
  *  (.github/ci-notes/dispatch-browser.md, "Why the leg count stands in two places"). */
 const legs = (() => {
-  const script = readFileSync(
-    new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url),
-    "utf8"
+  const counts = [...shardSuiteScript.matchAll(/--shard=\$shard\/(\d+)/g)].map((match) =>
+    Number(match[1])
   );
-  const counts = [...script.matchAll(/--shard=\$shard\/(\d+)/g)].map((match) => Number(match[1]));
   if (counts.length === 0 || counts.some((count) => count !== counts[0])) {
     throw new Error(`the shard suite script names no one --shard denominator: ${counts}`);
   }
@@ -214,3 +226,35 @@ for (const [name, listed] of Object.entries(selections)) {
     rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
   );
 }
+
+// The bus project's row of the split, which is that it has none. Its rows read the frames their
+// stack's bus carried, and a shard leg's stacks have no bus: a run that selected the bus project
+// beside the lane's other projects would be refused before it started (`busRunOf`,
+// e2e/configurations.ts). So it is out of the default selection, every default project that
+// would see a bus file ignores it (`busSpecPattern`), and it runs on a leg of its own, the alone
+// job's `chromium-bus`; neither selection the legs above split holds a row of it or of its files,
+// and no lane of the shard job's script names it.
+test(
+  "no leg of the shard job holds a row of the bus project or of a bus file",
+  async () => {
+    for (const project of busProjectNames) {
+      expect(
+        shardSuiteScript.includes(`--project=${project}`),
+        `.github/scripts/dispatch-browser-shard-suite.sh names --project=${project}`
+      ).toBe(false);
+    }
+    for (const [name, listed] of Object.entries(selections)) {
+      const { whole } = await listed;
+      const rows = rowsOfListing(whole);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(
+        rows
+          .filter((row) => busProjectNames.includes(row.project) || busSpecPattern.test(row.file))
+          .map(rowKey),
+        `the rows of ${name} that are the bus project's or in a bus file`
+      ).toEqual([]);
+    }
+  },
+  // Both selections, started together above, each a listing per leg after its whole one.
+  rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
+);

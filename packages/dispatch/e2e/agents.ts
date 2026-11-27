@@ -298,6 +298,70 @@ export async function getSentMessages(): Promise<Record<string, unknown>[]> {
   >;
 }
 
+/** One message the outbox published on a session's agent subject, as the fake listener read it
+ *  off its stack's bus (`GET /__fixture/bus-frames`, e2e/fake-envoy.ts): the subject, the session
+ *  it names and the envelope it carried. */
+export interface BusFrame {
+  readonly subject: string;
+  readonly session: string;
+  readonly envelope: unknown;
+}
+
+/** The frames the fake listener read off its stack's bus since its last reset, oldest first, for
+ *  `session` alone when one is named. A stack started with no bus has none to read, and the fake
+ *  answers 409: this throws on it, naming the project that runs a bus, so a bus row on such a
+ *  stack fails rather than reading the absence of every frame as nothing sent. */
+export async function getBusFrames(session?: string): Promise<BusFrame[]> {
+  const path = `/__fixture/bus-frames${session === undefined ? "" : `?session=${encodeURIComponent(session)}`}`;
+  const response = await fetch(`http://127.0.0.1:${harnessPorts().fakeEnvoy.port}${path}`);
+  if (response.status === 409) {
+    throw new Error(
+      `GET ${path} answered 409 ${await response.text()}: this row's stack started with no ` +
+        "bus, so nothing the outbox sends can reach it. Run it in `chromium-bus` (`bun run " +
+        "e2e:bus` in packages/dispatch), whose stack starts a JetStream server of its own " +
+        "(e2e/harness-bus.ts)."
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as BusFrame[];
+}
+
+/** A frame read as the Dispatch event it carries: the envelope's own `event_id`, and the event its
+ *  `payload` holds, which the outbox writes as that event's JSON in a string (`envelope`,
+ *  packages/envoy/internal/dispatch/outbox/publisher.go) - its id, its type and its payload. A
+ *  frame that carries no event reads with none of them. */
+export interface BusEvent {
+  readonly session: string;
+  /** The envelope's `event_id`, `dispatch-<id>` of the event it carries. */
+  readonly envelopeEventId: unknown;
+  readonly id: unknown;
+  readonly type: unknown;
+  readonly payload: Record<string, unknown> | undefined;
+}
+
+/** `getBusFrames`, each frame read as the event it carries (`BusEvent`). */
+export async function getBusEvents(session?: string): Promise<BusEvent[]> {
+  return (await getBusFrames(session)).map((frame) => {
+    const envelope = (typeof frame.envelope === "object" ? frame.envelope : null) as Record<
+      string,
+      unknown
+    > | null;
+    const event =
+      typeof envelope?.payload === "string"
+        ? (JSON.parse(envelope.payload) as Record<string, unknown>)
+        : undefined;
+    return {
+      envelopeEventId: envelope?.event_id,
+      id: event?.id,
+      payload: event?.payload as Record<string, unknown> | undefined,
+      session: frame.session,
+      type: event?.type,
+    };
+  });
+}
+
 /** Whether a body the page posted is a broadcast's input. */
 export function isBroadcastInput(body: unknown): body is CreateBroadcastInput {
   return (
