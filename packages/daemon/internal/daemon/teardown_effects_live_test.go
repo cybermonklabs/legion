@@ -11,8 +11,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,12 +99,20 @@ type teardownEffectsRun struct {
 	git              fixturegit.Runner
 	commits          map[string]string
 	handoffs         map[string]teardownEffectsHandoff
-	// gateIDs is the id the replay's Dispatch gives each gate step's document, by step, and
-	// artifacts the id the replay's Dispatch gives each document a case's records or a run name by
-	// an id of their own (the world's gate artifactId, lane R's scratch id), by that id.
-	gateIDs, artifacts map[string]string
-	before             phase.Phase
-	fail               func(error)
+	// gateIDs is the id the replay's Dispatch gives each gate step's document, by step, and ids the
+	// id the replay's Dispatch gives each record the case's records or a run name by an id or a
+	// name of their own, under `comment/<name>`, `ask/<name>`, `message/<name>` and
+	// `artifact/<name>`: each comment and question of the world by its id (seedConversation), a
+	// comment a trace names (`id`), the world's gate artifactId, and each record of a run's by lane
+	// R's scratch id (applyDispatch, mapRunArtifacts), as seed.ts keeps its own in
+	// dispatch-fixture.json's `ids`.
+	gateIDs, ids map[string]string
+	// held is each issue the case's world seeds in the replay's Dispatch, the case's own first, on
+	// which a trace's write may be made; written is the id of each document of the case's issue a
+	// trace's write made or changed, in order.
+	held, written []string
+	before        phase.Phase
+	fail          func(error)
 }
 
 func TestTeardownEffectsLive(t *testing.T) {
@@ -226,7 +232,15 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
 		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: failed,
-		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, artifacts: map[string]string{}}
+		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, ids: map[string]string{}, held: []string{key}}
+	if parent := world.Dispatch.Issue.Parent; parent != "" {
+		r.held = append(r.held, parent)
+	}
+	for _, other := range world.Dispatch.Issues {
+		if !slices.Contains(r.held, other.Key) {
+			r.held = append(r.held, other.Key)
+		}
+	}
 	if world.Git != nil && world.Git.Remote.Name != "" {
 		r.remoteName = world.Git.Remote.Name
 	}
@@ -295,6 +309,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 			}
 			r.handoff(handoff.Phase, handoff.Author, r.mapBody(handoff.Body))
 		}
+		r.seedConversation(world, false)
 	}
 	// The case's issue carries the labels its world states, else Legion's, as lane R's seed leaves
 	// it; the parent carries Legion's label too, as the root handed over that seed records it as,
@@ -343,6 +358,9 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	for _, i := range ownHandoffs {
 		handoff := world.Dispatch.Handoffs[i]
 		r.handoff(handoff.Phase, r.session, r.mapBody(handoff.Body))
+	}
+	if plan == nil {
+		r.seedConversation(world, true)
 	}
 	// A child stands in the tree the world records it in: daemon.issue's, else its Dispatch
 	// parent's, which runs.
@@ -804,9 +822,9 @@ func (r *teardownEffectsRun) dispatchIssue(key string) (handoffDispatchIssue, st
 
 // gateDocuments finds the document of each step of the world's design gate (daemon.gate) among the
 // documents the replay's Dispatch holds of the claim's tree root, by its file name, as lane R's
-// seed finds it (seed.ts seedCaseDispatch): its id goes in gateIDs, by step, and in artifacts under
-// the id the case names the document by. A document the root does not hold fails the setup, naming
-// the part.
+// seed finds it (seed.ts seedCaseDispatch): its id goes in gateIDs, by step, and in the id map
+// under `artifact/<the id the case names the document by>`. A document the root does not hold
+// fails the setup, naming the part.
 func (r *teardownEffectsRun) gateDocuments(world teardownEffectsWorld) {
 	rows := world.Daemon.Gate
 	if len(rows) == 0 {
@@ -836,12 +854,12 @@ func (r *teardownEffectsRun) gateDocuments(world teardownEffectsWorld) {
 		}
 		r.gateIDs[row.Step] = root.Artifacts[at].ID
 		if row.ArtifactID != "" {
-			r.artifacts[row.ArtifactID] = root.Artifacts[at].ID
+			r.ids["artifact/"+row.ArtifactID] = root.Artifacts[at].ID
 		}
 	}
 }
 
-// mapRunArtifacts takes into artifacts the id lane R's scratch Dispatch gave each gate step's
+// mapRunArtifacts takes into the id map the id lane R's scratch Dispatch gave each gate step's
 // document, which the run's calls name it by (seed.ts's dispatch-fixture.json `gate`): the replay's
 // call names the replay's own.
 func (r *teardownEffectsRun) mapRunArtifacts(runDir string) {
@@ -853,7 +871,7 @@ func (r *teardownEffectsRun) mapRunArtifacts(runDir string) {
 	teardownEffectsReadJSON(r.t, file, &fixture)
 	for step, id := range fixture.Gate {
 		if given := r.gateIDs[step]; given != "" {
-			r.artifacts[id] = given
+			r.ids["artifact/"+id] = given
 		}
 	}
 }
@@ -1031,6 +1049,111 @@ func (r *teardownEffectsRun) handoff(word, session, body string) handoffRecord {
 	r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
 	return got
 }
+
+// seedConversation writes the world's comments and questions (world.dispatch.comments and asks) on
+// the case's issue in their case time order, as lane R's seed writes them (seed.ts
+// seedCaseDispatch): each by its author, a session where the author is one (`ses-`) and the scratch
+// Dispatch's person otherwise; a question with its options, then answered by the person or
+// resolved by its author as its state says. Each takes the id the replay's Dispatch gives it in the
+// id map, under `comment/<the world's id>` or `ask/<the world's id>`, so that a trace's reply, answer
+// or link names it. own says which records: those of the role's own session (daemon.claim.session),
+// written as the replay's session once the pane has registered one, or every other.
+func (r *teardownEffectsRun) seedConversation(world teardownEffectsWorld, own bool) {
+	type record struct {
+		at    time.Time
+		what  string
+		write func() error
+	}
+	author := func(id string) teardownEffectsActor {
+		switch {
+		case teardownEffectsOwnWrite(world, id):
+			return teardownEffectsActor{Kind: "session", ID: r.session}
+		case strings.HasPrefix(id, "ses-"):
+			return teardownEffectsActor{Kind: "session", ID: id}
+		}
+		return teardownEffectsActor{Kind: "user", ID: id}
+	}
+	made := func(kind, id string, answer []byte) error {
+		var created struct{ ID string }
+		if err := json.Unmarshal(answer, &created); err != nil || created.ID == "" {
+			return fmt.Errorf("Dispatch's answer names no id of the %s: %s", kind, answer)
+		}
+		r.ids[kind+"/"+id] = created.ID
+		return nil
+	}
+	prefix := "/api/v1/issues/" + r.key
+	var records []record
+	for _, comment := range world.Dispatch.Comments {
+		if teardownEffectsOwnWrite(world, comment.Author) != own {
+			continue
+		}
+		records = append(records, record{comment.At, "world.dispatch.comments " + comment.ID, func() error {
+			answer, err := r.dispatchSend(author(comment.Author), http.MethodPost, prefix+"/comments", map[string]any{"body": comment.Body})
+			if err != nil {
+				return err
+			}
+			return made("comment", comment.ID, answer)
+		}})
+	}
+	for _, ask := range world.Dispatch.Asks {
+		if teardownEffectsOwnWrite(world, ask.Author) != own {
+			continue
+		}
+		records = append(records, record{ask.At, "world.dispatch.asks " + ask.ID, func() error {
+			options := make([]map[string]string, len(ask.Options))
+			for i, label := range ask.Options {
+				options[i] = map[string]string{"label": label}
+			}
+			answer, err := r.dispatchSend(author(ask.Author), http.MethodPost, prefix+"/asks", map[string]any{"question": ask.Question, "options": options})
+			if err != nil {
+				return err
+			}
+			if err := made("ask", ask.ID, answer); err != nil {
+				return err
+			}
+			var opened struct {
+				EditedAt json.RawMessage `json:"edited_at"`
+			}
+			_ = json.Unmarshal(answer, &opened)
+			given := "/api/v1/asks/" + r.ids["ask/"+ask.ID]
+			switch ask.State {
+			case "answered":
+				if ask.Answer == nil {
+					return fmt.Errorf("an answered question with no answer")
+				}
+				selected := []string{}
+				if slices.Contains(ask.Options, *ask.Answer) {
+					selected = append(selected, *ask.Answer)
+				}
+				_, err = r.dispatchSend(teardownEffectsActor{Kind: "user", ID: handoffRecordsUser}, http.MethodPost, given+"/answer", map[string]any{"selected": selected, "text": *ask.Answer, "expected_edited_at": opened.EditedAt})
+			case "dismissed":
+				reason := "No answer needed."
+				if ask.Answer != nil {
+					reason = *ask.Answer
+				}
+				_, err = r.dispatchSend(author(ask.Author), http.MethodPost, given+"/resolve", map[string]any{"kind": "resolved", "reason": reason})
+			}
+			return err
+		}})
+	}
+	// Each result of the world, recorded as lane R's seed records it (seed.ts seedCaseDispatch): by
+	// the session rig-seed-<role>, at the replay's commit of the world's, observed as the starting
+	// state, through the real CLI as a run's result is (recordResult).
+	for i, result := range world.Dispatch.Results {
+		if own {
+			break
+		}
+		records = append(records, record{result.At, fmt.Sprintf("world.dispatch.results[%d]", i), func() error {
+			return r.recordResult("rig-seed-"+result.Role, result.Check, map[string]any{"role": result.Role, "verdict": result.Verdict, "commit_sha": r.sha(result.Commit), "observed": "Recorded in the case's starting state."})
+		}})
+	}
+	slices.SortStableFunc(records, func(a, b record) int { return a.at.Compare(b.at) })
+	for _, each := range records {
+		if err := each.write(); err != nil {
+			r.fail(fmt.Errorf("seed %s of the case's starting state: %w", each.what, err))
+		}
+	}
+}
 func (r *teardownEffectsRun) evidence(id string, answers []teardownEffectsAnswer, differences []teardownEffectsDifference, names []teardownEffectsHandoff) teardownEffectsRecord {
 	return teardownEffectsRecord{ID: id, Answers: append([]teardownEffectsAnswer{}, answers...), Diverged: append([]teardownEffectsDifference{}, differences...), HandoffRecords: append([]teardownEffectsHandoff{}, names...), PhaseBefore: string(r.before), PhaseAfter: string(r.issue(r.key).Phase),
 		ProductionCheck: r.productionCheck()}
@@ -1096,85 +1219,6 @@ func teardownEffectsWriteJSON(t *testing.T, path string, value any) {
 	if err := os.Rename(temporary, path); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Observe actual bytes on one HTTP hop: the pane's to the real daemon, where only the tool routes
-// are observed (boot, registration, and asynchronous lifecycle calls are not tool answers), or the
-// dispatch CLI's to Dispatch, where every request is observed. asked counts each observed request,
-// and records holds each that came back, with its answer, so a request that got no answer (a
-// transport failure) shows as a gap between the two.
-type teardownEffectsProxy struct {
-	mu      sync.Mutex
-	url     string
-	asked   int
-	records []teardownEffectsHTTP
-}
-
-func teardownEffectsStartProxy(t *testing.T, target string, observe func(path string) bool) *teardownEffectsProxy {
-	t.Helper()
-	dest, err := url.Parse(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &teardownEffectsProxy{}
-	forward := httputil.NewSingleHostReverseProxy(dest)
-	type requestKey struct{}
-	forward.ModifyResponse = func(res *http.Response) error {
-		sent, ok := res.Request.Context().Value(requestKey{}).(teardownEffectsHTTP)
-		if !ok {
-			return nil
-		}
-		answer, err := io.ReadAll(res.Body)
-		res.Body.Close()
-		if err != nil {
-			return err
-		}
-		res.Body = io.NopCloser(bytes.NewReader(answer))
-		if !json.Valid(answer) {
-			answer, _ = json.Marshal(string(answer))
-		}
-		sent.Answer, sent.Status = answer, res.StatusCode
-		p.mu.Lock()
-		p.records = append(p.records, sent)
-		p.mu.Unlock()
-		return nil
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if observe(req.URL.Path) {
-			p.mu.Lock()
-			p.asked++
-			p.mu.Unlock()
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				http.Error(w, "cannot observe request", 400)
-				return
-			}
-			req.Body = io.NopCloser(bytes.NewReader(body))
-			req = req.WithContext(context.WithValue(req.Context(), requestKey{}, teardownEffectsHTTP{At: time.Now(), Method: req.Method, Path: req.URL.Path, Body: body}))
-		}
-		forward.ServeHTTP(w, req)
-	}))
-	p.url = server.URL
-	t.Cleanup(server.Close)
-	return p
-}
-func (p *teardownEffectsProxy) since(from int) []teardownEffectsHTTP {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return slices.Clone(p.records[from:])
-}
-func (p *teardownEffectsProxy) mark() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.records)
-}
-
-// observed is the number of requests the proxy observed, and each of them that came back, with its
-// answer, in order.
-func (p *teardownEffectsProxy) observed() (int, []teardownEffectsHTTP) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.asked, slices.Clone(p.records)
 }
 
 // One scripted turn executes one tool at a time. The next request carries the tool result;
@@ -1269,13 +1313,13 @@ func (s *teardownEffectsModel) ServeHTTP(w http.ResponseWriter, req *http.Reques
 
 // call makes one legion call through the real pane at the case time at, with args, the call's op and
 // its arguments. A document the call names by the case's id or lane R's (a register_gate's
-// artifactId) is named by the id the replay's Dispatch gave it (artifacts).
+// artifactId) is named by the id the replay's Dispatch gave it (ids).
 func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([]teardownEffectsAnswer, []teardownEffectsHTTP, []teardownEffectsHandoff, toolResult) {
 	t := r.t
 	t.Helper()
-	if id, ok := args["artifactId"].(string); ok && r.artifacts[id] != "" {
+	if id, ok := args["artifactId"].(string); ok && r.ids["artifact/"+id] != "" {
 		args = maps.Clone(args)
-		args["artifactId"] = r.artifacts[id]
+		args["artifactId"] = r.ids["artifact/"+id]
 	}
 	r.clock.advance(at)
 	from := r.proxy.mark()
@@ -1706,14 +1750,15 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 // legion call through the real pane at the action's case time, held to the answer the trace records
 // (teardownEffectsTraceAnswer); each push, GitHub change and Dispatch write a change made before the
 // next call, or after the last one, by the run replay's own writers at the action's case time
-// (applyTraceAction), a request-approval among them, which the replay makes as a refused write and
-// records its refusal under the action's own seq and case time. A staging action, a GitHub call
-// that changes no pull request (a read: teardownEffectsTraceRead) and an action of a carried kind
-// (an Envoy message, a Dispatch read, a task agent's start, a probe of production, a diff read:
-// teardownEffectsCarriedKinds) change nothing the replay holds, and are not made; each action that
-// is made keeps its own seq and case time however many of them stand between. Where the trace
-// states its documents, the script's check holds the real Dispatch to them after the trace's last
-// write (documentFaults). It also answers the seq of each call's action, in the order of the calls.
+// (applyTraceAction), a refused request-approval among them, which records its refusal under the
+// action's own seq and case time. A staging action, a GitHub call that changes no pull request (a
+// read: teardownEffectsTraceRead) and an action of a carried kind (an Envoy message, a Dispatch
+// read, a task agent's start, a probe of production, a diff read: teardownEffectsCarriedKinds)
+// change nothing the replay holds, and are not made; each action that is made keeps its own seq and
+// case time however many of them stand between. Where the trace states its documents (an empty
+// list among them), the script's check holds the real Dispatch to them after the trace's last write
+// (documentFaults); a trace with no `documents` key is held to nothing. It also answers the seq of
+// each call's action, in the order of the calls.
 func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffectsTrace) (teardownEffectsScript, []int) {
 	var script teardownEffectsScript
 	var seqs []int
@@ -1747,7 +1792,7 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 		}
 	}
 	script.end = pending
-	if len(trace.Documents) > 0 {
+	if trace.Documents != nil {
 		script.check = func() error { return r.documentFaults(caseID, name, trace.Documents) }
 	}
 	return script, seqs
@@ -1756,8 +1801,10 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 // documentFaults holds each document the trace `name` of case caseID states to the document of the
 // issue the replay's Dispatch holds by its file name, after the trace's last write: its latest
 // version and that version's text, read through Dispatch's own routes, with each id the replay's
-// Dispatch gave a document the world names by an id of its own written as the world's (artifacts,
-// turned round). A document not held as stated is an error, the replay's HARNESS verdict.
+// Dispatch gave a record the case names written as the case's name (ids, turned round). Each
+// document of the issue a trace's write made or changed (written) must be among the stated ones. A
+// document not held as stated, and a written one the trace does not state, is an error, the
+// replay's HARNESS verdict (teardownEffectsDocumentFaults).
 func (r *teardownEffectsRun) documentFaults(caseID, name string, stated []teardownEffectsDocument) error {
 	get := func(path string, into any) error {
 		request, err := http.NewRequest(http.MethodGet, r.dispatch.base+path, nil)
@@ -1801,11 +1848,18 @@ func (r *teardownEffectsRun) documentFaults(caseID, name string, stated []teardo
 		}
 		held[artifact.Name] = teardownEffectsDocument{Name: artifact.Name, Version: latest, Body: text.Markdown}
 	}
-	ids := map[string]string{}
-	for stated, given := range r.artifacts {
-		ids[given] = stated
+	var written []string
+	for _, artifact := range issue.Artifacts {
+		if slices.Contains(r.written, artifact.ID) {
+			written = append(written, artifact.Name)
+		}
 	}
-	if faults := teardownEffectsDocumentFaults(stated, held, ids); len(faults) > 0 {
+	ids := map[string]string{}
+	for named, given := range r.ids {
+		_, caseName, _ := strings.Cut(named, "/")
+		ids[given] = caseName
+	}
+	if faults := teardownEffectsDocumentFaults(stated, held, written, ids); len(faults) > 0 {
 		return fmt.Errorf("%s %s trace: the replay's Dispatch does not hold the documents the trace states: %s", caseID, name, strings.Join(faults, "; "))
 	}
 	return nil
@@ -1816,10 +1870,11 @@ func (r *teardownEffectsRun) documentFaults(caseID, name string, stated []teardo
 // (applyPush); a GitHub change is the trace's own `change`, or the one gh-standin keeps of the
 // request the action records (teardownEffectsTraceChange), its commits mapped and what it leaves to
 // the state filled from the replay's own (teardownEffectsScratch.resolve), made by the rule a run's
-// change is made by (teardownEffectsScratch.change); a Dispatch write is made by the role's session
-// as the run replay makes one (teardownEffectsTraceWrite, applyDispatch), but a request-approval,
-// which the role's session makes through the real dispatch CLI as a refused write
-// (requestApproval). It answers that write's refusal, and nil for every change it made.
+// change is made by (teardownEffectsScratch.change); a handoff, a result and a question are made by
+// the role's session as the run replay makes one (teardownEffectsTraceWrite, applyDispatch); and
+// every other Dispatch write through the real dispatch CLI, as the role's session makes it
+// (command), a request-approval among them (requestApproval). It answers a request-approval's
+// refusal, and nil for every change it made.
 func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*teardownEffectsRefusal, error) {
 	r.clock.advance(a.At)
 	switch a.Kind {
@@ -1852,46 +1907,82 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*te
 		}
 		return nil, scratch.change(p)
 	case "dispatch":
-		if a.Command == teardownEffectsApprovalCommand {
+		switch a.Command {
+		case "handoff-write", "result", "ask":
+			e, readback, err := teardownEffectsTraceWrite(r.key, r.session, a, r.sha, r.nextVersion)
+			if err != nil {
+				return nil, err
+			}
+			return nil, r.applyDispatch(e, r.session, &readback)
+		case teardownEffectsApprovalCommand:
 			return r.requestApproval(a)
 		}
-		e, readback, err := teardownEffectsTraceWrite(r.key, r.session, a, r.sha, r.nextVersion)
-		if err != nil {
-			return nil, err
-		}
-		return nil, r.applyDispatch(e, r.session, &readback)
+		return nil, r.command(a)
 	}
 	return nil, fmt.Errorf("the replay makes no %s action", a.Kind)
 }
 
-// requestApproval makes the trace's request-approval a again as the role's session makes one: the
-// real dispatch CLI, run as recordResult runs it, with the document and the summary the trace names
-// (teardownEffectsApprovalRequest), through a proxy that keeps each request the CLI sends Dispatch
-// and Dispatch's answer to it. The replay makes a request-approval only as a refused write: it
-// answers the refusal, typed from those answers (teardownEffectsApprovalRefusal), and an error,
-// which makes the replay HARNESS, where Dispatch took the request or another write, failed, or
-// refused for another cause.
+// command makes the trace's Dispatch write a again as the role's session makes it, through the real
+// dispatch CLI (teardownEffectsTraceCommand, dispatchCLI), and requires the CLI to have made it
+// (teardownEffectsCommandMade): a refusal of the CLI's or Dispatch's is an error, which makes the
+// replay HARNESS, naming the command and Dispatch's code. A comment the case names by its `id`
+// joins the id map under that name, so a later write that names it names the replay's comment,
+// and a document of the case's issue the write made or changed is one of written.
+func (r *teardownEffectsRun) command(a teardownEffectsTraceAction) error {
+	c, err := teardownEffectsTraceCommand(r.key, r.held, a, r.ids)
+	if err != nil {
+		return err
+	}
+	exit, printed, asked, sent := r.dispatchCLI(c)
+	made, err := teardownEffectsCommandMade(c, exit, printed, asked, sent)
+	if err != nil {
+		return fmt.Errorf("the trace's %s at action %d: %w", a.Command, a.Seq, err)
+	}
+	if c.Name != "" {
+		r.ids["comment/"+c.Name] = made.ID
+	}
+	if made.Document != "" && c.Issue == r.key && !slices.Contains(r.written, made.Document) {
+		r.written = append(r.written, made.Document)
+	}
+	return nil
+}
+
+// requestApproval makes the trace's request-approval a again as the role's session makes one, through
+// the real dispatch CLI (teardownEffectsTraceCommand, dispatchCLI). It answers the refusal of the
+// two that a trace's request can hold, nil where Dispatch took the request, which is a made write,
+// and an error, which makes the replay HARNESS, for every other outcome
+// (teardownEffectsApprovalRefusal).
 func (r *teardownEffectsRun) requestApproval(a teardownEffectsTraceAction) (*teardownEffectsRefusal, error) {
-	artifact, summary, err := teardownEffectsApprovalRequest(r.key, a)
+	c, err := teardownEffectsTraceCommand(r.key, r.held, a, r.ids)
 	if err != nil {
 		return nil, err
 	}
-	dir := r.t.TempDir()
-	args := []string{teardownEffectsApprovalCommand, "--issue", r.key}
-	for _, field := range []struct{ flag, value string }{{"artifact", artifact}, {"summary", summary}} {
-		file := filepath.Join(dir, field.flag)
-		writeProofFile(r.t, file, field.value)
-		args = append(args, "--"+field.flag+"-file", file)
+	exit, printed, asked, sent := r.dispatchCLI(c)
+	refusal, err := teardownEffectsApprovalRefusal(c, exit, printed, asked, sent)
+	if err != nil {
+		return nil, fmt.Errorf("the trace's request-approval at action %d: %s: %w", a.Seq, c, err)
 	}
+	return refusal, nil
+}
+
+// dispatchCLI runs c through the real dispatch CLI as the role's session, as recordResult runs it,
+// each text and JSON value from a file of its own, through a proxy that keeps each request the CLI
+// sends Dispatch and Dispatch's answer to it. It answers the CLI's exit code, what it printed, the
+// number of requests it sent, and each that came back, with its answer, in order.
+func (r *teardownEffectsRun) dispatchCLI(c teardownEffectsCommand) (int, string, int, []teardownEffectsHTTP) {
+	dir := r.t.TempDir()
+	files := 0
+	args := c.argv(func(flag, value string) string {
+		files++
+		file := filepath.Join(dir, fmt.Sprintf("%d-%s", files, flag))
+		writeProofFile(r.t, file, value)
+		return file
+	})
 	proxy := teardownEffectsStartProxy(r.t, r.dispatch.base, func(string) bool { return true })
 	shell := cliShell{t: r.t, dir: dir, session: r.session, base: proxy.url, token: r.dispatch.token}
 	out, exit := shell.bun(nil, dispatchCLI(r.harness.root), args...)
 	asked, sent := proxy.observed()
-	refusal, err := teardownEffectsApprovalRefusal(r.key, artifact, exit, string(out.stdout)+string(out.stderr), asked, sent)
-	if err != nil {
-		return nil, fmt.Errorf("the trace's request-approval at action %d: %w", a.Seq, err)
-	}
-	return refusal, nil
+	return exit, string(out.stdout) + string(out.stderr), asked, sent
 }
 
 // nextVersion is the version the next handoff record of phase takes: one more than the newest the
@@ -2150,22 +2241,43 @@ func (r *teardownEffectsRun) scratch() teardownEffectsScratch {
 
 // applyDispatch writes one Dispatch event's record again as its author wrote it: the run's own
 // session's as the replay's pane (own names the run's session), any other session's as that
-// session, and a person's as the scratch Dispatch's person. Dispatch gives each record a new id;
-// a handoff keeps its phase's version.
+// session, and a person's as the scratch Dispatch's person. A handoff keeps its phase's version
+// and a result goes through the real CLI (recordResult); every other write is the request
+// teardownEffectsEventRequest makes of it. Dispatch gives each record a new id, which joins the
+// replay's id map under the run's, so a later write that names the record names the replay's. For
+// an event the order placed, the replay's write must write the same follow-on events in its request
+// as the run's did (teardownEffectsFollowOns), else the replay's state is not the run's.
 func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b *teardownEffectsReadback) error {
 	actor := e.Actor
 	if actor.Kind == "session" && own != "" && actor.ID == own {
 		actor.ID = r.session
 	}
-	prefix := "/api/v1/issues/" + r.key
-	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
 	if fault, _ := teardownEffectsDispatchFault(b, e); fault != "" {
 		return fmt.Errorf("%s: %s", e.Type, fault)
 	}
+	cursor := r.dispatch.issue(r.key).LastSeq
+	if err := r.makeDispatch(e, actor, b); err != nil || !e.followed {
+		return err
+	}
+	lead, followOns, err := r.writtenSince(cursor, actor)
+	if err != nil {
+		return err
+	}
+	want, got := slices.Sorted(slices.Values(e.followOns)), slices.Sorted(slices.Values(followOns))
+	if lead != e.Type || !slices.Equal(want, got) {
+		return fmt.Errorf("the run's %s wrote the follow-on events %v in its request, and the replay's wrote %s and %v", e.Type, want, lead, got)
+	}
+	return nil
+}
+
+// makeDispatch makes the write of e as actor (applyDispatch).
+func (r *teardownEffectsRun) makeDispatch(e teardownEffectsEvent, actor teardownEffectsActor, b *teardownEffectsReadback) error {
+	prefix := "/api/v1/issues/" + r.key
+	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
 	switch e.Type {
 	case "handoff.recorded":
 		body, version, word, _ := b.handoffBody(text("handoff_id"))
-		if err := r.dispatchPost(actor, prefix+"/handoffs/"+word, map[string]any{"body": body}); err != nil {
+		if _, err := r.dispatchSend(actor, http.MethodPost, prefix+"/handoffs/"+word, map[string]any{"body": body}); err != nil {
 			return err
 		}
 		got := r.dispatch.latest(r.key, word)
@@ -2174,55 +2286,102 @@ func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b
 		}
 		r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
 		return nil
-	case "comment.created":
-		return r.dispatchPost(actor, prefix+"/comments", map[string]any{"body": text("body")})
 	case "result.recorded":
 		result, check, _ := b.result(text("result_id"))
 		return r.recordResult(actor.ID, check, result)
-	case "ask.opened":
-		for _, ask := range b.Asks {
-			if ask.ID == text("id") {
-				return r.dispatchPost(actor, prefix+"/asks", map[string]any{"question": ask.Question, "options": ask.Options})
-			}
-		}
-	case "artifact.created":
-		for _, doc := range b.Documents {
-			if doc.ID == e.ArtifactID {
-				return r.dispatchPost(actor, prefix+"/artifacts", map[string]any{"name": doc.Name, "content": doc.Text})
-			}
-		}
 	}
-	return fmt.Errorf("the replay writes no %s", e.Type)
-}
-
-// dispatchPost posts body as actor: a session through the agent's bearer, naming it, and a person
-// as the scratch Dispatch's person (handoffRecordsUser), whose login stands for the run's.
-func (r *teardownEffectsRun) dispatchPost(actor teardownEffectsActor, path string, body map[string]any) error {
-	var status int
-	var answer []byte
-	switch actor.Kind {
-	case "session":
-		body["actor"] = actor
-		status, answer = r.dispatch.agentPost(path, body)
-	case "user":
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		request, err := http.NewRequest(http.MethodPost, r.dispatch.base+path, bytes.NewReader(encoded))
-		if err != nil {
-			return err
-		}
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("X-Dispatch-User", handoffRecordsUser)
-		status, answer = r.dispatch.do(request)
-	default:
-		return fmt.Errorf("the replay writes nothing as a %s", actor.Kind)
+	request, err := teardownEffectsEventRequest(r.key, e, b, r.ids)
+	if err != nil {
+		return err
 	}
-	if status != http.StatusCreated {
-		return fmt.Errorf("Dispatch POST %s = %d %s", path, status, answer)
+	answer, err := r.dispatchSend(actor, request.Method, request.Path, request.Body)
+	if err != nil {
+		return err
+	}
+	id, document, version, err := teardownEffectsAnswerOf(answer)
+	if err != nil {
+		return fmt.Errorf("Dispatch's answer to %s %s: %w", request.Method, request.Path, err)
+	}
+	if request.Kind == "artifact" {
+		id = document
+	}
+	if request.Version != 0 && version != request.Version {
+		return fmt.Errorf("the replay's %s %s made version %d, and the run's %s made version %d", request.Method, request.Path, version, e.Type, request.Version)
+	}
+	if request.Kind != "" && request.ID != "" {
+		if id == "" {
+			return fmt.Errorf("Dispatch's answer to %s %s names no id of the %s it made", request.Method, request.Path, request.Kind)
+		}
+		r.ids[request.Kind+"/"+request.ID] = id
 	}
 	return nil
+}
+
+// writtenSince is what the replay's Dispatch wrote on the issue after the event cursor after, in the
+// request of the first event there by actor (a person's, by any person): that event's type, and the
+// type of each other event of the same request (its transaction's time, the events table's
+// `created_at default now()`), a delivery attempt left out.
+func (r *teardownEffectsRun) writtenSince(after int64, actor teardownEffectsActor) (string, []string, error) {
+	request, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/issues/%s/events?after=%d&limit=200", r.dispatch.base, r.key, after), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+	status, answer := r.dispatch.do(request)
+	var events []teardownEffectsEvent
+	if status != http.StatusOK || json.Unmarshal(answer, &events) != nil {
+		return "", nil, fmt.Errorf("Dispatch GET the events of %s after %d = %d %s", r.key, after, status, answer)
+	}
+	var lead *teardownEffectsEvent
+	var followOns []string
+	for i, e := range events {
+		if strings.HasSuffix(e.Type, ".delivery") || e.Actor.Kind != actor.Kind || actor.Kind == "session" && e.Actor.ID != actor.ID {
+			continue
+		}
+		switch {
+		case lead == nil:
+			lead = &events[i]
+		case e.CreatedAt.Equal(lead.CreatedAt):
+			followOns = append(followOns, e.Type)
+		}
+	}
+	if lead == nil {
+		return "", nil, fmt.Errorf("the replay's Dispatch wrote no event of %s by %s %s after %d", r.key, actor.Kind, actor.ID, after)
+	}
+	return lead.Type, followOns, nil
+}
+
+// dispatchSend sends body to path as actor: a session through the agent's bearer, naming it, and a
+// person as the scratch Dispatch's person (handoffRecordsUser), whose login stands for the run's.
+// It answers Dispatch's answer, and an error that names it where Dispatch did not take the write.
+func (r *teardownEffectsRun) dispatchSend(actor teardownEffectsActor, method, path string, body map[string]any) ([]byte, error) {
+	request := map[string]any{}
+	maps.Copy(request, body)
+	header := "X-Dispatch-User"
+	value := handoffRecordsUser
+	switch actor.Kind {
+	case "session":
+		request["actor"] = actor
+		header, value = "Authorization", "Bearer "+r.dispatch.token
+	case "user":
+	default:
+		return nil, fmt.Errorf("the replay writes nothing as a %s", actor.Kind)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	sent, err := http.NewRequest(method, r.dispatch.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	sent.Header.Set("Content-Type", "application/json")
+	sent.Header.Set(header, value)
+	status, answer := r.dispatch.do(sent)
+	if status < 200 || status > 299 {
+		return nil, fmt.Errorf("Dispatch %s %s = %d %s", method, path, status, answer)
+	}
+	return answer, nil
 }
 
 // recordResult records a check result as the session that recorded it in the run, each value of the

@@ -1774,8 +1774,9 @@ export async function seedCaseDispatch(
 
 /** Keep the native API envelopes and original timestamps; outcome.ts selects run writes and
  * reshapes them to the machine-independent schema. Each handoff carries its immutable body, and
- * each version of a document of the issue that an event after the seed wrote (outcome.ts
- * writtenVersion) carries its text, read through Dispatch's own version route (`versions`). */
+ * each version of a document of the issue that an event wrote (outcome.ts writtenVersion), the
+ * seed's among them, carries its text, read through Dispatch's own version route (`versions`):
+ * lane D's replay makes each document again at each version the events wrote, from that text. */
 export async function captureCaseDispatch(runDir: string): Promise<void> {
   const { issue: key, seedThrough } = CaseDispatchFixture.parse(
     JSON.parse(readFileSync(path.join(runDir, "dispatch-fixture.json"), "utf8"))
@@ -1798,7 +1799,7 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
   const texts = new Set(documents.filter(({ kind }) => kind === "doc").map(({ id }) => id));
   const versions: { artifact_id: string; number: number; markdown: string }[] = [];
   for (const event of events) {
-    const written = event.seq > seedThrough ? writtenVersion(event) : undefined;
+    const written = writtenVersion(event);
     if (written === undefined || !texts.has(written.id)) continue;
     const { id, version } = written;
     if (versions.some((each) => each.artifact_id === id && each.number === version)) continue;
