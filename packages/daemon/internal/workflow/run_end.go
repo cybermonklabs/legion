@@ -248,19 +248,22 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // that task (view), whose start waited for its join or for its agent, through Engine.start, the
 // start of every step: at the end of its join (taskJoined), at its join again at the issue's
 // generation (joinAgain) and at the hand-on of its freed agent (handOn). Its task is told where its
-// work stands and its own pull request (standingPart). Where the start that waited was a start
-// again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
-// its entry counts as a move back, as that start's own would have had it waited for nothing
-// (startAtFirstStep, transition). Where it was the return out of awaiting_children, the task is
-// told the return's own task as written (record.PlanTask.StartTask: the task the wait held, with
-// the children that merged during it), and its entry counts as a move back too, as the return's
-// start would have had it waited for nothing (ReturnFromChildren). Its entry names the phase the
-// start that waited moved the issue from (record.PhaseRow.EntryFrom), which that start kept on its
-// task's row (record.PlanTask.StepWaitFrom, waitsFrom), as that start's own entry would have named
-// it: so an entry a role's move back raised out of retro or merging names that phase after a wait
-// for its agent too, and the admission pass leaves its start alone (acceptedEntry). Both rows'
-// values are read on s's plan. said is the log line, which names the issue, the task, its place and
-// role, the reason, whether a return's task is told, that phase, and args.
+// work stands and its own pull request (standingPart). Where the start that waited was a move
+// forward, the task is told the report of the step that move ended in its place, before the pull
+// request (record.PlanTask.StartReport, taskReported), as that start's own would have been
+// (transition). Where it was a start again of the task at its first step or a move back
+// (Walk.StartReason), the task is told why, and its entry counts as a move back, as that start's
+// own would have had it waited for nothing (startAtFirstStep, transition). Where it was the return
+// out of awaiting_children, the task is told the return's own task as written
+// (record.PlanTask.StartTask: the task the wait held, with the children that merged during it), and
+// its entry counts as a move back too, as the return's start would have had it waited for nothing
+// (ReturnFromChildren). Its entry names the phase the start that waited moved the issue from
+// (record.PhaseRow.EntryFrom), which that start kept on its task's row
+// (record.PlanTask.StepWaitFrom, waitsFrom), as that start's own entry would have named it: so an
+// entry a role's move back raised out of retro or merging names that phase after a wait for its
+// agent too, and the admission pass leaves its start alone (acceptedEntry). The row's values are
+// read on s's plan. said is the log line, which names the issue, the task, its place and role, the
+// reason, whether a report or a return's task is told, that phase, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
@@ -269,14 +272,14 @@ func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, sai
 	}
 	reason := w.StartReason
 	var from phase.Phase
-	var returned string
+	var report, returned string
 	if row, ok := s.plan.TaskOf(w.Task); ok {
-		from, returned = row.StepWaitFrom, row.StartTask
+		from, report, returned = row.StepWaitFrom, row.StartReport, row.StartTask
 	}
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
-		"reason", reason, "returned", returned != "", "from", from}, args...)...)
+		"reason", reason, "reported", report != "", "returned", returned != "", "from", from}, args...)...)
 	told := func(at Standing) string {
-		return task(view, at, record.PhaseRow{}, reason)
+		return taskReported(view, at, report, reason)
 	}
 	if returned != "" {
 		told = func(Standing) string { return returned }

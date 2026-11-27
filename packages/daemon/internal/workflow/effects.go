@@ -1481,7 +1481,14 @@ const (
 // task a held start keeps, this task built for the held phase (holdForChildren, retryPhase), carry
 // none of them.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, reason string) string {
-	text := continueLine(issue) + at.lines + handoffReport(issue, handoff) + at.pull
+	return taskReported(issue, at, handoffReport(issue, handoff), reason)
+}
+
+// taskReported is task with the report of the step before already composed (handoffReport): what
+// the start after a wait is told from the report its move kept on the task's row
+// (record.PlanTask.StartReport, startAfterWait), in the place the move's own start tells it.
+func taskReported(issue record.Issue, at Standing, report, reason string) string {
+	text := continueLine(issue) + at.lines + report + at.pull
 	if reason != "" {
 		text += " " + reasonLabel + ": " + sentence(reason)
 	}

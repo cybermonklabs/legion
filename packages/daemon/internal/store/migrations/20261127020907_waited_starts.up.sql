@@ -1,6 +1,6 @@
 -- 20261127020907_waited_starts.up.sql — what the start of a step that waits for its join or its
--- agent keeps for the start after the wait: the phase its move left, and the task a return out of
--- awaiting_children hands it.
+-- agent keeps for the start after the wait: the phase its move left, the report of the step before
+-- a move forward, and the task a return out of awaiting_children hands it.
 --
 -- plan_tasks.step_wait_from is record.PlanTask.StepWaitFrom: the phase the start that waits for the
 -- step's join or its agent (plan_tasks.step_wait) moved the issue from, the phase the entry that
@@ -13,6 +13,15 @@
 -- move and every stop of the task clears it (record's MoveTask and StopTask); a carry copies it
 -- with the wait (record's CarryPlan).
 --
+-- plan_tasks.start_report is record.PlanTask.StartReport: the report of the step a move forward
+-- ended (its handoff, its commit, its verdict; workflow's handoffReport), which the start of the
+-- next step tells in its place, before the pull request (record's SetStartReport, workflow's
+-- transition), written after the move, as plan_tasks.start_reason is after a move back. The step
+-- that starts after a wait for its agent is told it in the same place (workflow's startAfterWait),
+-- so the tester after a wait still reads which handoff and which head to test. '' for a move back,
+-- whose report is in its reason, and for every other start. Every move of the task clears it
+-- (record's MoveTask); a carry copies it.
+--
 -- plan_tasks.start_task is record.PlanTask.StartTask: the task the return out of awaiting_children
 -- hands the start of the step it takes the task to (record's SetStartTask, workflow's
 -- ReturnFromChildren), the task the wait held with the children that merged during it, written
@@ -21,21 +30,23 @@
 -- startAfterWait), as the return's start is where the agent was free. '' for every other start.
 -- Every move of the task clears it (record's MoveTask); a carry copies it.
 --
--- '' is the value of both columns on every row this migration finds.
+-- '' is the value of the three columns on every row this migration finds.
 --
 -- A rollback to the release before runs the way back below, with every project's daemon on that
 -- database stopped, before the earlier image is pinned. That release names the columns of
 -- plan_tasks in each statement it runs, so it boots with the columns in place; but it neither writes
 -- nor clears them, so a value written before the rollback would stand beside a wait or a start that
--- release writes and be read by this release after a roll forward. The way back drops both columns
--- and deletes this migration's row, so store.apply runs this file again at the roll forward and
--- every row reads ''. What it costs: a step that waits across the rollback and the roll forward
--- starts after its wait with no phase its move left, and a return's start among them as a step the
--- task reached going forward, as it does under the release before.
+-- release writes and be read by this release after a roll forward. The way back drops the three
+-- columns and deletes this migration's row, so store.apply runs this file again at the roll forward
+-- and every row reads ''. What it costs: a step that waits across the rollback and the roll forward
+-- starts after its wait with no phase its move left and no report of the step before, and a
+-- return's start among them as a step the task reached going forward, as it does under the release
+-- before.
 --
 -- begin;
--- alter table if exists plan_tasks drop column if exists step_wait_from, drop column if exists start_task;
+-- alter table if exists plan_tasks drop column if exists step_wait_from, drop column if exists start_report, drop column if exists start_task;
 -- delete from schema_version where version = 20261127020907;
 -- commit;
 alter table plan_tasks add column step_wait_from text not null default '',
+  add column start_report text not null default '',
   add column start_task text not null default '';

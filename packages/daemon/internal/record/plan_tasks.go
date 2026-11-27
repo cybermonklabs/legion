@@ -181,6 +181,26 @@ func (s *Postgres) SetStartReason(ctx context.Context, tx pgx.Tx, issue string, 
 	return nil
 }
 
+// SetStartReport writes report as the report of the step before that the start of the step task of
+// the plan of issue at generation stands at tells before its pull request: the report of the step a
+// move forward ended (the workflow's handoffReport, transition), in the transaction that moves the
+// task there, after the move (MoveTask, which clears it at every move), so the step that starts
+// after a wait for its agent is told it in the same place. A task that is not running, and a task
+// the plan does not hold, are refused, naming it.
+func (s *Postgres) SetStartReport(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, report string) error {
+	describe := fmt.Sprintf("write the report the start of the step of task %s of %s at generation %d is told", task, issue, generation)
+	tag, err := tx.Exec(ctx, `update plan_tasks set start_report = $4 where issue = $1 and generation = $2 and task = $3 and state = 'running'`,
+		issue, int64(generation), task, report)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task that is running", describe)
+	}
+	noteRecordWrite(ctx)
+	return nil
+}
+
 // SetStartTask writes text as the task the start of the step task of the plan of issue at
 // generation stands at is told as written: the task the return out of awaiting_children hands that
 // start, the task the wait held with the children that merged during it (the workflow's
@@ -237,15 +257,16 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 // the states stopped and held are refused here. A move takes a stop's reason away, but a move to
 // left (TaskLeft): a stopped task whose issue leaves the workflow keeps why it was stopped, the one
 // record of why it was not done. A move ends a hold's reason, why the step the task stood at was
-// started (SetStartReason, which a start again and a move back write after their move), the task
-// its start is told as written (SetStartTask, which the return out of awaiting_children writes
-// after its move) and the wait of the step the task stood at, whose start it no longer waits to
-// deliver, with the phase that start moved the issue from (SetStepWaitFrom). A move into running
-// from waiting or stopped is a start of the task, whose step waits for the join of its needs
-// (StepWaitJoin) since this transaction's moment, until the start that follows the move (the
-// workflow's Engine.start) ends that wait or the end of the join does; every other move writes no
-// wait. A place no task can stand at, a step the task does not have, a task the plan does not hold
-// and a task that left the workflow, which nothing moves again, are refused.
+// started (SetStartReason, which a start again and a move back write after their move), the report
+// of the step before that its start tells (SetStartReport, which a move forward writes after its
+// move), the task its start is told as written (SetStartTask, which the return out of
+// awaiting_children writes after its move) and the wait of the step the task stood at, whose start
+// it no longer waits to deliver, with the phase that start moved the issue from (SetStepWaitFrom).
+// A move into running from waiting or stopped is a start of the task, whose step waits for the
+// join of its needs (StepWaitJoin) since this transaction's moment, until the start that follows
+// the move (the workflow's Engine.start) ends that wait or the end of the join does; every other
+// move writes no wait. A place no task can stand at, a step the task does not have, a task the plan
+// does not hold and a task that left the workflow, which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
@@ -262,7 +283,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
 		stopped_reason = case when $6 = 'left' then stopped_reason else '' end,
-		hold_reason = '', start_reason = '', start_task = '',
+		hold_reason = '', start_reason = '', start_report = '', start_task = '',
 		step_wait = case when $6 = 'running' and state in ('waiting', 'stopped') then 'join' else '' end,
 		step_wait_since = case when $6 = 'running' and state in ('waiting', 'stopped') then now() end,
 		step_wait_from = ''

@@ -2892,6 +2892,9 @@ type Store interface {
 	// SetStartReason writes why the step a running task stands at was started: a start again at its
 	// first step, or a move back. Every move of the task clears it.
 	SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// SetStartReport writes the report of the step before that the start of the step a running task
+	// stands at tells before its pull request: a move forward's. Every move of the task clears it.
+	SetStartReport(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, report string) error
 	// SetStartTask writes the task the start of the step a running task stands at is told as
 	// written: the task a return out of awaiting_children hands it. Every move of the task clears it.
 	SetStartTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, text string) error
