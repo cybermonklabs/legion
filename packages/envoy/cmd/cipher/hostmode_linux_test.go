@@ -598,7 +598,7 @@ func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
 		launcherScript: "printf '%s\\n' \"$$\" > \"$(dirname \"$0\")/launcher.pid\"\n\"$@\"\nexit $?\n",
 		rootScript:     "sh \"$(dirname \"$0\")/launcher.sh\" \"$@\"\nexit $?\n",
 	} {
-		if err := testexec.WriteFile(path, []byte(body), 0o700); err != nil {
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
