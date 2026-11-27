@@ -1280,6 +1280,73 @@ test("two sessions that share a title draw words on screen in the box's picker t
   ).not.toBe(onScreen[1]);
 });
 
+/** A draft to the planner in BTW, a mode the planner does not advertise (`plannerAgent`
+ *  advertises Send alone), and what the line says of it: a notice it draws from the agents list
+ *  alone. */
+const BTW_TO_PLANNER = `/btw ${PLANNER_SEED} hello`;
+const BTW_UNADVERTISED = "Planner does not advertise BTW, so sending it records a failed attempt.";
+
+/**
+ * The reader writes `BTW_TO_PLANNER` in the line, which draws `BTW_UNADVERTISED` once the focus in
+ * it reads the agents list, and, where `send`, sends it, which Dispatch refuses, so the line holds
+ * the send. Then the page mounts again in the same tab over the draft the line kept or the send it
+ * holds, as a reload brings the box back, and its field holds the draft with no focus in it.
+ */
+async function remountedOverBtw(send: boolean): Promise<void> {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValueOnce(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+    )
+  );
+  const first = renderPage();
+  await user.click(writeField());
+  await user.paste(BTW_TO_PLANNER);
+  expect(writeField().value).toBe(BTW_TO_PLANNER);
+  await waitFor(() =>
+    expect(
+      within(composerBox()).queryByText(BTW_UNADVERTISED),
+      "the line used draws no notice of the mode"
+    ).not.toBeNull()
+  );
+  if (send) {
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The comment was refused.")
+    );
+  }
+  first.view.unmount();
+  renderPage({}, outline(), first.client);
+  expect(writeField().value).toBe(BTW_TO_PLANNER);
+  expect(writeField()).not.toHaveFocus();
+}
+
+// A line the reader has not used reads no agents list (`WriteLine`), but a draft the line kept
+// from before a reload, which its field takes as it mounts, and a send the line holds from then
+// are the reader's use of it: the delivery mode of the draft and the notices about it come from
+// that list, so the line mounted over either reads it at once, before any focus.
+test("the line mounted again over the draft it kept reads the agents list before any focus", async () => {
+  await remountedOverBtw(false);
+  await waitFor(() =>
+    expect(
+      within(composerBox()).queryByText(BTW_UNADVERTISED),
+      "the line mounted over its kept draft read no agents list"
+    ).not.toBeNull()
+  );
+  expect(writeField()).not.toHaveFocus();
+});
+
+test("the line mounted again over the send it holds reads the agents list before any focus", async () => {
+  await remountedOverBtw(true);
+  await waitFor(() =>
+    expect(
+      within(composerBox()).queryByText(BTW_UNADVERTISED),
+      "the line mounted over its held send read no agents list"
+    ).not.toBeNull()
+  );
+  expect(writeField()).not.toHaveFocus();
+});
+
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
 // (`FOOT_HEIGHT_PROPERTY`) while it is drawn, keeps it as the box changes size, and takes it
 // away while it is hidden, so a row brought on screen is brought clear of it.

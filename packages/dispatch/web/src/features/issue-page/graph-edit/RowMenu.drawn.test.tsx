@@ -60,7 +60,19 @@ import { AppProviders, focusedRow, stubReads } from "../slots/stage-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
 import type { OnEditing, OnEditor } from "../useNodeEditing";
-import { fixture, NAMED, nodeOf, renamed, signedIn } from "./graph-edit-fixtures";
+import {
+  fixture,
+  fragmentOf,
+  type LiveBlock,
+  type LiveRoom,
+  liveRoom,
+  NAMED,
+  nodeOf,
+  paragraphOf,
+  renamed,
+  roomBlock,
+  signedIn,
+} from "./graph-edit-fixtures";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 import { GRAPH_EDIT_META } from "./room-writes";
 
@@ -1328,40 +1340,6 @@ test("a delete waits for the node's moves", async () => {
 // `IssueTree.test.tsx`'s `editLive` draws it.
 // ---------------------------------------------------------------------------------------------
 
-/** A block of a document as the room holds it, in ProseMirror's JSON (`IssueTree.test.tsx`'s
- *  `LiveBlock`): its type, its attributes - its `blockId` among them - and what it holds. */
-interface LiveBlock {
-  readonly attrs?: Readonly<Record<string, string | number>>;
-  readonly content?: readonly (LiveBlock | { readonly text: string; readonly type: "text" })[];
-  readonly type: string;
-}
-
-/** `block` as the room holds it: a Yjs element of its type and attributes, holding its words and
- *  its blocks, as y-prosemirror writes a document there. */
-function roomBlock(block: LiveBlock): Y.XmlElement {
-  const element = new Y.XmlElement(block.type);
-  const attributes = element as Y.XmlElement<Record<string, string | number>>;
-  for (const [name, value] of Object.entries(block.attrs ?? {})) {
-    attributes.setAttribute(name, value);
-  }
-  element.insert(
-    0,
-    (block.content ?? []).map((child) =>
-      "text" in child ? new Y.XmlText(child.text) : roomBlock(child)
-    )
-  );
-  return element;
-}
-
-/** A paragraph of `words`, whose `blockId` is `blockId` where it has one. */
-function paragraphOf(words: string, blockId?: string): LiveBlock {
-  return {
-    ...(blockId === undefined ? {} : { attrs: { blockId } }),
-    content: [{ text: words, type: "text" }],
-    type: "paragraph",
-  };
-}
-
 /** The words the fixture's read gives `node`: the text of the first paragraph of its text. */
 function wordsOfNode(node: TreeAnswerNode): string {
   const found: string[] = [];
@@ -1412,28 +1390,6 @@ const LIVE_DOCUMENTS: Readonly<Record<string, readonly LiveBlock[]>> = {
     },
   ],
 };
-
-/** The room's copy of a document and the browser's, each update to either relayed to the other,
- *  and the row's editor of it, once made (`IssueTree.test.tsx`'s `LiveRoom`). */
-interface LiveRoom {
-  readonly browser: Y.Doc;
-  editor?: EditorHandle;
-  readonly server: Y.Doc;
-}
-
-function liveRoom(): LiveRoom {
-  const browser = new Y.Doc();
-  const server = new Y.Doc();
-  for (const [from, to] of [
-    [server, browser],
-    [browser, server],
-  ] as const) {
-    from.on("update", (update: Uint8Array, origin: unknown) => {
-      if (origin !== "relay") Y.applyUpdate(to, update, "relay");
-    });
-  }
-  return { browser, server };
-}
 
 /** The document's own editor (`doc/editor.ts`), made as `ProofDocument` makes it for the row, over
  *  a room that holds `blocks` before it is made, handed to the row (`onEditor`) once made. */
@@ -1974,33 +1930,6 @@ async function caretInNewRow(
       return { editable, row };
     },
     { timeout: 10_000 }
-  );
-}
-
-/** Each block of the document `room` holds, as the room holds it: its type, its block id and its
- *  words. Strings, never nodes, are what a case compares. */
-function fragmentOf(room: LiveRoom | undefined): string[] {
-  // `Y.XmlText.toString()` writes formatting marks (`proofAuthored`) as XML tags; its delta holds
-  // the block's plain words.
-  const textOf = (text: Y.XmlText): string =>
-    (text.toDelta() as readonly { readonly insert?: unknown }[])
-      .map((op) => (typeof op.insert === "string" ? op.insert : ""))
-      .join("");
-  const wordsIn = (element: Y.XmlElement): string =>
-    element
-      .toArray()
-      .map((child) =>
-        child instanceof Y.XmlText
-          ? textOf(child)
-          : child instanceof Y.XmlElement
-            ? wordsIn(child)
-            : ""
-      )
-      .join("");
-  return (room?.server.getXmlFragment("prosemirror").toArray() ?? []).map((block) =>
-    block instanceof Y.XmlElement
-      ? `${block.nodeName} ${String(block.getAttribute("blockId"))}: ${wordsIn(block)}`
-      : "text"
   );
 }
 
@@ -2581,11 +2510,11 @@ const AGENT_REPLY = nodeOf(converted, "<agent-reply>");
 const MESSAGE_ROUTE = `message/${MESSAGE.id}`;
 const MESSAGE_BLOCK = `${MESSAGE_ROUTE}#b1`;
 
-/** A new row New row under made on the row of `parent`, with `Q` typed in it, the read that holds
- *  its node landed, and its placing PATCH answered with `answer` and taken: the page, the room of
- *  the issue's own fragment and its editor, the new row and its editable, the keys of the rows
- *  right under `parent`'s before the new row was made and as it was first drawn, the caret as the
- *  reader left it, and what the PATCH carried. */
+/** A new row that New row under made on the row of `parent`, with `Q` typed in it, the read that
+ *  holds its node landed, and its placing PATCH answered with `answer` and taken: the page, the
+ *  room of the issue's own fragment and its editor, the new row and its editable, the keys of the
+ *  rows right under `parent`'s before the new row was made and as it was first drawn, the caret as
+ *  the reader left it, and what the PATCH carried. */
 async function placedUnder(
   parent: TreeAnswerNode,
   answer: { readonly after: string | null; readonly parent: string }

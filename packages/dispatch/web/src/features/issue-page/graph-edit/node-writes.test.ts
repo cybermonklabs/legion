@@ -967,17 +967,29 @@ function underFirstStatement(): NewRowAsk {
   };
 }
 
-// A typed row whose node only the second page holds, on a first page that owes the tree artifact
-// nothing: the page reads the next page once, and that page, merged, holds the node with a rank
-// and a placement_seq, so the one placing PATCH goes with the row's body under that placement_seq.
-test("a new row's node the first page lacks is read for on the next page and placed", async () => {
-  const reads = answerTreeReads(fixture.paged.pages);
+/** The paged cases' new row under the first statement (`underFirstStatement`), the gate `out`
+ *  that holds its placing PATCH's answer until the case resolves it, and the PATCHes sent, each
+ *  answered with the paragraph's next placement_seq. */
+function pagedPlacing(): {
+  readonly ask: NewRowAsk;
+  readonly out: { readonly resolve: () => void };
+  readonly patches: { readonly calls: Patch[] };
+} {
   const ask = underFirstStatement();
   const out = Promise.withResolvers<void>();
   const patches = answerPatches({
     ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
     gate: out.promise,
   });
+  return { ask, out, patches };
+}
+
+// A typed row whose node only the second page holds, on a first page that owes the tree artifact
+// nothing: the page reads the next page once, and that page, merged, holds the node with a rank
+// and a placement_seq, so the one placing PATCH goes with the row's body under that placement_seq.
+test("a new row's node the first page lacks is read for on the next page and placed", async () => {
+  const reads = answerTreeReads(fixture.paged.pages);
+  const { ask, out, patches } = pagedPlacing();
   expect(firstPage.owed_documents ?? [], "the first page owes an index").toEqual([]);
   expect(
     firstPage.nodes?.some((node) => node.block_id === PAGED),
@@ -1007,12 +1019,7 @@ test("a new row's node the first page lacks is read for on the next page and pla
 // first read that owes it no more has the next page read, and the node placed.
 test("no next page is read for a new row's node while the read owes the tree artifact's index", async () => {
   const reads = answerTreeReads(fixture.paged.pages);
-  const ask = underFirstStatement();
-  const out = Promise.withResolvers<void>();
-  const patches = answerPatches({
-    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
-    gate: out.promise,
-  });
+  const { ask, out, patches } = pagedPlacing();
   const { tree } = firstPage;
   if (tree === null) throw new Error("the paged read names no tree artifact");
   const owing: TreeAnswer = { ...firstPage, owed_documents: [{ artifact_id: tree, version: 1 }] };
@@ -1055,12 +1062,7 @@ test("a new row's node past the second page is read for page by page and placed"
       return Response.json(page1);
     })
   );
-  const ask = underFirstStatement();
-  const out = Promise.withResolvers<void>();
-  const patches = answerPatches({
-    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
-    gate: out.promise,
-  });
+  const { ask, out, patches } = pagedPlacing();
   const { client } = mountNewRows(page1);
   typed(client, ask);
   await waitFor(() => expect(patches.calls).toHaveLength(1));
@@ -1086,12 +1088,7 @@ test("a refused next page does not retry on its own and leaves the row waiting",
       return Response.json(cursor === null ? firstPage : secondPage);
     })
   );
-  const ask = underFirstStatement();
-  const out = Promise.withResolvers<void>();
-  const patches = answerPatches({
-    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
-    gate: out.promise,
-  });
+  const { ask, out, patches } = pagedPlacing();
   const { client, view } = mountNewRows(firstPage);
   typed(client, ask);
   await waitFor(() => expect(cursors).toEqual([firstPage.cursor]));

@@ -158,16 +158,17 @@ const TREE_SLUG = "tree";
  *  message. */
 const ITEM_KINDS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
 
-/** The kinds of node the read answers first among a node's children, before every ranked one,
- *  whatever their rank: a conversation item's own blocks, then the conversation - an ask, a
- *  comment, a message, a lens and a risk (the server's `conversationKinds`,
- *  `refs/tree_walk.go`). An item's own block is drawn in the item's row, never in one of its own. */
+/** An item's own blocks, drawn in the item's row, never in one of its own. */
 const ITEM_BLOCK_KINDS: Readonly<Record<string, true>> = {
   ask_block: true,
   comment_block: true,
   message_block: true,
 };
-const CONVERSATION_KINDS: Readonly<Record<string, true>> = {
+/** The kinds of node the read answers first among a node's children, before every ranked one,
+ *  whatever their rank: a conversation item's own blocks, then the conversation - an ask, a
+ *  comment, a message, a lens and a risk (the server's `conversationKinds`,
+ *  `refs/tree_walk.go`). */
+const ANSWERED_FIRST_KINDS: Readonly<Record<string, true>> = {
   ...ITEM_KINDS,
   ...ITEM_BLOCK_KINDS,
   lens: true,
@@ -496,7 +497,7 @@ function newBelow({ walk, node }: Focus): Verdict {
 
 /** New node under (R3): first among the node's children of the issue's own fragment, drawn where
  *  the read answers the node once placed. The read answers a node's children in one order - the
- *  conversation (`CONVERSATION_KINDS`), then the ranked children by rank, band by band, then the
+ *  conversation (`ANSWERED_FIRST_KINDS`), then the ranked children by rank, band by band, then the
  *  rest - so the new block stands right before the first child, in the walk's order, that the
  *  read answers after it: a ranked child of its own band or a later one, or one of the rest. The
  *  new row is drawn right after the last child before that one that the outline draws in a row of
@@ -506,7 +507,8 @@ function newUnder({ walk, node }: Focus): Verdict {
   let before: TreeAnswerNode | undefined;
   for (const child of walk.children.get(node.id) ?? NONE) {
     const earlier =
-      Object.hasOwn(CONVERSATION_KINDS, child.kind) || (hasRank(child) && bandOf(child) < BAND.own);
+      Object.hasOwn(ANSWERED_FIRST_KINDS, child.kind) ||
+      (hasRank(child) && bandOf(child) < BAND.own);
     if (!earlier) break;
     if (!Object.hasOwn(ITEM_BLOCK_KINDS, child.kind)) before = child;
   }

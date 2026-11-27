@@ -67,11 +67,11 @@ function blockIn(
 /** Whether the paragraph `block` holds no words: nothing, or blank text alone, which a new row's
  *  first key does not write either (`new-row-editing.ts`). Any other inline node is content. */
 function holdsNoWords(block: ProseMirrorNode): boolean {
-  let words = false;
-  block.forEach((child) => {
-    words ||= !child.isText || (child.text ?? "").trim() !== "";
-  });
-  return !words;
+  for (let index = 0; index < block.childCount; index += 1) {
+    const child = block.child(index);
+    if (!child.isText || (child.text ?? "").trim() !== "") return false;
+  }
+  return true;
 }
 
 /**

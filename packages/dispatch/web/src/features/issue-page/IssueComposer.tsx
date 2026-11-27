@@ -21,6 +21,8 @@ import {
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
+import { useUnsentDrafts } from "../conversation/unsent-drafts";
+import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
 import { EMPTY_AGENTS } from "../refs/agent-registry";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -354,10 +356,18 @@ function WriteLine({
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   // The line stands open from the load, so it is handed no agents, and reads no list of them for
-  // its mention picker, until the reader uses it (the focus in it), as a margin card's reply
-  // composer does (`text-comments/TextThreadCard.tsx`): a page sends no read for the line that
-  // its reader has not used.
+  // its mention picker, until the reader uses it, as a margin card's reply composer does
+  // (`text-comments/TextThreadCard.tsx`): the focus in it, a send of the line's that the
+  // held-send store holds, or a draft the line kept for the target it mounts at, which its field
+  // takes, since the delivery mode of what the field holds and its notices come from that list.
+  // The kept draft is read at the mount alone: the field takes it out of the kept drafts there
+  // (`useKeptDrafts`). So a page sends no read for the line that its reader has not used.
   const [used, setUsed] = useState(false);
+  const held = useHeldSend(writer.sendKey) !== undefined;
+  const unsent = useUnsentDrafts();
+  const [kept] = useState(
+    () => unsent.readAway(composerNameOf(writer.sendKey), reply, undefined, anchor) !== undefined
+  );
   // What the line is aimed at (`LineAim`); none for a write on the issue itself.
   const aim: LineAim | undefined =
     reply !== null
@@ -438,7 +448,7 @@ function WriteLine({
   return (
     <div className="contents" onFocusCapture={() => setUsed(true)}>
       <MentionComposer
-        agents={used ? undefined : EMPTY_AGENTS}
+        agents={used || held || kept ? undefined : EMPTY_AGENTS}
         box="issue-page-composer"
         closed={isClosed}
         kind={writesKinds ? writer.kind : "comment"}
