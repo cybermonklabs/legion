@@ -4,7 +4,7 @@
 // the operator or the controller sets to a number, sets to none or clears decides the next pass,
 // with no restart.
 //
-// It boots the whole daemon through this package's own whole-daemon harness (startDaemonWithin,
+// It boots the whole daemon through this package's own whole-daemon harness (startDaemonLogging,
 // which calls run as `legion start` does) on a real Postgres and JetStream, from the configuration
 // legion.yaml loads into with an admission cap of 1 and a P0 bound of 1, over liveProof's Dispatch
 // stand-in (liveDispatch), with no agent: every claim is launched by the package's fake runtime.
@@ -131,7 +131,7 @@ func newP0StartLive(t *testing.T) *p0StartLive {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = admissionIssuesGitHub(t)
 	log := slog.New(slog.NewMultiHandler(r.log().Handler(), slog.NewJSONHandler(r.logs, nil)))
-	r.d = startDaemonWithin(t, r.cfg, o, log, 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, log)
 	r.note("booted: admission cap %d, legion.yaml's admission_p0_bound %d, no issue recorded; %s on Dispatch's board at its own P0",
 		p0StartCap, p0StartBound, p0StartAncestor)
 	return r

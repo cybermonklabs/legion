@@ -43,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -61,7 +62,7 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 
 // Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end,
 // for a pgx pool to open: store.Open, pgxpool, or a daemon's postgres_dsn. A pool opened on it
-// holds PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// holds the pool_max_conns LEGION_TEST_PG_DSN sets, or testpool.PoolConns where it sets no size
 // (PoolBounded), so a test's pools do not grow with the machine's CPU count. A URL that libpq,
 // pgx.Connect, psql, a scratch Dispatch or another child process reads is PlainDatabase's, which
 // holds no pool key whatever LEGION_TEST_PG_DSN holds (poolKeys says why).
@@ -318,15 +319,7 @@ func DatabaseURL(dsn, database string) (string, error) {
 // dsnName is the variable every DSN this package rewrites was read from, and it starts a refusal.
 const dsnName = "LEGION_TEST_PG_DSN"
 
-// PoolConns is the size PoolBounded gives a pool when LEGION_TEST_PG_DSN sets no size of its own
-// (pool_max_conns); a size the DSN sets is kept. A pool that is not told its size is sized by pgx
-// at the greater of 4 and the machine's CPU count (pgxpool.ParseConfig), so on a box with 288 CPUs
-// one test that runs 100 statements at once asks for 100 connections, which is all PostgreSQL's
-// default max_connections allows, and fails with "too many clients" there while it passes on a
-// small machine. 4 is pgx's own floor: the size every pool has on a machine with 4 CPUs or fewer.
-const PoolConns = 4
-
-// poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.
+// poolMaxConns is the key of a DSN's query that pgxpool reads as its size.
 const poolMaxConns = "pool_max_conns"
 
 // poolKeys are the keys of a DSN's query that pgxpool reads and takes out before it connects
@@ -359,8 +352,8 @@ func splitPoolPairs(rawQuery string) (pool, rest []string) {
 
 // PoolBounded is dsn as a URL for a pgx pool, with the pool keys LEGION_TEST_PG_DSN sets (server,
 // as the caller read it from that variable) in place of any dsn holds, and pool_max_conns set to
-// PoolConns where server sets no size. dsn is a URL DatabaseURL made, which holds no pool key, or
-// server itself. Every other byte of dsn's query is kept, since pgx reads a query with its own
+// testpool.PoolConns where server sets no size. dsn is a URL DatabaseURL made, which holds no pool
+// key, or server itself. Every other byte of dsn's query is kept, since pgx reads it with its own
 // libpq-style parser (pgconn's parse_url.go), which decodes only %XX and keeps a `+`, where Go's
 // url.Values would write an encoded space back as `+` and drop a pair holding `;`. Only pgxpool
 // reads a pool key (poolKeys), so its URL goes only to pools: Database's, internal/testpg's Clone
@@ -383,8 +376,8 @@ func PoolBounded(server, dsn string) (string, error) {
 		}
 	}
 	if _, sized := read[poolMaxConns]; !sized {
-		pool = append(pool, poolMaxConns+"="+strconv.Itoa(PoolConns))
-		read[poolMaxConns] = strconv.Itoa(PoolConns)
+		pool = append(pool, poolMaxConns+"="+strconv.Itoa(testpool.PoolConns))
+		read[poolMaxConns] = strconv.Itoa(testpool.PoolConns)
 	}
 	return rewriteDSN(dsnName, dsn, rewrite{pools: true, pool: pool, poolRead: read})
 }
@@ -392,8 +385,8 @@ func PoolBounded(server, dsn string) (string, error) {
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
 // rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
 // CommitFaults, Outage), the pool keys of its query, and whether TLS is off. With pools set, the
-// rewrite takes every pool key out of the query and appends pool, the raw pairs pgx reads as
-// poolRead: none for DatabaseURL, the server's own or pool_max_conns=PoolConns for PoolBounded.
+// poolRead: none for DatabaseURL, the server's own or pool_max_conns=testpool.PoolConns for
+// PoolBounded.
 // With plain set, it appends sslmode=disable, which pgx reads over an sslmode the query already
 // holds since it keeps the last of a repeated key (pgconn's parse_url.go), so an attempt makes no
 // TLS connection and falls back to none (Outage). A field left empty is one the rewrite keeps.

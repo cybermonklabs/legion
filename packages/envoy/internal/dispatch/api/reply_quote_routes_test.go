@@ -14,7 +14,7 @@ var replyBlockMembers = []string{"reply_to_block", "in_reply_to_block"}
 
 // A reply to a block takes the words it quotes beside the block it names, quote and occurrence,
 // as model.AnchorInput holds them for a document anchor. The walk reads every route's request
-// type as routeShapes declares it, so a route that comes to name a block to reply to without
+// type as its Shape declares it, so a route that comes to name a block to reply to without
 // taking its quote fails here, and the routes it finds are held to the six the spec names, so a
 // seventh fails until the spec names it too.
 func TestEveryRouteThatNamesABlockToReplyToTakesItsQuote(t *testing.T) {
@@ -28,8 +28,8 @@ func TestEveryRouteThatNamesABlockToReplyToTakesItsQuote(t *testing.T) {
 		"POST /api/v1/messages/{id}/reply",
 	}
 	var found []string
-	for _, route := range slices.Sorted(maps.Keys(routeShapes)) {
-		request := routeShapes[route].Request
+	for _, declared := range routeRegistry {
+		route, request := declared.Method+" "+declared.Pattern, declared.Shape.Request
 		if request == nil {
 			continue
 		}
@@ -41,6 +41,7 @@ func TestEveryRouteThatNamesABlockToReplyToTakesItsQuote(t *testing.T) {
 			found = append(found, route)
 		}
 	}
+	slices.Sort(found)
 	if !slices.Equal(found, want) {
 		t.Errorf("the routes whose request names a block to reply to are\n  %s\nwant the spec's six\n  %s",
 			strings.Join(found, "\n  "), strings.Join(want, "\n  "))

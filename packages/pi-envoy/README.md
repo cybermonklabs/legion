@@ -191,7 +191,42 @@ shows an untagged turn twice: once from the stream and once as the message Dispa
 turn goes untagged when the record misses it: a typed turn the host starts under a new session
 id, and, on a host without `sendUserInput`, where the record finds a turn by its text until the
 run ends, a Send the host runs as a turn of its own after the run's `agent_end` and a prompt
-template or file command, whose stream carries the expanded text.
+template or file command, whose stream carries the expanded text. A turn read back from the
+transcript (below) is tagged by the tag the host wrote on it, where the transcript records that
+the session handled that Dispatch message (`handledMessages` in
+`@legion/pi-shared/dispatch-user-turn`); a `!command` report, which the host never writes as a
+turn, is not read back, and the page shows the person's line and the session's reply from
+Dispatch's store instead.
+
+## The live view after a restart
+
+The live view's replay is the session's answer from a ring of its newest messages held in the
+process (`AgentStreamPublisher` in `@legion/pi-shared/agent-stream`). A process that takes up a
+session whose transcript already holds turns (a pod's restart and `omp --continue`, a
+`--resume`, a `/resume`, a fork) fills that ring from the session's live context when it takes
+the session up (`restoreLocalSessionState`): the branch from the latest compaction's first kept
+entry on, or from the compaction itself where that entry does not stand before it on the branch,
+with no body before the cut read. A `/clear` (a `reset_boundary` entry) after that compaction, or
+on a branch with none, cuts it instead, and the ring is filled from the turns after the `/clear`
+(`liveContext` in `@legion/pi-shared/delivery-pictures`). It keeps to the ring's bounds: the
+newest 200 messages it carries, and 512 KiB for the replay's `frames` array, which the reply's
+envelope adds a few bytes to. So a person who opens the session after a restart sees the turns
+after that cut, within those bounds. Oh My Pi's terminal draws a resumed session from the same
+compaction cut by default (`display.collapseCompacted`), but where the cut left the first kept
+turn partial and a later user turn starts before the compaction, it hides that partial turn; the
+replay does not trim it. The process before the restart may have replayed more: its ring kept the
+turns from before a compaction it ran. A session that starts fresh has no turns to read back.
+
+Each message the ring keeps from the transcript is a copy, made as Oh My Pi copies a message for
+`message_end`, because Oh My Pi rewrites its own objects in place: a prune pass blanks a stale tool
+result's content with a placeholder (`blankToolResult`), such as `[Superseded by a newer read of
+this file]` or `[Uneventful result elided]`. So a restored tool result the session prunes after it
+is taken up keeps its output in the replay, as a result this process recorded does. A result
+pruned before the restart shows the placeholder: the prune is recorded in the transcript, and Oh
+My Pi blanks the result as it loads the session, before the ring can copy it, where the process
+before the restart still showed the output. The ring keys a card that names no id, such as one of
+the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
+message `message_start` was handed.
 
 ## A `task` subagent
 

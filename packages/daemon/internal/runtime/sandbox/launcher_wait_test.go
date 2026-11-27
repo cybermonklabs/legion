@@ -20,18 +20,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// fetching is a pod's status while workspace-fetch runs: Pending, workspace-init not started.
-func fetching(p *corev1.Pod) {
+// initializing is a pod's status while workspace-init runs.
+func initializing(p *corev1.Pod) {
 	p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-		{Name: fetchContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
-		{Name: initContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}},
+		{Name: initContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
 	}}
 }
 
-// pulling is a pod's status before any init container has started: an image pull.
+// pulling is a pod's status before workspace-init has started: an image pull.
 func pulling(p *corev1.Pod) {
 	p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-		{Name: fetchContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}},
 		{Name: initContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}},
 	}}
 }
@@ -67,10 +65,10 @@ func (g *rig) pendingPod(name string, status func(*corev1.Pod)) time.Time {
 	return appeared
 }
 
-// A pod's role launchers start only once its init containers have finished, and workspace-fetch's
-// clone, with its retries of a transient failure, may run past the boot timeout. A launch whose pod
-// is still provisioning then keeps waiting for its launcher, and starts the role in that same pod
-// once the launcher connects: the claim is charged no launch failure.
+// A pod's role launchers start only once workspace-init has finished. Its fill, with retries of a
+// transient failure, may run past the boot timeout. A launch whose pod is still provisioning then
+// keeps waiting for its launcher, and starts the role in that same pod once the launcher connects:
+// the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withTestBootTimeout())
@@ -80,12 +78,12 @@ func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 	launched := make(chan error, 1)
 	go func() { launched <- machine.Handle(g.ctx, supervise.RequestSpawn{Claim: spec.Claim}) }()
 	name := SandboxName(spec.Claim)
-	g.pendingPod(name, fetching)
+	g.pendingPod(name, initializing)
 	uid := g.pod(name).UID
 
 	select {
 	case err := <-launched:
-		t.Fatalf("the launch ended while its pod was still in workspace-fetch: %v", err)
+		t.Fatalf("the launch ended while its pod was still in workspace-init: %v", err)
 	case <-time.After(g.opts.BootTimeout + time.Second):
 	}
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
@@ -120,7 +118,7 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
 	name := SandboxName(workerToken)
-	appeared := g.pendingPod(name, fetching)
+	appeared := g.pendingPod(name, initializing)
 	time.Sleep(g.opts.BootTimeout + time.Second)
 	provisioned := time.Now()
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
@@ -373,9 +371,8 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 
 // The launcher's deadline is the boot timeout after the pod was last seen provisioning, and never
 // past the boot timeout plus ProvisionBound from the first time it was. The last row is the edge a
-// cap counted from the wait's start got wrong: a 60 s image pull, a fetch that ran the whole bound
-// this case gives it, then a 90 s workspace-init, whose launcher connects 32 min 30 s after the
-// wait began.
+// cap counted from the wait's start got wrong: a 60 s image pull, then workspace-init running until
+// its launcher connects 32 min 30 s after the wait began.
 func TestTheLauncherDeadlineFollowsProvisioningUpToItsBound(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)
@@ -389,7 +386,7 @@ func TestTheLauncherDeadlineFollowsProvisioningUpToItsBound(t *testing.T) {
 		{"provisioning ten minutes in", 0, 10 * time.Minute, 10*time.Minute + boot},
 		{"provisioning right up to the bound", 0, bound, bound + boot},
 		{"provisioning past the bound", 0, bound + time.Minute, bound + boot},
-		{"a pull, a whole fetch, then workspace-init", time.Minute, 32*time.Minute + 30*time.Second, time.Minute + bound + boot},
+		{"a pull, then workspace-init", time.Minute, 32*time.Minute + 30*time.Second, time.Minute + bound + boot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := launcherDeadline(start.Add(tc.first), start.Add(tc.last), boot, bound).Sub(start); got != tc.want {
@@ -399,15 +396,14 @@ func TestTheLauncherDeadlineFollowsProvisioningUpToItsBound(t *testing.T) {
 	}
 }
 
-// The launch's wait for its pod's launcher outlasts the fetch's whole clocked budget, which the
-// fetch's waits and clocked stages keep to, so a fetch still within it is never cut short by the
-// launch, and one that runs out of one of those bounds fails, naming why, before the launch would
-// give up. The stream from the repository cache is the one part outside them, on the low-speed
-// bound rather than a clock (workspace.CacheStreamLowSpeedBytes), and it runs on into the slack
-// this wait holds over what the fetch actually waited. With the default 2-minute boot timeout
-// and the runtime's own bound: a pod pulled in a minute whose fetch waits 35 minutes for its
-// repository's cache is still waited on, and one whose fetch runs its whole FetchBudget leaves
-// workspace-init the boot timeout.
+// The launch's wait for its pod's launcher outlasts the fill's whole clocked budget, which its
+// waits and clocked stages keep to, so a fill still within it is never cut short by the launch, and
+// one that runs out of one of those bounds fails, naming why, before the launch would give up. The
+// stream from the repository cache is the one part outside them, on the low-speed bound rather than
+// a clock (workspace.CacheStreamLowSpeedBytes), and it runs on into the slack this wait holds over
+// what the fill actually waited. With the default 2-minute boot timeout and the runtime's own
+// bound: a pod pulled in a minute whose fill waits 35 minutes for its repository's cache is still
+// waited on, and one whose fill runs its whole FetchBudget keeps the boot timeout.
 func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -418,21 +414,21 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 		last time.Duration
 		want time.Duration
 	}{
-		{"a fetch waiting 35 minutes for its repository's cache", 35 * time.Minute, 35*time.Minute + boot},
-		{"a fetch running its whole budget", workspace.FetchBudget, workspace.FetchBudget + boot},
+		{"a fill waiting 35 minutes for its repository's cache", 35 * time.Minute, 35*time.Minute + boot},
+		{"a fill running its whole budget", workspace.FetchBudget, workspace.FetchBudget + boot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := launcherDeadline(first, first.Add(tc.last), boot, g.r.ProvisionBound()).Sub(first); got != tc.want {
-				t.Fatalf("launcherDeadline = first provisioning + %s, want + %s: the fetch's own bound ends first", got, tc.want)
+				t.Fatalf("launcherDeadline = first provisioning + %s, want + %s: the fill's own bound ends first", got, tc.want)
 			}
 		})
 	}
 }
 
-// A launch that gives up on a pod whose workspace-fetch is still running says so, with the state
-// of the repository cache that fetch fills a fresh feed from: the fetch's own failure, which would
-// name it, has not come.
-func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
+// A launch that gives up on a pod whose workspace-init is still running says so, with the state of
+// the repository cache that fills its clone: workspace-init's own failure, which would name it, has
+// not come.
+func TestALaunchThatGivesUpOnWorkspaceInitNamesTheRepositorysCache(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
@@ -440,21 +436,21 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 	spec := workerSpec(t)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-	g.pendingPod(SandboxName(spec.Claim), fetching)
+	g.pendingPod(SandboxName(spec.Claim), initializing)
 
 	select {
 	case err := <-result:
-		want := "; its workspace-fetch is still running; the repository cache of " + spec.Repository.String() + ", which a fresh feed comes from alone, is "
+		want := "; its workspace-init is still running; the repository cache of " + spec.Repository.String() + ", which workspace-init fills the clone from, is "
 		if err == nil || !strings.Contains(err.Error(), "wait for its role launcher: timed out after") || !strings.Contains(err.Error(), want) {
-			t.Fatalf("Spawn = %v, want the launcher wait's timeout naming the running fetch and %q", err, want)
+			t.Fatalf("Spawn = %v, want the launcher wait's timeout naming workspace-init and %q", err, want)
 		}
 	case <-time.After(2*g.opts.BootTimeout + 5*time.Second):
-		t.Fatal("the launch still waits past its bound on a pod that is still fetching")
+		t.Fatal("the launch still waits past its bound on a pod whose workspace-init is still running")
 	}
 }
 
 // The cap is counted from the first time the wait sees the pod provisioning, not from the wait's
-// start: an image pull before workspace-fetch does not eat into the fetch's bound. With a 2 s boot
+// start: an image pull before workspace-init does not eat into the fill's bound. With a 2 s boot
 // timeout and a 3 s bound, the pod pulls for the wait's first second and provisions until 5.5 s
 // after the wait began, past the 5 s a cap from the wait's start would allow; its launcher
 // connects then, and the launch starts the role. The wait runs on the rig's fake clock, moved one
@@ -494,7 +490,7 @@ func (g *rig) launchOnFakeClock(fc *clocktest.Fake, spec runtime.SpawnSpec, star
 }
 
 // launchProvisioningUntil launches spec on fc (launchOnFakeClock), its pod pulling its image until
-// provisionAt into the launch's wait for its role launcher and in workspace-fetch from then, and
+// provisionAt into the launch's wait for its role launcher and in workspace-init from then, and
 // connects the launcher at connectAt: it fails the test unless the launch still waits then and
 // starts the role once the launcher has connected.
 func (g *rig) launchProvisioningUntil(fc *clocktest.Fake, spec runtime.SpawnSpec, start, provisionAt, connectAt time.Duration) {
@@ -535,12 +531,12 @@ func (g *rig) stepTo(fc *clocktest.Fake, at time.Time, ended func() bool) {
 	}
 }
 
-// provisions moves the pod named name into workspace-fetch and waits until the runtime's store
+// provisions moves the pod named name into workspace-init and waits until the runtime's store
 // holds it there, so the next check of the launch's wait sees it provisioning.
 func (g *rig) provisions(name string) {
 	g.t.Helper()
-	g.update(g.pod(name), fetching)
-	g.eventually("the store to hold the pod in workspace-fetch", func() bool {
+	g.update(g.pod(name), initializing)
+	g.eventually("the store to hold the pod in workspace-init", func() bool {
 		pod := g.r.storedPod(name)
 		return pod != nil && provisioning(pod)
 	})

@@ -75,7 +75,7 @@ var replyQuoteEventExceptions = map[string]string{
 		"reply's own event in the log is never message.created; the delivery frame that replays it is, and is a row",
 }
 
-// R8 over every answer that can hold a reply_block, as routeShapes declares each route's answers
+// R8 over every answer that can hold a reply_block, as each route's Shape declares its answers
 // (the type walk of TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh): each such answer is a
 // row here, read through its route, or an exception with its reason, and a route that comes to
 // answer a reply's block fails until it is one or the other. The fixture's replies quote a word of
@@ -175,7 +175,8 @@ func TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote(t *testing.T) {
 	}
 
 	found := map[string]bool{}
-	for route, shape := range routeShapes {
+	for _, declared := range routeRegistry {
+		route, shape := declared.Method+" "+declared.Pattern, declared.Shape
 		for _, body := range []any{shape.Response, shape.Advice} {
 			if body != nil && holdsReplyBlock(reflect.TypeOf(body)) {
 				found[fmt.Sprintf("%s %d", route, shape.Status)] = true
@@ -202,7 +203,7 @@ func TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote(t *testing.T) {
 	}
 	for _, listed := range append(slices.Collect(maps.Keys(answers)), slices.Collect(maps.Keys(replyQuoteAnswerExceptions))...) {
 		if !found[listed] {
-			t.Errorf("%s is listed here, and is no answer routeShapes says can hold a reply_block", listed)
+			t.Errorf("%s is listed here, and is no answer a route's declared Shape says can hold a reply_block", listed)
 		}
 	}
 

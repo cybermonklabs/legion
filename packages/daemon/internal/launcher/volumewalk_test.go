@@ -39,10 +39,10 @@ func walkTree(t *testing.T, at time.Time) string {
 		mkdirFixture(t, filepath.Join(root, dir))
 		writeAged(t, filepath.Join(root, dir, "one"), at)
 	}
-	// The pod's feed: a read-only mount of files inside the same claim, with no directory of
-	// its own, so the walk measures the child itself and nothing on the volume goes unaccounted.
-	mkdirFixture(t, filepath.Join(root, "feed"))
-	writeAged(t, filepath.Join(root, "feed", "issue.json"), at)
+	// An auxiliary directory with a file has no child directory of its own, so the walk measures
+	// that child itself and no byte of the volume goes unaccounted.
+	mkdirFixture(t, filepath.Join(root, "archive"))
+	writeAged(t, filepath.Join(root, "archive", "issue.json"), at)
 	// A file directly under the volume root, which is a child that holds no directory either.
 	writeAged(t, filepath.Join(root, "lost+found.txt"), at)
 	return root
@@ -72,7 +72,7 @@ func TestTheWalkMeasuresTwoLevelsUnderTheRootInItsOwnOrder(t *testing.T) {
 		// then go
 		"go/build", "go/mod",
 		// then the rest, in the order the root's own children sort
-		"feed", "lost+found.txt", "uv/cache", "uv/python", "workspaces/cybermonklabs",
+		"archive", "lost+found.txt", "uv/cache", "uv/python", "workspaces/cybermonklabs",
 	}
 	var got []string
 	for _, size := range result.Sizes {
@@ -273,19 +273,17 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	}
 }
 
-// A read the kernel refuses under a target ends nothing and is no early end: the pod's feed is a
-// read-only mount inside the same claim, so the walk reaches it and its bytes are already in the
-// statfs reading the marks are taken from. The walk goes on to its end, so it is not partial,
-// and each directory it could read only in part is a size that names the first read refused
-// there and how many were, so that its bytes are never read as the directory's whole. Four
-// shapes are staged: two mode-0000 directories under the feed's own directory, which the walk
-// reads the rest of; a mode-0000 directory at the foot of a chain thirty directories deep, which
-// is named by the target, its own name and its depth and never by the path between, as the
-// deleter's removal failure is (removalFailure); a target that is itself mode 0000, whose lstat
-// in its readable parent succeeds and whose open is refused, so the walk reads nothing of it and
-// names it as unmeasured with the read the kernel refused, and as no size; and an immediate
-// child of the root that is mode 0000, which the walk cannot list and names as unmeasured the
-// same way. The negative control is every other target of the tree, which carries no refusal.
+// A read the kernel refuses under a target ends nothing and is no early end: the walk goes on to
+// its end, so it is not partial, and each directory it could read only in part is a size that names
+// the first read refused there and how many were, so that its bytes are never read as the
+// directory's whole. Four shapes are staged: two mode-0000 directories under one auxiliary
+// directory, which the walk reads the rest of; a mode-0000 directory at the foot of a chain thirty
+// directories deep, which is named by the target, its own name and its depth and never by the path
+// between, as the deleter's removal failure is (removalFailure); a target that is itself mode 0000,
+// whose lstat in its readable parent succeeds and whose open is refused, so the walk reads nothing
+// of it and names it as unmeasured with the read the kernel refused, and as no size; and an
+// immediate child of the root that is mode 0000, which the walk cannot list and names as unmeasured
+// the same way. The negative control is every other target of the tree, which carries no refusal.
 func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
@@ -293,12 +291,10 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	}
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
-	// The feed as workspace-fetch writes it: a directory of its own under the mount, which is
-	// what the walk measures, with two directories under that the reader is refused.
-	feed := filepath.Join(root, "feed", "pack")
-	mkdirFixture(t, feed)
-	writeAged(t, filepath.Join(feed, "issue.json"), clock.at.Add(-2*time.Hour))
-	first, second := filepath.Join(feed, "a-locked"), filepath.Join(feed, "b-locked")
+	auxiliary := filepath.Join(root, "archive", "pack")
+	mkdirFixture(t, auxiliary)
+	writeAged(t, filepath.Join(auxiliary, "issue.json"), clock.at.Add(-2*time.Hour))
+	first, second := filepath.Join(auxiliary, "a-locked"), filepath.Join(auxiliary, "b-locked")
 	locked := filepath.Join(root, "workspaces", "locked")
 	sealed := filepath.Join(root, "sealed")
 	// The chain a role can make under any target: thirty levels of 100-byte names, which the
@@ -335,8 +331,8 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 		}
 		return result.Sizes[at], true
 	}
-	if size, ok := sizeOf(feed); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
-		t.Errorf("the walk measured the feed as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
+	if size, ok := sizeOf(auxiliary); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
+		t.Errorf("the walk measured the auxiliary directory as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
 	}
 	if at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == locked }); at >= 0 {
 		t.Errorf("the walk reports the directory it could not open as the size %+v, want it named as unmeasured and no size at all", result.Sizes[at])
@@ -349,7 +345,7 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 		}
 	}
 	for _, size := range result.Sizes {
-		if size.Path != feed && size.Path != locked && size.Path != deep && (size.Refused != "" || size.Refusals != 0) {
+		if size.Path != auxiliary && size.Path != locked && size.Path != deep && (size.Refused != "" || size.Refusals != 0) {
 			t.Errorf("the walk marks %s, which it read whole, as read in part: %+v", size.Path, size)
 		}
 	}
@@ -878,7 +874,7 @@ func TestAWalkThatMetARefusedReadSaysWhereAndNotThatItEndedEarly(t *testing.T) {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
 	}
 	f := newTrimFixture(t, 1)
-	pack := filepath.Join(f.root, "feed", "pack")
+	pack := filepath.Join(f.root, "unprotected", "pack")
 	refused := filepath.Join(pack, "under")
 	mkdirFixture(t, pack)
 	writeAged(t, filepath.Join(pack, "issue.json"), f.clock.at)
