@@ -124,6 +124,11 @@ func HoldRow(t testing.TB, database *store.Store, hold *Hold, statement string, 
 // whitespace collapsed as RequireStoppedAt reads it: store.LockOwners' advisory lock.
 var OwnerLockStatement = strings.ToLower(store.OwnerLockStatement)
 
+// OwnersLockSharedStatement is how the statement that takes an owner's lock shared starts, in the
+// same form: store.OwnersLockShared, the lock a hold of a project's default takes
+// (inboxwrite.HoldDefault).
+var OwnersLockSharedStatement = strings.ToLower(store.OwnersLockShared)
+
 // HoldOwner holds owner's lock, the transaction advisory lock every writer of that owner takes
 // first (store.LockOwner), as one of those writers takes it.
 func HoldOwner(t testing.TB, database *store.Store, hold *Hold, owner store.Owner) *Hold {

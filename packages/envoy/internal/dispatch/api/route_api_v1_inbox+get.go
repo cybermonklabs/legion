@@ -14,8 +14,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED).",
 	Handler:     (*server).listInbox,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	// kept for one release: inbox-old-reads
-	Read: readEntry{Writes: readWritesNothing},
-	// kept for one release: inbox-old-reads
-	Shape: routeShape{Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
+	Read:        readEntry{Writes: readWritesNothing},
+	Shape:       routeShape{Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
 })

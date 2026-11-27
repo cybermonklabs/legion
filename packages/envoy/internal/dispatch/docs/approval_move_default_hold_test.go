@@ -2,18 +2,15 @@ package docs
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
-	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A version that moves an open approval request falling through to its project's default assignee
@@ -88,17 +85,10 @@ func TestAVersionThatMovesARequestHoldsTheDefaultItFallsThroughToBeforeAnyAsksRo
 	awaitRoomAppends(t, issue.service, issue.spec, "become durable", issue.service.waitForDurableAppends)
 
 	runner := storetest.SingleConnection(t, issue.database)
-	settler := New(Deps{
-		Store: runner, Events: events.NewBroker(), Identity: headerIdentity(issue.database),
-		ServerURL: "https://dispatch.example", Settle: time.Hour,
-	})
-	// Registered after the store's close and so run before it, cleanups running last registered
-	// first, which leaves the service its connection while it shuts down.
-	testcleanup.Add(t, func() {
-		if err := settler.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown the settling document service: %v", err)
-		}
-	})
+	// Its shutdown is registered after the store's close and so runs before it, cleanups running
+	// last registered first, which leaves the service its connection while it shuts down.
+	settler := newTestServiceOn(t, runner)
+	settler.settle = time.Hour
 	pid := backendOf(t, runner)
 
 	owner := lockstep.HoldOwner(t, issue.database, &lockstep.Hold{
@@ -108,11 +98,11 @@ func TestAVersionThatMovesARequestHoldsTheDefaultItFallsThroughToBeforeAnyAsksRo
 	}, store.IssueOwner("DOC-1"))
 	project := lockstep.HoldOwner(t, issue.database, &lockstep.Hold{
 		Name: "project DOC's owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "project", ID: "DOC",
-		Statement: strings.ToLower(store.OwnersLockShared),
+		Statement: lockstep.OwnersLockSharedStatement,
 	}, store.ProjectOwner("DOC"))
 	blockRow := lockstep.HoldRow(t, issue.database, &lockstep.Hold{
 		Name: "the open block ask's row", Step: lockstep.StepProjection, Taken: true,
-		Statement: "select 1 from asks a where a.block_artifact_id = $1 and a.block_id is not null",
+		Statement: docsAskRowsStatement,
 	}, `select 1 from asks where id = $1::uuid for no key update`, opened)
 	requestRow := lockstep.HoldRow(t, issue.database, &lockstep.Hold{
 		Name: "the approval request's row", Step: lockstep.StepProjection, Taken: true,

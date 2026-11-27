@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -79,7 +78,7 @@ func TestTheCloseHoldsTheDefaultItsAsksFallThroughToBeforeAnyAsksRow(t *testing.
 	}, store.IssueOwner(issue.Key))
 	project := lockstep.HoldOwner(t, database, &lockstep.Hold{
 		Name: "project HOLD's owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "project", ID: "HOLD",
-		Statement: strings.ToLower(store.OwnersLockShared),
+		Statement: lockstep.OwnersLockSharedStatement,
 		Unlocked:  []string{"asks"},
 	}, store.ProjectOwner("HOLD"))
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{

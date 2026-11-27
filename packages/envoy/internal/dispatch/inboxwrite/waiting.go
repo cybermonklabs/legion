@@ -189,7 +189,8 @@ const AskDefaultProject = `coalesce(case when a.state = '` + asks.StateOpen + `'
 
 // HoldAskDefault is HoldDefault for a write into the thread of ask askID with no read of the ask
 // of its own to read the project in (AskDefaultProject) - an edit there (api's
-// editMentionParticipation), the approval carry's answer (docs' answerApprovalAsk): it reads that
+// editMentionParticipation), the approval carry's answer (docs' answerApprovalAsk), a version's
+// move of an approval request (docs' moveApprovalAsk): it reads that
 // project and holds it shared (HoldProjectDefault), and holds nothing for an ask a move of a
 // default does not reach, such as one handed to somebody.
 func HoldAskDefault(ctx context.Context, tx pgx.Tx, askID string) error {
