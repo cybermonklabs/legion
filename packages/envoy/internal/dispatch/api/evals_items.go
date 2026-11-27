@@ -468,11 +468,10 @@ func (s *server) repoRules(ctx context.Context, read evalItemsRead) ([]delivery.
 		return nil, err
 	}
 	var rules []delivery.DeliverySettings
-	for i, rule := range built {
-		if rule != nil {
-			one := *rule
-			one.DeployRepo = repos[i]
-			rules = append(rules, one)
+	for _, repo := range repos {
+		if rule, held := built[delivery.RuleKey(repo)]; held {
+			rule.DeployRepo = repo
+			rules = append(rules, rule)
 		}
 	}
 	read.once.rules, read.once.rulesRead = rules, true

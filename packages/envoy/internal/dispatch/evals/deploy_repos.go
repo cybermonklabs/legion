@@ -154,7 +154,7 @@ const unionDeployRepo = "*"
 // DeployReposOf is the DeployRepos that read repo alone ("" for none): one cut of the stored
 // figures (figureCut), or one repository a test reads, project's where repo is its events
 // repository. For unionDeployRepo ("*"), which stands for a project's current deploy repositories
-// (DeployReposIn), callers read the selection from the database (cutDeployRepos).
+// (DeployReposIn), a fold reads the selection from the database (figureScope.cutRepos).
 func DeployReposOf(project, repo string) *DeployRepos {
 	switch posted := IsEventsRepo(repo); {
 	case repo == "":
@@ -177,22 +177,21 @@ func unionPairs(projects []string) (keys, repos []string) {
 	return keys, repos
 }
 
-// cutDeployRepos answers the DeployRepos whose day rows a fold of cut reads: all of the project's
-// currently recorded deploy repositories (DeployReposIn) for the union cut (unionDeployRepo), and
-// DeployReposOf(project, deployRepo) for a single deploy repository or none.
-func cutDeployRepos(ctx context.Context, q delivery.Querier, project, deployRepo string) (*DeployRepos, error) {
-	if deployRepo == unionDeployRepo {
-		return DeployReposIn(ctx, q)
-	}
-	return DeployReposOf(project, deployRepo), nil
-}
-
 // hasRepo reports whether project's read folds repo (Of).
 func (d *DeployRepos) hasRepo(project, repo string) bool {
 	if d == nil || repo == "" {
 		return false
 	}
 	return slices.Contains(d.sources, repo) || d.events[project] == repo
+}
+
+// several reports whether project's read folds more than one repository (Of).
+func (d *DeployRepos) several(project string) bool {
+	if d == nil {
+		return false
+	}
+	_, posted := d.events[project]
+	return len(d.sources) > 1 || len(d.sources) == 1 && posted
 }
 
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
@@ -284,7 +283,6 @@ func IsEventsRepo(repo string) bool {
 // a first deploy that ships a pull request merged before the repository's history began would
 // otherwise time a lead time from before it: such a day holds no row of the repository.
 type keptRepo struct {
-	name    string
 	deploys bool
 	since   time.Time
 	rule    delivery.DeliverySettings
@@ -292,7 +290,8 @@ type keptRepo struct {
 
 // readDeployRepos reads the repositories whose rows of the evals that read the deploy repository
 // are kept: every repository that holds a delivery run, in the byte order of their names, each
-// with whether it holds a deploy run and the start of its history (keptRepo.since). One
+// with whether it holds a deploy run and the start of its history (keptRepo.since), its rule
+// naming the repository alone (rule.DeployRepo), which the pass's rules fill (keptRepos). One
 // statement walks delivery_runs' primary key from one repository to the next (repo, run_id), one
 // probe each, and reads delivery_runs_kind_started_at's first entry of each repository and kind,
 // so it reads a handful of index entries however many runs there are.
@@ -316,14 +315,14 @@ func readDeployRepos(ctx context.Context, q delivery.Querier) ([]keptRepo, error
 	}
 	var repos []keptRepo
 	var one keptRepo
-	if _, err := pgx.ForEachRow(rows, []any{&one.name, &one.deploys, &one.since}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&one.rule.DeployRepo, &one.deploys, &one.since}, func() error {
 		one.since = measures.Midnight(one.since)
 		repos = append(repos, one)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the repositories that hold a delivery run: %w", err)
 	}
-	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.name, b.name) })
+	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.rule.DeployRepo, b.rule.DeployRepo) })
 	return repos, nil
 }
 
@@ -345,7 +344,7 @@ func readPostedRepos(ctx context.Context, q delivery.Querier, rules []delivery.D
 	var repos []keptRepo
 	for i, first := range firsts {
 		if first != nil {
-			repos = append(repos, keptRepo{name: rules[i].DeployRepo, since: measures.Midnight(*first), rule: rules[i]})
+			repos = append(repos, keptRepo{since: measures.Midnight(*first), rule: rules[i]})
 		}
 	}
 	return repos, nil
@@ -450,18 +449,18 @@ func keptRules(repos []keptRepo) []delivery.DeliverySettings {
 // names), and whether repos holds repo: its source's rule, or the one recorded with its rows where
 // no source reads it any more.
 func keptRule(repos []keptRepo, repo string) (delivery.DeliverySettings, bool) {
-	i, found := slices.BinarySearchFunc(repos, repo, func(kept keptRepo, name string) int { return cmp.Compare(kept.name, name) })
+	i, found := slices.BinarySearchFunc(repos, repo, func(kept keptRepo, name string) int { return cmp.Compare(kept.rule.DeployRepo, name) })
 	if !found {
 		return delivery.DeliverySettings{}, false
 	}
 	return repos[i].rule, true
 }
 
-// deployRepoNames is the names of repos, in their order.
+// deployRepoNames is the names of repos (rule.DeployRepo), in their order.
 func deployRepoNames(repos []keptRepo) []string {
 	names := make([]string, len(repos))
 	for i, repo := range repos {
-		names[i] = repo.name
+		names[i] = repo.rule.DeployRepo
 	}
 	return names
 }

@@ -1860,7 +1860,7 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   It folds the first paint of each cut it marks instead (`evals.foldMarkedFirstPaints`, below), so a first paint of every cut the move touches, the Evals tab's own rows among them, reads the stored figures from the commit on, and it logs one INFO line with the projects it moved, the cuts it marked, their evals, how long the first-paint folds took, how long the transaction took and how long it held the locks of the logged evals it folded (`locks_held_ms`).
   The publishing commit writes no day row or member, and a commit that clears the last default a project holds publishes the clear once.
 
-- The refresher uses the same publication path when a deploy source changes (`evals.publishDefaults`).
+- The refresher marks and folds a move of a deploy source the way it does a move of a default (`evals.publishMove`, which `evals.publishDefaults` runs too).
   It compares the selected deploy repositories and their owner-key readers in the same transaction, before and after recording the rules.
   A source add, removal, move, ownership change, delivery toggle, or default change under an unnamed source can change this selection.
   The commit marks cuts of the owner keys a project gains or loses, and cuts with rows from a deploy repository it gains or loses (`evals.sourceMarksOf`).

@@ -39,7 +39,7 @@ import (
 // recordRules): the deploy repositories a read of the evals keyed by them folds (DeployReposIn),
 // and the reader of each repository's source key, a selection too (dispatch://INFRA-978, plan T19
 // paths 1 and 3), whose cuts the commit marks and whose first paints it folds alike
-// (publishDefaults, sourceMarksOf).
+// (publishMove, sourceMarksOf).
 
 // The eval tables' lock order. A transaction that takes locks of more than one of these steps
 // takes them in this order, and those of one step in the order the step gives, so two writers wait
@@ -190,24 +190,20 @@ func readSelection(ctx context.Context, q delivery.Querier) (selectionRead, erro
 	return selectionRead{repos: repos, owners: owners}, nil
 }
 
-// publishDefaults publishes, in tx, a commit that moves what the evals' reads select from before,
+// publishMove publishes, in tx, a commit that moves what the evals' reads select from before,
 // which tx read before its first write (readSelection): a refresher page's commit (commitPage),
 // which records the deploy sources' rules (recordRules: the deploy repositories a read selects, and
-// the reader of each repository's source key) and publishes the default repositories move holds
-// where move is not nil. The rewrite of one repository's rule that also moves its source to another
-// project (rewriteSettings) publishes its move with move nil through selectionMoves, whose marks it
-// writes and folds with those of its own rows (markMovedCuts). projects is every project's key.
-// Where move is not nil, every project's published default is replaced by the one it stands at,
-// every published row locked first in the byte order of its key (readPublishedDefaults); each
-// project the commit moves gets one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults),
-// which marks its evals views; and each deploy repository whose judging project moved one more
-// (delivery.JudgingMoved), which marks the delivery views those evals judge. A commit of the sources
-// alone logs neither: its record of the rules says the rows stand at the settings
-// (markSettingsApplied), which recomputes every evals view. Either way it marks stale each cut the
-// commit moves rows into or out of, naming the evals whose rows it moved there (selectionMoves:
+// the reader of each repository's source key), alone or, where a project's default repository
+// moved, within the commit's publication of the defaults (publishDefaults). The rewrite of one
+// repository's rule that also moves its source to another project (rewriteSettings) finds its move
+// through selectionMoves, whose marks it writes and folds with those of its own rows
+// (markMovedCuts). projects is every project's key; moved is the projects whose own published
+// default the commit moves, and was and live every project's published default before the commit
+// and as it stands, all three empty for a commit that moves no default. It marks stale each cut
+// the commit moves rows into or out of, naming the evals whose rows it moved there (selectionMoves:
 // staleMarksOf, sourceMarksOf; markStaleCuts), and folds the first paint of each cut it marks whose
 // mark names no logged eval under what the reads select now (foldMarkedFirstPaints). It takes the
-// defaults' locks and then the marks', and no eval lock, in the eval tables' lock order.
+// marks' locks, and no eval lock, in the eval tables' lock order.
 //
 // The projects it moves are those whose own default it moves, and every project whose owner keys
 // (eval_project_owners, with whether it reads each through the repository) the commit moves, read
@@ -244,8 +240,8 @@ func readSelection(ctx context.Context, q delivery.Querier) (selectionRead, erro
 // left owed, and then the rest of the marked evals, newest end day first, batch after batch, each in
 // a short transaction of its own (refoldStaleCuts). It answers what the commit moved, marked and
 // folded, which the page logs once it commits (movePublished.log).
-func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, error) {
-	published, marks, err := selectionMoves(ctx, tx, projects, move, before, fresh)
+func publishMove(ctx context.Context, tx pgx.Tx, build string, projects, moved []string, was, live map[string]string, before selectionRead, fresh map[string]bool) (movePublished, error) {
+	published, marks, err := selectionMoves(ctx, tx, projects, moved, was, live, before, fresh)
 	if err != nil {
 		return movePublished{}, err
 	}
@@ -256,36 +252,53 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []st
 	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf); err != nil {
 		return movePublished{}, err
 	}
-	if move != nil {
-		for _, repo := range move.judging {
-			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
-				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
-				return movePublished{}, fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
-			}
+	return published, nil
+}
+
+// publishDefaults publishes, in tx, the page's commit (commitPage), the default repositories move
+// holds, and with them what the commit moves of what the evals' reads select from before
+// (publishMove): every project's published default replaced by the one it stands at, every
+// published row locked first in the byte order of its key (publishDefaultRows,
+// readPublishedDefaults), so it takes the defaults' locks before the marks'; then one eval_days
+// change of no eval for each project the commit moves (delivery.EvalDaysWrittenByDefaults), which
+// marks its evals views, and one more for each deploy repository whose judging project moved
+// (delivery.JudgingMoved), which marks the delivery views those evals judge. A commit that moves no
+// default logs neither: its record of the rules says the rows stand at the settings
+// (markSettingsApplied), which recomputes every evals view.
+func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, error) {
+	was, err := publishDefaultRows(ctx, tx, move)
+	if err != nil {
+		return movePublished{}, err
+	}
+	published, err := publishMove(ctx, tx, build, projects, move.moved, was, move.live, before, fresh)
+	if err != nil {
+		return movePublished{}, err
+	}
+	for _, project := range published.moved {
+		if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,
+			delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
+			return movePublished{}, fmt.Errorf("log the default repository %s publishes: %w", project, err)
+		}
+	}
+	for _, repo := range move.judging {
+		if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
+			delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
+			return movePublished{}, fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
 		}
 	}
 	return published, nil
 }
 
-// selectionMoves is what publishDefaults publishes and finds before it writes a mark: in tx, the
-// default repositories move holds published where move is not nil (publishDefaultRows), with one
-// eval_days change of no eval for each project the commit moves, and the projects the commit moves
-// from before, with the marks of the cuts it moves rows into or out of (noteMovedCuts,
-// staleMarksOf, sourceMarksOf), each cut's eval ids in byte order, not yet written. It answers
-// what the commit moved and marks, how many cuts and evals among them, and the marks, which
-// publishDefaults writes and folds the first paints of, and which a rewrite of one repository's
-// rule that moves its source to another project (rewriteSettings, move nil) writes in one batch
-// with the marks of the rows it rewrote (markMovedCuts).
-func selectionMoves(ctx context.Context, tx pgx.Tx, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, map[staleCut][]string, error) {
-	published := movePublished{defaults: move != nil}
-	var was map[string]string
-	if move != nil {
-		var err error
-		if was, err = publishDefaultRows(ctx, tx, move); err != nil {
-			return movePublished{}, nil, err
-		}
-		published.moved = slices.Clone(move.moved)
-	}
+// selectionMoves is what publishMove publishes and finds before it writes a mark: in tx, the
+// projects the commit moves from before, the projects moved names whose own published default it
+// moves from was to live among them, with the marks of the cuts it moves rows into or out of
+// (noteMovedCuts, staleMarksOf, sourceMarksOf), each cut's eval ids in byte order, not yet
+// written. It answers what the commit moved and marks, how many cuts and evals among them, and the
+// marks, which publishMove writes and folds the first paints of, and which a rewrite of one
+// repository's rule that moves its source to another project (rewriteSettings, no default moved)
+// writes in one batch with the marks of the rows it rewrote (markMovedCuts).
+func selectionMoves(ctx context.Context, tx pgx.Tx, projects, moved []string, was, live map[string]string, before selectionRead, fresh map[string]bool) (movePublished, map[staleCut][]string, error) {
+	published := movePublished{moved: slices.Clone(moved)}
 	after, err := readSelection(ctx, tx)
 	if err != nil {
 		return movePublished{}, nil, err
@@ -306,15 +319,7 @@ func selectionMoves(ctx context.Context, tx pgx.Tx, projects []string, move *def
 	published.moved = slices.Compact(published.moved)
 	cuts := map[staleCut]*movedCut{}
 	for _, project := range published.moved {
-		var from, to string
-		if move != nil {
-			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,
-				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
-				return movePublished{}, nil, fmt.Errorf("log the default repository %s publishes: %w", project, err)
-			}
-			from, to = was[project], move.live[project]
-		}
-		noteMovedCuts(cuts, project, from, to, before.owners[project], after.owners[project], read)
+		noteMovedCuts(cuts, project, was[project], live[project], before.owners[project], after.owners[project], read)
 	}
 	marks, err := staleMarksOf(ctx, tx, cuts)
 	if err != nil {
@@ -381,25 +386,22 @@ func sameOwners(a, b map[string]bool, read func(owner string) bool) bool {
 	return true
 }
 
-// movePublished is what a commit that moves what the evals' reads select did (publishDefaults):
-// whether it published the default repositories, the projects it moved, how many cuts it marked
-// stale and how many evals the marks name in all, and what its fold of their first paints did.
+// movePublished is what a commit that moves what the evals' reads select did (publishMove): the
+// projects it moved, how many cuts it marked stale and how many evals the marks name in all, and
+// what its fold of their first paints did.
 type movePublished struct {
-	defaults    bool
 	moved       []string
 	cuts, evals int
 	paints      markedPaints
 }
 
-// log logs the commit of a move, whose transaction began at began and committed at committed, as a
-// batch of a stale cut's refold logs: beside the counts, how long the first-paint folds took and
-// how long the transaction took. A commit of the sources that moved no read logs nothing.
-func (p movePublished) log(began, committed time.Time) {
-	what := "the deploy sources"
-	switch {
-	case p.defaults:
-		what = "the default repositories"
-	case len(p.moved) == 0 && p.cuts == 0:
+// log logs the commit of a move of what ("the default repositories" or "the deploy sources"),
+// whose transaction began at began and committed at committed, as a batch of a stale cut's refold
+// logs: beside the counts, how long the first-paint folds took and how long the transaction took.
+// A commit that moved no read logs nothing; one that publishes the defaults moves the projects
+// whose default it moves.
+func (p movePublished) log(what string, began, committed time.Time) {
+	if len(p.moved) == 0 && p.cuts == 0 {
 		return
 	}
 	slog.Info("dispatch: the eval day-row refresher published a move of "+what, "projects", len(p.moved), "cuts_marked", p.cuts,
@@ -414,7 +416,7 @@ type markedPaints struct {
 }
 
 // foldMarkedFirstPaints folds, in tx, the first paints of the cuts markStaleCuts marked, in key
-// order (publishDefaults, rewriteSettings). It folds each cut that owes its first paint under
+// order (publishMove, rewriteSettings). It folds each cut that owes its first paint under
 // scopeOf and whose mark names only computed evals, and records the paint with the mark
 // (foldPaintOf). paintOf selects the end days and day rows to fold: the settings rewrite also
 // folds the day rows back to the paint's reach (paintReached). It reads each project's evals
@@ -504,7 +506,7 @@ type movedCut struct {
 }
 
 // noteMovedCuts records in cuts the cuts of project's stored figures a move of what the evals'
-// reads select moves (publishDefaults), and what it moves of each, its published default moving
+// reads select moves (publishMove), and what it moves of each, its published default moving
 // from was to now ("" for none) and the owner keys it reads, with whether through the repository,
 // from before to after, of those read names: the cuts of was and of now where they differ, which
 // hold its own rows stored under legionfacts.DefaultRepo (cutOf), and, for each owner key it gains,
@@ -646,36 +648,28 @@ const ownerEvalsQuery = `
 	) held
 `
 
-// sourceMarksOf reads in tx, the commit of a move of what the evals' reads select
-// (publishDefaults), the marks its move of the deploy repositories names beside those of its owner
-// keys (staleMarksOf), from the rows stored as it commits: for each of projects whose read of the
-// evals keyed by the deploy repository gains or loses a deploy repository from before to after
-// (DeployRepos.Of, a repository fresh names aside: movedDeployRepos), each cut that holds a row of
-// such a repository of one of those evals among the rows the project reads under either (its own,
-// and each owner key's it reads before or after), naming the project's eval of each such row's slug
-// (asReader), whose union cut (`deploy_repo` `*`) folds that row in one selection and not in the
-// other; and, of each project the commit moves (moved) or that this names a cut of, its failure
-// evals in each cut their rows stand in (FailureDaySlugs: the project's own rows, which the
-// failure writes rewrite under the published selection once the commit lands, applyFailures). It
-// answers each cut's ids in byte order, and no cut that holds no such row, whose stored figures
-// stand. An owner key's rows of a deploy repository are of the key's repository alone: a
-// repository's deploys ship its own pull requests alone (delivery.ContainingRun) and its deploy and
-// CI runs are its own (deliveryRead.linked), and a posted deploy counts in its project's own rows
-// alone; so a key is read only for the deploy repository of its own repository, and a project's
-// own key for every one its read moves. The read is bounded by eval_days' primary key
-// (cutRowsQuery): for each key, eval and deploy repository, one probe for each series and
-// repository its rows hold and one past the last, in statements of at most statementBytes.
+// sourceMarksOf reads in tx, the commit of a move of what the evals' reads select (publishMove),
+// the marks its move of the deploy repositories names beside those of its owner keys
+// (staleMarksOf), from the rows stored as it commits, in two passes. The first: for each of
+// projects whose read of the evals keyed by the deploy repository gains or loses a deploy
+// repository from before to after (DeployRepos.Of, a repository fresh names aside:
+// movedDeployRepos), each cut that holds a row of such a repository of one of those evals among the
+// rows the project reads under either (its own, and each owner key's it reads before or after),
+// naming the project's eval of each such row's slug (asReader), whose union cut (`deploy_repo` `*`)
+// folds that row in one selection and not in the other. The second: of each project the commit
+// moves (moved), and each of those projects that the first names a cut of, its failure evals in
+// each cut their rows stand in (FailureDaySlugs: the project's own rows, which the failure writes
+// rewrite under the published selection once the commit lands, applyFailures). It answers each
+// cut's ids in byte order, and no cut that holds no such row, whose stored figures stand. An owner
+// key's rows of a deploy repository are of the key's repository alone: a repository's deploys ship
+// its own pull requests alone (delivery.ContainingRun) and its deploy and CI runs are its own
+// (deliveryRead.linked), and a posted deploy counts in its project's own rows alone; so a key is
+// read only for the deploy repository of its own repository, and a project's own key for every one
+// its read moves. Each pass is bounded by eval_days' primary key (readCutRows).
 func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, before, after selectionRead, fresh map[string]bool) (map[staleCut][]string, error) {
-	type probe struct{ key, evalID, deployRepo string }
-	var probes []probe
-	probed := map[probe]bool{}
-	add := func(one probe) {
-		if !probed[one] {
-			probed[one] = true
-			probes = append(probes, one)
-		}
-	}
-	readers := map[probe][]string{}
+	var probes []cutProbe
+	probed := map[cutProbe]bool{}
+	readers := map[cutProbe][]string{}
 	failing := slices.Clone(moved)
 	for _, project := range projects {
 		repos := movedDeployRepos(before.repos.Of(project), after.repos.Of(project), fresh)
@@ -695,17 +689,14 @@ func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, bef
 					continue
 				}
 				for _, slug := range deployRepoSlugs {
-					one := probe{key: key, evalID: EvalID(key, slug), deployRepo: repo}
-					add(one)
+					one := cutProbe{key: key, evalID: EvalID(key, slug), deployRepo: repo}
+					if !probed[one] {
+						probed[one] = true
+						probes = append(probes, one)
+					}
 					readers[one] = append(readers[one], project)
 				}
 			}
-		}
-	}
-	slices.Sort(failing)
-	for _, project := range slices.Compact(failing) {
-		for _, slug := range FailureDaySlugs {
-			add(probe{key: project, evalID: EvalID(project, slug)})
 		}
 	}
 	named := map[staleCut]map[string]bool{}
@@ -719,9 +710,45 @@ func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, bef
 	for _, project := range moved {
 		touched[project] = true
 	}
-	var failures []staleCut
-	failureEvals := map[staleCut][]string{}
-	size := func(one *probe) int { return 3*4 + len(one.key) + len(one.evalID) + len(one.deployRepo) }
+	if err := readCutRows(ctx, tx, probes, func(one cutProbe, repo string) {
+		for _, project := range readers[one] {
+			note(staleCut{project: project, repo: repo}, asReader(one.key, project, one.evalID))
+			touched[project] = true
+		}
+	}); err != nil {
+		return nil, err
+	}
+	var failures []cutProbe
+	slices.Sort(failing)
+	for _, project := range slices.Compact(failing) {
+		if touched[project] {
+			for _, slug := range FailureDaySlugs {
+				failures = append(failures, cutProbe{key: project, evalID: EvalID(project, slug)})
+			}
+		}
+	}
+	if err := readCutRows(ctx, tx, failures, func(one cutProbe, repo string) {
+		note(staleCut{project: one.key, repo: repo}, one.evalID)
+	}); err != nil {
+		return nil, err
+	}
+	marks := make(map[staleCut][]string, len(named))
+	for cut, evals := range named {
+		marks[cut] = slices.Sorted(maps.Keys(evals))
+	}
+	return marks, nil
+}
+
+// cutProbe is one key's eval under one deploy repository ("" for an eval no deploy repository
+// keys) whose cuts readCutRows reads.
+type cutProbe struct{ key, evalID, deployRepo string }
+
+// readCutRows reads, in tx, the repository of each cut that holds a row of each of probes
+// (cutRowsQuery), in statements of at most statementBytes, and hands each to each with its probe.
+// It passes over the cut of legionfacts.DefaultRepo, which holds Legion rows alone: no row of an
+// eval that reads the deploy repository, and no failure row, stands under it.
+func readCutRows(ctx context.Context, tx pgx.Tx, probes []cutProbe, each func(one cutProbe, repo string)) error {
+	size := func(one *cutProbe) int { return 3*4 + len(one.key) + len(one.evalID) + len(one.deployRepo) }
 	for chunk := range statementChunks(probes, paramBytes(3), size) {
 		keys, evalIDs, repos := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 		for index, one := range chunk {
@@ -729,42 +756,20 @@ func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, bef
 		}
 		rows, err := tx.Query(ctx, cutRowsQuery, keys, evalIDs, repos)
 		if err != nil {
-			return nil, fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
+			return fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
 		}
-		var one probe
+		var one cutProbe
 		var repo string
 		if _, err := pgx.ForEachRow(rows, []any{&one.key, &one.evalID, &one.deployRepo, &repo}, func() error {
-			switch {
-			case repo == legionfacts.DefaultRepo:
-				// No row of an eval that reads the deploy repository, and no failure row, stands
-				// under it: it holds Legion rows alone.
-			case one.deployRepo == "":
-				cut := staleCut{project: one.key, repo: repo}
-				failures = append(failures, cut)
-				failureEvals[cut] = append(failureEvals[cut], one.evalID)
-			default:
-				for _, project := range readers[one] {
-					note(staleCut{project: project, repo: repo}, asReader(one.key, project, one.evalID))
-					touched[project] = true
-				}
+			if repo != legionfacts.DefaultRepo {
+				each(one, repo)
 			}
 			return nil
 		}); err != nil {
-			return nil, fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
+			return fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
 		}
 	}
-	for _, cut := range failures {
-		if touched[cut.project] {
-			for _, evalID := range failureEvals[cut] {
-				note(cut, evalID)
-			}
-		}
-	}
-	marks := make(map[staleCut][]string, len(named))
-	for cut, evals := range named {
-		marks[cut] = slices.Sorted(maps.Keys(evals))
-	}
-	return marks, nil
+	return nil
 }
 
 // movedDeployRepos is the deploy repositories one of before and after holds and the other does not,

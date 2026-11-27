@@ -73,10 +73,11 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	// (refresh.keptRepos).
 	var repos []keptRepo
 	for _, repo := range held {
+		name := repo.rule.DeployRepo
 		for _, rule := range delivery.DeployRules(projects) {
-			if delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(repo.name) {
+			if delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(name) {
 				repo.rule = rule
-				repo.rule.DeployRepo = repo.name
+				repo.rule.DeployRepo = name
 				repos = append(repos, repo)
 			}
 		}
@@ -143,9 +144,9 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 				one := repo.rule
 				applies, err := delivery.ReadApplyRows(ctx, pool, one, day)
 				if err != nil {
-					t.Fatalf("%s: read the deploy runs of %s from the day on: %v", what, repo.name, err)
+					t.Fatalf("%s: read the deploy runs of %s from the day on: %v", what, one.DeployRepo, err)
 				}
-				walked[repo.name] = &applies
+				walked[one.DeployRepo] = &applies
 			}
 			own, err := r.registry.readDeliveryDays(ctx, repos, []time.Time{day}, walked, nil)
 			if err != nil {

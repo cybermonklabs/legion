@@ -585,7 +585,7 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family string, 
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	multiDeploy := slices.ContainsFunc(projects, func(project string) bool { return len(deployRepos.Of(project)) > 1 })
+	multiDeploy := slices.ContainsFunc(projects, deployRepos.several)
 	cut, storedRepo, ownedRepo := `d.repo = any($2)`, "", ""
 	withRepo := len(repos) > 0
 	if !withRepo {

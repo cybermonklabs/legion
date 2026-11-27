@@ -602,6 +602,18 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 	return nil
 }
 
+// markFailureFirstDayMoved announces a project's new first day if the rewrite did not already
+// log a day-row change for it. In either case the hub receives one settings rewrite.
+func markFailureFirstDayMoved(ctx context.Context, tx pgx.Tx, project string) error {
+	if _, err := tx.Exec(ctx, `
+		select delivery_change_log_pending($1, $2, $3, null, null, null)
+		where coalesce(nullif(current_setting('dispatch.eval_days_pending', true), ''), '{}') = '{}'`,
+		delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenBySettingsRewrite, project); err != nil {
+		return fmt.Errorf("log the change to %s's first failure day: %w", project, err)
+	}
+	return nil
+}
+
 // deleteStaleFailureDays deletes, in tx, each of the computation's stored rows of project's evals
 // evalIDs on the days of days that those days do not hold (deleteStaleDays' rule, over several days
 // at once), failureStaleDays days a statement.
@@ -737,7 +749,7 @@ func (r *refresh) applyFailures(ctx context.Context, w *pageWork) error {
 	for _, project := range r.projects {
 		failures, measured := r.failures[project]
 		switch {
-		case w.rebuild != "" || w.settingsOf[project] || measured && slices.Contains(w.failureSelection, project):
+		case w.rebuild != "" || w.settingsOf[project] || measured && w.failureSelection[project]:
 			whole[project] = true
 		case measured && len(changed) > 0:
 		default:

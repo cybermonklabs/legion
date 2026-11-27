@@ -689,7 +689,7 @@ func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last tim
 	if _, err := lockLogged(ctx, tx, entries); err != nil {
 		return err
 	}
-	scope := figureScope{build: r.build, project: key.project, through: last}
+	scope := figureScope{build: r.build, project: key.project, through: last, repos: &recordedRepos{}}
 	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, endsThrough(first, last)); err != nil {
 		return err
 	}

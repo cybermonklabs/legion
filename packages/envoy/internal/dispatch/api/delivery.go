@@ -213,24 +213,19 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	if err != nil {
 		return nil, err
 	}
-	recorded := make(map[string]*delivery.DeliverySettings, len(built))
-	for i, rule := range built {
-		recorded[delivery.RuleKey(repos[i])] = rule
-	}
 	for p := range projects {
 		project := &projects[p]
 		if !project.Delivery {
 			continue
 		}
-		for i, source := range project.Sources {
-			repo, ok := delivery.SourceRepoOf(source.SourceRule, project.DefaultRepo)
+		for i := range project.Sources {
+			source := &project.Sources[i].SourceRule
+			repo, ok := delivery.SourceRepoOf(*source, project.DefaultRepo)
 			if !ok {
 				continue
 			}
-			if rule := recorded[delivery.RuleKey(repo)]; rule != nil {
-				source.ProductionJobNames, source.ProductionApplyStepName = rule.ProductionJobNames, rule.ProductionApplyStepName
-				source.StagingE2EJobName, source.StagingApplyJobName = rule.StagingE2EJobName, rule.StagingApplyJobName
-				project.Sources[i] = source
+			if rule, held := built[delivery.RuleKey(repo)]; held {
+				*source = evals.RecordedOf(rule).OnSource(*source)
 			}
 		}
 	}

@@ -50,7 +50,10 @@ import (
 // after: a deploy's finished_at, or a failure's blamed deploy's; a failure whose restored_at moved
 // logs a second change, carrying its restored_at before and after.
 //
-// A settings row is a write of the delivery settings: its Repo, Ref, TOld and TNew are empty.
+// A settings row is a write of the delivery settings: its Repo carries the key of the project whose
+// settings were written (empty for the singleton row the release before writes), its Ref is
+// FailureFirstDayRef where the write moved the first day the project's failure evals measure and
+// empty otherwise, and its TOld and TNew are empty.
 type Change struct {
 	Seq     int64
 	At      time.Time
@@ -132,6 +135,12 @@ const DefaultsJudgingRef = "judging"
 // SettingsRecordedRef is the Ref of the change that says the refresher recorded the delivery
 // settings the day rows stand built under (SettingsRecorded).
 const SettingsRecordedRef = "settings-recorded"
+
+// FailureFirstDayRef is the Ref of a settings change whose write moved the effective first day of
+// a project's failure evals (project_delivery_settings_changed, migration 20261123010254): it can
+// move their data_since with no day row, so the refresher announces it for the project
+// (evals.markFailureFirstDayMoved).
+const FailureFirstDayRef = "failure-first-day"
 
 // SettingsApplied reports whether change is the refresher's word that the day rows stand at the
 // delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.

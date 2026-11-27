@@ -412,9 +412,8 @@ func (s *Store) readDeliveryDays(ctx context.Context, repos []keptRepo, days []t
 		return nil
 	}}
 	for i, kept := range repos {
-		repo, one := kept.name, &reads[i]
+		repo, one := kept.rule.DeployRepo, &reads[i]
 		one.settings, one.since = kept.rule, kept.since
-		one.settings.DeployRepo = repo
 		if IsEventsRepo(repo) {
 			if held, read := postedRows[repo]; read {
 				one.posted = held
@@ -569,7 +568,7 @@ func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, on
 // project through its route, not a repository: via_repository counts neither.
 func postedDayAs(day time.Time, prs []delivery.DeliveryPullRequest, posted postedRecord, repo keptRepo) DeliveryDay {
 	owner := counted{project: repo.rule.Project}
-	read := DeliveryDay{Day: day, deployRepo: repo.name, since: repo.since, posted: true}
+	read := DeliveryDay{Day: day, deployRepo: repo.rule.DeployRepo, since: repo.since, posted: true}
 	succeeded := delivery.DeliveryRunConclusionSuccess
 	for _, deploy := range posted.finishedOn[measures.Midnight(day)] {
 		read.deploys = append(read.deploys, dayDeploy{

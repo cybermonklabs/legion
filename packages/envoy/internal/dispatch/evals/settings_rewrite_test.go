@@ -749,7 +749,7 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 		}
 		wantRule := settings
 		wantRule.Project = deliveries.Project
-		if held, found := recorded[delivery.RuleKey(settings.DeployRepo)]; !found || !sameBuiltRule(held.rule, wantRule) {
+		if held, found := recorded[delivery.RuleKey(settings.DeployRepo)]; !found || !RecordedOf(held.rule).same(RecordedOf(wantRule)) {
 			t.Fatalf("%s: the rows stand built under %+v, want the new settings, production jobs %v", change.name, recorded, settings.ProductionJobNames)
 		}
 	}
@@ -2849,14 +2849,15 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		}
 		repo := owned[0]
 		built, err := BuiltSettingsIn(t.Context(), r.database.Pool, []string{repo})
-		if err != nil || built[0] == nil {
+		rule, held := built[delivery.RuleKey(repo)]
+		if err != nil || !held {
 			t.Fatalf("%s: the settings a read takes are %v (%v)", what, built, err)
 		}
-		return repo, *built[0]
+		return repo, rule
 	}
 	sameBuiltSettings := func(built, want delivery.DeliverySettings) bool {
 		want.Project = deliveries.Project
-		return sameBuiltRule(built, want)
+		return RecordedOf(built).same(RecordedOf(want))
 	}
 	plain := r.registry
 	prints := &commitPrints{t: t, rig: r.rig, snapshot: func() string {

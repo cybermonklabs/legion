@@ -734,20 +734,21 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // and the page read a change of the settings row (work.settingsApplied, syncSettings), the commit
 // says that the day rows stand at the settings (markSettingsApplied); a rewrite of one
 // repository's rows says so in no transaction of its own (rewriteSettings). Where a project's
-// default repository moved (work.defaults, syncDefaults), the commit publishes it, and where it
-// records the rules or publishes a default it marks the stored cuts the move of what a read
-// selects moves, read in the transaction before its first write and after its last, and folds the
-// first paints of those whose evals are all computed (publishDefaults): a source added, removed or
-// moved, the switch, an owner change and a default move under a source that names none move the
-// deploy repositories a read folds and the readers of their source keys, and the repositories the
-// page builds anew (freshRepos) are folded by their own writes. It takes no eval lock, whose place
-// in the eval tables' lock order is before every row lock (defaults.go): the day rows and stored
-// figures it writes are of computed evals, whose rows are the refresher's alone. The event cursor
-// is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
-// page last read the change log to its end (page), which the lost-cursor rule reads and which a
-// full page leaves where it stood. Once the transaction commits, the pass records what the spans
-// wrote (committed) and the projects whose failure rows the published selection moves. The page
-// drains publishing changes after its failure writes (page), not here.
+// default repository moved (work.defaults, syncDefaults), the commit publishes it
+// (publishDefaults), and where it records the rules or publishes a default it marks the stored
+// cuts the move of what a read selects moves, read in the transaction before its first write and
+// after its last, and folds the first paints of those whose evals are all computed (publishMove):
+// a source added, removed or moved, the switch, an owner change and a default move under a source
+// that names none move the deploy repositories a read folds and the readers of their source keys,
+// and the repositories the page builds anew (freshRepos) are folded by their own writes. It takes
+// no eval lock, whose place in the eval tables' lock order is before every row lock (defaults.go):
+// the day rows and stored figures it writes are of computed evals, whose rows are the refresher's
+// alone. The event cursor is stamped with the moment the pass ran as of, and the change cursor
+// with its ReadAt, when a page last read the change log to its end (page), which the lost-cursor
+// rule reads and which a full page leaves where it stood. Once the transaction commits, the pass
+// records what the spans wrote (committed) and adds the projects the published selection moves
+// to those whose failure rows the page writes whole (work.failureSelection). The page drains
+// publishing changes after its failure writes (page), not here.
 func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, spans []*spanWrite) error {
 	var rebuildWalks []walkKey
 	if work.rebuild != "" {
@@ -773,7 +774,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	}
 	defer tx.Rollback(ctx)
 	// What a read selects is read before the first write, which a move of the sources or of a
-	// default moves, so the commit marks the cuts the move moves (publishDefaults).
+	// default moves, so the commit marks the cuts the move moves (publishMove).
 	var selected *selectionRead
 	if work.record || work.defaults != nil {
 		read, err := readSelection(ctx, tx)
@@ -829,8 +830,15 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		}
 	}
 	var published *movePublished
+	what := "the deploy sources"
 	if selected != nil {
-		move, err := publishDefaults(ctx, tx, r.build, r.projects, work.defaults, *selected, freshRepos(work))
+		var move movePublished
+		if work.defaults != nil {
+			what = "the default repositories"
+			move, err = publishDefaults(ctx, tx, r.build, r.projects, work.defaults, *selected, freshRepos(work))
+		} else {
+			move, err = publishMove(ctx, tx, r.build, r.projects, nil, nil, nil, *selected, freshRepos(work))
+		}
 		if err != nil {
 			return err
 		}
@@ -843,8 +851,10 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	r.committed(spans)
 	logSpans(spans, committed.Sub(began))
 	if published != nil {
-		published.log(began, committed)
-		work.failureSelection = append(work.failureSelection, published.moved...)
+		published.log(what, began, committed)
+		for _, project := range published.moved {
+			work.failureSelection[project] = true
+		}
 	}
 	// A publishing page drains after the failure writes it owes. Otherwise the spans' changes
 	// are ready now.
@@ -863,8 +873,9 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 func freshRepos(work *pageWork) map[string]bool {
 	fresh := map[string]bool{}
 	for _, repo := range work.kept {
-		if !slices.ContainsFunc(work.keptWas, func(was keptRepo) bool { return was.name == repo.name }) {
-			fresh[repo.name] = true
+		name := repo.rule.DeployRepo
+		if !slices.ContainsFunc(work.keptWas, func(was keptRepo) bool { return was.rule.DeployRepo == name }) {
+			fresh[name] = true
 		}
 	}
 	return fresh

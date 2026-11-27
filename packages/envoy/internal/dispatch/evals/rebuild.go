@@ -1359,7 +1359,7 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 	if err != nil {
 		return err
 	}
-	scope := figureScope{build: rb.build, project: project, through: last}
+	scope := figureScope{build: rb.build, project: project, through: last, repos: &recordedRepos{}}
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
 	cuts, err := readFigureCuts(ctx, pool, project, read, nil)
 	if err != nil {
@@ -1378,11 +1378,9 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
 	cuts = slices.Concat(cuts, more)
-	if cuts, err = withUnionCuts(ctx, pool, project, cuts); err != nil {
+	if cuts, err = scope.withUnionCuts(ctx, pool, cuts); err != nil {
 		return err
 	}
-	slices.SortFunc(cuts, compareFigureCuts)
-	cuts = slices.Compact(cuts)
 	built := map[rangeFigureKey]rangeFigureRow{}
 	builtDays := map[dayFigureKey]dayFigureRow{}
 	for _, cut := range cuts {
@@ -1643,7 +1641,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	deployRepos, err := cutDeployRepos(ctx, q, scope.project, cut.deployRepo)
+	deployRepos, err := scope.cutRepos(ctx, q, cut)
 	if err != nil {
 		return nil, err
 	}
@@ -1651,7 +1649,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if err != nil {
 		return nil, err
 	}
-	multiDeploy := len(deployRepos.Of(scope.project)) > 1
+	multiDeploy := deployRepos.several(scope.project)
 	var stagedDeployRepos []string
 	if cut.deployRepo == "" {
 		stagedDeployRepos = []string{""}

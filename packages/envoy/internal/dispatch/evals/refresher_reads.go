@@ -525,8 +525,8 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 	var earliest *time.Time
 	names := []string{}
 	for _, repo := range repos {
-		if !IsEventsRepo(repo.name) {
-			names = append(names, repo.name)
+		if !IsEventsRepo(repo.rule.DeployRepo) {
+			names = append(names, repo.rule.DeployRepo)
 		}
 	}
 	if err := s.database.Pool.QueryRow(ctx, `
@@ -540,7 +540,7 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
 	}
 	for _, repo := range repos {
-		if IsEventsRepo(repo.name) && (earliest == nil || repo.since.Before(*earliest)) {
+		if IsEventsRepo(repo.rule.DeployRepo) && (earliest == nil || repo.since.Before(*earliest)) {
 			since := repo.since
 			earliest = &since
 		}

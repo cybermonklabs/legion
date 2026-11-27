@@ -289,14 +289,15 @@ func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan,
 	covered = map[string]daySpan{}
 	before := make(map[string]time.Time, len(was))
 	for _, repo := range was {
-		before[repo.name] = repo.since
+		before[repo.rule.DeployRepo] = repo.since
 	}
 	for _, repo := range is {
-		since, held := before[repo.name]
+		name := repo.rule.DeployRepo
+		since, held := before[name]
 		span := daySpan{first: repo.since, last: reach}
 		if held {
 			if since.Equal(repo.since) {
-				delete(before, repo.name)
+				delete(before, name)
 				continue
 			}
 			span = daySpan{first: since, last: repo.since.AddDate(0, 0, -1)}
@@ -304,12 +305,12 @@ func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan,
 				span = daySpan{first: repo.since, last: since.AddDate(0, 0, -1)}
 			}
 		}
-		delete(before, repo.name)
+		delete(before, name)
 		if span.last.After(reach) {
 			span.last = reach
 		}
 		if !span.first.After(span.last) {
-			covered[repo.name] = span
+			covered[name] = span
 		}
 	}
 	return covered, slices.Sorted(maps.Keys(before))
@@ -742,9 +743,9 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		// them though the store holds no row of either yet (trackKept tracks them with the rest).
 		if kept != nil {
 			for _, repo := range kept.is {
-				r.noteOwners([]string{OwnerKey(repo.name, nil, nil)})
-				if !IsEventsRepo(repo.name) {
-					r.noteOwners([]string{sourceKey(repo.name)})
+				r.noteOwners([]string{OwnerKey(repo.rule.DeployRepo, nil, nil)})
+				if !IsEventsRepo(repo.rule.DeployRepo) {
+					r.noteOwners([]string{sourceKey(repo.rule.DeployRepo)})
 				}
 			}
 		}
@@ -1136,15 +1137,15 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	// A pull request counts its lead times at the first deploy to ship it, a GitHub one or a posted
 	// one (firstShipped), so where both kinds of repository are kept every one is read to compare.
-	compare := slices.ContainsFunc(kept, func(repo keptRepo) bool { return IsEventsRepo(repo.name) }) &&
-		slices.ContainsFunc(kept, func(repo keptRepo) bool { return !IsEventsRepo(repo.name) })
+	compare := slices.ContainsFunc(kept, func(repo keptRepo) bool { return IsEventsRepo(repo.rule.DeployRepo) }) &&
+		slices.ContainsFunc(kept, func(repo keptRepo) bool { return !IsEventsRepo(repo.rule.DeployRepo) })
 	var repos, events []keptRepo
 	var judged []string
 	for _, repo := range kept {
-		if !needed[repo.name] && !compare {
+		if !needed[repo.rule.DeployRepo] && !compare {
 			continue
 		}
-		if IsEventsRepo(repo.name) {
+		if IsEventsRepo(repo.rule.DeployRepo) {
 			events = append(events, repo)
 			continue
 		}
@@ -1192,7 +1193,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	histories := make(map[string]repoHistory, len(repos))
 	for _, repo := range repos {
-		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs)
+		histories[repo.rule.DeployRepo] = historyOf(repo, history.Deploys[repo.rule.DeployRepo], prs)
 	}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
 		alone, as, ci := false, map[string]bool{}, map[string]bool{}
@@ -1227,7 +1228,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		var rules []delivery.DeliverySettings
 		var shown []bool
 		for _, repo := range repos {
-			name := repo.name
+			name := repo.rule.DeployRepo
 			if !as[name] && !compare {
 				continue
 			}
@@ -1247,9 +1248,9 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			built, rules, shown = append(built, one), append(rules, repo.rule), append(shown, as[name])
 		}
 		for i, repo := range events {
-			if as[repo.name] || compare {
+			if as[repo.rule.DeployRepo] || compare {
 				built, rules = append(built, postedDayAs(day, merged, posted[i], repo)), append(rules, repo.rule)
-				shown = append(shown, as[repo.name])
+				shown = append(shown, as[repo.rule.DeployRepo])
 			}
 		}
 		firstShipped(built)

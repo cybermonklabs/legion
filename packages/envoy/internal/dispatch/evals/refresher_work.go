@@ -356,11 +356,15 @@ type pageWork struct {
 	// change's repo), whose failure rows the page writes whole (applyFailures).
 	settingsOf map[string]bool
 	// failureFirstDayOf is the projects for which a settings change moved the effective first
-	// measured day, which the Evals page reads even if the project has no failure day rows.
+	// measured day (delivery.FailureFirstDayRef), which the Evals page reads even if the project
+	// has no failure day rows.
 	failureFirstDayOf map[string]bool
-	// failureSelection names projects whose source-key readers or published defaults the page
-	// moves. Their failure rows are written against the new selection after it commits.
-	failureSelection []string
+	// failureSelection is the projects whose failure rows the page writes whole against the
+	// selection it moves: each whose source repositories its rules gain, lose or move to another
+	// project, read off the rules before and after syncSettings (ruleProjectsMoved), and each
+	// project whose source-key readers or published defaults the page's commit moves
+	// (movePublished.moved).
+	failureSelection map[string]bool
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
 	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where that
 	// record moves the repositories a read of the evals chooses among (DeployReposIn: a source
@@ -395,7 +399,7 @@ func newPageWork() *pageWork {
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
 		prodEvents: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
 		unowned: map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
-		failureFirstDayOf: map[string]bool{},
+		failureFirstDayOf: map[string]bool{}, failureSelection: map[string]bool{},
 	}
 }
 
@@ -436,7 +440,7 @@ func (w *pageWork) addChange(change delivery.Change) {
 		// project's failure rows whole (applyFailures).
 		w.settings = true
 		w.settingsOf[change.Repo] = true
-		if change.Ref == failureFirstDaySettingsRef {
+		if change.Ref == delivery.FailureFirstDayRef {
 			w.failureFirstDayOf[change.Repo] = true
 		}
 	case delivery.ChangeKindProductionEvents:
@@ -989,26 +993,26 @@ func (r *refresh) shippedNeighbours(ctx context.Context, w *pageWork, held []hel
 		if !repo.deploys {
 			continue
 		}
-		production := repo.rule.Production()
+		name, production := repo.rule.DeployRepo, repo.rule.Production()
 		since := repo.since
 		if w.kept != nil {
-			at := slices.IndexFunc(w.keptWas, func(was keptRepo) bool { return was.name == repo.name })
+			at := slices.IndexFunc(w.keptWas, func(was keptRepo) bool { return was.rule.DeployRepo == name })
 			if at < 0 {
 				continue
 			}
 			since = w.keptWas[at].since
 		}
 		var moments []time.Time
-		for _, merged := range w.left[repo.name] {
+		for _, merged := range w.left[name] {
 			if merged.Before(since) {
 				moments = append(moments, merged)
 			}
 		}
 		var ran *time.Time
-		if at, known := w.ran[repo.name]; known {
+		if at, known := w.ran[name]; known {
 			ran = &at
 		}
-		first, err := r.firstToComplete(ctx, repo.name, production, since, changed[repo.name], ran, held, linked)
+		first, err := r.firstToComplete(ctx, name, production, since, changed[name], ran, held, linked)
 		if err != nil {
 			return nil, err
 		}
@@ -1017,10 +1021,10 @@ func (r *refresh) shippedNeighbours(ctx context.Context, w *pageWork, held []hel
 		}
 		rows, err := delivery.ReadApplyRows(ctx, pool, repo.rule, time.Time{})
 		if err != nil {
-			return nil, fmt.Errorf("read the deploy runs of %s: %w", repo.name, err)
+			return nil, fmt.Errorf("read the deploy runs of %s: %w", name, err)
 		}
 		applies := slices.DeleteFunc(delivery.ProductionApplies(rows.Runs, rows.Jobs, production).Applies, func(apply delivery.Apply) bool {
-			return changed[repo.name][apply.RunID]
+			return changed[name][apply.RunID]
 		})
 		if first {
 			// What merged before every run was created, then what merged from the creation of each
@@ -1041,7 +1045,7 @@ func (r *refresh) shippedNeighbours(ctx context.Context, w *pageWork, held []hel
 		for _, run := range rows.Runs {
 			if ships[run.RunID] {
 				day := measures.Midnight(run.StartedAt)
-				neighbours = append(neighbours, deliveryItem{member: RunMember(repo.name, run.RunID), day: &day})
+				neighbours = append(neighbours, deliveryItem{member: RunMember(name, run.RunID), day: &day})
 			}
 		}
 	}
@@ -1246,17 +1250,18 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	repos := []keptRepo{}
 	var events []delivery.DeliverySettings
 	for _, repo := range held {
-		if IsEventsRepo(repo.name) {
+		name := repo.rule.DeployRepo
+		if IsEventsRepo(name) {
 			continue
 		}
-		if rule, read := r.ruleOf(repo.name); read {
+		if rule, read := r.ruleOf(name); read {
 			repo.rule = rule
 			repos = append(repos, repo)
 			continue
 		}
-		if recorded, found := r.builtUnder[delivery.RuleKey(repo.name)]; found {
+		if recorded, found := r.builtUnder[delivery.RuleKey(name)]; found {
 			repo.rule = recorded.rule
-			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
+			repo.rule.DeployRepo, repo.rule.Project = name, ""
 			repos = append(repos, repo)
 		}
 	}
@@ -1270,7 +1275,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 		return nil, err
 	}
 	repos = append(repos, posted...)
-	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.name, b.name) })
+	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.rule.DeployRepo, b.rule.DeployRepo) })
 	r.deployRepos = repos
 	return r.deployRepos, nil
 }
@@ -2052,7 +2057,7 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 		var reads []func(context.Context) error
 		r.walkApplies = make(map[string]*delivery.ApplyRows, len(kept))
 		for i, repo := range kept {
-			if IsEventsRepo(repo.name) {
+			if IsEventsRepo(repo.rule.DeployRepo) {
 				project := repo.rule.Project
 				reads = append(reads, func(ctx context.Context) (err error) {
 					posted[i], err = postedDeploys(ctx, r.store.database.Pool, project, day)
@@ -2063,11 +2068,11 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 			settings := repo.rule
 			reads = append(reads, func(ctx context.Context) (err error) {
 				if applies[i], err = delivery.ReadApplyRows(ctx, r.store.database.Pool, settings, day); err != nil {
-					return fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, day.Format(time.DateOnly), err)
+					return fmt.Errorf("read the deploy runs of %s from %s on: %w", settings.DeployRepo, day.Format(time.DateOnly), err)
 				}
 				return nil
 			})
-			r.walkApplies[repo.name] = &applies[i]
+			r.walkApplies[repo.rule.DeployRepo] = &applies[i]
 		}
 		if err := store.ReadSideBySide(ctx, reads...); err != nil {
 			r.walkApplies, r.walkPosted = nil, nil
@@ -2075,8 +2080,8 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 		}
 		r.walkPosted = make(map[string]postedRecord)
 		for i, repo := range kept {
-			if IsEventsRepo(repo.name) {
-				r.walkPosted[repo.name] = posted[i]
+			if IsEventsRepo(repo.rule.DeployRepo) {
+				r.walkPosted[repo.rule.DeployRepo] = posted[i]
 			}
 		}
 		r.walkAppliesFrom = day
