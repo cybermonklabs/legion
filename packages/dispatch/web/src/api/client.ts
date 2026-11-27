@@ -36,7 +36,6 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
-  AccessGroup,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
@@ -421,6 +420,16 @@ export function isCredentialFeatureOff(error: unknown): boolean {
 export function isDeliveryNotConfigured(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 404 && error.code === "DELIVERY_NOT_CONFIGURED"
+  );
+}
+
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential acting for one. A full
+// member's credential reads it whatever projects it lists, as the shared token does. It is
+// definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
   );
 }
 
@@ -1143,18 +1152,6 @@ export class DispatchApiClient {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
   }
 
-
-  /** One page of the groups an access list can name, by name: at most 100 after the name `after`,
-   *  with `next` naming where the next page starts, absent on the last page. */
-  listAccessGroupsPage(after?: string) {
-    return this.read("/api/v1/access-groups", {}, after === undefined ? undefined : { after });
-  }
-
-  /** Every group an access list can name, by name, each with its owner and its members' emails:
-   *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
-   *  group picker both read this whole list. A page's `next` is the last name it holds, so the
-   *  cursor only moves on; a `next` the read has already passed as `after` would read the same
-   *  pages again for good, so the read stops there and fails naming it. */
   /** Sets the repository an issue of the project resolves to when neither the issue nor an issue
    *  above it names one, `owner/name`. `{ repo: null }` clears it. The server stores the name in
    *  lower case with no `.git`, and its answer holds the stored value. A name GitHub could hold no
@@ -1231,15 +1228,14 @@ export class DispatchApiClient {
   }
 
   /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
-   *  replaces the set it holds now, and, when the body names them, the whole list of projects it
-   *  may use; a body with no `projects` leaves the list as it is. Answers the updated token. A
-   *  scope the caller does not hold itself is refused, as it is at the mint. */
-  updateAgentToken(
+   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
+   *  itself is refused, as it is at the mint. */
+  setAgentTokenScopes(
     id: string,
-    input: Body<"/api/v1/me/agent-tokens/{id}", "patch">,
+    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
     bounds: WriteBounds
   ) {
-    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, input, bounds);
+    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, { scopes }, bounds);
   }
 
   async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {

@@ -103,6 +103,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
+import { isRestrictedMember } from "./hooks/useRestrictedMember";
 import {
   backdrop50,
   badgeBlocking,
@@ -1072,6 +1073,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             navigationOpen={navigationOpen}
             onOpenNavigation={() => setNavigationOpen(true)}
             project={routeProject}
+            restricted={isRestrictedMember(user)}
             user={user}
           />
         ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
