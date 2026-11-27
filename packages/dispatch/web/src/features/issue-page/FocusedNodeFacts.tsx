@@ -133,29 +133,28 @@ export function FocusedNodeFacts({
             <Fact chrome label={PROPERTY_LABELS.status} value={node.state} />
           </>
         )}
-        {node.author === undefined ? null : asker === undefined ? (
+        {node.author === undefined ? null : (
           <>
             {" "}
-            <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
-          </>
-        ) : (
-          <>
-            {" "}
-            <div className={FACT}>
-              <FactLabel label={CONTROL_LABELS.written_by} />{" "}
-              <dd className="flex min-w-0 flex-col items-start gap-1">
-                <button
-                  aria-expanded={handlesOpen}
-                  className={`dispatch-inline-link min-w-0 break-words text-left ${pageInkText} ${pageRowAct}`}
-                  onClick={() => setHandlesOn(handlesOpen ? undefined : node.id)}
-                  type="button"
-                  {...authorText}
-                >
-                  {agentText.author(asker)}
-                </button>
-                {handlesOpen ? <AskerHandles asker={asker} /> : null}
-              </dd>
-            </div>
+            {asker === undefined ? (
+              <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
+            ) : (
+              <div className={FACT}>
+                <FactLabel label={CONTROL_LABELS.written_by} />{" "}
+                <dd className="flex min-w-0 flex-col items-start gap-1">
+                  <button
+                    aria-expanded={handlesOpen}
+                    className={`dispatch-inline-link min-w-0 break-words text-left ${pageInkText} ${pageRowAct}`}
+                    onClick={() => setHandlesOn(handlesOpen ? undefined : node.id)}
+                    type="button"
+                    {...authorText}
+                  >
+                    {agentText.author(asker)}
+                  </button>
+                  {handlesOpen ? <AskerHandles asker={asker} /> : null}
+                </dd>
+              </div>
+            )}
           </>
         )}
       </dl>{" "}

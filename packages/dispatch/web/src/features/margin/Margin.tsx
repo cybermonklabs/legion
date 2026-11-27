@@ -302,7 +302,7 @@ function DetailsDrawer({
   useLayoutEffect(() => {
     // A request the open did not take - the phone's sheet takes the focus as a dialog - is
     // answered here, so that it leaves no later open the focus where it is.
-    const leavesFocus = pageNow.current?.takesLeaveFocus?.() === true;
+    const leavesFocus = pageNow.current?.takesLeaveFocus() === true;
     if (!open || isPhoneViewport) return;
     // The drawer as it is now: the commit that closes it detaches the `aside`'s ref before this
     // effect's cleanup runs, so the cleanup cannot read `box`.

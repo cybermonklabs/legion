@@ -48,7 +48,7 @@ import type {
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { pinnedItemMarker } from "../issue/pins";
-import { stubViewport } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -2775,7 +2775,7 @@ async function drawLandingHistory({
   writer: () => OutlineWriter | undefined;
 }> {
   await warmMarkdownRenderer();
-  const restoreViewport = phone ? stubViewport(390) : undefined;
+  const restoreViewport = phone ? stubViewport(PHONE_WIDTH) : undefined;
   const restoreReads = stubHistoryReads(
     Array.from({ length: newer }, (_, index) => claimAgo(newer + 10 - index, index + 1)),
     { comments, messages: [daemonThread()] }
@@ -2968,15 +2968,27 @@ async function replyOnPhone(
   );
 }
 
-// Decision 581: on a phone Details is a sheet over the page, and a turn's Reply shuts it so that
-// the line at the foot can take the focus (`history-entries.tsx`). The reply the line then sent
-// was the history's to land, but the history was no longer drawn, so the landing ended at once:
-// the reader neither saw where their reply went nor had the focus on it. The writer opens Details
-// for that landing as it is asked for it, Details draws the history again, and the history takes
-// the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
-// it does where Details stays open.
-test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
+/**
+ * Draws the history of `newer` claims on a phone (`drawLandingHistory`), sends a reply from its
+ * turn `m-root` and holds its landing to decision 581: Reply shuts Details, the line at the foot
+ * sends, the writer opens Details again with the history drawn - `historyDrawn` being the failure
+ * where it is not - and once the reader's new turn is drawn the history focuses it, wholly in
+ * Details' view, and ends the landing. `whileLanding` reads the writer's landing once Details has
+ * opened for it, and `landed` the new turn the history focused, before the landing's last checks.
+ */
+async function landPhoneReply({
+  historyDrawn,
+  landed,
+  newer,
+  whileLanding,
+}: {
+  historyDrawn: string;
+  landed?: (turn: HTMLElement) => void;
+  newer?: number;
+  whileLanding?: (landing: OutlineWriter["landing"]) => void;
+}): Promise<void> {
   const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
+    newer,
     phone: true,
   });
 
@@ -2991,15 +3003,9 @@ test("on a phone, a reply sent from a turn of the history with Details shut open
     expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
       true
     );
-    expect(
-      writer()?.landing,
-      "the reply's landing is not the history's, or is not marked as opening Details"
-    ).toMatchObject({ in: "history", opensDetails: true });
+    whileLanding?.(writer()?.landing);
     await waitFor(() =>
-      expect(
-        box.querySelector('[data-history-item="m-earlier"]'),
-        "Details opened without the history"
-      ).not.toBeNull()
+      expect(box.querySelector('[data-history-item="m-earlier"]'), historyDrawn).not.toBeNull()
     );
     expect(
       document.activeElement,
@@ -3020,10 +3026,7 @@ test("on a phone, a reply sent from a turn of the history with Details shut open
     expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
       turn.querySelector("a[href], button:not(:disabled)")
     );
-    expect(
-      turn.closest('[data-history-entry="thread:m-root"]'),
-      "the reader's new turn is not drawn under the turn it answers"
-    ).not.toBeNull();
+    landed?.(turn);
     expect(
       writer()?.landing,
       "the landing did not end once it took the reader there"
@@ -3037,6 +3040,29 @@ test("on a phone, a reply sent from a turn of the history with Details shut open
   } finally {
     restore();
   }
+}
+
+// Decision 581: on a phone Details is a sheet over the page, and a turn's Reply shuts it so that
+// the line at the foot can take the focus (`history-entries.tsx`). The reply the line then sent
+// was the history's to land, but the history was no longer drawn, so the landing ended at once:
+// the reader neither saw where their reply went nor had the focus on it. The writer opens Details
+// for that landing as it is asked for it, Details draws the history again, and the history takes
+// the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
+// it does where Details stays open.
+test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
+  await landPhoneReply({
+    historyDrawn: "Details opened without the history",
+    landed: (turn) =>
+      expect(
+        turn.closest('[data-history-entry="thread:m-root"]'),
+        "the reader's new turn is not drawn under the turn it answers"
+      ).not.toBeNull(),
+    whileLanding: (landing) =>
+      expect(
+        landing,
+        "the reply's landing is not the history's, or is not marked as opening Details"
+      ).toMatchObject({ in: "history", opensDetails: true }),
+  });
 });
 
 // Decision 581, for a thread under the history's first entries. A turn's Reply shuts Details on a
@@ -3047,59 +3073,11 @@ test("on a phone, a reply sent from a turn of the history with Details shut open
 // its top and the focus not on the reply. The history is drawn down to the thread the landing
 // answers, as it is to the thread of a turn an address names.
 test("on a phone, a reply sent from a turn of a thread under the history's first 20 entries opens Details drawn down to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
-  const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
+  await landPhoneReply({
+    historyDrawn:
+      "Details opened again without the history drawn down to the thread the reply answers",
     newer: 25,
-    phone: true,
   });
-
-  try {
-    await replyOnPhone(box, "m-root", field, detailsOpen);
-
-    act(() => {
-      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
-      writer()?.clear();
-    });
-    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
-      true
-    );
-    await waitFor(() =>
-      expect(
-        box.querySelector('[data-history-item="m-earlier"]'),
-        "Details opened again without the history drawn down to the thread the reply answers"
-      ).not.toBeNull()
-    );
-    expect(
-      document.activeElement,
-      "the history moved the focus before the reader's new turn was drawn"
-    ).toBe(field);
-
-    act(() => {
-      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
-    });
-    const turn = await waitFor(() => {
-      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
-      expect(
-        drawn?.contains(document.activeElement) === true,
-        "the landing did not move the focus to the reader's new turn in the history"
-      ).toBe(true);
-      return drawn as HTMLElement;
-    });
-    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
-      turn.querySelector("a[href], button:not(:disabled)")
-    );
-    expect(
-      writer()?.landing,
-      "the landing did not end once it took the reader there"
-    ).toBeUndefined();
-    const at = turn.getBoundingClientRect();
-    expect(
-      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
-      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
-    ).toBe(true);
-    expect(window.scrollY, "the page under Details scrolled").toBe(0);
-  } finally {
-    restore();
-  }
 });
 
 // Decision 573, which decision 581 leaves as it is: a person's reply to an agents' comment tied
