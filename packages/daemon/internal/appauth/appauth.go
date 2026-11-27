@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -76,9 +77,10 @@ type Lease struct {
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
 // same request may pass when it is made again: no answer at all (a transport failure, including a
-// request or a body read cut off by its deadline), a 5xx, or a rate limit (a 429, or a 403 that
-// says it is one). Every other failure is GitHub's definitive answer, or one about the
-// configuration, and asking again changes nothing.
+// request or a body read cut off by its deadline), an outage (httpoutage.Is: a 5xx, a 408 for
+// a request the server did not take in time, or a 429), or a rate limit (a 403 that says it is
+// one). Every other failure is GitHub's definitive answer, or one about the configuration, and
+// asking again changes nothing.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -110,12 +112,13 @@ func (m *Manager) answered(response *http.Response, body []byte, err error) *Ans
 	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
 }
 
-// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
-// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
+// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: an
+// outage (httpoutage.Is: a 5xx, a 408 or a 429), or a rate limit (the answer's RateLimited,
+// githubrest.RateLimited, which reads the body for a secondary limit GitHub names there alone).
+// Either way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, body []byte, err error) error {
 	refused := m.answered(response, body, err)
-	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
+	if httpoutage.Is(response.StatusCode) || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused

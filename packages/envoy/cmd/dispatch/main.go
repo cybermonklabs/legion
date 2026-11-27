@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -904,6 +905,11 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
+	// The API server's writer of an issue message, which the outbox posts the message about the
+	// events a role did not take with (outbox.Deps.PostIssueMessage). The outbox starts before the
+	// API server is registered (routes.New, below), so it reads the writer from here once that has
+	// happened, and a post before it fails and is tried again on the post's own back-off.
+	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, model.SystemMessage) (string, error)]
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -926,13 +932,20 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
-			KeptLanes:        natsClient,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			KeptLanes:  natsClient,
+			PostIssueMessage: func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error) {
+				post := postSystemMessage.Load()
+				if post == nil {
+					return "", errors.New("the API server is not registered yet")
+				}
+				return (*post)(ctx, actor, message)
+			},
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
 			Metrics:          met,
@@ -942,24 +955,6 @@ func main() {
 			defer close(outboxStopped)
 			outboxPublisher.Run(ctx)
 		}()
-	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	var backgroundEmbedder embed.Embedder
-	if embedder != nil {
-		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
 	}
 
 	// This process's one shared LISTEN connection. Its name is what makes this process a member:
@@ -979,7 +974,7 @@ func main() {
 		},
 	}
 	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
-	if backgroundEmbedder != nil {
+	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
@@ -1001,7 +996,23 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
+	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
+	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own
@@ -1277,6 +1288,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
+	postSystemMessage.Store(&background.PostSystemMessage)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
