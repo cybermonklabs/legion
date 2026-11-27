@@ -390,12 +390,13 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   replies read. A sleeping view is dropped altogether unless you pinned its session or left text
   unsent in it, and opening it again builds it from what the session replays.
 - An Oh My Pi session that starts again on the same conversation, such as an agent whose pod
-  restarted or a session resumed with `omp --continue`, shows the turns it had before: the session
-  reads back up to its newest 200 messages since it last summarised its conversation, which is
-  what its terminal shows too, or since its last `/clear`, where that came later. A session that
-  summarised inside those 200 shows only the turns that summary kept and those after it, and one
-  cleared with `/clear` only the turns after it. A `!` command run before the restart shows as
-  your message and the session's reply.
+  restarted or a session resumed with `omp --continue`, shows the turns it had before, up to its
+  newest 200 messages. The newer of its last summary and its last `/clear` decides where they
+  start: after a summary, the turns that summary kept and those after it; after a `/clear`, only
+  the turns after it. Where a summary kept only the end of a turn, the live view shows that part,
+  which the terminal hides. A session that summarised inside its last 200 messages can show fewer
+  turns than it did before the restart. A `!` command run before the restart shows as your
+  message and the session's reply.
 
 A session whose plugin does not stream its conversation shows none of it here.
 The live view says so, and still shows your messages and their replies.

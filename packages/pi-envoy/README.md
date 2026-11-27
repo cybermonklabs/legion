@@ -200,16 +200,19 @@ The live view's replay is the session's answer from a ring of its newest message
 process (`AgentStreamPublisher` in `@legion/pi-shared/agent-stream`). A process that takes up a
 session whose transcript already holds turns (a pod's restart and `omp --continue`, a
 `--resume`, a `/resume`, a fork) fills that ring from the session's live context when it takes
-the session up (`restoreLocalSessionState`): the branch from the latest compaction's cut on, which
-is what Oh My Pi draws a resumed session from by default, with no body before the cut read. A
-`/clear` (a `reset_boundary` entry) after that compaction, or on a branch with none, cuts it
-instead, and the ring is filled from the turns after the `/clear` (`liveContext` in
-`@legion/pi-shared/delivery-pictures`). It keeps to the ring's bounds: the newest 200 messages it
-carries, and the replay's 512 KiB. So a person who opens the session after a restart sees the
-turns its terminal shows, as the process before the restart would have replayed them; a session
-that starts fresh has no turns to read back. The ring keys a card that names no id, such as one of
-the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
-message `message_start` was handed.
+the session up (`restoreLocalSessionState`): the branch from the latest compaction's first kept
+entry on, or from the compaction itself where that entry does not stand before it on the branch,
+with no body before the cut read. A `/clear` (a `reset_boundary` entry) after that compaction, or
+on a branch with none, cuts it instead, and the ring is filled from the turns after the `/clear`
+(`liveContext` in `@legion/pi-shared/delivery-pictures`). It keeps to the ring's bounds: the
+newest 200 messages it carries, and 512 KiB for the replay's `frames` array, which the reply's
+envelope adds a few bytes to. So a person who opens the session after a restart sees the turns
+after that cut, within those bounds. Oh My Pi's terminal draws a resumed session from the same
+compaction cut by default (`display.collapseCompacted`), but hides the start of a kept turn the
+cut left partial, which the replay shows. The process before the restart may have replayed more:
+its ring kept the turns from before a compaction it ran. A session that starts fresh has no turns
+to read back. The ring keys a card that names no id, such as one of the plugin's own notices, by
+what it says, since Oh My Pi hands `message_end` a copy of the message `message_start` was handed.
 
 ## A `task` subagent
 
