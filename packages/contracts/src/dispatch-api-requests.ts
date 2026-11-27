@@ -7,7 +7,6 @@ import type {
   EditPreconditionMismatch,
   IssueDetails,
   ParentStatusConflictIssue,
-  SpecFormFinding,
   StatusChangeEntry,
   TargetCandidate,
   WriteAdvice,
@@ -131,10 +130,6 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
-  /** The texts a `409 SPEC_FORM` refuses, at most 500 (`SpecFormError`). */
-  readonly findings?: SpecFormFinding[] | null;
-  /** On a person's refused approval, the reason a Request changes sends to the author. */
-  readonly changes_reason?: string;
   /** Where to look next, which Dispatch adds to one refusal only: its answer to a path no route
    *  serves (`404 NOT_FOUND`, "no route for …", the router's `staticHandler`), which says that
    *  `GET /api/v1` lists every route. */
