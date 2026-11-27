@@ -1,25 +1,44 @@
 #!/usr/bin/env bash
 # Tests for `heads-without-runs.sh`: the scheduled check that names each open pull request whose
-# head no workflow ran.
+# head no workflow ran, and warns on each entry of main's merge queue that has come to conflict
+# with main.
 #
-# Each case writes the pages of GitHub's GraphQL answer and the REST answers of the pull requests,
-# and runs the script with a stand-in `gh` first on PATH. The stand-in answers the list
-# (`gh api graphql --input <file>`) with the page the request's cursor names, and a pull request
+# Each case writes the pages of GitHub's GraphQL answers and the REST answers of the pull requests,
+# and runs the script with a stand-in `gh` first on PATH. The stand-in answers the list of open pull
+# requests and the list of main's merge queue (`gh api graphql --input <file>`, told apart by the
+# request's operation) with the page the request's cursor names; a pull request
 # (`gh api repos/o/r/pulls/<n>`) with its fixture, or with the fixture of that read's turn where a
-# case gives the reads of one pull request different answers; a pull request with no fixture is a
-# 404. It records each call, so a case can show what was read and what was not. The fixtures carry
-# the shapes GitHub answered for this repository: two check suites with no check run on every head
-# (two GitHub Apps' queued suites), and a check run of any conclusion as a node of a suite.
+# case gives the reads of one pull request different answers, and a pull request with no fixture
+# is a 404; and main's activity (`gh api --paginate repos/o/r/activity?... --jq <filter>`) with
+# its fixture under that filter. It records each call, so a case can show what was read and what
+# was not. The fixtures carry the shapes GitHub answered for this repository: two check suites
+# with no check run on every head (two GitHub Apps' queued suites), and a check run of any
+# conclusion as a node of a suite.
+#
+# The repository the queue's part fetches is a fixture origin served over file://, which the
+# script reaches as GITHUB_SERVER_URL/GITHUB_REPOSITORY.git, told to serve the filter and any
+# commit by its sha as GitHub serves them, so the script's partial fetch and git merge-tree's
+# fetch of the contents it merges both run as they do in CI. Main's commits are squash commits
+# whose subjects end with (#<number>), but one, and the queued heads fork from main's root.
 #
 # Run from anywhere: .github/scripts/heads-without-runs.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
 shopt -s inherit_errexit
 
+# The fixtures are judged on git's defaults wherever the harness runs, so every git variable the
+# environment sets goes before any git runs, as priority-conflicts.test.sh does.
+while read -r name; do
+  unset "$name"
+done < <(compgen -e GIT_)
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# has_line <text> <line>: true when <line> is a whole line of <text>, compared as a fixed string.
+has_line() { grep -qxF -- "$2" <<<"$1" && echo true || echo false; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -31,12 +50,25 @@ set -euo pipefail
 fixtures=$STAND_IN/fixtures
 if [ "$#" -eq 4 ] && [ "$1 $2 $3" = "api graphql --input" ]; then
   after=$(jq -r '.variables.after // "first"' "$4")
-  echo "graphql $after $(jq -r '.operationName' "$4")" >> "$STAND_IN/gh-calls"
-  if [ -e "$fixtures/graphql-refuses-$after" ]; then
+  operation=$(jq -r '.operationName' "$4")
+  echo "$operation $after" >> "$STAND_IN/gh-calls"
+  case $operation in
+    OpenPulls) refusal=graphql-refuses-$after answer=page-$after.json ;;
+    MainQueue) refusal=queue-refuses-$after answer=queue-$after.json ;;
+    *) echo "unexpected operation $operation" >&2; exit 2 ;;
+  esac
+  if [ -e "$fixtures/$refusal" ]; then
     echo 'HTTP 502: Bad Gateway (https://api.github.com/graphql)' >&2
     exit 1
   fi
-  cat "$fixtures/page-$after.json"
+  cat "$fixtures/$answer"
+elif [ "$#" -eq 5 ] && [ "$1 $2" = "api --paginate" ] && [[ $3 == repos/o/r/activity\?* ]] && [ "$4" = --jq ]; then
+  echo "activity ${3#*\?}" >> "$STAND_IN/gh-calls"
+  if [ -e "$fixtures/activity-refuses" ] || [ ! -e "$fixtures/activity.json" ]; then
+    echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/activity)' >&2
+    exit 1
+  fi
+  jq -c "$5" "$fixtures/activity.json"
 elif [ "$#" -eq 2 ] && [ "$1" = api ] && [[ $2 =~ ^repos/o/r/pulls/([0-9]+)$ ]]; then
   number=${BASH_REMATCH[1]}
   echo "pull $number" >> "$STAND_IN/gh-calls"
@@ -94,17 +126,46 @@ pull() {
     > "$work/fixtures/pull-$1${3:+.$3}.json"
 }
 
-fresh() { rm -rf "$work/fixtures" && mkdir "$work/fixtures"; }
+# queue_entry <number> <head> <position> <queued, seconds ago>: one entry of main's merge queue.
+queue_entry() {
+  jq -nc --argjson number "$1" --arg head "$2" --argjson position "$3" --arg queued "$(ago "$4")" \
+    '{position: $position, state: "QUEUED", enqueuedAt: $queued, pullRequest: {number: $number, headRefOid: $head}}'
+}
+
+# queue_page <cursor of the request, or first> <hasNextPage> <endCursor as JSON> <entry>...: one
+# page of the queue's answer.
+queue_page() {
+  local file=$1 next=$2 cursor=$3
+  shift 3
+  printf '%s\n' "$@" | jq -s --argjson next "$next" --argjson cursor "$cursor" \
+    '{data: {repository: {mergeQueue: {entries: {pageInfo: {hasNextPage: $next, endCursor: $cursor}, nodes: .}}}}}' \
+    > "$work/fixtures/queue-$file.json"
+}
+
+# fresh: no fixture but an empty queue, which a case that reads none of the queue answers with.
+fresh() { rm -rf "$work/fixtures" && mkdir "$work/fixtures" && queue_page first false null; }
+
+# git_fixture <args>: git with no configuration of the machine or of the user it runs as, and an
+# identity for the fixture's commits.
+git_fixture() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name='CI test' \
+    -c user.email=ci-test@example.com "$@"
+}
 
 # run_check [<script>]: runs the script (or a broken copy of it) over the fixtures; sets out
 # (stdout), err (stderr), summary (the step summary) and status. Under `timeout`, so a read that
-# hung fails its case instead of hanging the job.
+# hung fails its case instead of hanging the job. Git runs on its defaults here too, with the file
+# protocol allowed to the fetches git merge-tree makes; server_url, when a case sets it, replaces
+# the fixture origin's server.
 run_check() {
   rm -f "$work/gh-calls" "$work/summary"
   set +e
   out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" STAND_IN="$work" \
     GH_TOKEN=t GH_RETRY_SECONDS=0 MERGEABLE_RETRY_SECONDS=0 GITHUB_REPOSITORY=o/r \
-    GITHUB_STEP_SUMMARY="$work/summary" timeout 60 "${1:-$script_dir/heads-without-runs.sh}" 2> "$work/err")
+    GITHUB_SERVER_URL="${server_url:-file://$work/server}" GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow \
+    GIT_CONFIG_VALUE_0=always GITHUB_STEP_SUMMARY="$work/summary" \
+    timeout 120 "${1:-$script_dir/heads-without-runs.sh}" 2> "$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")
@@ -115,6 +176,100 @@ gh_calls() { cat "$work/gh-calls" 2> /dev/null || true; }
 pull_reads() { grep -c "^pull $1\$" "$work/gh-calls" || true; }
 named() { contains "$out" "^#$1 $(sha "$1") "; }
 errors() { grep -c '^::error::' <<< "$err" || true; }
+warnings() { grep -c '^::warning::' <<< "$err" || true; }
+
+# The fixture origin, at the path the script builds from GITHUB_SERVER_URL and GITHUB_REPOSITORY.
+# A bare repository serves only its tips and ignores a filter unless told otherwise; GitHub serves
+# both.
+origin="$work/server/o/r.git"
+mkdir -p "$work/server/o"
+git_fixture init -q --bare "$origin"
+git_fixture -C "$origin" config uploadpack.allowFilter true
+git_fixture -C "$origin" config uploadpack.allowAnySHA1InWant true
+tree="$work/tree"
+git_fixture init -q -b main "$tree"
+
+# body <prefix> [<line> <text>]...: nine lines, <prefix>1 to <prefix>9, each line named replaced by
+# its text. Two edits with two unchanged lines between them merge cleanly.
+body() {
+  local prefix=$1 i lines=()
+  shift
+  for i in 1 2 3 4 5 6 7 8 9; do
+    lines[i]="$prefix$i"
+  done
+  while [ $# -gt 0 ]; do
+    lines[$1]=$2
+    shift 2
+  done
+  printf '%s\n' "${lines[@]}"
+}
+
+# put <file> <text>: writes <text> and a newline to <file>.
+put() { printf '%s\n' "$2" > "$1"; }
+
+# on <parent> <message> <command>...: a commit on <parent> of what <command> does, run in the
+# fixture's work tree; prints its sha.
+on() {
+  local parent=$1 message=$2
+  shift 2
+  git_fixture -C "$tree" checkout -q --detach "$parent"
+  (cd "$tree" && "$@") > /dev/null
+  git_fixture -C "$tree" add -A
+  git_fixture -C "$tree" commit -q -m "$message"
+  git_fixture -C "$tree" rev-parse HEAD
+}
+
+# merges <commit of main> <head>: git merge-tree's own exit status for the two, in the fixture.
+merges() { git_fixture -C "$tree" merge-tree --write-tree "$1" "$2" > /dev/null 2>&1 && echo 0 || echo "$?"; }
+
+for prefix in a b c e; do
+  body "$prefix" > "$tree/$prefix.txt"
+done
+git_fixture -C "$tree" add -A
+git_fixture -C "$tree" commit -q -m "the first commit"
+root=$(git_fixture -C "$tree" rev-parse HEAD)
+# Main after the root, one squash commit a landing. #701 sets a2, which #601, #605 and #606 set
+# too; #702 sets a8, so the newest commit of main that touches a.txt is not the one that made the
+# conflict; the e2 commit names no pull request.
+m1=$(on "$root" "edit b2 (#700)" put b.txt "$(body b 2 'b2 main')")
+m2=$(on "$m1" "edit a2 (#701)" put a.txt "$(body a 2 'a2 main')")
+m3=$(on "$m2" "edit a8 (#702)" put a.txt "$(body a 2 'a2 main' 8 'a8 main')")
+m4=$(on "$m3" "edit e2, a commit that names no pull request" put e.txt "$(body e 2 'e2 main')")
+m5=$(on "$m4" "edit b8 (#703)" put b.txt "$(body b 2 'b2 main' 8 'b8 main')")
+# The queued heads, each a branch of the root.
+edit_a_and_e() { put a.txt "$(body a 2 'a2 six-oh-six')" && put e.txt "$(body e 2 'e2 six-oh-six')"; }
+q601=$(on "$root" "edit a2" put a.txt "$(body a 2 'a2 six-oh-one')")
+q602=$(on "$root" "edit c5" put c.txt "$(body c 5 'c5 six-oh-two')")
+q603=$(on "$root" "edit e2" put e.txt "$(body e 2 'e2 six-oh-three')")
+q605=$(on "$root" "edit a2 too" put a.txt "$(body a 2 'a2 six-oh-five')")
+q606=$(on "$root" "edit a2 and e2" edit_a_and_e)
+git_fixture -C "$tree" push -q "$origin" "$m5:refs/heads/main"
+for pair in "601:$q601" "602:$q602" "603:$q603" "605:$q605" "606:$q606"; do
+  git_fixture -C "$tree" push -q "$origin" "${pair#*:}:refs/pull/${pair%%:*}/head"
+done
+
+# main_activity: main's moves as the activity route lists them, newest first: the root five hours
+# ago, then a commit an hour apart, the tip half an hour ago.
+main_activity() {
+  jq -n --arg m5 "$m5" --arg m4 "$m4" --arg m3 "$m3" --arg m2 "$m2" --arg m1 "$m1" --arg root "$root" \
+    --arg t5 "$(ago 1800)" --arg t4 "$(ago 3600)" --arg t3 "$(ago 7200)" --arg t2 "$(ago 10800)" \
+    --arg t1 "$(ago 14400)" --arg t0 "$(ago 18000)" '
+    [[$m5, $m4, $t5], [$m4, $m3, $t4], [$m3, $m2, $t3], [$m2, $m1, $t2], [$m1, $root, $t1], [$root, null, $t0]]
+    | map({after: .[0], before: .[1], timestamp: .[2], ref: "refs/heads/main", activity_type: "merge_queue_merge"})' \
+    > "$work/fixtures/activity.json"
+}
+
+# dirty_queue: five entries, queued as main moved. #601 and #606 were queued between #700 and #701,
+# #605 between #701 and #702, #603 between #702 and the e2 commit, #602 ten minutes ago.
+dirty_queue() {
+  queue_page first false null \
+    "$(queue_entry 601 "$q601" 1 12600)" \
+    "$(queue_entry 602 "$q602" 2 600)" \
+    "$(queue_entry 603 "$q603" 3 5400)" \
+    "$(queue_entry 605 "$q605" 4 9000)" \
+    "$(queue_entry 606 "$q606" 5 12600)"
+  main_activity
+}
 
 three_hours=$((3 * 3600))
 five_days=$((5 * 86400))
@@ -193,7 +348,7 @@ check "neither pull request is read" "$(is "$(pull_reads 104)$(pull_reads 105)" 
 
 echo "case: more than 100 open pull requests: a head on the second page is named"
 check "it read both pages, the second through the first's cursor" \
-  "$(is "$(grep '^graphql' "$work/gh-calls")" $'graphql first OpenPulls\ngraphql c1 OpenPulls')"
+  "$(is "$(grep '^OpenPulls' "$work/gh-calls")" $'OpenPulls first\nOpenPulls c1')"
 check "#250, on the second page, is named" "$(named 250)"
 
 echo "case: a head whose pull request conflicts with its base is named with that reason, and no branch name"
@@ -234,7 +389,7 @@ run_check
 check "it exits 2" "$(is "$status" 2)"
 check "it says UNKNOWN and why" \
   "$(contains "$err" "^::error::UNKNOWN: GitHub's GraphQL API refused the list of open pull requests at every attempt, so this check read no head: it names none and clears none\$")"
-check "it tried three times" "$(is "$(grep -c '^graphql first' "$work/gh-calls")" 3)"
+check "it tried three times" "$(is "$(grep -c '^OpenPulls first' "$work/gh-calls")" 3)"
 check "it never says it named none" "$(is "$(contains "$out$summary" 'Named none')" false)"
 check "the summary says UNKNOWN" "$(contains "$summary" '^UNKNOWN: ')"
 
@@ -245,7 +400,7 @@ touch "$work/fixtures/graphql-refuses-c1"
 pull 101 true
 run_check
 check "it exits 2" "$(is "$status" 2)"
-check "it names no head" "$(is "$out" "")"
+check "it names no head" "$(is "$(contains "$out" '^#')" false)"
 check "it reads no pull request" "$(is "$(pull_reads 101)" 0)"
 
 echo "case: an empty list is UNKNOWN"
@@ -268,7 +423,7 @@ run_check
 check "it exits 2" "$(is "$status" 2)"
 check "it names the shape" \
   "$(contains "$err" "^::error::UNKNOWN: GitHub's GraphQL API answered the list of open pull requests in a shape this check does not read, ")"
-check "it names no head" "$(is "$out" "")"
+check "it names no head" "$(is "$(contains "$out" '^#')" false)"
 
 echo "case: a page that says another follows and names no cursor is UNKNOWN"
 fresh
@@ -339,7 +494,123 @@ page first false null \
 run_check
 check "it passes" "$(is "$status" 0)"
 check "it says it named none, with the count it read" \
-  "$(is "$out" 'Named none: no open pull request that is no draft has a head 20 minutes old or more with no check run (3 open pull requests read, 1 of them drafts).')"
+  "$(has_line "$out" 'Named none: no open pull request that is no draft has a head 20 minutes old or more with no check run (3 open pull requests read, 1 of them drafts).')"
 check "it reads no pull request" "$(is "$(grep -c '^pull' "$work/gh-calls" || true)" 0)"
 
-summary "the check that names each open pull request whose head no workflow ran"
+echo "case: the fixture: each planted conflict changed a tree, and git itself finds it"
+# The measuring method's own trap: a plant that left the tree as it was merged clean.
+# tree_of <commit>: its tree, in the fixture.
+tree_of() { git_fixture -C "$tree" rev-parse "$1^{tree}"; }
+check "#601's head changed the tree it forked from" "$(is "$(is "$(tree_of "$q601")" "$(tree_of "$root")")" false)"
+check "#701's commit changed main's tree" "$(is "$(is "$(tree_of "$m2")" "$(tree_of "$m1")")" false)"
+check "git merge-tree finds #601's head conflicts with main's tip" "$(is "$(merges "$m5" "$q601")" 1)"
+check "and merges it cleanly with main as it was when #601 was queued" "$(is "$(merges "$m1" "$q601")" 0)"
+check "and finds #602's head clean with main's tip" "$(is "$(merges "$m5" "$q602")" 0)"
+
+echo "case: a queued entry whose head has come to conflict with main is named, with its files and the pull request that caused it"
+# conflict_heads: a listing whose one named head conflicts with its base, so the heads pass.
+conflict_heads() {
+  page first false null \
+    "$(node 250 false "$(ago "$five_days")" "$(ago "$three_hours")" '[0,0]')" \
+    "$(node 100 false "$(ago "$five_days")" "$(ago "$three_hours")" '[0,0,1]')"
+  pull 250 false
+}
+fresh
+conflict_heads
+dirty_queue
+run_check
+check "#601 is named with its head, its position, its file and the pull request whose commit made it conflict" \
+  "$(has_line "$out" "queued #601 $q601 position 1 conflicts with main in a.txt; caused by #701")"
+check "a ::warning:: line says the same" \
+  "$(has_line "$err" "::warning::#601 is in main's merge queue at position 1, and its head $q601 conflicts with main in a.txt; caused by #701")"
+check "an entry that conflicts in two files names both, and the first commit of main that made it conflict" \
+  "$(has_line "$out" "queued #606 $q606 position 5 conflicts with main in a.txt, e.txt; caused by #701")"
+check "a commit whose subject names no pull request is UNKNOWN" \
+  "$(has_line "$out" "queued #603 $q603 position 3 conflicts with main in e.txt; caused by UNKNOWN: main's commit $m4 made it conflict, and its subject names no pull request")"
+check "an entry that conflicted already when it was queued is UNKNOWN, not laid on a later commit" \
+  "$(has_line "$out" "queued #605 $q605 position 4 conflicts with main in a.txt; caused by UNKNOWN: its head conflicted with main already when it was queued, at $m2")"
+check "main's activity is read once, over the past day" \
+  "$(is "$(grep '^activity' "$work/gh-calls")" "activity ref=refs/heads/main&time_period=day&per_page=100")"
+check "the summary holds #601's row" \
+  "$(has_line "$summary" "| #601 | \`$q601\` | 1 | a.txt | #701 |")"
+check "the last line counts the entries" \
+  "$(has_line "$out" "Queue: 4 of 5 entries of main's merge queue conflict with main's tip $m5 (warnings; they fail nothing), 0 UNKNOWN.")"
+
+echo "case: a clean queued entry is not named"
+check "#602 is not named" "$(is "$(contains "$out$err" '#602')" false)"
+
+echo "case: a queued entry that conflicts does not fail the job; a head with no run and no conflict still does"
+check "it passes" "$(is "$status" 0)"
+check "one ::warning:: line for each entry that conflicts" "$(is "$(warnings)" 4)"
+check "no ::error:: line" "$(is "$(errors)" 0)"
+fresh
+page first false null \
+  "$(node 101 false "$(ago "$five_days")" "$(ago "$three_hours")" '[0,0]')" \
+  "$(node 250 false "$(ago "$five_days")" "$(ago "$three_hours")" '[0,0]')"
+pull 101 true
+pull 250 false
+dirty_queue
+run_check
+check "with a head with no run and no conflict, it fails" "$(is "$status" 1)"
+check "the entries are still warnings" "$(is "$(warnings)" 4)"
+check "the one ::error:: line is that head's" \
+  "$(is "$(errors) $(contains "$err" '^::error::#101: ')" "1 true")"
+
+echo "case: a queue read GitHub refused is UNKNOWN, never none, and the heads are still reported"
+touch "$work/fixtures/queue-refuses-first"
+run_check
+check "it exits 2" "$(is "$status" 2)"
+check "it says UNKNOWN and why" \
+  "$(has_line "$err" "::error::UNKNOWN: GitHub's GraphQL API refused the list of main's merge queue at every attempt, so this check read no entry of main's merge queue: it names none and clears none")"
+check "it tried three times" "$(is "$(grep -c '^MainQueue first' "$work/gh-calls")" 3)"
+check "it never says no entry conflicts, or that the queue is empty" \
+  "$(is "$(contains "$out$summary" "No entry of main\|holds no entry")" false)"
+check "it names no entry and reads no activity" \
+  "$(is "$(contains "$out" '^queued ') $(grep -c '^activity' "$work/gh-calls" || true)" "false 0")"
+check "the heads are still named" "$(named 101)"
+
+echo "case: an answer that names no merge queue for main is UNKNOWN"
+fresh
+conflict_heads
+echo '{"data": {"repository": {"mergeQueue": null}}}' > "$work/fixtures/queue-first.json"
+run_check
+check "it exits 2" "$(is "$status" 2)"
+check "it says why" \
+  "$(contains "$err" "^::error::UNKNOWN: GitHub's GraphQL API answered the list of main's merge queue in a shape this check does not read, or named no merge queue for main, ")"
+
+echo "case: a fetch git could not make is UNKNOWN"
+fresh
+conflict_heads
+dirty_queue
+server_url="file://$work/nowhere" run_check
+check "it exits 2" "$(is "$status" 2)"
+check "it says what it could not fetch" \
+  "$(has_line "$err" "::error::UNKNOWN: git could not fetch main and the queued heads from file://$work/nowhere/o/r.git, so this check read no entry of main's merge queue: it names none and clears none")"
+check "it names no entry" "$(is "$(contains "$out" '^queued ')" false)"
+
+echo "case: main's activity GitHub refused leaves the cause UNKNOWN, and the entry is still named"
+touch "$work/fixtures/activity-refuses"
+run_check
+check "it passes" "$(is "$status" 0)"
+check "#601 is named, its cause UNKNOWN" \
+  "$(has_line "$out" "queued #601 $q601 position 1 conflicts with main in a.txt; caused by UNKNOWN: GitHub's REST API refused main's activity at every attempt")"
+
+echo "case: a queue whose entries are all clean says so, with how many it read"
+fresh
+conflict_heads
+queue_page first false null "$(queue_entry 602 "$q602" 1 600)"
+run_check
+check "it passes" "$(is "$status" 0)"
+check "it says no entry conflicts" \
+  "$(has_line "$out" "No entry of main's merge queue conflicts with main's tip $m5 (1 read).")"
+check "it reads no activity" "$(is "$(grep -c '^activity' "$work/gh-calls" || true)" 0)"
+
+echo "case: an empty queue says so"
+fresh
+conflict_heads
+run_check
+check "it passes" "$(is "$status" 0)"
+check "it says the queue holds no entry" \
+  "$(has_line "$out" "main's merge queue holds no entry: nothing to merge with main.")"
+
+summary "the check that names open pull request heads no workflow ran and queued entries that conflict with main"

@@ -1,26 +1,33 @@
 name: Pull request heads without a run
 
-# Every half hour, names each open pull request whose head no workflow ran: a pull request that is
-# no draft, whose head is 20 minutes old or more, and whose head carries no check run at all.
+# Every half hour, one reading with three cases
+# (.github/ci-notes/heads-without-runs.md#one-check-three-cases).
 # .github/scripts/heads-without-runs.sh reads every open pull request through GitHub's GraphQL
-# API, and for each head it names reads that pull request through the REST API to say why the head
-# has no run: it conflicts with its base, so GitHub built no merge ref and started no run; or it
-# has no run and no conflict, the head a person must look at. The script's header says what it
-# prints and when it fails.
+# API and names each whose head no workflow ran: a pull request that is no draft, whose head is 20
+# minutes old or more, and whose head carries no check run at all. For each head it names it reads
+# that pull request through the REST API to say why: it conflicts with its base, so GitHub built no
+# merge ref and started no run (case 1); or it has no run and no conflict, the head a person must
+# look at (case 2). Then it reads main's merge queue and warns on each entry whose head has come to
+# conflict with main since it was queued, with the files and the pull request whose landing caused
+# it (case 3). The script's header says what it prints and when it fails.
 #
-# The shape it catches is the one the ci-ok lane gate cannot. A lane job that a pull request's
-# labels hold back still leaves a skipped check run on the head, and the gate reads it. A head no
-# workflow ran has no check run at all, so it has no ci-ok, and no gate and no reader sees it.
+# The shape cases 1 and 2 catch is the one the ci-ok lane gate cannot. A lane job that a pull
+# request's labels hold back still leaves a skipped check run on the head, and the gate reads it.
+# A head no workflow ran has no check run at all, so it has no ci-ok, and no gate and no reader
+# sees it.
 # why: .github/ci-notes/heads-without-runs.md#why-the-check-exists
 #
-# What a red run does, and what it does not. The job fails. The step writes one ::error:: line for
-# each head that fails the check, at most 10, and the step summary lists every named head with why
-# it has no run. A head that conflicts with its base is listed and does not fail the job. GitHub's
-# "Events that trigger workflows" page says: "Notifications for scheduled workflows are sent to the
-# user who last modified the cron syntax in the workflow file." Nothing else is told: no comment on
-# any pull request, no issue and no message, as dispatch-unit-repeat.yaml and
-# dispatch-browser-nightly.yaml say of their own reports.
+# What a red run does, and what it does not. The job fails on case 2 alone, and on a part it could
+# not read. The step writes one ::error:: line for each such head, at most 10, one ::warning:: line
+# for each case-3 entry, at most 10, and the step summary lists every named head and entry. A head
+# that conflicts with its base and a queued entry that conflicts with main are listed and do not
+# fail the job. GitHub's "Events that trigger workflows" page says: "Notifications for scheduled
+# workflows are sent to the user who last modified the cron syntax in the workflow file." Nothing
+# else is told: no comment on any pull request, no issue and no message, as dispatch-unit-repeat.yaml
+# and dispatch-browser-nightly.yaml say of their own reports. It never removes an entry from the
+# queue.
 # why: .github/ci-notes/heads-without-runs.md#why-a-conflict-alone-does-not-fail-the-check
+# why: .github/ci-notes/heads-without-runs.md#what-the-queue-case-reads-and-why-it-only-warns
 #
 # Why a workflow of its own. GitHub starts a `schedule` from the default branch alone, and offers
 # `workflow_dispatch` only once the default branch holds the file. Until then the check is proved by
@@ -59,13 +66,14 @@ jobs:
       checks: read
     steps:
       # The job reads nothing of the tree but heads-without-runs.sh and the gh-read.sh it sources,
-      # so the .github cone is the whole checkout it needs.
+      # so the .github cone is the whole checkout it needs; the script fetches main and the queued
+      # heads into a repository of its own.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
           persist-credentials: false
 
-      - name: Name each open pull request whose head no workflow ran
+      - name: Name each open pull request whose head no workflow ran, and each queued entry that conflicts with main
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/heads-without-runs.sh
