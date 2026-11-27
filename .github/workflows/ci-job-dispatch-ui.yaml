@@ -80,12 +80,14 @@ jobs:
       # runner in three. What those cases prove - that a worker's psql reads its own stack's
       # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
       # where psql-session makes a database of its own. A developer runs them with `bun run test`
-      # in packages/dispatch. In an issue pod, where README.md's Development section sends the
-      # whole-package run out of the pod, a role whose change touches what these two files cover
-      # runs the two files by name in packages/dispatch, with this command:
-      # `bun test e2e/__tests__/psql-session.test.ts e2e/__tests__/harness-stacks.test.ts`
-      # The stack contract they guard is also covered end to end by every multi-worker run of the
-      # browser suite itself.
+      # in packages/dispatch. The rows of replace-blocks-guard.test.ts that need a server skip here
+      # for the same reason, and that file's head says what they test. In an issue pod, where
+      # README.md's Development section sends the whole-package run out of the pod, a role whose
+      # change touches what these three files cover runs the three files by name in
+      # packages/dispatch, with this command:
+      # `bun test e2e/__tests__/psql-session.test.ts e2e/__tests__/harness-stacks.test.ts e2e/__tests__/replace-blocks-guard.test.ts`
+      # The stack contract the first two guard is also covered end to end by every multi-worker run
+      # of the browser suite itself.
       #
       # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
