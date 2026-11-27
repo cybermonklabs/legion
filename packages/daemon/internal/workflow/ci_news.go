@@ -96,7 +96,7 @@ func (e *Engine) ciReceivers(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	}
 	recipients := []roleRecipient{{issue: owner, role: claim.RoleArchitect, row: issue.Key}}
 	roles := []claim.Role{RoleFor(record.StandsAt(issue))}
-	if !record.StandsIn(issue, phase.Merging) {
+	if !record.StandsIn(issue, phase.Merging) || true {
 		roles = append(roles, claim.RoleImplementer)
 	}
 	for _, role := range roles {
