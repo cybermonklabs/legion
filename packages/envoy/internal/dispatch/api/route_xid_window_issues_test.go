@@ -5,6 +5,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -154,6 +155,17 @@ var issueRouteXidWindows = []routeXidWindowCase{
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
 				"the batch appending issue.updated and its COMMIT"),
 	},
+	// A patch naming external links reads their owners before its first write, in one statement
+	// (refuseTakenExternalLinks), and rewrites them in one batch (writeExternalLinks): the delete
+	// of the links it held and the insert of every link it names. The patch names twenty, so a
+	// write phase that read or wrote a link at a time - a select and an insert for each, as it
+	// did - holds forty more statements in its window (dispatch://INFRA-49).
+	{
+		name: "the issue patch setting twenty external links", route: "PATCH /api/v1/issues/{key} naming external_links (patchIssue, refuseTakenExternalLinks, writeExternalLinks)",
+		ready: readyIssuePatchSettingExternalLinks, window: storetest.XidWindowOf(5,
+			"the batch deleting the issue's links and inserting the twenty it names, "+
+				"the two reads that load the issue it answers with, the batch appending issue.updated and its COMMIT"),
+	},
 }
 
 // readyIssueReopen drives PATCH /api/v1/issues/{key} reopening a closed issue whose close
@@ -280,6 +292,30 @@ func readyIssueCreateUnrecordedNearCopy(t *testing.T, base routeFixture) lockedI
 				select count(*) from near_copy_checks
 				 where issue_key = $1 and outcome = 'not_made' and reason = 'unrecorded'`, created.Key); rows != 1 {
 				t.Fatalf("near_copy_checks holds %d unrecorded rows naming %s, want the one its transaction wrote", rows, created.Key)
+			}
+		})
+}
+
+// readyIssuePatchSettingExternalLinks drives PATCH /api/v1/issues/{key} naming twenty external
+// links, none of which another issue holds.
+func readyIssuePatchSettingExternalLinks(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Patch setting external links")
+	links := make([]map[string]string, 20)
+	for index := range links {
+		links[index] = map[string]string{"url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", index+1)}
+	}
+	return fixture.routeWrite(t, "the issue's twenty external links",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
+				map[string]any{"external_links": links}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("set the external links: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			if patched := decodeBody[model.Issue](t, answer); len(patched.ExternalLinks) != len(links) {
+				t.Fatalf("the patched issue holds %d external links, want %d", len(patched.ExternalLinks), len(links))
 			}
 		})
 }

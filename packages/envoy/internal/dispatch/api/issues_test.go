@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The issue detail carries the open asks themselves, not a count: agents read them from here
@@ -1183,6 +1184,101 @@ func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
 	}
 	if links := decodeBody[model.Issue](t, unchanged).ExternalLinks; len(links) != 0 {
 		t.Fatalf("%s external links = %#v, want none after the refused link", second.Key, links)
+	}
+}
+
+// A patch that names one URL twice is refused 409 EXTERNAL_LINK_TAKEN naming the URL and the
+// issue itself, as the second insert of the URL would be: the links' owners are read once before
+// the first write (refuseTakenExternalLinks), and the request's own repeat is refused there, in
+// the request's order, with nothing written.
+func TestIssuePatchExternalLinksNamingAURLTwiceIsRefusedNamingTheIssue(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": "Twice"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := decodeBody[model.Issue](t, created)
+	repeated := "https://github.com/owner/repo/pull/8"
+	answer := sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
+		"external_links": []map[string]string{
+			{"url": "https://github.com/owner/repo/pull/7"}, {"url": repeated}, {"url": repeated},
+		},
+		"actor": sessionActor(),
+	})
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("a URL named twice: status=%d body=%s, want 409", answer.Code, answer.Body.String())
+	}
+	if body := answer.Body.String(); !strings.Contains(body, `"code":"EXTERNAL_LINK_TAKEN"`) ||
+		!strings.Contains(body, repeated+" is already linked from "+issue.Key) {
+		t.Fatalf("conflict body = %s, want EXTERNAL_LINK_TAKEN naming %s and %s", body, repeated, issue.Key)
+	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key, nil, "alice")
+	if links := decodeBody[model.Issue](t, read).ExternalLinks; len(links) != 0 {
+		t.Fatalf("%s external links = %#v, want none after the refused patch", issue.Key, links)
+	}
+}
+
+// A URL another issue takes after the patch read the links' owners and before its insert is the
+// unique index's refusal (issue_external_links_url), answered 409 EXTERNAL_LINK_TAKEN naming the
+// URL, with none of the patch's links written. The other issue's insert is held uncommitted while
+// the patch reads the owners, so the read does not see it and the patch's insert waits on it; its
+// commit is the race.
+func TestIssuePatchExternalLinkTakenWhileThePatchRunsIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	create := func(title string) model.Issue {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": title}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response)
+	}
+	first := create("First")
+	second := create("Second")
+	raced := "https://github.com/owner/repo/pull/9"
+	ctx := context.Background()
+	other, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other issue's link: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Rollback(context.Background()) })
+	if _, err := other.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`, first.Key, raced); err != nil {
+		t.Fatalf("link %s to %s uncommitted: %v", raced, first.Key, err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+second.Key, map[string]any{
+			"external_links": []map[string]string{{"url": "https://github.com/owner/repo/pull/10"}, {"url": raced}},
+			"actor":          sessionActor(),
+		})
+	}()
+	waitForLockWait(t, database, "%insert into issue_external_links%")
+	if err := other.Commit(ctx); err != nil {
+		t.Fatalf("commit the other issue's link: %v", err)
+	}
+	answer := testwait.Receive(t, "the patch's answer once the other issue's link committed", answered)
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("a URL taken while the patch ran: status=%d body=%s, want 409", answer.Code, answer.Body.String())
+	}
+	if body := answer.Body.String(); !strings.Contains(body, `"code":"EXTERNAL_LINK_TAKEN"`) ||
+		!strings.Contains(body, raced+" is already linked from another issue") {
+		t.Fatalf("conflict body = %s, want EXTERNAL_LINK_TAKEN naming %s", body, raced)
+	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+second.Key, nil, "alice")
+	if links := decodeBody[model.Issue](t, read).ExternalLinks; len(links) != 0 {
+		t.Fatalf("%s external links = %#v, want none after the refused patch", second.Key, links)
 	}
 }
 

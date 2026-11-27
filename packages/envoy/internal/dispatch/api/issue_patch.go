@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -781,6 +783,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
+	// The external links' owners are read here, before the first write, in one statement: a URL
+	// another issue holds, or one the request names twice, is refused before the transaction takes
+	// its id, and the write phase rewrites the links in one round trip (writeExternalLinks) rather
+	// than a read and an insert per link after its first write gave it the id, which held that id
+	// about 900 ms for twenty links on production's database (dispatch://INFRA-49, 2026-11-26).
+	if input.ExternalLinks != nil {
+		if err := refuseTakenExternalLinks(ctx, tx, key, *input.ExternalLinks); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -828,31 +840,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 
 	if input.ExternalLinks != nil {
-		if _, err := tx.Exec(ctx, `delete from issue_external_links where issue_key = $1`, key); err != nil {
+		if err := writeExternalLinks(ctx, tx, key, *input.ExternalLinks); err != nil {
 			return issueWriteResult{}, err
-		}
-		for _, link := range *input.ExternalLinks {
-			kind := link.Kind
-			if kind == "" {
-				kind = "url"
-			}
-			// A URL links exactly one issue (issue_external_links_url). This issue's own
-			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
-			var owner string
-			err := tx.QueryRow(ctx, `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
-			if err == nil {
-				return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return issueWriteResult{}, err
-			}
-			if _, err := tx.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, $3)`, key, link.URL, kind); err != nil {
-				if isUniqueViolation(err) {
-					return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from another issue", link.URL)
-				}
-				return issueWriteResult{}, err
-			}
 		}
 		changed = true
 	}
@@ -1141,4 +1130,83 @@ func isExternalLinksSubset(requested, existing []model.ExternalLink) bool {
 		}
 	}
 	return true
+}
+
+// refuseTakenExternalLinks refuses links where a URL of them is held by another issue or named
+// twice, 409 EXTERNAL_LINK_TAKEN naming the URL and the issue that holds it, the first such link
+// in the request's order: a URL links exactly one issue (issue_external_links_url), and a URL the
+// request names a second time is one this issue would already hold. key's own links are left out
+// of the read, since the patch replaces them. It is one statement of the patch's read phase, so
+// the write phase holds no read per link (writeExternalLinks).
+func refuseTakenExternalLinks(ctx context.Context, tx pgx.Tx, key string, links []model.ExternalLink) error {
+	urls := make([]string, len(links))
+	for index, link := range links {
+		urls[index] = link.URL
+	}
+	rows, err := tx.Query(ctx, `select url, issue_key from issue_external_links where url = any($1) and issue_key <> $2`, urls, key)
+	if err != nil {
+		return err
+	}
+	owners := make(map[string]string, len(links))
+	var url, owner string
+	if _, err := pgx.ForEachRow(rows, []any{&url, &owner}, func() error {
+		owners[url] = owner
+		return nil
+	}); err != nil {
+		return err
+	}
+	named := make(map[string]bool, len(links))
+	for _, link := range links {
+		if owner, taken := owners[link.URL]; taken {
+			return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
+		}
+		if named[link.URL] {
+			return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, key)
+		}
+		named[link.URL] = true
+	}
+	return nil
+}
+
+// writeExternalLinks replaces key's external links with links in one round trip: the delete of
+// the links it holds and one insert of every link it names, on a batch of their own
+// (store.WriteBatch), so nothing of this process comes between the statements while the
+// transaction holds its id. refuseTakenExternalLinks refused a URL another issue held before the
+// first write; one another issue took since is the unique index's refusal
+// (issue_external_links_url), answered 409 EXTERNAL_LINK_TAKEN naming the URL.
+func writeExternalLinks(ctx context.Context, tx pgx.Tx, key string, links []model.ExternalLink) error {
+	urls := make([]string, len(links))
+	kinds := make([]string, len(links))
+	for index, link := range links {
+		urls[index] = link.URL
+		kinds[index] = cmp.Or(link.Kind, "url")
+	}
+	var write store.WriteBatch
+	write.Queue("", `delete from issue_external_links where issue_key = $1`, key)
+	if len(links) > 0 {
+		write.Queue("", `
+			insert into issue_external_links (issue_key, url, kind)
+			select $1, link.url, link.kind from unnest($2::text[], $3::text[]) as link(url, kind)
+		`, key, urls, kinds)
+	}
+	err := write.Send(ctx, tx)
+	if isUniqueViolation(err) {
+		return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from another issue", takenExternalLink(err, urls))
+	}
+	return err
+}
+
+// takenExternalLink is the URL whose insert err, a unique violation of issue_external_links_url,
+// refused: the one its detail names ("Key (url)=(<url>) already exists."), else the request's
+// URLs joined, where Postgres names none.
+func takenExternalLink(err error, urls []string) string {
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) {
+		if url, found := strings.CutPrefix(pgError.Detail, "Key (url)=("); found {
+			if url, found = strings.CutSuffix(url, ") already exists."); found {
+				return url
+			}
+		}
+	}
+	return strings.Join(urls, ", ")
 }
