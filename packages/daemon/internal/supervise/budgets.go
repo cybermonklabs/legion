@@ -190,6 +190,12 @@ var FailureCauses = []FailureCause{
 // takes it, and nil for every caller but the boot's replay of a recorded death
 // (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
 // takes a place afresh.
+//
+// The wake its launch parks records that this relaunch's launch failure is in the count
+// (wake.chargedLaunchFailure), charged by this raise or by an earlier raise of the same death's
+// relaunch (deathLaunchFailureCharged): a report that finds the process running while a death's
+// relaunch waits drops that wake and gives the launch failure back (dropOutlivedRelaunch). It is
+// read as a wake the launch put on the machine, as relaunchDeath reads its mark.
 func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, place *wakepace.Place) error {
 	if !Charges(o) {
 		return m.launchAfter(ctx, false, false, false, place, ending)
@@ -212,7 +218,12 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, place, ending)
+	before := m.wake
+	err := m.launchAfter(ctx, true, false, false, place, ending)
+	if w := m.wake; w != nil && w != before {
+		w.chargedLaunchFailure = true
+	}
+	return err
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

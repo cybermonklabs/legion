@@ -53,27 +53,27 @@ const (
 // neither way, an Uncertain report (a claim write), a fault set for the next writes (a write
 // refused or of unknown outcome, or the relaunch refused by the lifecycle recheck), the faults
 // cleared, a second passing, a daemon restart, the boot's replay a restart owes where its store
-// held the decision (internal/daemon's recordedDeaths), and, while a read found the process
-// running, the daemon's replacement of its pod. Each report read neither way carries a detail of
-// its own, so each death's cause is its own. Before each step, drawn from streams of their own so
-// the steps above stay the ones each seed walked before them, may come: the runtime's sweep
-// reporting the process running (sweepRunning), as the reviewer's probe sent it, at any step of
-// a walk whose first report was read neither way before any report read the pod ended, where
-// the claim records the ended launch live and the store takes its writes, whatever waits or runs:
-// a death's relaunch waiting in the pacing, any launch waiting, ready or idle, in a turn, after a
-// restart; a read of the process at a caller's request that finds it running (ReadProcess), once
-// in a walk, in such a walk, wherever no launch waits; either running verdict ends a death died
-// judged once in a walk at most; on the daemon that read the end, where the
-// claim stood holding its task sent and still holds it, a late acknowledgement of that task's
-// prompt (acked), as the send in flight at the end gives one, or the shim's second answer for one
-// prompt; the steps of a process a read found running (live): the end of its turn with an
-// activity report that says nothing runs, the turn start of the task sent again, a suspension
-// held for that turn, and an end of the process; and, once in a walk, an operator's suspension,
-// held for the turn where the claim is in one over a process the daemon does not hold gone
-// (holdSuspension), and landing where it arrives otherwise. An event the machine answers with an
-// error is allowed. The walk closes with the faults cleared, the replay still owed, one report
-// read neither way, the relaunch's turn, the operator's resume where the claim is suspended, and
-// the relaunch's ready.
+// held the decision (internal/daemon's recordedDeaths), and, while a running verdict, a read's or
+// a sweep's, found the process running, the daemon's replacement of its pod. Each report read
+// neither way carries a detail of its own, so each death's cause is its own. Before each step,
+// drawn from streams of their own so the steps above stay the ones each seed walked before them,
+// may come: the runtime's sweep reporting the process running (sweepRunning), as the reviewer's
+// probe sent it, at any step of a walk whose first report was read neither way before any report
+// read the pod ended, where the claim records the ended launch live and the store takes its
+// writes, whatever waits or runs: a death's relaunch waiting in the pacing, any launch waiting,
+// ready or idle, in a turn, after a restart; a read of the process at a caller's request that
+// finds it running (ReadProcess), once in a walk, in such a walk, wherever no launch waits; either
+// running verdict ends a death died judged once in a walk at most; on the daemon that read the
+// end, where the claim stood holding its task sent and still holds it, a late acknowledgement of
+// that task's prompt (acked), as the send in flight at the end gives one, or the shim's second
+// answer for one prompt; the steps of a process a running verdict found running (live): the end
+// of its turn with an activity report that says nothing runs, the turn start of the task sent
+// again, a suspension held for that turn, and an end of the process; and, once in a walk, an
+// operator's suspension, held for the turn where the claim is in one over a process the daemon
+// does not hold gone (holdSuspension), and landing where it arrives otherwise. An event the
+// machine answers with an error is allowed. The walk closes with the faults cleared, the replay
+// still owed, one report read neither way, the relaunch's turn, the operator's resume where the
+// claim is suspended, and the relaunch's ready.
 //
 // After every step, with the seed and the steps walked in each failure:
 //
@@ -81,18 +81,18 @@ const (
 //     the pod, and no restart came while the store held no record of the ended launch typed as
 //     an end from outside the pod or as displaced's, the claim is charged nothing, in memory or
 //     in the store; otherwise, at most one death and its launch failure for each death judged,
-//     and a read that finds the process running ends a judged death (reportedProcess), so the
-//     end a later report finds is judged afresh. What the earlier launch's death charged before
-//     the walk began is no part of either (outsideWalk.base).
+//     and a running verdict ends a judged death (reportedProcess), so the end a later report
+//     finds is judged afresh. What the earlier launch's death charged before the walk began is
+//     no part of either (outsideWalk.base).
 //  2. The claim and the store hold the task, where the claim held one, at every step: it is
-//     never retired, but by the end of a turn that confirmed it in a process a read found
-//     running, which served it.
+//     never retired, but by the end of a turn that confirmed it in a process a running verdict
+//     found running, which served it.
 //  3. Once the claim reads the end decided (Claim.DeathCharged), the end of the turn
 //     (Claim.LastTurnEnd) does not move in it, and once the stored claim reads it decided, not in
 //     the store either (turnEndWatch). A decision D1 made in memory and its store refused is gone
 //     at a restart, and D2 makes it again, so the claim's watch starts again where the restored
-//     claim is undecided; the store's never does. A read that finds the process running clears
-//     the decision, in the claim and in the store, so both watches start again there.
+//     claim is undecided; the store's never does. A running verdict clears the decision, in the
+//     claim and in the store, so both watches start again there.
 //  4. At the relaunch's ready the task is sent once, never twice, and a claim that held nothing
 //     is sent nothing but the daemon's own delivery of a record that tells (queueRelaunch); an
 //     end the claim held decided from outside the pod is never told as a death
@@ -119,8 +119,8 @@ const (
 //     included, reads as decided from outside the pod.
 //  6. No prompt failure is charged for a process reported gone, and the turn-start timer
 //     (TimerTurn) is never armed while the machine holds the process gone (Claim.ProcessGone). A
-//     process a read found running can let the wait for a turn of a prompt sent to it run out,
-//     which charges a prompt failure as for any live process.
+//     process a running verdict found running can let the wait for a turn of a prompt sent to it
+//     run out, which charges a prompt failure as for any live process.
 //  7. A record that tells a turn cut off (EndedWork.Turn, TaskTurn) is told only where an end cut
 //     one off: it is a record an end of the process made — a report judged, a suspension landing,
 //     the relaunch's turn — that came while the claim was in a turn or held its task confirmed, or
@@ -131,26 +131,27 @@ const (
 //     launch: died's in that death's own words, displaced's or the end from outside the pod's, as
 //     judge routes the first report it judges (firstJudgement), and the claim types it as that
 //     judgement where displaced's or the end from outside the pod's judged first
-//     (recordedDisplaced, recordedFromOutside). A read that finds the process running ends that
-//     judgement, and a restart whose store kept no judgement of the launch forgets it, so the
-//     next report judges afresh (storedJudgement); a judgement over the record of a death a read
-//     ended leaves a record told by a delivery or still to tell, never told by none. An end that
-//     ended nothing worth telling over the earlier launch's record still untold keeps that
-//     record's words (leaveRecord), which are no cause of the ended launch.
-//  9. No end is told to a process that has not ended. While a process a read found running
-//     lives — no report has found it gone, no suspension stopped it and no launch replaced it —
-//     the claim holds no record of the ended launch that tells, in memory or in the store, so no
-//     prompt, relaunch task or catch-up tells it an end of its own; no prompt to it says that it
-//     ended, that a turn of it was cut off or that its pod ran out of memory (tellsEnd); the task
-//     the death took back goes to it again behind the one sentence of a task sent again
-//     (sentAgainTask), and no other prompt carries that sentence. A false death erases nothing:
-//     where the claim stood over the earlier launch's death still untold, every prompt to that
-//     process tells that end in its own words, until a turn confirms one that told it, and tells
-//     no other, and the sentence of a task sent again follows that end's words. The death a
-//     running verdict ended, a read's or a sweep's, never came, so it is never told afterwards:
-//     no record that tells holds its cause or its relaunch's, and no prompt, a relaunched role's
-//     among them, says it (outsideWalk.outlived); and no launch replaces the live process before
-//     a step has ended it, as the relaunch of that death would at its turn.
+//     (recordedDisplaced, recordedFromOutside). A running verdict ends that judgement, and a
+//     restart whose store kept no judgement of the launch forgets it, so the next report judges
+//     afresh (storedJudgement); a judgement over the record of a death a running verdict ended
+//     leaves a record told by a delivery or still to tell, never told by none. An end that ended
+//     nothing worth telling over the earlier launch's record still untold keeps that record's
+//     words (leaveRecord), which are no cause of the ended launch.
+//  9. No end is told to a process that has not ended. While a process a running verdict found
+//     running lives — no report has found it gone, no suspension stopped it and no launch
+//     replaced it — the claim holds no record of the ended launch that tells, in memory or in
+//     the store, so no prompt, relaunch task or catch-up tells it an end of its own; no prompt to
+//     it says that it ended, that a turn of it was cut off or that its pod ran out of memory
+//     (tellsEnd); the task the death took back goes to it again behind the one sentence of a
+//     task sent again (sentAgainTask), and no other prompt carries that sentence. A false death
+//     erases nothing: where the claim stood over the earlier launch's death still untold, every
+//     prompt to that process tells that end in its own words, until a turn confirms one that
+//     told it, and tells no other, and the sentence of a task sent again follows that end's
+//     words. The death a running verdict ended, a read's or a sweep's, never came, so it is
+//     never told afterwards: no record that tells holds its cause or its relaunch's, and no
+//     prompt, a relaunched role's among them, says it (outsideWalk.outlived); and no launch
+//     replaces the live process before a step has ended it, as the relaunch of that death would
+//     at its turn.
 //
 // The negative controls are the table test's: judge routing on decidedFromOutside fails
 // invariant 1, a report read neither way over a record with no decision charged a death, on one
@@ -301,23 +302,24 @@ type outsideWalk struct {
 	// the relaunch never tells as a death (outsideWalk.relaunch).
 	outside bool
 	// judged is how many deaths of the ended launch the claim may be charged: one, and one more
-	// for each read that found the process running over a judged death (invariant 1).
+	// for each running verdict, a read's or a sweep's, that ended a judged death (invariant 1).
 	judged int
 	// reads, acks and displacedReports are how many running reads, late acknowledgements, and
 	// reports read neither way over displaced's record the walk took.
 	reads, acks, displacedReports int
-	// alive is whether a read found the process running and no report has found it gone since,
-	// and podEnded whether a report read the pod ended, from outside it or by the daemon's
-	// replacement, after which no read finds it running.
+	// alive is whether a running verdict, a read's or a sweep's, found the process running and no
+	// report has found it gone since, and podEnded whether a report read the pod ended, from
+	// outside it or by the daemon's replacement, after which no running verdict comes.
 	alive, podEnded bool
 	// turnEnds, turnStarts, held and suspended are how many idle turn ends, turn starts after a
-	// read, suspensions held for a turn and suspensions landing where they arrived the walk took,
-	// suspensions how many suspensions it drew, and liveEnds how many displacements, deaths and
-	// ends from outside the pod it drew of a process a read found running (liveEnd).
+	// running verdict, suspensions held for a turn and suspensions landing where they arrived the
+	// walk took, suspensions how many suspensions it drew, and liveEnds how many displacements,
+	// deaths and ends from outside the pod it drew of a process a running verdict found running
+	// (liveEnd).
 	turnEnds, turnStarts, held, suspended, suspensions int
 	liveEnds                                           [3]int
-	// life is a seventh stream from the seed, of the steps of a process a read found running
-	// (live), drawn apart for the reason more is.
+	// life is a seventh stream from the seed, of the steps of a process a running verdict found
+	// running (live), drawn apart for the reason more is.
 	life *rand.Rand
 	// ending is whether the step running is an end of the process (outsideWalk.step), cutAts the
 	// moments (EndedWork.At) of the records that may tell a turn cut off (invariant 7),
@@ -343,13 +345,14 @@ type outsideWalk struct {
 	// (displacementStands): a death died judged before a read found the process running wrote
 	// them, and no report after the displacement may add one.
 	dying int
-	// path is the path a process a read found running takes (live), 0 until it is drawn.
+	// path is the path a process a running verdict found running takes (live), 0 until it is
+	// drawn.
 	path int
 	// details is how many reports read neither way the walk has sent, each with a detail of its
 	// own, so each death's cause is its own (invariant 8). takenBack is the id the last take-back
-	// that landed gave the claim's task, sentAgain that id where a read found the process running
-	// over it, which goes to the process again (invariant 9), and seen how many prompts the claim
-	// had been sent at the last check.
+	// that landed gave the claim's task, sentAgain that id where a running verdict found the
+	// process running over it, which goes to the process again (invariant 9), and seen how many
+	// prompts the claim had been sent at the last check.
 	details              int
 	takenBack, sentAgain string
 	seen                 int
@@ -664,8 +667,8 @@ func (w *outsideWalk) live() {
 }
 
 // turnStart is a step of the start of the turn of the task the claim sent again to a process a
-// read found running, which confirms the task and tells the record its prompt carried
-// (confirmCarrying).
+// running verdict, a read's or a sweep's, found running, which confirms the task and tells the
+// record its prompt carried (confirmCarrying).
 func (w *outsideWalk) turnStart() {
 	w.turnStarts++
 	w.step("a turn start of the task sent again", func() error {
@@ -673,33 +676,34 @@ func (w *outsideWalk) turnStart() {
 	})
 }
 
-// liveEnd is a step of an end of a process a read found running, drawn from life: the daemon's
-// replacement of its pod (displace), a death read neither way, or an end from outside the pod.
+// liveEnd is a step of an end of a process a running verdict found running, drawn from life: the
+// daemon's replacement of its pod (displace), a death read neither way, or an end from outside
+// the pod.
 func (w *outsideWalk) liveEnd() {
 	switch w.life.IntN(3) {
 	case 0:
 		w.displace()
 	case 1:
 		w.liveEnds[1]++
-		w.observe("a death of the process a read found running", runtime.Observation{Kind: runtime.Gone})
+		w.observe("a death of the process a running verdict found running", runtime.Observation{Kind: runtime.Gone})
 	default:
 		w.liveEnds[2]++
-		w.observe("an end from outside the pod of the process a read found running",
+		w.observe("an end from outside the pod of the process a running verdict found running",
 			runtime.Observation{Kind: runtime.Gone, EndReading: runtime.PodEndNotOurs})
 	}
 }
 
-// displace is a step of the daemon's replacement of the pod of a process a read found running,
-// drawn after a turn that ended normally (liveEnd) or among the random steps (run).
+// displace is a step of the daemon's replacement of the pod of a process a running verdict found
+// running, drawn after a turn that ended normally (liveEnd) or among the random steps (run).
 func (w *outsideWalk) displace() {
 	w.liveEnds[0]++
-	w.observe("the daemon's replacement of the pod of the process a read found running",
+	w.observe("the daemon's replacement of the pod of the process a running verdict found running",
 		runtime.Observation{Kind: runtime.Gone, Displaced: true})
 }
 
-// idleTurnEnd is a step of the end of the turn the claim is in, in a process a read found running,
-// with the process's activity report saying nothing runs: a turn that confirmed the task served
-// it, and the claim no longer holds it (invariant 2).
+// idleTurnEnd is a step of the end of the turn the claim is in, in a process a running verdict
+// found running, with the process's activity report saying nothing runs: a turn that confirmed
+// the task served it, and the claim no longer holds it (invariant 2).
 func (w *outsideWalk) idleTurnEnd() {
 	w.turnEnds++
 	w.step("an idle turn end, its activity report saying nothing runs", func() error {

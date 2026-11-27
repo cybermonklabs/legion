@@ -379,8 +379,9 @@ type Claim struct {
 	// which is what keeps a raise of that relaunch after a restart from charging it again
 	// (deathLaunchFailureCharged). A report that finds that death's process running while the
 	// relaunch waits drops the relaunch and clears this with it (dropOutlivedRelaunch): no
-	// relaunch of a failure is in flight any more. The launch failure stays counted, as for any
-	// death, until the next ready clears it.
+	// relaunch of a failure is in flight any more. The drop gives back the launch failure that
+	// relaunch was charged, while this still says it is counted, in place of the ready the
+	// relaunched agent would have given (wake.chargedLaunchFailure).
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
@@ -4530,14 +4531,18 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // recorded, so the two raise one relaunch the same way: relaunchAfterFailure under the outcome
 // died names for that end (endOutcome), which charges the death's one launch failure where the
 // policy charges the outcome (Charges) and is otherwise a launch that charges none and waits no
-// backoff; or, for an end from outside the pod the boot replays, that launch itself, which is the
-// launch endedFromOutside's replacement raises (replaceProcess, launch).
+// backoff. The end from outside the pod the boot replays is no death, and its launch is raised
+// without this (relaunchRecordedDeath, launchAfter), so no wake of it is marked.
 //
 // A wake the raise leaves waiting, in the pacing or behind the pause's gate, is marked as this
 // death's relaunch (wake.deathRelaunch), so that a report finding the process running drops it
 // and no other launch waiting over the same process (judge). The mark goes on the wake the raise
-// parked, read as a wake this call put on the machine, so a raise that ran its launch at once, or
-// that the lifecycle recheck refused, marks none.
+// parked, read as a wake this call put on the machine, so a raise that the lifecycle recheck
+// refused marks none, and nor does one whose launch ran at once and started its process. A launch
+// that ran at once and then parked at its issue pod's gate (askPod) is marked: the park is a wake
+// this call put on the machine, and it is the death's relaunch waiting, for its pod's start
+// rather than its turn. No report drops it: that launch let the dead process go, and the death's
+// charge with it (letGo), so the fence drops every later report of that process.
 func (m *Machine) relaunchDeath(raise func() error) error {
 	before := m.wake
 	err := raise()
@@ -4562,8 +4567,10 @@ func (m *Machine) relaunchDeath(raise func() error) error {
 // (endedFromOutside), and the claim's record of what that end ended says so: it is of the launch
 // the claim records and typed as an end from outside the pod (EndedWork.FromOutside,
 // decidedFromOutside), where a death's record is not, is of an earlier launch, or is none. Such
-// an end is relaunched as that end relaunched it, through launch itself (relaunchDeath), which
-// charges no launch failure and waits no backoff, passing endFromOutside as the let-go's cause.
+// an end is relaunched as that end relaunched it, through launch itself (launchAfter), which
+// charges no launch failure and waits no backoff, passing endFromOutside as the let-go's cause;
+// no death raised it, so its wake is not marked as a death's relaunch (relaunchDeath,
+// wake.deathRelaunch).
 // The let-go records nothing over the decided end (recordEnd), so what the next process is told
 // is the record the decision left of this launch, which an end from outside the pod always
 // leaves (markFromOutside): this end's own, a displacement's that markFromOutside typed, or an
@@ -4616,7 +4623,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	}
 	relaunching()
 	if outside {
-		return m.relaunchDeath(func() error { return m.launchAfter(ctx, false, false, false, recorded.Place, endFromOutside) })
+		return m.launchAfter(ctx, false, false, false, recorded.Place, endFromOutside)
 	}
 	return m.relaunchDeath(func() error {
 		return m.relaunchAfterFailure(ctx, m.endOutcome(runtime.OutcomeProcessDied, "died"), endRecordedDeath(m.claim.LastDeathCause), recorded.Place)
@@ -5332,9 +5339,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 //
 // What the death charged stays counted, as for any death: the Death the decision counted
 // (chargeDeath) until the work it was counted against ends, and the launch failure its relaunch
-// charged (Budgets.LaunchFailures) until the next ready clears it. The cause that relaunch left
-// pending goes where a report drops the waiting relaunch (dropOutlivedRelaunch), since no
-// relaunch of a failure is then in flight.
+// charged (Budgets.LaunchFailures) until the next ready clears it, or until a report drops that
+// relaunch while it waits (dropOutlivedRelaunch), which gives that one launch failure back. The
+// cause that relaunch left pending goes with the drop too, since no relaunch of a failure is then
+// in flight.
 func (m *Machine) reportedProcess(observation runtime.Observation) (cleared, delivery bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:

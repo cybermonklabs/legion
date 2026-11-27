@@ -205,6 +205,18 @@ type wake struct {
 	// other launch still owes the live process what it was raised for, and keeps its turn. It is
 	// memory only, as the wake is: the boot's replay raises the death's relaunch again, marked.
 	deathRelaunch bool
+	// chargedLaunchFailure is whether the claim's count holds the one launch failure the relaunch
+	// this wake holds was charged (Budgets.LaunchFailures, relaunchAfterFailure): charged by the
+	// raise that parked it, or by an earlier raise of the same death's relaunch, whose wake a
+	// restart lost and whose charge the store kept beside died pending (deathLaunchFailureCharged).
+	// A report that finds the process running and drops the death's relaunch gives that one launch
+	// failure back (dropOutlivedRelaunch,
+	// dispatch://INFRA-1117/comment/beaf0ee7-ee68-497d-8f29-00f7f61b3a82): had the relaunch run,
+	// its agent's ready would have cleared it, and the process kept in its place comes to no such
+	// ready, since a ready from an agent already up resets nothing (reready). It is memory only, as
+	// deathRelaunch is: the boot's replay raises the relaunch again, and the wake that raise parks
+	// carries it again, whether the replay charges the launch failure or finds it counted already.
+	chargedLaunchFailure bool
 	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no place
 	// of its own (letOutHeldLaunch): the launch has had its turn from the pacing already. The
 	// pacing let its place out, which a pause then met at its turn (reserveWake, wakeNow), an
@@ -741,8 +753,14 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // relaunch left pending goes with the relaunch (Claim.PendingCause): no relaunch of a failure is in
 // flight any more. Only a cause that relaunch recorded goes, read as died over an end the policy
 // charges (processOutcome, Charges): an end it charges nothing recorded none, and the cause pending
-// is the earlier failure's that this process is the relaunch of. What the death counted stays
-// counted, as for any death: its launch failure until the next ready clears it.
+// is the earlier failure's that this process is the relaunch of. The Death the death counted
+// stays counted, as for any death (chargeDeath). The one launch failure the relaunch was charged
+// goes back with it (wake.chargedLaunchFailure,
+// dispatch://INFRA-1117/comment/beaf0ee7-ee68-497d-8f29-00f7f61b3a82), in place of the ready the
+// relaunched agent would have given, and nothing else goes back: the claim counts after the drop
+// the launch failures it counted before the death. It goes back only while died pending still
+// says it is counted, since a ready that came from the process while the relaunch waited cleared
+// both.
 // The wake goes off the machine and gives up what held it: its place in the pacing
 // (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
 // of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
@@ -763,6 +781,9 @@ func (m *Machine) dropOutlivedRelaunch() {
 	m.disarm(TimerWake)
 	m.disarm(TimerPause)
 	m.wake = nil
+	if waiting.chargedLaunchFailure && m.claim.PendingCause == CauseDied {
+		m.claim.Budgets.LaunchFailures--
+	}
 	if m.claim.PendingCause == CauseDied && Charges(m.processOutcome(runtime.OutcomeProcessDied)) {
 		m.claim.PendingCause = ""
 	}
