@@ -66,6 +66,9 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	if own := began + after - held; own > runBound {
 		t.Errorf("RunChecked spent %s of its own, past main's %s: %s from the call to the git's start, and %s from the git's exit to the return, less the %s os/exec holds the child's pipe (procgroup.WaitDelay)",
 			own, runBound, began, after, held)
+	} else {
+		t.Logf("RunChecked spent %s of its own, against main's %s: %s from the call to the git's start, and %s from the git's exit to the return, less the %s os/exec holds the child's pipe (procgroup.WaitDelay)",
+			own, runBound, began, after, held)
 	}
 }
 
@@ -284,6 +287,9 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 			if own := began + after - held; own > commandBound {
 				t.Errorf("RunCommand spent %s of its own, past main's %s: %s from the call to the command's start, and %s from the command's exit to the return, less the %s os/exec holds the child's pipes (procgroup.WaitDelay) (RunCommand = %q, %v)",
 					own, commandBound, began, after, held, out, err)
+			} else {
+				t.Logf("RunCommand spent %s of its own, against main's %s: %s from the call to the command's start, and %s from the command's exit to the return, less the %s os/exec holds the child's pipes (procgroup.WaitDelay)",
+					own, commandBound, began, after, held)
 			}
 			if testCase.wantErr == "" {
 				if err != nil || out != "answered" {

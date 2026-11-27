@@ -593,6 +593,7 @@ func duringDrain(t *testing.T, process *brokerProcess, began time.Time, drain ti
 	sent := time.Now()
 	status, body, err := freshRequest(process.Addr, path)
 	if err == nil {
+		t.Logf("GET http://%s%s, sent %s into the broker's %s drain by its own %q line, was answered %d", process.Addr, path, sent.Sub(began).Round(time.Millisecond), drain, "broker draining", status)
 		return status, body
 	}
 	if into := sent.Sub(began).Round(time.Millisecond); into < drain {

@@ -61,6 +61,9 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 			if began, after := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited); began+after-pipeDrainDelay > clientBound {
 				t.Errorf("runTmux spent %s of its own, past main's %s: %s from the call to the client's start, and %s from the client's exit to the return, less the %s os/exec holds the pipes (pipeDrainDelay)",
 					began+after-pipeDrainDelay, clientBound, began, after, pipeDrainDelay)
+			} else {
+				t.Logf("runTmux spent %s of its own, against main's %s: %s from the call to the client's start, and %s from the client's exit to the return, less the %s os/exec holds the pipes (pipeDrainDelay)",
+					began+after-pipeDrainDelay, clientBound, began, after, pipeDrainDelay)
 			}
 			if res.timedOut != 0 || res.exitCode != exit || strings.TrimSpace(res.stdout) != "answered" {
 				t.Errorf("runTmux = exit %d, timed out %s, stdout %q after %s; want exit %d, no timeout, and the answer: the client exited on its own, its timeout far away",
