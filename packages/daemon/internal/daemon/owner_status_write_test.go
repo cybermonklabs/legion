@@ -26,7 +26,7 @@ import (
 // The tree of the test below (dispatch://INFRA-3178, the plan's list L2): a root and one child. The
 // root's architect is the architect above the child, and the child's implementer is a phase worker
 // of it. A write in Dispatch names its session, and the daemon finds the writer's claim by that
-// session alone, among the claims it publishes as role holders (record.Store.LiveRoleHolders).
+// session alone, among the claims it publishes as role holders (record.Store.RoleHolders).
 const (
 	ownerMoveRoot      = "LEGION-1"
 	ownerMoveChild     = "LEGION-2"
@@ -50,14 +50,16 @@ type issueLogEntry struct {
 	changed []string
 }
 
-// issueLogDispatch is the child as Dispatch shows it, from one event log. GetIssue answers the
-// status of the last event and its sequence. SetStatusAt writes only at the sequence of the read it
+// issueLogDispatch is the child as Dispatch shows it, from one event log, and its parent, the root,
+// at in_progress as the rig records it. GetIssue answers the child at the status of the last event
+// and its sequence, and the root to a read of the root, such as a set-back's read of the parent it
+// waits on (the outbox's awaitParentInWork). SetStatusAt writes only at the sequence of the read it
 // is given, and refuses a write at any other sequence with ISSUE_CHANGED, as Dispatch does.
 // EventsAfter serves the log after a sequence in Dispatch's own shape. Each write the daemon makes
-// is an event of its own session. onRead runs once, before the first GetIssue answers, and onWrite
-// once, before the first SetStatusAt reads its sequence. A row sets one of them to add the owner's
-// events while a set-back is in flight, its lease taken: before its read, or between its read and
-// its write.
+// is an event of its own session. onRead runs once, before the first read of the child answers, and
+// onWrite once, before the first SetStatusAt reads its sequence. A row sets one of them to add the
+// owner's events while a set-back is in flight, its lease taken: before its read, or between its
+// read and its write.
 type issueLogDispatch struct {
 	outboxDispatch
 	log             []issueLogEntry
@@ -108,7 +110,11 @@ func (d *issueLogDispatch) raw(entry issueLogEntry) json.RawMessage {
 	return raw
 }
 
-func (d *issueLogDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
+func (d *issueLogDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	if key == ownerMoveRoot {
+		return dispatch.Issue{Key: ownerMoveRoot, Status: "in_progress", Title: ownerMoveRoot, Rank: "A", Labels: []string{dispatch.LegionLabel},
+			ResolvedRepo: "acme/widgets", LastSeq: 1}, nil
+	}
 	if read := d.onRead; read != nil {
 		d.onRead = nil
 		read()
