@@ -271,6 +271,58 @@ func TestEveryDPoPEntryIsHeldToItsOwnDestinationsHost(t *testing.T) {
 	}
 }
 
+// TestEveryDPoPBlockRefusalNamesTheBlockKind: each refusal of a dpop block that names the block's
+// kind names the word a profiles file writes it with, `"kind": "dpop"` (policy.BlockKindDPoP), and
+// never the airlock way its binding takes (proxyrules.WayDPoP), which is a way of its own and may
+// be written another way without the file's word moving. The words below are written out rather
+// than read from either constant, so a refusal that takes its word from the way is caught the
+// moment the way's string moves; each ends in what follows the kind in that refusal, so a longer
+// word written where the kind belongs cannot satisfy a row by having the kind as its first part.
+// One row per line of MintedEntryRules and ProxyMintedRules that names the kind: the eight lines
+// write nine refusals, since the line a block of two hosts meets is the one a block of a "*." host
+// meets too.
+func TestEveryDPoPBlockRefusalNamesTheBlockKind(t *testing.T) {
+	upstream := []PrivateUpstream{dispatchUpstream(t)}
+	both := upstreamsOf(t, "dispatch.test=http://10.0.0.5:8766 results.test=http://10.0.0.6:8766")
+	results := upstreamsOf(t, "results.test=http://10.0.0.6:8766")
+	one := func() proxyrules.Rules {
+		return proxyrules.Rules{Names: []proxyrules.Binding{mintedEntry("FIRST_TOKEN")}}
+	}
+	for _, c := range []struct {
+		name, says string
+		upstreams  []PrivateUpstream
+		spoil      func(*proxyrules.Rules)
+	}{
+		{"a block of two hosts", "is of kind dpop and must bind one exact host", upstream, func(r *proxyrules.Rules) {
+			r.Names[0].Inline.Hosts = []string{"dispatch.test", "other.test"}
+		}},
+		{"a block with no allow list", "is of kind dpop and must have a non-empty allow list", upstream, func(r *proxyrules.Rules) {
+			r.Names[0].Inline.Allow = nil
+		}},
+		{"a block allowing every path", "is of kind dpop and allows GET on the path prefix", upstream, func(r *proxyrules.Rules) {
+			r.Names[0].Inline.Allow = []proxyrules.Allow{{Method: "GET", PathPrefix: "/"}}
+		}},
+		{"a block carried in another header", "is of kind dpop and must be carried in the Authorization header alone", upstream, func(r *proxyrules.Rules) {
+			r.Names[0].Inline.Headers = []string{"X-Token"}
+		}},
+		{"a kind over the block's host", "the host of the profile FIRST_TOKEN of kind dpop: no kind may bind a host", upstream, func(r *proxyrules.Rules) {
+			r.Kinds = append(r.Kinds, proxyrules.Kind{Name: "wildcard", Hosts: []string{"*.test"}, Ways: []string{proxyrules.WaySwap}})
+		}},
+		{"no destination at all", "is of kind dpop and binds dispatch.test, and BROKER_PROXY_PRIVATE_UPSTREAM is unset", nil, func(*proxyrules.Rules) {}},
+		{"a destination of another host", "is of kind dpop and binds dispatch.test, which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", results, func(*proxyrules.Rules) {}},
+		{"a destination no block binds", "no profile of BROKER_PROFILES_FILE of kind dpop binds it", both, func(*proxyrules.Rules) {}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rules := one()
+			c.spoil(&rules)
+			err := ProxyMintedRules(rules, c.upstreams)
+			if err == nil || !strings.Contains(err.Error(), c.says) {
+				t.Fatalf("ProxyMintedRules = %v; want a refusal naming %q", err, c.says)
+			}
+		})
+	}
+}
+
 // TestTheMintedEntryDigestCoversTheProfileAndTheDestination: a minted grant records the digest of
 // the dpop block it was made under and the private destination its token goes to, so a broker of
 // another block or destination on the same database serves none of its grants. The digest is 64
