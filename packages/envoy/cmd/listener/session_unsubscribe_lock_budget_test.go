@@ -19,9 +19,6 @@ import (
 // not free within the write's budget (storedFilterWrite).
 const lockNotFreeLine = "session consumer filter left unchanged: the session's lock was not free within the filter write's budget; the session's next heartbeat sets it"
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: an answer between the route's 3.5 s budget and the client's 5 s attempt.
-//
 // An unsubscribe whose session's lock is held past the route's budget answers 200 and leaves the
 // consumer's filter as it was. A registration of the session holds that lock across its consumer
 // call and its writes, and the test holds it here in the same way. The route's filter write
@@ -31,6 +28,8 @@ const lockNotFreeLine = "session consumer filter left unchanged: the session's l
 // line. The filter keeps the topic until a later filter write. Control: the same unsubscribe sent
 // again with the lock free is such a write, and it takes the topic out of the filter.
 func TestAnUnsubscribeWhoseSessionLockIsHeldPastTheBudgetAnswers200AndLeavesTheFilter(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: an
+	// answer between the route's 3.5 s budget and the client's 5 s attempt.
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_refollow_lock_held"
 	const kept = "notifications.dispatch.issue.LOCKHELDKEPT.>"

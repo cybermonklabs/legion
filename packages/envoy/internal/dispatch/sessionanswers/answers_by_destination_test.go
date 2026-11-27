@@ -36,6 +36,7 @@ const askPayloadIndex = "events_ask_payload_id"
 // and for two other sessions, with the window's start 72 hours and 7 days back. A window of 7
 // days holds the reader's deliveries 4 to 6 days old too.
 func TestTheAnswersReadAnswersMainsRows(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	ctx := context.Background()
 	since := f.now.Add(-72 * time.Hour)
@@ -280,6 +281,7 @@ func readAnswerRows(t *testing.T, database *store.Store, statement, session stri
 // array on its rows: the check of the read of events, run on it, must fail under each plan, and
 // the test fails when it passes, since the check would then be one that cannot fail.
 func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	ctx := context.Background()
 	var indexed bool

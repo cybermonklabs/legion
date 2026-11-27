@@ -897,6 +897,7 @@ func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
 // heartbeat is within store.OwnerLockLegacyWindow of the database's now(), the window the owner
 // lock counts an earlier build's row in, and not once its heartbeat is older.
 func TestEarlierLegionIntakeCountsARowOfAnEarlierBuildUntilItIsPruned(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
 	earlier := func(what string) bool {

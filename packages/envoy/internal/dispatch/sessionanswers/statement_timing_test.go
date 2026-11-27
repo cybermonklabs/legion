@@ -33,6 +33,7 @@ import (
 // (benchtime.Runner.PairBuffers). Each of these is a subtest, so one that fails leaves the rest of
 // the run to log its own numbers.
 func TestStatementTimings(t *testing.T) {
+	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))

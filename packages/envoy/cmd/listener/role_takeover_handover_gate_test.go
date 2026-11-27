@@ -848,6 +848,7 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 // again as the same service through such a bucket: its refused write leaves its own principal
 // recorded, and it is answered 200.
 func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_gate_first_registration_refused"
 	rig := newGateRig(t)
 	js := rig.harness.client.JS()

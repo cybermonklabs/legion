@@ -88,6 +88,7 @@ func TestARegistrationLogsALeftOutTopicOncePerSessionAndTopicAnHour(t *testing.T
 // control is the row itself, read before the registration: it holds the topic, so the line is
 // about a topic that pass took out.
 func TestARegistrationWhoseEntryWriteFailsStillLogsTheTopicsItLeftOut(t *testing.T) {
+	t.Parallel()
 	// Serial (listenerTestParallelism): it gives the process's one registration limiter a memory of
 	// its own (registrationLeftOutLogs.isolate), which every registration of the process reads.
 	const (

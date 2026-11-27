@@ -28,9 +28,6 @@ func unsubscribeBody(t *testing.T, sessionID string, topics ...string) string {
 	return string(body)
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: an answer inside the client's 5 s attempt, from a route whose budget is 3.5 s.
-//
 // An unsubscribe the listener answers while its NATS connection is reconnecting fails by name, and
 // inside the client's own deadline (R14 of dispatch://INFRA-3589), as a registration does
 // (TestARegistrationThroughANATSReconnectFailsByName). An unsubscribe of a session with a consumer
@@ -40,6 +37,8 @@ func unsubscribeBody(t *testing.T, sessionID string, topics ...string) string {
 // reaches nobody. So the answer is a 503 whose reason names the reconnect, inside that attempt,
 // and no listener line names nats.go's buffer refusal.
 func TestAnUnsubscribeThroughANATSReconnectFailsByName(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: an
+	// answer inside the client's 5 s attempt, from a route whose budget is 3.5 s.
 	const (
 		machineID = "reconnect-unsubscribe"
 		sessionID = "ses_reconnect_unsubscribe"
@@ -135,9 +134,6 @@ func (rig *consumerCallCutRig) serve(method, path, body string) *httptest.Respon
 	return recorder
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: the cut connection's close inside 3 s, and an answer inside the client's 5 s attempt.
-//
 // An unsubscribe whose store work answers and whose consumer call meets a NATS reconnect fails by
 // name, and inside the client's own deadline, as a registration's consumer call does. The filter
 // update after the row is written (sessionDelivery.refollow) is the route's one consumer call, and
@@ -150,6 +146,8 @@ func (rig *consumerCallCutRig) serve(method, path, body string) *httptest.Respon
 // An update the route's budget did not bound would wait out sessionConsumerCallTimeout (5 s) from
 // its own start and only be logged, and the route would answer 200 after the client's attempt.
 func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: the cut
+	// connection's close inside 3 s, and an answer inside the client's 5 s attempt.
 	const (
 		sessionID = "ses_unsubscribe_consumer_call"
 		topic     = "notifications.team.unsubscribe-consumer-call"
@@ -175,9 +173,6 @@ func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing
 	}
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: the cut connection's close inside 3 s, within the route's 3.5 s budget.
-//
 // The retry of an unsubscribe that took every topic of the session's record answers 200. The
 // first attempt removes the topics, and the removal of the last one deletes the record
 // (store.Registry.Remove). Its filter update then meets a NATS reconnect, so the route answers
@@ -189,6 +184,8 @@ func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing
 // A store that read an absent record as an error would answer the retry 500 `nats: key not found`
 // for a removal that did happen.
 func TestTheRetryOfAnUnsubscribeThatEmptiedTheRecordAnswers200(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: the cut
+	// connection's close inside 3 s, within the route's 3.5 s budget.
 	const (
 		sessionID = "ses_unsubscribe_emptied_record"
 		topic     = "notifications.team.unsubscribe-emptied-record"

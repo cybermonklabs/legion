@@ -69,10 +69,6 @@ func requireInsideTheProbe(t *testing.T, probed time.Time) {
 	}
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: a registration inside a probe's receipt wait of 500 ms, and the session's messages
-// inside 2 s of it.
-//
 // Check l19 of dispatch://INFRA-3589 (R21): a registration that holds an open relay subject
 // resumes a relay the listener paused while the session could not answer, so the session has its
 // messages at once rather than after the pause backoff. The session's connection that left e1 and
@@ -83,6 +79,9 @@ func requireInsideTheProbe(t *testing.T, probed time.Time) {
 // registration, where the pause would wait 4 s, and the listener logs the resume once, at INFO,
 // naming the session and the backoff it cut short.
 func TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: a
+	// registration inside a probe's receipt wait of 500 ms, and the session's messages inside 2 s of
+	// it.
 	const sessionID = "ses_resumed_in_probe"
 	rig, gone, e1, e2, probed := relayInAProbe(t, sessionID)
 	gone.close()
@@ -98,9 +97,6 @@ func TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer(t *testin
 	}
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: a registration inside a probe's receipt wait of 500 ms.
-//
 // A registration earns a paused relay one probe, not one each receipt wait: a session that
 // registers while the relay's probe waits for its receipt, and still answers nothing, is sent its
 // messages again at once, and then nothing more until the next backoff has passed. That
@@ -108,6 +104,8 @@ func TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer(t *testin
 // not take it, and a session that registers and never answers costs no restart of its consumer
 // every receipt wait.
 func TestARegistrationEarnsAPausedRelayOneProbe(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: a
+	// registration inside a probe's receipt wait of 500 ms.
 	const sessionID = "ses_probed_once"
 	rig, silent, e1, e2, probed := relayInAProbe(t, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))

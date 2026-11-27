@@ -82,9 +82,6 @@ func reconnectWritesCallWritten(port int, path, body string, timeout time.Durati
 	return reconnectWritesAnswer{status: response.StatusCode, body: string(answer), err: err}
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: the listener's reconnect inside the route's 3.5 s budget, after the test gave up.
-//
 // A write the listener makes while its NATS connection is reconnecting waits for the connection
 // within its caller's deadline and is then sent, or fails by name, at once or once that deadline
 // ends: the answer is a 503 whose reason says the bus is reconnecting. No answer and no log line
@@ -112,6 +109,8 @@ func reconnectWritesCallWritten(port int, path, body string, timeout time.Durati
 // deadline. R14 of dispatch://INFRA-3589 allows both. So the write the third outage gives up on is
 // a publish, which waits for the connection.
 func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: the
+	// listener's reconnect inside the route's 3.5 s budget, after the test gave up.
 	const (
 		machineID = "reconnect-writes"
 		sessionID = "ses_reconnect_writes"
