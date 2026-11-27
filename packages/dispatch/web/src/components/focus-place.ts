@@ -20,7 +20,8 @@ import { ROW_SELECTOR } from "./row-marker";
  * not it took anything off (`ControlRow`'s `handOff`), until what was clicked has left the page,
  * and the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
  * `focusAfterPin`), which keeps a pin made from the row holding the focus until the commit that
- * draws it. A hold on what answers the press keeps it live (`holdHandOff`),
+ * draws it. A hold on what answers the press keeps it live (`holdHandOff`) - a hold over a write
+ * holds the press that write began under (`pressOfWrite`), never a later press of the reader's -
  * and so does its control's own hold, up to the write deadline and only until a hold on what
  * answers the press has begun: a control still held once that hold has ended says only that
  * there is nothing left to do. Where no hold on what answers the press begins - a step of
@@ -392,10 +393,37 @@ export function isRowMark(element: Element): boolean {
   return element.matches(MARK) && element.closest(ROW_SELECTOR) !== null;
 }
 
+/** Whether `row` is marked: its own mark - the first checkbox it draws (`MARK`), in no row
+ *  inside it - is ticked. */
+function isMarked(row: Element): boolean {
+  const mark = row.querySelector(MARK);
+  return mark instanceof HTMLInputElement && mark.checked && mark.closest(ROW_SELECTOR) === row;
+}
+
+/** The list the selection bar `bar` stands over: the nearest element around the bar that holds a
+ *  marked row (`isMarked`), else null. A page draws its bar beside the list whose rows it marks:
+ *  the Inbox in the element that holds its list column, the project List inside its section. */
+function markedListAround(bar: Element): Element | null {
+  const marked: Element[] = [];
+  for (const mark of document.querySelectorAll(MARK)) {
+    const row = mark.closest(ROW_SELECTOR);
+    if (row !== null && isMarked(row)) marked.push(row);
+  }
+  for (let around = bar.parentElement; around !== null; around = around.parentElement) {
+    for (const row of marked) {
+      if (around.contains(row)) return around;
+    }
+  }
+  return null;
+}
+
+/** The selection bar, by the name its component draws on it (`SelectionBar`). */
+const SELECTION_BAR = `[data-control="${CONTROL.selectionBar}"]`;
+
 /** The regions of their own a focus can sit in: a dialog or a panel (`DIALOG`), or the selection
  *  bar. A press that empties a selection could land in one and still be the reader's own, and a
  *  focus in one drawn inside a component's container is that region's (`inRegionWithin`). */
-const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
+const PRESS_REGION = `${DIALOG}, ${SELECTION_BAR}`;
 
 /** Whether the page draws `element`: under no `hidden` ancestor, and given a box. */
 function rendered(element: Element): boolean {
@@ -883,12 +911,15 @@ function isHeld(element: Element): boolean {
   return heldControl(element) !== null;
 }
 
-/** The longest an armed press's action keeps it live, counted from the arm (`armHandOff`): the
+/** The longest an armed press's action keeps it live, counted from the arm (`armHandOff`) and
+ *  again from each write its action begins where the action says so (`actionWriteBegins`): the
  *  app's write deadline (`SEND_DEADLINE_MS`), the longest its control's hold keeps it live, and
  *  then the request deadline (`REQUEST_DEADLINE_MS`), which bounds the hold through the re-read
  *  that answers the write (`useReadBound`). It is the longest one write that lands within its
  *  deadline, and then its re-read, can take, and it bounds every hold over the press the same
- *  way, counted from the same arm: an action of several writes, as the List's Start next, too. */
+ *  way. So an action of several writes, as the List's Start next, keeps its press live while it
+ *  writes and ends it that long after the last write it began, and a single write longer than
+ *  that ends it there. */
 const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
 
 /** The keys that only modify another key: one pressed alone acts on nothing, so it leaves an
@@ -909,24 +940,26 @@ interface ArmedPress {
    *  holds it in the page, the controls held in it now (`HELD`) to those held before the press
    *  (`holds`): the same press heard at a component's root inside another's is armed at both. */
   readonly addRoot: (root: Element) => void;
-  /** The holds on what answers the press, begun while it is armed, that are still on
-   *  (`holdHandOff`). */
-  readonly answers: Set<object>;
-  /** Reads again whether anything still keeps the press armed; nothing once it has ended. */
-  changed: () => void;
   /** The control the press landed on: the nearest of the element it landed on and the elements
    *  around it that a row holds as a control by markup (`ROW_CONTROL`) - the button a span or an
    *  icon of it is drawn in - else that element. */
   readonly control: Element;
   /** Ends the press now: its timers, its watch, its listeners and its frame loop stop. */
   readonly end: () => void;
+  /** Begins a hold on what answers the press (`holdHandOff`): it keeps the press live until the
+   *  function it answers runs, and running that again does nothing. Once the press has ended it
+   *  holds nothing. */
+  readonly hold: () => () => void;
   /** Whether `pressed` is, or is inside, a control the press holds now by a hold that began after
    *  it (`HELD`): its own control, held where it was not as the press was made, or a control in a
    *  root it was armed at that was not held when the press first read a root around it
    *  (`addRoot`) - the Inbox bar's Snooze selected asks, held while the snooze its pick in the
-   *  open list sent is out. A press there takes nothing but the hold, and leaves this press the
-   *  cause (`armHandOff`). It needs neither the press's control nor the list it was made in still
-   *  in the page: the pick takes both away. */
+   *  open list sent is out - or, for a press armed at a selection bar, a control in a marked row
+   *  of the list the bar stands over that was not held as the bar's root was read
+   *  (`markedListAround`): a marked Inbox card's own Snooze, which the bar's Snooze holds while
+   *  its write is out. A press there takes nothing but the hold, and leaves this press the cause
+   *  (`armHandOff`). It needs neither the press's control nor the list it was made in still in
+   *  the page: the pick takes both away. */
   readonly holds: (pressed: Element) => boolean;
   /** The focused element and the dialog, panel or selection bar around it (`PRESS_REGION`), read
    *  at the arm and at every focus while the press is armed, which `pressRegionOf` reads for an
@@ -954,6 +987,9 @@ interface ArmedPress {
    *  button takes none in WebKit. A press that drops the focus onto the body fires no `focusin`,
    *  and keeps it. */
   takenFrom: Element | null;
+  /** Counts the press's action bound (`ACTION_BOUND_MS`) from now, as its action begins another
+   *  write (`actionWriteBegins`); nothing once the bound has passed or the press has ended. */
+  readonly wrote: () => void;
 }
 
 /** The armed press while one is (`armHandOff`), else null. */
@@ -976,28 +1012,34 @@ let armed: ArmedPress | null = null;
  * armed control again - a checkbox's `click` and then its `change`, or the same click heard at a
  * component's root inside another's - restarts nothing. Nor does a press on a control the armed
  * press holds now by a hold that began after it, or on anything inside that control (`holds`):
- * its own control, or a control of a root it was armed at that was not held as it was armed. A
- * double click or a repeated Enter on a held control takes the press without a write, so the
- * first press stays the cause, with its bounds as they were: a second Enter on the Inbox bar's
- * Snooze selected asks, held while the snooze picked in its list is out, though that pick took
- * the list's text box it was made in away. A press on a control held before the arm is the
- * reader's next act, and arms anew. A press on a control the armed press holds outside its own
+ * its own control, a control of a root it was armed at that was not held as it was armed, or,
+ * for a press armed at a selection bar, such a control in a marked row of the list the bar stands
+ * over (`markedListAround`), which counts for nothing else. A double click or a repeated Enter on
+ * a held control takes the press without a write, so the first press stays the cause, with its
+ * bounds as they were: a second Enter on the Inbox bar's Snooze selected asks, held while the
+ * snooze picked in its list is out, though that pick took the list's text box it was made in
+ * away, and a double click on a marked Inbox card's own Snooze, which that snooze holds too. A
+ * press on a control held before the arm is the reader's next act, and arms anew, and so is any
+ * other press in that list: another row's own Dismiss, a row's link, a control in a marked row
+ * the bar's action does not hold. A press on a control the armed press holds outside its own
  * control notes where it took the focus from (`takenFrom`), which the selection bar reads as it
  * goes (`repeatTookFocusFrom`).
  *
  * The press is live from the arm until a frame and a task after the last of what keeps it live
  * ends (`afterComponents`), so the commit that draws its answer and the effects after it are
  * still its own. A press that holds nothing ends a frame and a task after the arm. A hold on what
- * answers it, begun while it is live (`holdHandOff`), keeps it live until the hold ends. Its
- * control held by a hold that began after the arm keeps it live too, up to the app's write
- * deadline (`SEND_DEADLINE_MS`) from the arm, and only until a hold on what answers it has begun:
- * once every such hold has ended its action is answered, and a control still held after that -
- * the project List's Move, which its own press leaves with no epic to move to - says only that
- * there is nothing to do, which keeps no press live. The control's hold is watched rather than
- * polled, with a watch on the page's `aria-disabled`, `disabled` and children, so the control
- * going, its fieldset enabled again or its write refused ends that hold. Nothing pulls the focus
- * back to a control a refused write lets go. At `ACTION_BOUND_MS` from the arm the press stops
- * counting whatever is still on and ends a frame and a task later.
+ * answers it (`holdHandOff`), begun while it is live, keeps it live until the hold ends, and one
+ * begun once it has ended keeps nothing live. Its control held by a hold that began after the arm
+ * keeps it live too, up to the app's write deadline (`SEND_DEADLINE_MS`) from the arm, and only
+ * until a hold on what answers it has begun: once every such hold has ended its action is
+ * answered, and a control still held after that - the project List's Move, which its own press
+ * leaves with no epic to move to - says only that there is nothing to do, which keeps no press
+ * live. The control's hold is watched rather than polled, with a watch on the page's
+ * `aria-disabled`, `disabled` and children, so the control going, its fieldset enabled again or
+ * its write refused ends that hold. Nothing pulls the focus back to a control a refused write lets
+ * go. At `ACTION_BOUND_MS` from the arm, or from the last write its action began where the action
+ * says so (`actionWriteBegins`), the press stops counting whatever is still on and ends a frame
+ * and a task later.
  *
  * The reader's next act disarms it, read by listeners on the document installed only while a
  * press is armed: a pointer press anywhere outside the armed control and the controls it holds
@@ -1065,28 +1107,52 @@ export const ARM_ON_PRESS = {
   onKeyDownCapture: armOnPress,
 } as const;
 
-/** Begins a hold on what answers the armed press (`armHandOff`): begun while that press is live,
- *  it keeps the press live until the function it answers runs, up to `ACTION_BOUND_MS` from the
- *  arm, and from its start the press's control's own hold counts no longer. Begun while nothing is
- *  armed, it does nothing. Every hold on what answers a write begins one: the control held while
- *  the write is out and through the commit after its answer (`useHeldThroughAnswer`), through the
- *  re-read that draws what the write changed (`useReadBound`), until the update that carries the
- *  write is drawn (`useHoldUntilDrawn`), and through the whole run of a project List action
- *  (`issues-table-actions.ts`'s `perform`). So the row or the form that what answers the write
- *  takes away is still the press's doing (`causedByReader`). A refusal answers a press as a write
- *  does: a project List action refused with no write begins one and ends it at once with the
- *  refusal (`issues-table-actions.ts`'s `moveTo`), so the press's control, which its press leaves
- *  held with nothing to do, keeps it live no longer. Answers what ends the hold; ending it again
- *  does nothing. */
-export function holdHandOff(): () => void {
-  const press = armed;
-  if (press === null) return () => undefined;
-  const hold = {};
-  press.answers.add(hold);
-  press.changed();
-  return () => {
-    if (press.answers.delete(hold)) press.changed();
-  };
+/** The press a write began under, as every hold over that write takes it (`holdHandOff`): the
+ *  press armed as the write began (`pressOfWrite`), else null. */
+export type WritePress = ArmedPress | null;
+
+/** The press a write that begins now begins under: the armed press (`armHandOff`), else null.
+ *  Every hold over that write takes this press (`holdHandOff`), however late it begins - through
+ *  the re-read after the write's answer (`useReadBound`), or until the update that carries the
+ *  write is drawn (`useHoldUntilDrawn`) - and never the press armed by then: the reader may have
+ *  pressed again while the write was out, and that later press is no doing of this write's. A
+ *  keyed write reads it in its `onMutate`, which TanStack calls in the `mutate` the reader's press
+ *  makes, and is handed it back in its `onSuccess` (`useKeyedWrite`). */
+export function pressOfWrite(): WritePress {
+  return armed;
+}
+
+/** Begins a hold on what answers the write `press` began (`pressOfWrite`), or, with no `press`
+ *  given, on what answers the press armed now, for a hold that begins as its write does. Begun
+ *  while that press is live, it keeps the press live until the function it answers runs, up to
+ *  `ACTION_BOUND_MS` from the arm or from the last write its action began
+ *  (`actionWriteBegins`), and from its start the press's control's own hold counts no longer. A
+ *  hold of a press that has ended, or of none, does nothing: a later press of the reader's is
+ *  never kept live by an earlier write's hold. Every hold on what answers a write begins one: the
+ *  control held while the write is out and through the commit after its answer
+ *  (`useHeldThroughAnswer`), begun in the commit that draws the write; through the re-read that
+ *  draws what the write changed (`useReadBound`) and until the update that carries the write is
+ *  drawn (`useHoldUntilDrawn`), each begun as the write's answer comes, of the press the write
+ *  began under; and through the whole run of a project List action (`issues-table-actions.ts`'s
+ *  `perform`). So the row or the form that what answers the write takes away is still the
+ *  press's doing (`causedByReader`). A refusal answers a press as a write does: a project List
+ *  action refused with no write begins one and ends it at once with the refusal
+ *  (`issues-table-actions.ts`'s `moveTo`), so the press's control, which its press leaves held
+ *  with nothing to do, keeps it live no longer. Answers what ends the hold; ending it again does
+ *  nothing. */
+export function holdHandOff(press: WritePress = armed): () => void {
+  return press === null ? () => undefined : press.hold();
+}
+
+/** Counts the bound of `press` (`ACTION_BOUND_MS`) from now, as the action that holds it
+ *  (`holdHandOff`) begins another write: the project List's actions say so before each write
+ *  they send, of the press the action began under (`issues-table-actions.ts`'s `perform`). So a
+ *  press stays live while its action writes - Start next writes one step at a time, each step a
+ *  write and its re-read within the bound - and ends `ACTION_BOUND_MS` after the last write its
+ *  action began. No other write of the page moves it. A press that has ended, or whose bound has
+ *  passed, is left as it is: a single write longer than the bound still ends the press there. */
+export function actionWriteBegins(press: WritePress): void {
+  press?.wrote();
 }
 
 /** A new record of what the reader can see of `element` (`Sight`), read now against every box
@@ -1114,22 +1180,40 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
    *  portal's root first heard after the arm, which no root added holds in the page, still adds
    *  the controls held in it as it is heard. */
   const heldAtArm = new Set<Element>();
+  /** The list the selection bar the press was armed at stands over (`markedListAround`), else
+   *  null, and the controls held in it as the bar's root was added (`heldInList`): a control in a
+   *  marked row of that list that a hold begun after that holds is the press's own (`holds`), as
+   *  a control of a root is. The Inbox's cards draw each ask's own Snooze in the list beside the
+   *  bar, not in it, and the bar's Snooze holds the marked cards' Snoozes while its write is out.
+   *  The list counts for that alone and is no root: a press on anything else in it is the
+   *  reader's next act, and no place in it holds the press (`pressMadeIn`). */
+  let markedList: Element | null = null;
+  const heldInList = new Set<Element>();
   const addRoot = (added: Element) => {
     if (roots.has(added)) return;
     let covered = false;
     for (const each of roots) covered ||= each.contains(added);
     roots.add(added);
     if (!covered) for (const held of added.querySelectorAll(HELD)) heldAtArm.add(held);
+    if (markedList !== null || !added.matches(SELECTION_BAR)) return;
+    markedList = markedListAround(added);
+    for (const held of markedList?.querySelectorAll(HELD) ?? []) heldInList.add(held);
   };
   if (root !== undefined) addRoot(root);
   const holds = (pressed: Element) => {
     if (!heldBefore && heldControl(control)?.contains(pressed) === true) return true;
     const held = heldControl(pressed);
-    if (held === null || heldAtArm.has(held)) return false;
-    for (const each of roots) {
-      if (each.contains(held)) return true;
+    if (held === null) return false;
+    if (!heldAtArm.has(held)) {
+      for (const each of roots) {
+        if (each.contains(held)) return true;
+      }
     }
-    return false;
+    return (
+      markedList?.contains(held) === true &&
+      !heldInList.has(held) &&
+      rowsAround(held).some(isMarked)
+    );
   };
   /** What cancels the press's end, from the moment nothing keeps it live until the end runs. */
   let ending: (() => void) | null = null;
@@ -1139,6 +1223,9 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
    *  control's hold counts no longer either, so once every such hold has ended the press ends as
    *  one that holds nothing does. */
   let answerBegun = false;
+  /** Whether the action bound has passed (`ACTION_BOUND_MS`): from then on nothing that is still
+   *  on keeps the press live, and no write of its action counts the bound again (`wrote`). */
+  let pastBound = false;
   /** Whether a Tab of the reader's is still to land while the press's write is out. */
   let tabbing = false;
   /** What the reader's pointer pressed last on a control the press holds outside its own control,
@@ -1150,14 +1237,19 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   /** Whether the press has ended: from then on none of its timers, watches or listeners acts. */
   let over = false;
   let watching = false;
-  const watcher = new MutationObserver(() => press.changed());
+  /** The holds on what answers the press, begun while it is live (`hold`), that are still on. */
+  const answers = new Set<object>();
+  /** Reads again whether anything still keeps the press armed; nothing once it has ended or its
+   *  bound has passed. */
+  let changed = () => read();
+  const watcher = new MutationObserver(() => changed());
   /** Whether the press's write is out: a hold on what answers it is on, or, up to the write
    *  deadline and until such a hold has begun, its control is held by a hold that began after the
    *  arm. */
   const writeOut = () =>
-    press.answers.size > 0 || (!late && !answerBegun && !heldBefore && isHeld(control));
+    answers.size > 0 || (!late && !answerBegun && !heldBefore && isHeld(control));
   const read = () => {
-    if (press.answers.size > 0) answerBegun = true;
+    if (answers.size > 0) answerBegun = true;
     // The watch on the control's hold runs only while that hold alone can keep the press live
     // (`writeOut`): never for a control already held at the arm, and not once a hold on what
     // answers the press has begun or the write deadline has passed.
@@ -1247,7 +1339,7 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   const end = () => {
     if (over) return;
     over = true;
-    press.changed = () => undefined;
+    changed = () => undefined;
     watcher.disconnect();
     window.clearTimeout(deadline);
     window.clearTimeout(bound);
@@ -1261,27 +1353,43 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   };
   const press: ArmedPress = {
     addRoot,
-    answers: new Set(),
-    changed: () => read(),
     control,
     end,
+    hold: () => {
+      if (over) return () => undefined;
+      const hold = {};
+      answers.add(hold);
+      changed();
+      return () => {
+        if (answers.delete(hold)) changed();
+      };
+    },
     holds,
     note: null,
     roots,
     sight: null,
     takenFrom: null,
+    wrote: () => {
+      if (over || pastBound) return;
+      window.clearTimeout(bound);
+      bound = window.setTimeout(atBound, ACTION_BOUND_MS);
+    },
   };
   const deadline = window.setTimeout(() => {
     late = true;
-    press.changed();
+    changed();
   }, SEND_DEADLINE_MS);
-  const bound = window.setTimeout(() => {
+  /** The action bound: whatever is still on counts no longer, and the press ends a frame and a
+   *  task later. */
+  const atBound = () => {
     if (over) return;
-    press.changed = () => undefined;
+    pastBound = true;
+    changed = () => undefined;
     watcher.disconnect();
     ending?.();
     ending = afterComponents(end);
-  }, ACTION_BOUND_MS);
+  };
+  let bound = window.setTimeout(atBound, ACTION_BOUND_MS);
   document.addEventListener("pointerdown", onPointer, true);
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("keyup", onKeyUp, true);

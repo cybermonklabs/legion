@@ -14,7 +14,12 @@ import { advancesIssuesParams } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
-import { holdHandOff } from "../../components/focus-place";
+import {
+  actionWriteBegins,
+  holdHandOff,
+  pressOfWrite,
+  type WritePress,
+} from "../../components/focus-place";
 import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -219,6 +224,10 @@ export function useIssueTableActions({
   // The table going away ends the question a Finish waits on, as a Cancel does: the Finish ends,
   // with nothing more written, rather than wait on a dialog nobody can see.
   useEffect(() => () => answering.current?.(false), []);
+  // The press the action in hand began under (`perform`), else null: each write the action
+  // begins counts that press's bound from there (`actionWriteBegins`), so the press stays live
+  // while its action writes, however many writes it makes.
+  const actionPress = useRef<WritePress>(null);
   // The project a write of this table may name, which a scoped table has none of: the epic
   // actions are withheld rather than sent against a listing that belongs to no project.
   const project = "project" in listing ? listing.project : undefined;
@@ -235,6 +244,7 @@ export function useIssueTableActions({
       : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
+    actionWriteBegins(actionPress.current);
     const answer = writes.run({
       kind: plainWrite,
       detail: null,
@@ -329,20 +339,33 @@ export function useIssueTableActions({
     return operations.map(({ key }) => key);
   };
   /** Runs `action`, which the reader's press began and whose writes are for the issues `sends`
-   *  as the table lists them: those are named as leaving from the press (`taking`). */
+   *  as the table lists them: those are named as leaving from the press (`taking`). `press` is
+   *  the press the action began under (`pressOfWrite`), the one armed now unless the caller read
+   *  it earlier, as a move does before its dry run (`askTarget`); `duplicate` answers a create
+   *  Dispatch refused as a near copy of an epic. */
   const perform = async (
     said: string,
     sends: readonly string[],
     action: () => Promise<readonly string[] | undefined>,
-    duplicate?: (error: ApiError) => void
+    {
+      duplicate,
+      press = pressOfWrite(),
+    }: {
+      readonly duplicate?: (error: ApiError) => void;
+      readonly press?: WritePress;
+    } = {}
   ) => {
     // The action's whole run keeps the armed hand-off of the reader's press that began it live
     // (`holdHandOff`), until its controls are let go. An action of several writes runs on after
     // its first writes are answered: Start next writes one step at a time, New epic moves the
     // issues after the create, and a batch sends `WRITES_IN_FLIGHT` writes at a time. Without
     // this hold the press could end before the action did, and the bar's going would read as no
-    // doing of the reader's.
-    const endHold = holdHandOff();
+    // doing of the reader's. Each write the action begins counts the press's bound from there
+    // (`actionPress`), so writes that together outlast the bound - Start next over ten issues at
+    // 7 s a step - keep the press live to the action's end. Every hold here is that press's,
+    // never a later press of the reader's.
+    const endHold = holdHandOff(press);
+    actionPress.current = press;
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
@@ -375,6 +398,7 @@ export function useIssueTableActions({
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       unwatch();
+      if (actionPress.current === press) actionPress.current = null;
       // An action that may have changed the list keeps its controls held (`busy`) through the read
       // of the list that draws what it changed - a row's Start next gone once its issue starts
       // next. The hold above lasts until then, so that going is still the press's doing
@@ -395,7 +419,7 @@ export function useIssueTableActions({
       const listed = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
-      if (mayHaveChanged) await holdThrough(listed);
+      if (mayHaveChanged) await holdThrough(listed, press);
       // The bar's going and its hand-off are one render. This line runs outside any event of the
       // reader's - the turn a write's answer takes, or the read's own bound - so React would
       // commit it at normal priority and run the bar's hand-off, a passive effect
@@ -513,13 +537,15 @@ export function useIssueTableActions({
    * rule needs the epic in work first, the page sends the dry run of its move into work and asks
    * one question (`targetQuestion`): a yes is `go(true)`, which makes that status change before
    * the action's own writes, and a Cancel writes nothing. Where the rule needs nothing, as the
-   * dry run finds the epic too, it is `go(false)` at once.
+   * dry run finds the epic too, it is `go(false)` at once, and where only the dry run's answer
+   * says so, `go(false, press)`: the action that follows that answer is the doing of the press
+   * that asked for the dry run (`pressOfWrite`), whatever the reader has pressed since.
    */
   const askTarget = (
     target: string,
     moving: readonly string[],
     action: TargetAction,
-    go: (intoWork: boolean) => void
+    go: (intoWork: boolean, press?: WritePress) => void
   ) => {
     const rows = listed(moving);
     const held = issues.find((issue) => issue.key === target);
@@ -529,13 +555,14 @@ export function useIssueTableActions({
       go(false);
       return;
     }
+    const press = pressOfWrite();
     setBusy(true);
     setNotice(undefined);
     setTaking(new Set(moving));
     targetQuestion(target, rows, action).then(
       (question) => {
         setBusy(false);
-        if (question === undefined) go(false);
+        if (question === undefined) go(false, press);
         else setConfirming({ ...question, fromBar: action.fromBar, run: () => go(true) });
       },
       (error: unknown) => {
@@ -629,11 +656,16 @@ export function useIssueTableActions({
       (epic === null
         ? `Took ${named(open)} out of ${open.length === 1 ? "its epic" : "their epics"}.`
         : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
-    const move = (intoWork: boolean) =>
-      void perform(said, open, async () => {
-        if (intoWork && epic !== null) await moveIntoWork(epic);
-        return apply(open.map((key) => ({ key, input: { parent: epic } })));
-      });
+    const move = (intoWork: boolean, press?: WritePress) =>
+      void perform(
+        said,
+        open,
+        async () => {
+          if (intoWork && epic !== null) await moveIntoWork(epic);
+          return apply(open.map((key) => ({ key, input: { parent: epic } })));
+        },
+        { press }
+      );
     // Only the bar moves issues to an epic (`IssueTableSelection`'s Move and Take out of epic), so
     // the question this asks is the bar's.
     if (epic === null) move(false);
@@ -780,6 +812,7 @@ export function useIssueTableActions({
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
       open,
       async () => {
+        actionWriteBegins(actionPress.current);
         const creation = writes.run({
           kind: tableEpicWrite,
           detail: recoveryKey,
@@ -823,11 +856,13 @@ export function useIssueTableActions({
         recovery.dismiss();
         return changed;
       },
-      (error) => {
-        const refused = writes.rows().find((row) => row.key === key);
-        if (refused) writes.discard(refused.id);
-        recovery.dismiss();
-        setDuplicateEpic({ keys, title, message: error.message, intoWork });
+      {
+        duplicate: (error) => {
+          const refused = writes.rows().find((row) => row.key === key);
+          if (refused) writes.discard(refused.id);
+          recovery.dismiss();
+          setDuplicateEpic({ keys, title, message: error.message, intoWork });
+        },
       }
     );
   };
@@ -1005,7 +1040,9 @@ export function useIssueTableActions({
       if (!(await goOnFinish(record, question))) return false;
       // With no issue in work, the create goes again with the action's other refused writes.
       if (question === undefined) return true;
-      await recovery.settle(record, (step) => step === "create");
+      // The create goes again from Pending changes, a write of this action's all the same, which
+      // counts the bound of the press the action began under as it is sent (`settle`).
+      await recovery.settle(record, (step) => step === "create", actionPress.current);
       if (!recovery.active(record.id)) return false;
       const made = recovery.current.current?.target;
       if (made === undefined) throw new Error(unknownKey);
@@ -1136,7 +1173,7 @@ export function useIssueTableActions({
       if (step !== undefined) release(step);
     });
     void perform("Finished the interrupted action.", interrupted.keys, async () => {
-      await recovery.settle(interrupted, () => false);
+      await recovery.settle(interrupted, () => false, actionPress.current);
       // The record while it is still the one in hand, as the writes waited on left it: a create
       // that landed names its epic.
       const held = () => (recovery.active(interrupted.id) ? recovery.current.current : undefined);
@@ -1153,7 +1190,9 @@ export function useIssueTableActions({
       }
       const guarded = held();
       if (!guarded) return undefined;
-      await recovery.settle(guarded, resend);
+      // The refused writes go again from Pending changes, writes of this action's all the same,
+      // each counting the bound of the press the action began under as it is sent (`settle`).
+      await recovery.settle(guarded, resend, actionPress.current);
       const settled = held();
       if (!settled) return undefined;
       const current = await listAll();

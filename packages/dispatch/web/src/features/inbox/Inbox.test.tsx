@@ -6,6 +6,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { disarm } from "../../__tests__/armed-press";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
   drawnPick,
@@ -48,6 +49,7 @@ import type {
   IssueDetails,
   MyReplyRow,
 } from "../../api/types";
+import { pressMadeIn } from "../../components/focus-place";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -9637,6 +9639,164 @@ test("a row the reader defers hands the selection to the next one, and the last 
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+/** Narrows happy-dom's window to a phone's 390 px, as `widenToReadingPane` widens it: the page
+ *  reads its width through `matchMedia`, which happy-dom answers from its own window. Answers the
+ *  function that puts the width back. */
+function narrowToPhone(): () => void {
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width: 390 });
+  return () => window_.happyDOM.setViewport({ width: was });
+}
+
+/** Where the focus rests: the page's body, else what holds it - a row's mark, or the control by
+ *  its label - and the row it stands in. */
+function focusPlace(): string {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+  const row = focused.closest<HTMLElement>("[data-inbox-row]")?.dataset.inboxRow;
+  const what = focused.matches('input[type="checkbox"]')
+    ? "the mark"
+    : (focused.getAttribute("aria-label") ?? focused.tagName);
+  return row === undefined ? what : `${what} of ${row}`;
+}
+
+/** Four asks in the drawer's cards on a phone (`narrowToPhone`), `ask-b` and `ask-c` marked,
+ *  `ask-b` last, and the bar's Snooze picked over them with its write held, so the bar's action
+ *  holds each marked card's own Snooze (`SnoozeControl`). `whileOut` is what the reader does then,
+ *  handed the upper marked card's held Snooze. The write then lands, and the bar goes with the two
+ *  cards. Answers where the focus rests then (`focusPlace`). */
+async function snoozeMarkedCardsOnAPhone(
+  whileOut: (user: UserEvent, heldSnooze: HTMLElement) => Promise<void>
+): Promise<string> {
+  const user = userEvent.setup();
+  const widthWas = narrowToPhone();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    inboxIssue("ask-d", "CORE-4", "Which date?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
+  try {
+    await screen.findByText("Which date?");
+    await user.click(markOf("ask-c"));
+    await user.click(markOf("ask-b"));
+    await screen.findByText("2 selected");
+    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    expect(drawnSnooze("ask-b", "CORE-2: Which format?")).toBe("Snooze held");
+    await whileOut(user, within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?"));
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-d"]));
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    return focusPlace();
+  } finally {
+    unmount();
+    disarm();
+    widthWas();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+}
+
+// On a phone the drawer's cards each draw their ask's own Snooze, which the bar's Snooze holds
+// while its write is out over that ask (`SnoozeControl`). A double click on a marked card's held
+// Snooze, or a click on it and then Enter, presses a control the bar's running action holds in a
+// marked row: it takes nothing but the hold, and the bar's pick stays the cause
+// (`components/focus-place.ts`'s `holds`, which reads the list the bar stands over for that case
+// alone). So once the write lands and the bar goes with the two cards, the focus goes where the
+// pick alone puts it: on the mark of the card now at the place of the card marked last, the card
+// after the two. Were the second press the reader's next act, it would end the pick's press, the
+// bar's going would be nobody's doing, and the focus would be left on the body.
+test("on a phone, a second press on a marked card's held Snooze while the bar's Snooze is out lands where the pick alone lands", async () => {
+  const landed: Record<string, string> = {};
+  landed["no second press"] = await snoozeMarkedCardsOnAPhone(async () => undefined);
+  landed["a double click on the held Snooze"] = await snoozeMarkedCardsOnAPhone((user, held) =>
+    user.dblClick(held)
+  );
+  landed["a click on the held Snooze, then Enter"] = await snoozeMarkedCardsOnAPhone(
+    async (user, held) => {
+      await user.click(held);
+      await user.keyboard("{Enter}");
+    }
+  );
+  expect(landed).toEqual({
+    "a click on the held Snooze, then Enter": "the mark of ask-d",
+    "a double click on the held Snooze": "the mark of ask-d",
+    "no second press": "the mark of ask-d",
+  });
+});
+
+// The same Snooze of the bar's out over two marked cards, and the reader presses another row's
+// own Dismiss, a thread's, which the bar's action does not hold: that is the reader's next act,
+// and it ends the bar's press, as any press of theirs outside the bar and the controls its action
+// holds in a marked row does.
+test("on a phone, another row's own Dismiss pressed while the bar's Snooze is out ends the bar's press", async () => {
+  const user = userEvent.setup();
+  const widthWas = narrowToPhone();
+  const asks = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const reads = listThreads(1, asks);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (_id, { snoozed_until: until }) => {
+    await landing.promise;
+    return { snoozed_until: until };
+  });
+  const dismissed = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(dismissed.promise);
+  const { unmount } = renderInbox("/?group=none", { pane: false });
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(4));
+    await user.click(markOf("ask-c"));
+    await user.click(markOf("ask-b"));
+    await screen.findByText("2 selected");
+    const bar = screen.getByRole("toolbar", { name: "Selected rows" });
+    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    const whileOut = pressMadeIn(bar);
+    const thread = rowIds().find((id) => !id.startsWith("ask-")) ?? "";
+    const dismiss = document.querySelector<HTMLElement>(`[data-inbox-dismiss="${thread}"]`);
+    if (dismiss === null) throw new Error(`${thread} Dismiss missing`);
+    await user.click(dismiss);
+    expect({ afterTheDismiss: pressMadeIn(bar), whileOut }).toEqual({
+      afterTheDismiss: false,
+      whileOut: true,
+    });
+  } finally {
+    await act(async () => {
+      landing.resolve();
+      dismissed.resolve({ dismissed: 1 });
+    });
+    unmount();
+    disarm();
+    widthWas();
+    reads();
     snoozeAsk.mockRestore();
   }
 });

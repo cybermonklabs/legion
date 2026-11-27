@@ -13,21 +13,22 @@ import { optionNames, pick, pickNamed } from "../../__tests__/list-picks";
 import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { ApiError, api, issuePatchRequest, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { holdHandOff, pressMadeIn } from "../../components/focus-place";
+import { causedByReader, holdHandOff, pressArmed, pressMadeIn } from "../../components/focus-place";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../../hooks/useFootInset";
+import { newSendKey } from "../../lib/send-key";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { writesOf } from "../writes/write-store";
+import { plainWrite, writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { issueTableLayout } from "./issues-table-columns";
 import type { IssueListing } from "./issues-table-data";
@@ -6059,4 +6060,260 @@ test("a layout that leaves out the row's actions draws no cell for them and give
   expect(within(list).queryByRole("button", { name: "Start next" })).toBeNull();
   expect(within(list).getByRole("columnheader", { name: /^Title/ }).style.width).toBe("242px");
   expect(list.style.width).toBe("604px");
+});
+
+/** The List of `count + 4` issues in Legion's queue, with its last `count` marked, the row at the
+ *  end marked last, and the focus on the bar's Start next. Answers a way to answer the List's
+ *  write number `index` (from 0) with its issue once it has gone out (`answer`), and the query
+ *  client the List reads through. */
+async function queuedWithBar(count: number) {
+  const answers: ((saved: Issue) => void)[] = [];
+  const send = spyOn(api, "send").mockImplementation(() => {
+    const answer = Promise.withResolvers<Issue>();
+    answers.push(answer.resolve);
+    return answer.promise as never;
+  });
+  restores.push(() => send.mockRestore());
+  const total = count + 4;
+  const { client } = table(
+    Array.from({ length: total }, (_, index) =>
+      issue(`CORE-${index + 1}`, { labels: ["legion"], rank: String(index).padStart(3, "0") })
+    ),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("row", { name: `CORE-${total} Work CORE-${total}` });
+  const marking = userEvent.setup();
+  for (let index = total - count + 1; index <= total; index++) {
+    await marking.click(screen.getByRole("checkbox", { name: `Select CORE-${index}` }));
+  }
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  act(() =>
+    within(bar)
+      .getByRole("button", { name: /^Start next$/ })
+      .focus()
+  );
+  const answer = async (index: number) => {
+    for (let turn = 0; turn < 40 && send.mock.calls.length <= index; turn++) await tick(0);
+    const request = send.mock.calls[index]?.[0] as { readonly path: string } | undefined;
+    await act(async () => answers[index]?.(savedIssue(request?.path.split("/").at(-1) ?? "")));
+    await tick(0);
+  };
+  return { answer, client };
+}
+
+/** The bar's Start next over the last `count` of `count + 4` queued issues, on the fake clock:
+ *  the action writes one step at a time, and each step's write is answered `stepMs` after it went
+ *  out. Answers where the focus rests once the last step and the list read after it are answered
+ *  and the bar has gone. */
+async function startNextInSteps(count: number, stepMs: number): Promise<string> {
+  const { answer } = await queuedWithBar(count);
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().keyboard("{Enter}");
+    for (let step = 0; step < count; step++) {
+      await tick(stepMs);
+      await answer(step);
+    }
+    await tick(2_000);
+    expect(screen.queryByRole("toolbar", { name: "Selected issues" })).toBeNull();
+    return focusedName();
+  } finally {
+    realClock();
+  }
+}
+
+// The bar's Start next writes one step at a time, each step a write that lands within its
+// deadline (`runStartNext`), and its whole run holds the press that began it (`perform`). Each
+// write the action begins counts that press's bound from there (`actionWriteBegins`), so a run
+// whose steps together outlast the bound counted from the press alone is still the press's when
+// its last step lands: the bar goes with the selection as the list read after it settles, and its
+// hand-off puts the focus on the mark of the row marked last, which Start next leaves listed.
+// Three issues at 25 s a step take 75 s in all.
+test("the bar's Start next over three issues at 25 s a step lands on the mark of the row marked last", async () => {
+  expect(await startNextInSteps(3, 25_000)).toBe("Select CORE-7");
+});
+
+// The same of ten issues at 7 s a step, 70 s in all.
+test("the bar's Start next over ten issues at 7 s a step lands on the mark of the row marked last", async () => {
+  expect(await startNextInSteps(10, 7_000)).toBe("Select CORE-14");
+});
+
+/** The bar's Start next over one queued issue, whose one write is answered 70 s after it went
+ *  out, on the fake clock; `meanwhile` runs 50 s after the press. Answers whether the press is
+ *  armed a second short of the bound counted from that write (`ACTION_BOUND_MS`, 60 s) and a
+ *  second past it, and where the focus rests once the write is answered and the bar has gone. */
+async function startNextOfOneSlowWrite(
+  meanwhile: (client: QueryClient) => void = () => undefined
+): Promise<{ readonly after: boolean; readonly before: boolean; readonly landed: string }> {
+  const { answer, client } = await queuedWithBar(1);
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().keyboard("{Enter}");
+    await tick(50_000);
+    meanwhile(client);
+    await tick(9_000);
+    const before = pressArmed();
+    await tick(2_000);
+    const after = pressArmed();
+    await tick(9_000);
+    await answer(0);
+    await tick(2_000);
+    expect(screen.queryByRole("toolbar", { name: "Selected issues" })).toBeNull();
+    return { after, before, landed: focusedName() };
+  } finally {
+    realClock();
+  }
+}
+
+// One write longer than the bound still ends its press at the bound, counted from that write: the
+// bar's Start next over one issue whose write takes 70 s holds its press through the write, and
+// at 60 s the press counts that hold no longer and ends a frame and a task later. So the bar's
+// going once the write lands is no doing of the press's, and nothing lands the focus: it stays on
+// the body, where the bar's Start next dropped it as it went with the bar.
+test("the bar's Start next whose one write takes 70 s ends its press 60 s after that write began", async () => {
+  expect(await startNextOfOneSlowWrite()).toEqual({
+    after: false,
+    before: true,
+    landed: "the body",
+  });
+});
+
+// Only a write the action itself begins counts the press's bound again. Another write of the
+// page's, sent through the same writes 50 s after the press while the action's one write is still
+// out, is none of the action's: the press still ends 60 s after the action's write began.
+test("another write of the page's while the bar's Start next is out does not count the press's bound again", async () => {
+  const otherWrite = (client: QueryClient) =>
+    void writesOf(client)
+      .run({
+        detail: null,
+        key: newSendKey(),
+        kind: plainWrite,
+        label: "Update CORE-1 from elsewhere",
+        presentation: "indicator",
+        request: issuePatchRequest("CORE-1", { title: "Elsewhere" }),
+        target: "issue:CORE-1",
+      })
+      .catch(() => undefined);
+  expect(await startNextOfOneSlowWrite(otherWrite)).toEqual({
+    after: false,
+    before: true,
+    landed: "the body",
+  });
+});
+
+// A write's hold takes the press the write began under. The reader presses CORE-3's own Start
+// next, whose write is out, and clicks CORE-1's mark as that write is answered, in the same task:
+// the click is the reader's next act, which ends the Start next's press, and the action's hold
+// through the list read after its write (`perform`'s `holdThrough`) is that ended press's, so it
+// keeps nothing live. The mark's press ends a frame and a task after its click, as a press alone
+// does. A hold that took the press armed as the answer came, the mark's, would keep the mark's
+// press live until the read's bound, 30 s on (`REQUEST_DEADLINE_MS`).
+test("a row's mark clicked as another row's Start next is answered is not kept live by that action's list read", async () => {
+  const answer = Promise.withResolvers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => answer.promise as never);
+  restores.push(() => send.mockRestore());
+  const { listing } = table(
+    ["CORE-1", "CORE-2", "CORE-3", "CORE-4"].map((key, index) =>
+      issue(key, { labels: ["legion"], rank: String(index).padStart(3, "0") })
+    ),
+    "",
+    { inMain: true }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-3 Work CORE-3" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  const mark = screen.getByRole("checkbox", { name: "Select CORE-1" });
+  jest.useFakeTimers();
+  try {
+    act(() => startNext.focus());
+    await userOnFakeClock().keyboard("{Enter}");
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    // The list read after the action never settles, so its hold runs to its bound.
+    listing.mockImplementation(() => new Promise<never>(() => undefined));
+    await act(async () => {
+      mark.click();
+      answer.resolve(savedIssue("CORE-3"));
+    });
+    const clicked = causedByReader(mark);
+    await tick(0);
+    await tick(0);
+    const after = { armed: pressArmed(), markLossIsTheReaders: causedByReader(mark) };
+    await tick(REQUEST_DEADLINE_MS);
+    expect({ after, clicked }).toEqual({
+      after: { armed: false, markLossIsTheReaders: false },
+      clicked: true,
+    });
+  } finally {
+    realClock();
+  }
+});
+
+// Finish sends a refused action's writes again eight at a time (`WRITES_IN_FLIGHT`), and each is
+// a write of the Finish's own: each counts the bound of the press that began the Finish from its
+// send (`issues-table-recovery.ts`'s `settle`, `actionWriteBegins`). A merge's twenty refused
+// moves, each answered 25 s after it is sent again, go in three runs, at 0 s, 25 s and 50 s: 75 s
+// in all, each sent within the bound of the one before. So 70 s after the press, with the last
+// run still out, the press is still live. Its bound counted once, from the press or from the first
+// run, would have ended it at 60 s.
+test("a Finish whose writes sent again outlast the bound together, each sent within it, keeps its press live", async () => {
+  const user = userEvent.setup();
+  let refuse = true;
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
+    const answered = Promise.withResolvers<void>();
+    setTimeout(answered.resolve, 25_000);
+    await answered.promise;
+    return savedIssue("CORE-1") as never;
+  });
+  restores.push(() => send.mockRestore());
+  const children = Array.from({ length: 20 }, (_, index) =>
+    issue(`CORE-${index + 1}`, { parent: "CORE-98" })
+  );
+  const { client } = table(
+    [
+      issue("CORE-98", { labels: ["epic"], title: "Merge source" }),
+      issue("CORE-99", { labels: ["epic"], title: "Merge target" }),
+      ...children,
+    ],
+    "?group=epic",
+    { inMain: true }
+  );
+  const heading = (await screen.findByRole("link", { name: "CORE-98 · Merge source" })).closest(
+    "tr"
+  );
+  if (!heading) throw new Error("The source epic has no heading row");
+  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
+  await user.click(screen.getByRole("option", { name: "Merge target" }));
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: /^Merge$/,
+    })
+  );
+  await screen.findByRole("alert");
+  const refused = writesOf(client)
+    .rows()
+    .filter((write) => write.status === "refused").length;
+  refuse = false;
+  const interrupted = await screen.findByRole("region", { name: "Interrupted table action" });
+  act(() => within(interrupted).getByRole("button", { name: "Finish" }).focus());
+  const sentBefore = send.mock.calls.length;
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().keyboard("{Enter}");
+    await tick(70_000);
+    expect({
+      armed: pressArmed(),
+      refused,
+      sentAgain: send.mock.calls.length - sentBefore,
+    }).toEqual({
+      armed: true,
+      refused: 20,
+      sentAgain: 20,
+    });
+  } finally {
+    realClock();
+  }
 });

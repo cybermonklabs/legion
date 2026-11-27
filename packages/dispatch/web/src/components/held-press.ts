@@ -54,10 +54,12 @@ export function heldField(held: boolean): {
  * itself, as the Inbox does a row's snooze (`useAskSnoozeWrites`) and its Assign to me
  * (`AskAssignWritesProvider`), lets go of the row in the answer's own commit, while this hold is
  * still on. The hold keeps the armed hand-off of the press that started the write live while it
- * is on (`holdHandOff`), so where the press was armed at a component's root (`armOnPress`), that
- * component's hand-off reads the going of what the press held as the press's doing
- * (`causedByReader`), as the selection bar's does when its Snooze lands. With nothing armed, the
- * hold arms nothing.
+ * is on (`holdHandOff`): it is begun as the commit that first draws `pending` runs its effects,
+ * of the press armed then, the one that started the write, and stays on that press however the
+ * reader presses again while the write is out. So where the press was armed at a component's root
+ * (`armOnPress`), that component's hand-off reads the going of what the press held as the
+ * press's doing (`causedByReader`), as the selection bar's does when its Snooze lands. With
+ * nothing armed, the hold arms nothing.
  */
 export function useHeldThroughAnswer(pending: boolean): boolean {
   const [answering, setAnswering] = useState(false);

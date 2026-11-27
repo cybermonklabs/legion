@@ -12,6 +12,7 @@ import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { pressOfWrite, type WritePress } from "../../components/focus-place";
 import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -305,15 +306,17 @@ export function AskRecipients({
   // Each write stays pending through the read its landing starts, for the request deadline at
   // the most (`useReadBound`), and `unsettled` is why such a read has not settled once its hold
   // ran out. The read waits on a fetch the network had already paused too
-  // (`invalidateWaitingForPaused`), which the bound ends as well.
+  // (`invalidateWaitingForPaused`), which the bound ends as well. The hold is the press's the
+  // write began under (`pressOfWrite`), never a later press of the reader's on the card.
   const [unsettled, holdThrough] = useReadBound();
   const unfollow = useKeyedWrite({
     method: "DELETE",
     write: (press: { askId: string; sessionId: string }, bounds) =>
       removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
-    onSuccess: (_result, press) =>
-      holdThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId])),
+    onMutate: pressOfWrite,
+    onSuccess: (_result, press, writePress: WritePress) =>
+      holdThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId]), writePress),
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
@@ -331,8 +334,12 @@ export function AskRecipients({
     },
     label: (press) =>
       `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
-    onSuccess: (_result, press) =>
-      holdThrough(invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id])),
+    onMutate: pressOfWrite,
+    onSuccess: (_result, press, writePress: WritePress) =>
+      holdThrough(
+        invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id]),
+        writePress
+      ),
   });
   const unfollowHeld = useHeldThroughAnswer(unfollow.isPending);
   const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending);

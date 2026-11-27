@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
+import { actionWriteBegins, type WritePress } from "../../components/focus-place";
 import { readStore, writeStore } from "../../components/table-storage";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -218,9 +219,12 @@ export function useTableRecovery(project: string, report: (text: string) => void
      *  (`ResumableAction.guard` in `issues-table-actions.ts`). A step is a key of `record.writes`:
      *  an issue's key for its parent or rank write, or for a merge's close of its source, `create`,
      *  `intoWork` or `reason`. A refused
-     *  write `resend` holds back stays as it is in Pending changes. Throws the first refusal of a
-     *  write it waited on or sent. */
-    settle: async (record: TableAction, resend: (step: string) => boolean) => {
+     *  write `resend` holds back stays as it is in Pending changes. Each write sent again is a
+     *  write of the Finish's own, so it counts the bound of `press`, the press the Finish began
+     *  under, from its send (`actionWriteBegins`): a Finish whose writes sent again outlast the
+     *  bound together, each sent within it, keeps its press live to its end. Throws the first
+     *  refusal of a write it waited on or sent. */
+    settle: async (record: TableAction, resend: (step: string) => boolean, press: WritePress) => {
       const stepOf = stepsByWriteKey(record.writes);
       const rows = writes.rows().filter((row) => stepOf.has(row.key));
       const outcome = (row: (typeof rows)[number]) => {
@@ -257,6 +261,7 @@ export function useTableRecovery(project: string, report: (text: string) => void
             return;
           }
           const landed = outcome(row);
+          actionWriteBegins(press);
           writes.retry(row.id);
           await landed;
         }

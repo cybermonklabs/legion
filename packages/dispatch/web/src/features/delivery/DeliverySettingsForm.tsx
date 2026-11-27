@@ -7,6 +7,7 @@ import { invalidateWaitingForPaused } from "../../api/query-client";
 import { isLiveQuery } from "../../api/query-refresh";
 import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
+import { pressOfWrite, type WritePress } from "../../components/focus-place";
 import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -213,8 +214,10 @@ function DeliverySettingsFields({
     inline: true,
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
-    onSuccess: () => {
-      if (replacedByCaller) holdUntilDrawn();
+    // The press the save began under, which its holds after the answer keep live (`pressOfWrite`).
+    onMutate: pressOfWrite,
+    onSuccess: (_saved, _input, press: WritePress) => {
+      if (replacedByCaller) holdUntilDrawn(press);
       // Pending through the record's own read, which a caller holding the record has none of. A
       // read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused
       // while the browser is offline - lets Save go then, and the form says why the record is not
@@ -227,7 +230,7 @@ function DeliverySettingsFields({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
-      return holdThrough(read);
+      return holdThrough(read, press);
     },
   });
   const held = save.isPending || drawing;

@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { pressOfWrite } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -77,8 +78,12 @@ function GroupCard({
   }
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
-  // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on.
-  const send = (change: GroupChange) => write(change, holdUntilDrawn);
+  // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on,
+  // and on the press the write began under (`pressOfWrite`), read here at that press.
+  const send = (change: GroupChange) => {
+    const press = pressOfWrite();
+    write(change, () => holdUntilDrawn(press));
+  };
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   const nothingToRename = name.trim() === "" || name.trim() === group.name;
   return (

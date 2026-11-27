@@ -157,8 +157,9 @@ test("useReadBound shows why a hold's read has not settled until that read settl
     onlineManager.setOnline(false);
     const read = Promise.withResolvers<void>();
     let held = true;
+    // No press of the reader's made the writes these holds are over (`null`).
     act(() => {
-      void hook.result.current[1](read.promise).then(() => {
+      void hook.result.current[1](read.promise, null).then(() => {
         held = false;
       });
     });
@@ -179,7 +180,7 @@ test("useReadBound shows why a hold's read has not settled until that read settl
 
     let quick = true;
     act(() => {
-      void hook.result.current[1](Promise.resolve()).then(() => {
+      void hook.result.current[1](Promise.resolve(), null).then(() => {
         quick = false;
       });
     });

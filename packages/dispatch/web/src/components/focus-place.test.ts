@@ -2,11 +2,11 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for; nor has it one for a key marked as an input method's, at keyCode 229.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
-import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
+import { Component, createElement, Fragment, type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { disarm } from "../__tests__/armed-press";
-import { realClock } from "../__tests__/fake-clock";
+import { realClock, tick } from "../__tests__/fake-clock";
 import { frameAndTasks, nextFrame } from "../__tests__/frames";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
 import { useReadBound } from "../api/read-bound";
@@ -16,15 +16,19 @@ import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import {
   ARM_ON_PRESS,
+  actionWriteBegins,
   armOnPress,
   causedByReader,
   focusedOutOfSight,
   holdHandOff,
   landNearest,
+  pressArmed,
   pressIsArmedOwn,
+  pressOfWrite,
   repeatTookFocusFrom,
   useFocusPlace,
 } from "./focus-place";
+import { useHeldThroughAnswer } from "./held-press";
 
 // The page's focus hand-offs, read in happy-dom with the page built by hand: a component's own
 // hand-off (`useFocusPlace`), in a line of buttons React draws (`HandOffLine`, `ArmedLine`) or a
@@ -865,8 +869,9 @@ test("an armed press held offline hands the focus on in the render its hold's en
       const line = armedLineIn(main, { labels: LINE });
       try {
         clickPress(line.button("Two"));
+        const press = pressOfWrite();
         line.redraw({ held: ["Two"], labels: LINE });
-        const held = bound.result.current[1](new Promise<never>(() => undefined));
+        const held = bound.result.current[1](new Promise<never>(() => undefined), press);
         await act(async () => {
           jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
           await held;
@@ -1043,10 +1048,12 @@ test("an armed press held through its write's re-read causes a loss inside that 
         const reread = Promise.withResolvers<void>();
         try {
           clickPress(line.button("Two"));
+          const press = pressOfWrite();
           line.redraw({ held: ["Two"], labels: LINE });
           await frameAndTasks();
-          // The write lands, and its `onSuccess` holds it through the list's read.
-          const held = bound.result.current[1](reread.promise);
+          // The write lands, and its `onSuccess` holds the press it began under through the
+          // list's read.
+          const held = bound.result.current[1](reread.promise, press);
           for (const _ of [0, 1, 2]) await frameAndTasks();
           if (when === "after the read's hold ended") {
             reread.resolve();
@@ -1139,6 +1146,177 @@ test("an armed press whose hold never ends is disarmed at its bound, and a later
   });
 });
 
+// An action of several writes, as the List's Start next, holds its press through its whole run
+// (`holdHandOff`), and each write it begins counts the press's bound from there
+// (`actionWriteBegins`). A write begun 50 s after the press keeps the press live past the bound
+// counted from the press, until the bound counted from that write, and no longer. A write begun
+// once the bound has passed counts nothing: the press ends a frame and a task after the bound,
+// as one whose action begins no write does.
+test("each write an armed press's action begins counts its bound from there, and one begun past the bound counts nothing", async () => {
+  const bound = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
+  // How long after the press the write begins, and how long after that the update comes.
+  const writes: Readonly<Record<string, readonly [number, number]>> = {
+    "a write begun 50 s on, a second short of the bound from it": [50_000, bound - 1_000],
+    "a write begun 50 s on, once the bound from it has passed": [50_000, bound],
+    "a write begun once the bound from the press has passed": [bound, 0],
+  };
+  jest.useFakeTimers();
+  const landed: Record<string, string | null> = {};
+  try {
+    for (const [named, [begun, after]] of Object.entries(writes)) {
+      landed[named] = await inMain([], async (main) => {
+        const line = armedLineIn(main, { labels: LINE });
+        try {
+          clickPress(line.button("Two"));
+          const press = pressOfWrite();
+          const answered = holdHandOff(press);
+          jest.advanceTimersByTime(begun);
+          actionWriteBegins(press);
+          jest.advanceTimersByTime(after);
+          // A press its bound ended ends a frame and a task on.
+          await nextFrame();
+          jest.advanceTimersByTime(0);
+          line.redraw({ labels: ["One", "Three"] });
+          answered();
+          return landing();
+        } finally {
+          line.remove();
+        }
+      });
+    }
+  } finally {
+    realClock();
+  }
+  expect(landed).toEqual({
+    "a write begun 50 s on, a second short of the bound from it": "Three",
+    "a write begun 50 s on, once the bound from it has passed": "the page",
+    "a write begun once the bound from the press has passed": "the page",
+  });
+});
+
+// A hold over a write takes the press the write began under (`pressOfWrite`), however late the
+// hold begins. Here that press ended a frame and a task after its arm, with nothing holding it,
+// and the reader has pressed again since: a hold of the ended press keeps nothing live, neither
+// that press nor the later one, which ends a frame and a task after its own arm as a press that
+// holds nothing does. The update that then takes the later press's control away leaves the focus
+// on the page.
+test("a hold of a press that has ended keeps nothing live, neither that press nor a later one", async () => {
+  await scrollingNothing(async () => {
+    const seen = await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("One"));
+        const ended = pressOfWrite();
+        await frameAndTasks();
+        const armedAfterOne = pressArmed();
+        clickPress(line.button("Two"));
+        const answered = holdHandOff(ended);
+        await frameAndTasks();
+        const armedAfterTwo = pressArmed();
+        line.redraw({ labels: ["One", "Three"] });
+        answered();
+        return { armedAfterOne, armedAfterTwo, landed: landing() };
+      } finally {
+        line.remove();
+      }
+    });
+    expect(seen).toEqual({ armedAfterOne: false, armedAfterTwo: false, landed: "the page" });
+  });
+});
+
+/** The writes `TwoWrites` makes, each answered when the case says: A's, the re-read A's landing
+ *  holds through, and B's. */
+interface TwoWritesAnswers {
+  readonly readA: () => Promise<void>;
+  readonly writeA: () => Promise<void>;
+  readonly writeB: () => Promise<void>;
+}
+
+/** Two controls in one root that arms at a press (`ARM_ON_PRESS`), as the Inbox's reading column
+ *  draws its card's: A, whose landing holds through the re-read after it (`useReadBound`), as the
+ *  card's Unfollow does, and B, held through its answer (`useHeldThroughAnswer`), as the column
+ *  head's Snooze is. Each is held while its write is out, and A reads the press its write began
+ *  under at its own press (`pressOfWrite`), as a keyed write does in its `onMutate`. */
+function TwoWrites({ writes }: { readonly writes: TwoWritesAnswers }): ReactNode {
+  const [, holdThrough] = useReadBound();
+  const [pendingA, setPendingA] = useState(false);
+  const [pendingB, setPendingB] = useState(false);
+  const heldA = useHeldThroughAnswer(pendingA);
+  const heldB = useHeldThroughAnswer(pendingB);
+  const pressA = () => {
+    const press = pressOfWrite();
+    setPendingA(true);
+    void writes
+      .writeA()
+      .then(() => holdThrough(writes.readA(), press))
+      .then(() => setPendingA(false));
+  };
+  const pressB = () => {
+    setPendingB(true);
+    void writes.writeB().then(() => setPendingB(false));
+  };
+  return createElement(
+    "div",
+    ARM_ON_PRESS,
+    createElement(
+      "button",
+      { "aria-disabled": heldA || undefined, onClick: pressA, type: "button" },
+      "A"
+    ),
+    createElement(
+      "button",
+      { "aria-disabled": heldB || undefined, onClick: pressB, type: "button" },
+      "B"
+    )
+  );
+}
+
+// Two writes in one root, each from a press of its own: the reader presses A, whose landing holds
+// through the re-read after it (`useReadBound`), and then B while A's write is out, which ends A's
+// press. A's write lands while B's is out, and its re-read does not settle. That hold is of the
+// press A's write began under, which has ended, so it keeps nothing live: B's press ends a frame
+// and a task after B's own write lands, as B's alone does, and a loss of B after that is no doing
+// of the reader's. A hold that took the press armed as A's answer came, B's, would keep B's press
+// live until the re-read's bound, 30 s on.
+test("a later press is not kept live by an earlier write's re-read: it ends a frame and a task after its own write lands", async () => {
+  const a = Promise.withResolvers<void>();
+  const readA = Promise.withResolvers<void>();
+  const b = Promise.withResolvers<void>();
+  const view = render(
+    createElement(TwoWrites, {
+      writes: { readA: () => readA.promise, writeA: () => a.promise, writeB: () => b.promise },
+    })
+  );
+  const seen: Record<string, boolean> = {};
+  jest.useFakeTimers();
+  try {
+    const buttonB = view.getByRole("button", { name: "B" });
+    act(() => view.getByRole("button", { name: "A" }).click());
+    await tick(0);
+    act(() => buttonB.click());
+    await tick(0);
+    seen["B pressed"] = causedByReader(buttonB);
+    await act(async () => a.resolve());
+    await tick(0);
+    seen["A's write landed, B's out"] = causedByReader(buttonB);
+    await act(async () => b.resolve());
+    await tick(0);
+    await tick(0);
+    seen["a frame and a task after B's write landed"] = causedByReader(buttonB);
+    await act(async () => readA.resolve());
+    await tick(0);
+  } finally {
+    disarm();
+    realClock();
+    view.unmount();
+  }
+  expect(seen).toEqual({
+    "a frame and a task after B's write landed": false,
+    "A's write landed, B's out": true,
+    "B pressed": true,
+  });
+});
+
 // (do) Nothing armed: a refetch, a live update or another device takes the focused control away
 // - a control of a component that hands its focus off, or the row holding it. That is as main
 // does: the focus stays on the body, in no row, and nothing scrolls. The selection bar emptied
@@ -1193,7 +1371,7 @@ test("with nothing armed, a hold that ends offline at the request deadline keeps
           const two = line.button("Two");
           two.focus();
           line.redraw({ held: ["Two"], labels: LINE });
-          const held = bound.result.current[1](new Promise<never>(() => undefined));
+          const held = bound.result.current[1](new Promise<never>(() => undefined), pressOfWrite());
           await act(async () => {
             jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
             await held;

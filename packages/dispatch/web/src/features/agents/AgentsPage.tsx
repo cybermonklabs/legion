@@ -40,7 +40,9 @@ import {
   controlsLikeRow,
   focusNoScroll,
   inSightWhole,
+  pressOfWrite,
   useFocusPlace,
+  type WritePress,
 } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -192,8 +194,9 @@ function AgentExchangeReply({
   replyDisabled,
 }: {
   agent: Agent;
-  /** Holds through the conversation's re-read (`useReadBound`). */
-  holdThroughRead: () => Promise<void>;
+  /** Holds through the conversation's re-read (`useReadBound`), of the press the retry began
+   *  under. */
+  holdThroughRead: (press: WritePress) => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
@@ -209,8 +212,10 @@ function AgentExchangeReply({
     // (`DeliveryRetry`), so the pressed one keeps the focus until that read takes them away. The
     // read settles either way, and a failed one lets them go. A read that has not settled by the
     // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
-    // them go then, and the conversation says why it is not read yet (`useReadBound`).
-    onSuccess: holdThroughRead,
+    // them go then, and the conversation says why it is not read yet (`useReadBound`). The hold
+    // is the press's the retry began under (`pressOfWrite`).
+    onMutate: pressOfWrite,
+    onSuccess: (_attempt, _delivery, press: WritePress) => holdThroughRead(press),
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
@@ -287,8 +292,9 @@ function AgentTargetedMessage({
   replyDisabled,
 }: {
   agent: Agent;
-  /** Holds through the conversation's re-read (`useReadBound`). */
-  holdThroughRead: () => Promise<void>;
+  /** Holds through the conversation's re-read (`useReadBound`), of the press the retry began
+   *  under. */
+  holdThroughRead: (press: WritePress) => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
@@ -301,7 +307,8 @@ function AgentTargetedMessage({
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     // Pending through the read that draws the new attempt, as a reply's retry is, and bounded
     // the same way.
-    onSuccess: holdThroughRead,
+    onMutate: pressOfWrite,
+    onSuccess: (_attempt, _delivery, press: WritePress) => holdThroughRead(press),
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
@@ -409,9 +416,10 @@ function AgentMessageList({
   // A retry's hold through this conversation's read, and why that read has not settled once the
   // hold ran out (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
-  const holdThroughRead = () =>
+  const holdThroughRead = (press: WritePress) =>
     holdThrough(
-      invalidateWaitingForPaused(queryClient, agentMessagesQuery(agent.session_id).queryKey)
+      invalidateWaitingForPaused(queryClient, agentMessagesQuery(agent.session_id).queryKey),
+      press
     );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
