@@ -71,7 +71,7 @@ func (g *rig) pendingPod(name string, status func(*corev1.Pod)) time.Time {
 // the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	spec := workerSpec(t)
 	machine, _, _ := supervisedSandboxMachine(t, g, spec)
@@ -113,7 +113,7 @@ func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 // ProvisionBound.
 func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -143,7 +143,7 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 // provisioning: its launch gives up at the boot timeout.
 func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -312,7 +312,7 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 			logs := &lockedLog{}
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-			}))
+			}), withTestBootTimeout())
 			g.autoStart.Store(false)
 			spec := workerSpec(t)
 			name := SandboxName(spec.Claim)
@@ -430,7 +430,7 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 // not come.
 func TestALaunchThatGivesUpOnWorkspaceInitNamesTheRepositorysCache(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	g.r.provisionBound = time.Second
 	spec := workerSpec(t)
@@ -458,7 +458,7 @@ func TestALaunchThatGivesUpOnWorkspaceInitNamesTheRepositorysCache(t *testing.T)
 // the pod provisioning at 1 or 1.5 s on any machine, and its cap is 6 or 6.5 s.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
 	g.launchProvisioningUntil(clocktest.New(rigNow), workerSpec(t), g.r.bootTimeout, time.Second, 5500*time.Millisecond)

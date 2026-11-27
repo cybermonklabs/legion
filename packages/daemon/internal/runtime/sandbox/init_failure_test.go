@@ -354,7 +354,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended 1 under a Sandbox already Suspended, and the launch stopped before its delete", func(t *testing.T) {
 		first, old, _ := launched(t, kept, &logBuffer{})
 		fail(t, first, status(corev1.PodPending, initFailed))
-		g, _ := first.suspendedCopy(name, kept)
+		g, _ := first.suspendedCopy(name, withOptions(kept), withTestBootTimeout())
 		before := g.sandbox(name)
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		spec := workerSpec(t)

@@ -30,11 +30,13 @@ import (
 
 // TestAnIssuePodGetsOneRepositoryLive writes the proof's legion.yaml and launches two issues'
 // roots on sharedCloneLiveRepository: the first as the cache set's first launch, whose launch
-// makes the repository cache, and the second once that cache is Ready. It writes
-// `<namespace>/<pod> <repository>` for the first and `<namespace>/<pod> <repository> <cache
-// Sandbox>` for the second to LEGION_E2E_RESULT, one line each, for the script, which reads the
-// clones and cache in the pods.
+// makes the repository cache, and, once that cache is Ready, the second, whose clone is filled
+// from the cache (the e2e check cache-second-pod's pod). It writes `<namespace>/<pod>
+// <repository>` for the first and `<namespace>/<pod> <repository> <cache Sandbox>` for the second
+// to LEGION_E2E_RESULT, one line each, for the script, which reads the clones and the cache in the
+// pods.
 func TestAnIssuePodGetsOneRepositoryLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := map[string]string{}
 	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT"} {

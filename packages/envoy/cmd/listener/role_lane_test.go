@@ -326,6 +326,8 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 // and neither listener reports a slow consumer. A handler that forwarded inline, waiting for the
 // stream's acknowledgement of each message before reading the next, stalls behind every one.
 func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
+	// Not parallel: it requires the busier role's forwards to reach their holder within 1 s of
+	// their publish at the 99th percentile.
 	const (
 		rate     = 40
 		duration = 10 * time.Second
@@ -410,6 +412,8 @@ func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
 // each forward carries the message's event id and the holder's subject as its Nats-Msg-Id (its
 // dedupe key is the sender's choice, so roleForward.msgID names it by its event id).
 func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	const messages = 20
 	machines := []string{"role-lane-grant-a", "role-lane-grant-b"}
 	seed, public := testnats.User(t)
