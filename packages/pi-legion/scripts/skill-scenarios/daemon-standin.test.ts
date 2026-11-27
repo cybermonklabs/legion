@@ -122,6 +122,9 @@ function boot(options: Partial<StandinOptions> = {}) {
 
 const COMPLETE = "/legion/v1/handoff/complete";
 const RECORD = (issue: string) => `/legion/v1/issues/${issue}/record`;
+/** What the stand-in's log writes in place of a boot token or a claim's secret: the marker a row
+ * expects there, which no client holds. */
+const REDACTED = "<redacted>";
 
 test("serves the claim's registration and grants, and logs each request with its body and answer, secrets redacted", async () => {
   const daemon = boot();
@@ -163,7 +166,7 @@ test("serves the claim's registration and grants, and logs each request with its
     ["POST", COMPLETE, 200],
   ]);
   expect(log[0]).toMatchObject({
-    body: { bootToken: "<redacted>" },
+    body: { bootToken: REDACTED },
     answer: { error: "Invalid boot token" },
   });
   expect(log[1]?.answer).toMatchObject({
@@ -171,9 +174,9 @@ test("serves the claim's registration and grants, and logs each request with its
     tree: "ACME-12",
     issue: "ACME-12",
     role: "tester",
-    secret: "<redacted>",
+    secret: REDACTED,
   });
-  expect(log[2]).toMatchObject({ sessionId: "session-1", body: { secret: "<redacted>" } });
+  expect(log[2]).toMatchObject({ sessionId: "session-1", body: { secret: REDACTED } });
   expect(log[3]).toMatchObject({ answer: null });
   expect(log[5]).toMatchObject({
     grantId,

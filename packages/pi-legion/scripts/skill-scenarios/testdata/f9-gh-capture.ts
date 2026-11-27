@@ -10,6 +10,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 const [gh = "gh", out = "."] = Bun.argv.slice(2);
 const scratch = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "f9-"));
@@ -415,7 +416,7 @@ async function run(args: string[], stdin?: string, cwd = checkout) {
       HOME: config,
       GH_CONFIG_DIR: config,
       GH_HOST: "github.localhost",
-      GH_ENTERPRISE_TOKEN: "not-a-secret",
+      GH_ENTERPRISE_TOKEN: fixtureSecret("gh"),
       HTTP_PROXY: proxy,
       http_proxy: proxy,
       GH_NO_UPDATE_NOTIFIER: "1",

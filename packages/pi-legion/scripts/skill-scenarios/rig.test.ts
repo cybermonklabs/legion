@@ -2245,18 +2245,24 @@ test("case gateway's keyless route sends the pod's identity token in place of th
       return new Response("answer");
     },
   });
-  const claims = (aud: string) =>
-    Buffer.from(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 3600 })).toString(
-      "base64url"
-    );
+  // A fake identity token for `aud`, expiring in an hour: random header and signature segments,
+  // made once for this row, around the claims the gateway reads.
+  const header = fixtureSecret("header");
+  const signature = fixtureSecret("sig");
+  const identityToken = (aud: string) => {
+    const claims = { aud, exp: Math.floor(Date.now() / 1000) + 3600 };
+    return `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.${signature}`;
+  };
+  const token = identityToken("gateway-audience");
   const minted: string[] = [];
-  const metadata = (aud: string) =>
+  /** A metadata server that answers each identity request with `answer`. */
+  const metadata = (answer: string) =>
     (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       minted.push(
         `${url.searchParams.get("audience")} ${new Headers(init?.headers).get("Metadata-Flavor")}`
       );
-      return new Response(`h.${claims(aud)}.s`);
+      return new Response(answer);
     }) as typeof fetch;
   try {
     const dir = freshDir("case-keyless");
@@ -2265,11 +2271,7 @@ test("case gateway's keyless route sends the pod's identity token in place of th
       JSON.stringify({ providers: { anthropic: { baseUrl: upstream.url.origin } } })
     );
     writeFileSync(path.join(dir, "config.yml"), "{}");
-    const gateway = caseGateway(
-      dir,
-      dir,
-      metadataIdentity("gateway-audience", metadata("gateway-audience"))
-    );
+    const gateway = caseGateway(dir, dir, metadataIdentity("gateway-audience", metadata(token)));
     try {
       for (let i = 0; i < 2; i += 1) {
         const response = await fetch(new URL("/v1/messages", gateway.url), {
@@ -2282,13 +2284,13 @@ test("case gateway's keyless route sends the pod's identity token in place of th
     } finally {
       gateway.stop(true);
     }
-    const token = `h.${claims("gateway-audience")}.s`;
     expect(seen).toEqual([
       { authorization: `Bearer ${token}`, key: null },
       { authorization: `Bearer ${token}`, key: null },
     ]);
     expect(minted).toEqual(["gateway-audience Google"]);
-    await expect(metadataIdentity("gateway-audience", metadata("another"))()).rejects.toThrow(
+    const wrongAudience = metadata(identityToken("another"));
+    await expect(metadataIdentity("gateway-audience", wrongAudience)()).rejects.toThrow(
       "no identity token for gateway-audience"
     );
   } finally {
