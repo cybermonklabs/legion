@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The bearers the daemon's read of a plan carries in these rows. echoedBearer is lower-case
@@ -95,7 +96,8 @@ func standInPlanHarness(t *testing.T, standIn, bearer string) (*harness, string)
 // (steps-grammar), or whose needs echo the bearer (needs-bearer) or quote such a URL (needs-url).
 // register_plan's answer holds none of those words: the route took the plan and answered its id,
 // or refused it with a reason quoting the id, the step or the needs. Each refusal names the block
-// by its place and the rule, or the step by its place, and the control, a block of id a, is taken.
+// by its place and the rule, or the step by its place, or quotes each needs value that names no
+// task through the URL rule (plan.Validate), and the control, a block of id a, is taken.
 // The twin shows the stand-in's own answer holds each word. Captures api.plan-route-words/<case>.
 func TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses(t *testing.T) {
 	steps := func(attributes map[string]string) map[string]string {
@@ -129,7 +131,7 @@ func TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses(t *testing.T) {
 			block: func(bearer string) (string, map[string]string) {
 				return "a", steps(map[string]string{"needs": "dispatch://LEGION-208/artifact/plan-md#b-" + bearer})
 			}},
-		{name: "needs-url", bearer: plainBearer, secret: oauth2calltest.Token, want: "task a names needs.",
+		{name: "needs-url", bearer: plainBearer, secret: oauth2calltest.Token, want: "task a needs " + redact.URLCredentials(probeURL) + ", which names no task of this plan.",
 			block: func(string) (string, map[string]string) {
 				return "a", steps(map[string]string{"needs": "dispatch://LEGION-208/artifact/plan-md#b-b " + probeURL})
 			}},

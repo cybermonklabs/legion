@@ -406,11 +406,12 @@ func credentialIn(text string) string {
 // own redaction of `error` has nothing left to find, and `reasons`, which the route writes as they
 // came, holds what the rule left. A need, a step whose role is the URL, a step whose key is the
 // URL, a task block's id, a role block's id and one id on two blocks each carry plantedURL. Each
-// answer quotes redactedURL cut and marked, in a reason of the task named and in the sentence, and
-// holds no run of six bytes of plantedUser. The fault is a cut made before the rule, which ends
-// inside the userinfo, before its "@", so the route's redaction of `error` finds no userinfo and
-// `reasons` are never redacted; the control is the plan package's quoted cutting first, under
-// which each answer keeps 120 bytes of plantedUser in both.
+// answer quotes redactedURL cut and marked, or for a step names it by its place among the words of
+// steps and quotes none of it (plan.ParseSteps), in a reason of the task named and in the
+// sentence, and holds no run of six bytes of plantedUser. The fault is a cut made before the rule,
+// which ends inside the userinfo, before its "@", so the route's redaction of `error` finds no
+// userinfo and `reasons` are never redacted; the control is the plan package's quoted cutting
+// first, under which each answer keeps 120 bytes of plantedUser in both.
 func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
 	cut := func(word string) string {
 		return fmt.Sprintf("%s… (cut from %d bytes)", word[:plan.MostQuotedBytes], len(word))
@@ -421,11 +422,11 @@ func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
 		name   string
 		blocks []dispatch.DocumentBlock
 		task   string // the task of the reason that quotes the word
-		quote  string
+		names  string // what the answer names the word by: its quote, or a step's place
 	}{
 		{"a need", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), plantedURL)}, "a", quote},
-		{"a step whose role is the URL", []dispatch.DocumentBlock{taskBlock("a", plantedURL)}, "", quote},
-		{"a step whose key is the URL", []dispatch.DocumentBlock{taskBlock("a", "implementer reviewer:"+plantedURL)}, "", cut("reviewer:" + redactedURL)},
+		{"a step whose role is the URL", []dispatch.DocumentBlock{taskBlock("a", plantedURL)}, "", "task a: the 1st word of steps"},
+		{"a step whose key is the URL", []dispatch.DocumentBlock{taskBlock("a", "implementer reviewer:"+plantedURL)}, "", "task a: the 2nd word of steps"},
 		{"a task block's id", []dispatch.DocumentBlock{taskBlock(plantedURL, "implementer reviewer")}, "", quote},
 		{"a role block's id", []dispatch.DocumentBlock{roleBlock, taskBlock("a", "implementer reviewer")}, "", quote},
 		{"one id on two blocks", []dispatch.DocumentBlock{roleBlock, taskBlock(plantedURL, "implementer reviewer")}, "", quote},
@@ -441,10 +442,10 @@ func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
 			}
 			var refusal PlanRefusal
 			decodeInto(t, answer, &refusal)
-			if refusal.Code != "PLAN_REFUSED" || !strings.Contains(refusal.Error, tc.quote) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
-				return reason.Task == tc.task && strings.Contains(reason.Reason, tc.quote)
+			if refusal.Code != "PLAN_REFUSED" || !strings.Contains(refusal.Error, tc.names) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+				return reason.Task == tc.task && strings.Contains(reason.Reason, tc.names)
 			}) {
-				t.Fatalf("refusal %.3000v, want PLAN_REFUSED quoting %.300q in its sentence and in a reason of task %q", refusal, tc.quote, tc.task)
+				t.Fatalf("refusal %.3000v, want PLAN_REFUSED naming the word by %.300q in its sentence and in a reason of task %q", refusal, tc.names, tc.task)
 			}
 			if part := credentialIn(refusal.Error); part != "" {
 				t.Errorf("`error` %.2000q holds %q of the URL's credential", refusal.Error, part)
