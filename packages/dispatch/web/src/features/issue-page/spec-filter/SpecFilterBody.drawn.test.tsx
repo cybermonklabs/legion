@@ -3846,11 +3846,14 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     const first = within(line).getByRole("alert");
     const retry = within(line).getByRole("button", { name: "Retry" });
     // The run's first try starts while the browser is online; the browser goes offline before
-    // that try is refused, so the second try pauses until it is online again.
+    // that try is refused, so the second try pauses until it is online again. The first try's
+    // refusal comes back when the stubbed read answers, which a loaded machine delays, so the
+    // case waits for the pause rather than for a fixed time.
     act(() => retry.click());
     act(() => onlineManager.setOnline(false));
-    await act(() => Bun.sleep(100));
-    expect(client.getQueryState(["decisions", KEY])?.fetchStatus).toBe("paused");
+    await waitFor(() =>
+      expect(client.getQueryState(["decisions", KEY])?.fetchStatus).toBe("paused")
+    );
     expect(alertSaying(view, STATE_LINES.issue_decisions_unreadable)).toBe(line);
     expect(
       within(line).getByRole("alert"),
