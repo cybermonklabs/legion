@@ -2,12 +2,69 @@ package pmdoc
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/yuin/goldmark/ast"
 	extensionast "github.com/yuin/goldmark/extension/ast"
 )
+
+// A block calls each label of its footnote references once, in the order it first calls it, as
+// the reference holds it. A label a definition inside the block defines, by the label or only up
+// to case, is left out, since the block's own reading resolves the call to that definition, and
+// so is every label of a node that is no footnote, such as a list item's marker.
+func TestABlockCallsTheLabelsItsOwnDefinitionsDoNotDefine(t *testing.T) {
+	t.Parallel()
+	text := func(value string) *Node { return &Node{Type: "text", Text: value} }
+	reference := func(label string) *Node { return &Node{Type: "footnote_reference", Attrs: Attrs{"label": label}} }
+	block := &Node{Type: "blockquote", Children: []*Node{
+		{Type: "paragraph", Children: []*Node{
+			text("Calls "), reference("b"), text(", "), reference("a"), text(", "), reference("b"),
+			text(" again, "), reference("C"), text(" and "), reference("d"), text("."),
+		}},
+		bulletList(false, listItem(false, &Node{Type: "paragraph", Children: []*Node{text("In a list "), reference("c")}})),
+		footnoteDefinition("c", paragraph("Defined in the block.")),
+	}}
+	if got, want := CalledFootnoteLabels(block), []string{"b", "a", "d"}; !slices.Equal(got, want) {
+		t.Errorf("CalledFootnoteLabels = %q, want %q", got, want)
+	}
+	if got := CalledFootnoteLabels(paragraph("No call.")); len(got) != 0 {
+		t.Errorf("CalledFootnoteLabels of a block with no reference = %q, want none", got)
+	}
+}
+
+// Markdown with a stand-in definition of each label it calls reads each call as a reference to
+// that label, a label the renderer escapes included, and its last blocks are the stand-ins, one
+// footnote definition per label in the order given. With no label the markdown is as it stands.
+func TestStandInDefinitionsReadBackAsTheLabelsTheyStandFor(t *testing.T) {
+	t.Parallel()
+	const markdown = "See [^a\\]b] and [^k1]."
+	if got := WithStandInDefinitions(markdown, nil); got != markdown {
+		t.Errorf("WithStandInDefinitions with no labels = %q, want %q", got, markdown)
+	}
+	labels := []string{"a]b", "k1"}
+	withStandIns := WithStandInDefinitions(markdown, labels)
+	if want := markdown + "\n\n[^a\\]b]: x\n\n[^k1]: x"; withStandIns != want {
+		t.Fatalf("WithStandInDefinitions = %q, want %q", withStandIns, want)
+	}
+	doc := ReadForDisplay(withStandIns, DisplayLatest)
+	var called, defined []string
+	for _, node := range collect(doc, func(n *Node) bool { return n.Type == "footnote_reference" }) {
+		label, _ := node.Attrs["label"].(string)
+		called = append(called, label)
+	}
+	for _, node := range doc.Children[1:] {
+		label, _ := node.Attrs["label"].(string)
+		defined = append(defined, node.Type+" "+label)
+	}
+	if !slices.Equal(called, labels) {
+		t.Errorf("%q reads the references %q, want %q", withStandIns, called, labels)
+	}
+	if want := []string{"footnote_definition a]b", "footnote_definition k1"}; !slices.Equal(defined, want) {
+		t.Errorf("%q reads %q after its paragraph, want %q", withStandIns, defined, want)
+	}
+}
 
 // A footnote reference resolves to the first definition whose label it equals byte for byte, and
 // failing that to the first whose label matches it up to case (footnoteLabelKey), carrying its

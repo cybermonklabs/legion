@@ -906,6 +906,9 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
 // so the coverage and the results reads take the same text through the same rule, and one block
 // answers one tree in all three reads, the whole stored text of a typed block in a quote included.
+// A requirement that calls a footnote the document defines outside it is the one exception: the
+// coverage read reads its tree from that text with a stand-in definition of each such label after
+// it, so the calls read as the references the document holds (requirementBlocksIn).
 // The ranges come with the markdown from that one read, which serves both from the read cache
 // without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
 // the block's own content (blockContent).

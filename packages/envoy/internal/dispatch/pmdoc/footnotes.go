@@ -1,6 +1,9 @@
 package pmdoc
 
 import (
+	"slices"
+	"strings"
+
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -11,6 +14,64 @@ import (
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
+
+// CalledFootnoteLabels is the label of every footnote reference inside block, each once, in
+// document order and as the reference holds it, but for a label a footnote definition inside
+// block defines, by the label or up to case (footnoteLabelKey): block's own markdown holds that
+// definition, and its reading resolves the reference to it as the document's does. Each label
+// left is one the document defines outside block, so block's markdown read apart from the
+// document reads a call of it as text unless a definition of it stands beside that markdown
+// (WithStandInDefinitions).
+func CalledFootnoteLabels(block *Node) []string {
+	var called, defined []string
+	Walk(block, func(node *Node) bool {
+		if node.Type != "footnote_reference" && node.Type != "footnote_definition" {
+			return true
+		}
+		label, ok := node.Attrs["label"].(string)
+		switch {
+		case !ok:
+		case node.Type == "footnote_definition":
+			defined = append(defined, footnoteLabelKey(label))
+		case !slices.Contains(called, label):
+			called = append(called, label)
+		}
+		return true
+	})
+	if len(defined) == 0 {
+		return called
+	}
+	return slices.DeleteFunc(called, func(label string) bool {
+		return slices.Contains(defined, footnoteLabelKey(label))
+	})
+}
+
+// WithStandInDefinitions is markdown with a stand-in definition of each of labels after it: for
+// each label, a blank line and `[^label]: x`, the label written as the renderer writes one
+// (escapeFootnoteLabel), so every reader reads it back as that label. A reading of it reads each
+// call of those labels in markdown as a reference, where markdown read alone reads it as text:
+// the read-back of a run the renderer wrote (parseInlineWithDefinitions) and the display tree of
+// a block's markdown cut out of the document that defines the labels both read markdown so. The
+// stand-ins are the last blocks of that reading, one footnote definition each, unless markdown
+// ends in a block a definition's line continues. With no labels it is markdown.
+func WithStandInDefinitions(markdown string, labels []string) string {
+	if len(labels) == 0 {
+		return markdown
+	}
+	size := len(markdown)
+	for _, label := range labels {
+		size += len("\n\n[^]: x") + len(label)
+	}
+	var full strings.Builder
+	full.Grow(size)
+	full.WriteString(markdown)
+	for _, label := range labels {
+		full.WriteString("\n\n[^")
+		full.WriteString(escapeFootnoteLabel(label))
+		full.WriteString("]: x")
+	}
+	return full.String()
+}
 
 // footnoteReferenceParser reads a footnote reference, `[^label]`, or `![^label]` after an image's
 // bang, and resolves its label from maps of the parse's definitions built once

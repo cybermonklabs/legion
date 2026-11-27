@@ -426,12 +426,7 @@ func parseInlineWithDefinitions(markdown string, labels []string, reader inlineR
 		nodes, err = readInline(markdown, reader.run, context, nil)
 		return nodes, context.Get(flankingDivergenceKey) != nil, err
 	}
-	var full strings.Builder
-	full.WriteString(markdown)
-	for _, label := range labels {
-		full.WriteString("\n\n[^" + escapeFootnoteLabel(label) + "]: x")
-	}
-	source := []byte(full.String())
+	source := []byte(WithStandInDefinitions(markdown, labels))
 	root, err := parseSource(reader.withDefinitions, source, context)
 	diverged = context.Get(flankingDivergenceKey) != nil
 	if err != nil {
