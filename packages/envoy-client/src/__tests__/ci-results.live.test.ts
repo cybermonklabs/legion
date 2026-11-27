@@ -552,7 +552,12 @@ console.log(JSON.stringify(answers));
     test("a result for a check of files the graph logic refuses is refused, and nothing is stored", async () => {
       for (const [at, files, checkRunId, problem] of [
         [commit("b"), unservedFiles, 108, "broken.yaml:1: broken: leaf-without-check"],
-        [commit("c"), lackingFiles, 109, `probe.yaml:7: ${PROBE_CHECK}: schema: node: missing property 'failing_example'`],
+        [
+          commit("c"),
+          lackingFiles,
+          109,
+          `probe.yaml:7: ${PROBE_CHECK}: schema: node: missing property 'failing_example'`,
+        ],
       ] as const) {
         const ran = await writeResult(runAt(at, checkRunId, {}, files), at);
 
