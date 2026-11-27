@@ -139,9 +139,12 @@ func droppedAt(t *testing.T, contract int) string {
 // caller's strip stands below, and then the `dropped` of every row of valueStrips that took a
 // value off state, which follow its restore. The bands are read from the table rather than
 // written out here, so a narrowing added above the contract a row below reads is counted by that
-// row rather than failing it. One band writes no line where its contract alone says it should:
-// below assignmentsContract, assignmentPlanContract's band finds no assignment left to take
-// `plan` from, because the earlier band already took `assignments` whole, and so drops nothing.
+// row rather than failing it. Two bands write no
+// line where their contract alone says they should: below assignmentsContract,
+// assignmentPlanContract's band finds no assignment left to take `plan` from, because the earlier
+// band already took `assignments` whole; and FixBesideReviewContract's band reports a move only
+// for an issue carrying a fix (shaping.go's withoutFix), which the fixture records on none, so it
+// takes nothing and the daemon writes no line for it.
 //
 // Whether a value strip takes something turns on the values state carries as well as on
 // restore, so the strips are read from what the shaping itself reports it took off state
@@ -165,6 +168,10 @@ func narrowingsExpected(state State, contract int) []string {
 			continue
 		}
 		if narrowing.contract == assignmentPlanContract && strip < assignmentsContract {
+			continue
+		}
+		if narrowing.contract == entryNumber(FixBesideReviewContract) && !slices.ContainsFunc(
+			slices.Collect(maps.Values(state.Issues)), func(issue Issue) bool { return issue.Fix != nil }) {
 			continue
 		}
 		dropped = append(dropped, narrowing.dropped)
