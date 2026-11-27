@@ -773,15 +773,14 @@ func (f LineFacts) Queued(issue Issue) bool {
 }
 
 // HeldWhereItStands says whether issue's chain holds it where it stands, so that the line starts
-// nothing of it — its first phase (Waiting) or its queued promotion (Queued): its chain is unknown
-// (R16 of dispatch://INFRA-3320), which says neither whether it is a root nor what stands above
-// it; or it stands under a parent in one of R19's three holds — its parent is out of Legion's work
-// and an issue above that parent is in it (ancestry), its top issue waits on a person
-// (root_awaiting_person), or an issue above it stands in its retro or its merge
-// (HeldUnderAccepted). It is the one statement of those holds that the line reads. The returning
-// work of an issue the daemon has started reads it on a known chain alone (Waiting): R16 holds an
-// unstarted issue on an unknown chain, so such a chain holds no return, and R19's three holds do.
-// Which of them holds the issue, and which issue holds it, is the held list's word (HeldReasonOf).
+// nothing of it by any path — its returning work or its first phase (Waiting), or its queued
+// promotion (Queued): its chain is unknown (R16 of dispatch://INFRA-3320), which says neither
+// whether it is a root nor what stands above it, so an issue on it that is not at work, holding no
+// slot, starts nothing; or it stands under a parent in one of R19's three holds — its parent is out
+// of Legion's work and an issue above that parent is in it (ancestry), its top issue waits on a
+// person (root_awaiting_person), or an issue above it stands in its retro or its merge
+// (HeldUnderAccepted). It is the one statement of those holds that the line reads; which of them
+// holds the issue, and which issue holds it, is the held list's word (HeldReasonOf).
 func (f LineFacts) HeldWhereItStands(issue Issue) bool {
 	chains := f.Chains
 	chain := chains.Chain(issue.Key)
@@ -1220,24 +1219,24 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // in the board's order, so the issues under a started top issue go before the roots ranked below
 // it, and a root ranked above it is not kept out by a top issue that keeps filing children.
 //
-// An issue the daemon has not started whose chain is unknown (Chain.Known: a row the copy lacks, a
-// loop, more than 32 links) starts nothing (R16): it stands in no part of the line until its chain
-// is read right. The returning work of an issue the daemon has started is not held for an unknown
-// chain, and waits for its slot as any returning work does. An unanswered awaiting root waits on
-// the person rather than a slot, whatever Dispatch status it currently shows, so it is not in the
-// line until it is Answered. A root without the label waits for nothing. An issue under a parent is
-// held where it stands, and waits for nothing here, in three cases that the chain alone decides
-// (R19): its parent is not in Legion's work and an issue above the parent is (ancestry), its top
-// issue waits on a person (root_awaiting_person), or an issue above it stands in its retro or its
-// merge (HeldUnderAccepted). The unknown chain and the three cases are one rule
-// (LineFacts.HeldWhereItStands), which the queued roots (Queued) and the first phases read, so a
-// gate holder past its first run under a parent, whose run starts as a root's, meets them too; the
-// returning work reads it on a known chain alone, so a returning issue meets the three cases and
-// not the unknown chain. The other hold, on Dispatch blocked-by links, takes an issue out of here
-// only where it holds it where it stands: an issue whose first phase would start waits at admitted
-// until the last issue it names is done (LineFacts.Held, blockers.Holds), so the line never offers
-// it a slot. A root's links are read at its promotion instead, which passes it over and keeps its
-// place (blockers.WaitsOn); either way the state names it under admission.blocked.
+// An issue whose chain is unknown (Chain.Known: a row the copy lacks, a loop, more than 32 links)
+// that is not at work, holding no slot, starts nothing (R16): it stands in no part of the line
+// until its chain is read right, and a stopped issue that returns to work holds none, since it gave
+// its slot back (R20). An unanswered awaiting root waits on the person rather than a slot, whatever
+// Dispatch status it currently shows, so it is not in the line until it is Answered. A root without
+// the label waits for nothing. An issue under a parent is held where it stands, and waits for
+// nothing here, in three cases that the chain alone decides (R19): its parent is not in Legion's
+// work and an issue above the parent is (ancestry), its top issue waits on a person
+// (root_awaiting_person), or an issue above it stands in its retro or its merge
+// (HeldUnderAccepted). The unknown chain and the three cases are one rule
+// (LineFacts.HeldWhereItStands), which the returning work, the queued roots (Queued) and the first
+// phases all read, so a returning issue and a gate holder past its first run under a parent, whose
+// run starts as a root's, meet them too. The other hold, on Dispatch blocked-by links, takes an
+// issue out of here only where it holds it where it stands: an issue whose first phase would start
+// waits at admitted until the last issue it names is done (LineFacts.Held, blockers.Holds), so the
+// line never offers it a slot. A root's links are read at its promotion instead, which passes it
+// over and keeps its place (blockers.WaitsOn); either way the state names it under
+// admission.blocked.
 //
 // A root is in the line as a root that never ran (LineQueuedRoot) only while its own record says
 // the generation it carries has not run — it stands at admitted with its design gate never
@@ -1333,13 +1332,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// An issue under a parent in one of R19's holds starts nothing here: its parent out of
-		// Legion's work under an issue in it (ancestry), its top issue waiting on a person
-		// (root_awaiting_person), or, at admitted, an accepted ancestor — HeldWhereItStands, read
-		// on a known chain alone. A returning issue takes no slot while the hold stands and enters
-		// the line once the hold ends. An unknown chain holds none of this work: R16 holds an
-		// issue the daemon has not started, and this one has started.
-		if chains.Chain(issue.Key).Known() && facts.HeldWhereItStands(issue) {
+		// An issue its chain holds where it stands starts nothing here (HeldWhereItStands): one
+		// whose chain is unknown (R16), which holds no slot, since every slot holder is passed
+		// above, and so is not at work; or an issue under a parent in one of R19's holds — its
+		// parent out of Legion's work under an issue in it (ancestry), its top issue waiting on a
+		// person (root_awaiting_person), or, at admitted, an accepted ancestor. A returning issue
+		// takes no slot while the hold stands and enters the line once the hold ends.
+		if facts.HeldWhereItStands(issue) {
 			hold(issue)
 			continue
 		}

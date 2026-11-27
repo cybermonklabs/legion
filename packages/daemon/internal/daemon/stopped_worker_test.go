@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"path/filepath"
@@ -275,16 +276,16 @@ func workingPane(token claim.Token) *runtime.Locator {
 		Tmux: &runtime.TmuxLocator{Window: "legion", Pane: "%1"}}
 }
 
-// seedWaitingMember records member as a tree member holding no admission slot, with the claim of
-// its role and the start its transition owes that role. A phase worker's start is one row, which
-// carries the task and waits for the issue's slot (record.SuperviseRequest.NeedsSlot), and that
-// row has never run against this claim: a row held for a slot its issue does not hold is not
-// claimable at all (record's outboxInOrder), so it stands in the outbox exactly where it was
-// written and nothing of it has reached the claim. The claim is the live one of the round
-// before — the transition that wrote this row found the role already claimed — which is why it
-// is ready, with a session and a process of its own, while the row it is owed waits for the
-// slot. The member's own lifecycle, which the claim binds (store.Store.AdmitClaim), stands open
-// from the round that started that claim.
+// seedWaitingMember records member as a tree member holding no admission slot, with its row of the
+// daemon's copy of Dispatch (seedMemberCopyRow), the claim of its role and the start its
+// transition owes that role. A phase worker's start is one row, which carries the task and waits
+// for the issue's slot (record.SuperviseRequest.NeedsSlot), and that row has never run against
+// this claim: a row held for a slot its issue does not hold is not claimable at all (record's
+// outboxInOrder), so it stands in the outbox exactly where it was written and nothing of it has
+// reached the claim. The claim is the live one of the round before — the transition that wrote
+// this row found the role already claimed — which is why it is ready, with a session and a process
+// of its own, while the row it is owed waits for the slot. The member's own lifecycle, which the
+// claim binds (store.Store.AdmitClaim), stands open from the round that started that claim.
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -298,6 +299,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
+		seedMemberCopyRow(t, tx, member)
 		row, err := record.NewOutboxRow(member.Key, owed, time.Now().UTC())
 		if err != nil {
 			return err
@@ -312,10 +314,24 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 }
 
-// seedCappedRoots records a running tree for each of roots, its root at work in implementing.
-// The tests of a waiting member seed exactly two, the members' own tree and a tree of another
-// root, which is the cap: with both slots held, nothing is granted a member until one of the two
-// gives its slot back.
+// seedMemberCopyRow writes member's row of the daemon's copy of Dispatch in tx (seedCopyRow), as
+// seedWorkflowTreeIn writes a root's: under the parent its record names, at the status Dispatch
+// last showed it in (DispatchStatus, else Status). The daemon's boot fills the copy of every issue
+// it records before its first decision (R16 of dispatch://INFRA-3320), so a recorded member with
+// no row is a state production never reaches, whose chain reads unknown.
+func seedMemberCopyRow(t *testing.T, tx pgx.Tx, member record.Issue) {
+	t.Helper()
+	var parent string
+	if member.Parent != nil {
+		parent = *member.Parent
+	}
+	seedCopyRow(t, tx, member.Key, parent, cmp.Or(member.DispatchStatus, member.Status), 1)
+}
+
+// seedCappedRoots records a running tree for each of roots, its root at work in implementing and
+// holding a slot. The tests of a waiting member seed one, a tree of another root than the members'
+// own, which is the cap of one: with its slot held, nothing is granted a member until that root
+// gives its slot back. The members' own root holds none (seedWaitingParent).
 func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...string) {
 	t.Helper()
 	for _, at := range roots {
@@ -323,6 +339,23 @@ func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...s
 			Project: cfg.Project, Tree: at, Title: "root " + at, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
 			DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
 	}
+}
+
+// seedWaitingParent records root as the root of the members' running tree where the admission
+// pass leaves a started root that an open Dispatch child holds (R9 of dispatch://INFRA-3320,
+// admit's childrenWaits): in awaiting_children, holding the start of implementing it stopped,
+// with children the open children that hold it, and no admission slot, since the phase keeps none
+// (record.KeepsSlot). Each member's copy row names root as its parent (seedMemberCopyRow), so a
+// root seeded at work in implementing would move there at the daemon's first pass and give its
+// slot to a member.
+func seedWaitingParent(t *testing.T, cfg config.Config, project, root string, children ...string) {
+	t.Helper()
+	waited := time.Now().UTC()
+	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: cfg.Project, Tree: root, Title: "root " + root, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", HandedOver: true, Rank: "A", ChildrenWaitedAt: &waited,
+		ChildrenWait: &record.ChildrenWait{Start: phase.Implementing, Task: "Continue root " + root + ".", Since: waited, Children: children,
+			Reason: "the admission pass stopped the implementer's implementing phase, while Dispatch children of " + root + " were open"}})
 }
 
 // seedWaitingTester records key as a member of root's tree waiting for an admission slot, which
@@ -353,15 +386,16 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 //
 // The fixture is that row waiting. The member stands in a worker phase with no slot of its own,
 // its one start row stands in the outbox unrun — a row held for a slot is claimable by nothing
-// until the slot comes — and its tester is ready with no task. Two roots hold the cap's two
-// slots, so the member is in the line and nothing is granted it. The stop is made over the
-// operator's own route, which is what stamps the claim with the write mark its retirement took
-// (store's putClaim): the row's payload was written before the stop was recorded, so its mark
-// is below the claim's and the stop outlived it.
+// until the slot comes — and its tester is ready with no task. Its root waits in
+// awaiting_children on it and holds no slot, and a root of another tree holds the cap's one slot,
+// so the member is in the line and nothing is granted it. The stop is made over the operator's own
+// route, which is what stamps the claim with the write mark its retirement took (store's
+// putClaim): the row's payload was written before the stop was recorded, so its mark is below the
+// claim's and the stop outlived it.
 //
 // What the passes after the stop do is read twice, because the cap would explain the first read
-// on its own. First with both slots still held: the issue owes its tester nothing, the runtime is
-// asked for no launch of it, and it stands in no part of the waiting line, since what put it
+// on its own. First with the cap's slot still held: the issue owes its tester nothing, the runtime
+// is asked for no launch of it, and it stands in no part of the waiting line, since what put it
 // there was the row the repair has now ended (record.Waiting's first part is the issues that owe
 // their worker a start). Then with a slot freed, which is the read that says the stop and not the
 // cap is what holds: a slot stands free pass after pass and the stopped worker is still not
@@ -375,7 +409,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
-	cfg.AdmissionCap = 2
+	cfg.AdmissionCap = 1
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -385,10 +419,11 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The member's own tree, whose root is at work and holds one of the two slots, and a tree of
-	// another root holding the other: with the cap full, nothing is granted the member until the
-	// test frees a slot.
-	seedCappedRoots(t, cfg, project, root, other)
+	// The member's own tree, whose root waits in awaiting_children on the member and holds no
+	// slot, and a tree of another root holding the cap's one slot: with the cap full, nothing is
+	// granted the member until the test frees that slot.
+	seedWaitingParent(t, cfg, project, root, member)
+	seedCappedRoots(t, cfg, project, other)
 	seedWaitingTester(t, cfg, project, root, member, "B", tester)
 	d := startDaemon(t, cfg, o)
 
@@ -400,7 +435,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	launches := len(launchesOf(rt, tester))
 	theOperatorStops(t, d, tester)
 
-	// The first read, with both slots still held. The repair ends the owed row on the first pass
+	// The first read, with the cap's slot still held. The repair ends the owed row on the first pass
 	// that meets the retired claim, whether a slot is free or not, so the issue is out of the line
 	// from here on.
 	passed(t, pool, "after the stop")
@@ -444,9 +479,10 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 // the line is judged now, and the pass re-reads what it ended.
 //
 // The fixture is TestAStopEndsTheOwedStartOfAWaitingIssue's with a second waiting member behind
-// the stopped one: two roots hold the cap's two slots, and two members of the first root's tree
-// each owe their tester the task half of a start. Their order in the line is read before the
-// stop, since the whole test is which of the two the one free slot reaches.
+// the stopped one: a root of another tree holds the cap's one slot, and two members of the first
+// root's tree, which waits in awaiting_children on them, each owe their tester the task half of a
+// start. Their order in the line is read before the stop, since the whole test is which of the two
+// the one free slot reaches.
 //
 // The stop and the slot coming free have to reach the daemon as one state: a pass that met the
 // stop with the cap still full would end the owed row with no slot to give out, and the pass
@@ -458,7 +494,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
-	cfg.AdmissionCap = 2
+	cfg.AdmissionCap = 1
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -472,10 +508,11 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The members' own tree, whose root is at work and holds one of the two slots, and a tree of
-	// another root holding the other: the cap is full until this test frees the second, which is
-	// the one slot the two members compete for.
-	seedCappedRoots(t, cfg, project, root, other)
+	// The members' own tree, whose root waits in awaiting_children on them and holds no slot, and
+	// a tree of another root holding the cap's one slot: the cap is full until this test frees
+	// that slot, which is the one slot the two members compete for.
+	seedWaitingParent(t, cfg, project, root, stopped, next)
+	seedCappedRoots(t, cfg, project, other)
 	// Both members wait as TestAStopEndsTheOwedStartOfAWaitingIssue's member does. The stopped one
 	// is written first, which is what puts it ahead of the other in the line (record.Waiting
 	// orders that part by the age of the row the issue is owed).

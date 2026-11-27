@@ -638,7 +638,10 @@ type fenceRig struct {
 	enqueueStart func(issue string, role claim.Role, due time.Time) int64
 }
 
-// newFenceRig builds the rig the setup asks for.
+// newFenceRig builds the rig the setup asks for. The root and each child are recorded with their
+// rows of the daemon's copy of Dispatch (putChainIssue), each child under the root, as the boot
+// fills the copy of every issue it records before its first decision (R16 of
+// dispatch://INFRA-3320), so every chain of the rig is known.
 func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	t.Helper()
 	if len(setup.children) == 0 {
@@ -658,14 +661,14 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	rootSandbox := "legion-legion-" + strings.ToLower(root.Key)
 	sandboxes := []map[string]any{issueSandbox(rootSandbox, "sandbox-uid-root", root.Key, root.Key)}
 	children := make([]fenceIssue, 0, len(setup.children))
-	putOutboxIssue(t, pool, records, root)
+	putChainIssue(t, pool, records, root)
 	for i, spec := range setup.children {
 		key := fmt.Sprintf("LEGION-%d", 209+i)
 		child := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: spec.at, Generation: 1, Status: spec.status, Rank: string(rune('V' + i)), LastDispatchSeq: 1}
 		name := "legion-legion-" + strings.ToLower(key)
 		sandboxes = append(sandboxes, issueSandbox(name, spec.uid, root.Key, key))
 		children = append(children, fenceIssue{Issue: child, sandbox: name})
-		putOutboxIssue(t, pool, records, child)
+		putChainIssue(t, pool, records, child)
 	}
 	approved := 1
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {

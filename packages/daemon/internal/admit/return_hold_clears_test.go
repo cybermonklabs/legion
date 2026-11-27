@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -14,11 +15,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A stopped issue that returns to work under an R19 hold (ancestry or root_awaiting_person) stays
-// out of the waiting line and takes no slot while the hold stands, and enters the line and takes a
-// slot — making its owed worker start claimable — as soon as the hold ends (the parent returns to
-// work, or the top issue leaves awaiting_person). An unknown chain holds no such return: R16 holds
-// an issue the daemon has not started (record.Waiting).
+// A stopped issue that returns to work under an R19 or R16 hold (ancestry, root_awaiting_person,
+// or chain_unknown) stays out of the waiting line and takes no slot while the hold stands, and
+// enters the line and takes a slot — making its owed worker start claimable — as soon as the hold
+// ends (the parent returns to work, the top issue leaves awaiting_person, or the missing chain row
+// appears in the copy).
 func TestAReturningIssueStartsOnceItsHoldClears(t *testing.T) {
 	const top, middle, child = "LEGION-660", "LEGION-661", "LEGION-662"
 	for _, tc := range []struct {
@@ -60,6 +61,19 @@ func TestAReturningIssueStartsOnceItsHoldClears(t *testing.T) {
 			clear: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 				answerWait(t, pool, top, record.AnsweredByAsk, "ask-"+top)
 				tick(t, pool, admission, "top-answered")
+			},
+		},
+		{
+			name:   "chain_unknown: parent row arrives in the copy",
+			parent: middle,
+			reason: record.HeldChainUnknown,
+			holder: middle,
+			seed:   func(*testing.T, *pgxpool.Pool) {},
+			clear: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+				inTx(t, pool, func(tx pgx.Tx) {
+					putCopyTx(t, tx, record.Issue{Key: middle, Project: testProject, Status: "done"})
+				})
+				tick(t, pool, admission, "chain-known")
 			},
 		},
 	} {
