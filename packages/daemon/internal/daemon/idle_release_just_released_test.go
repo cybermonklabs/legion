@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,15 +147,17 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 // session reads gone, and the daemon then queues its role two hook prompts, each a row of the
 // role-message lane, as two hooks of the deployment firing on one move back queue them. No
 // sender tries either again. The first row's first attempt wakes the pod (wakeForDelivery) and
-// waits on its backoff, and each row's first attempt after that resume has launched publishes,
-// with keep, while the woken session has not claimed the role yet: its process is held before it
+// waits on its backoff, and each row's attempts after that resume has launched publish, with
+// keep, while the woken session has not claimed the role yet: its process is held before it
 // registers with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi is still
-// starting then. No live session holds the role, so the listener keeps each message on the role's
-// kept lane — holder_lapsed while the released session's claim stands, unclaimed once the
-// listener's reaper freed it — and each row ends. Once the process goes on, its registration
-// under the claim that still names its session, or its claim of the role, hands both to the woken
-// session (cybermonklabs/legion#4079). A row that published with keep: false would meet the 404
-// and end undelivered, and the woken session would never be given its message.
+// starting then. No live session holds the role, and the publish names no source session, so the
+// listener refuses it with nothing kept (404, its request line's outcome role_no_source_session),
+// and each row waits on its backoff (publishKeptToRole). The process is held until the listener has
+// refused each prompt twice, past two of the row's backoff steps. Once the process goes on, its
+// registration and its claim of the role give the role a live holder, and each row's next attempt
+// delivers its prompt to the woken session. A refused publish stores nothing, so each prompt
+// reaches that session once. A row that ended at the refusal, as the daemon's rows did when the
+// listener kept such a publish, would leave the woken session with no prompt at all.
 func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	issue := rig.issue(idleRigJustReleasedOutbox)
@@ -181,37 +184,73 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, hook, now))
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, loop, now))
 
-	// 3. The woken process registers with the daemon and holds, and both rows end while it does:
-	//    each publish meets a role no live session holds.
+	// 3. The woken process registers with the daemon and holds. Each publish meets a role no live
+	//    session holds, which the listener refuses, and both rows wait: the process holds until
+	//    the listener has refused each prompt twice, and both rows are still in the outbox then.
 	idleRigEventually(t, idleRigPodWait, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
-	idleRigEventually(t, idleRigRecordWait, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
-		var left int
-		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
-			issue.key, string(record.OutboxKindHookPrompt)).Scan(&left); err != nil {
-			t.Fatalf("read the outbox rows of %s: %v", issue.key, err)
-		}
-		return left == 0
-	})
+	for _, prompt := range []record.HookPrompt{hook, loop} {
+		idleRigEventually(t, idleRigRecordWait, "the listener refusing the "+prompt.Hook+" prompt to "+issue.key+" twice", func() bool {
+			return idleRigNoSessionRefusals(rig, "Legion hook "+prompt.Hook+" on "+issue.key+":") >= 2
+		})
+	}
+	if left := idleRigHookRows(t, rig, issue); left != 2 {
+		t.Fatalf("after two refusals of each prompt, %d hook-prompt rows of %s are left, want both waiting for a session to hold the role", left, issue.key)
+	}
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true})
+	idleRigEventually(t, idleRigRecordWait, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
+		return idleRigHookRows(t, rig, issue) == 0
+	})
 
 	// 4. The pod comes back once. The first row's wake is the one resume: a later attempt of
 	//    either row finds the claim no longer released and wakes nothing, and the listener's wake
-	//    report beside each kept publish meets the resume that wake opened.
+	//    report beside each refused publish meets the resume that wake opened.
 	rig.awaitResumed(issue, registered+1)
 	if resumes := rig.resumesOf(issue); len(resumes) != 1 || resumes[0].Kind != pods.WakeDelivery {
 		t.Errorf("the resumes of %s are recorded as %+v, want one, of kind %q", issue.key, resumes, pods.WakeDelivery)
 	}
 
-	// 5. Each message was kept for the role's next live holder, so the woken session's
-	//    registration, or its claim of the role, is what hands it over (drainKeptRole): each
+	// 5. Each row's attempt after the woken session holds the role delivers its prompt, so each
 	//    reaches that session once, and nothing sends either again. The daemon publishes a role
 	//    message's text as its payload too, which the listener carries as a JSON document
 	//    (notify's Publish), and the session records that payload, so it is the text's JSON
 	//    encoding that is counted.
 	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, hook.Message(issue.key)))
 	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, loop.Message(issue.key)))
+}
+
+// idleRigHookRows is how many hook-prompt rows of issue the outbox holds.
+func idleRigHookRows(t *testing.T, rig *idleWakeRig, issue idleRigIssue) int {
+	t.Helper()
+	var left int
+	if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
+		issue.key, string(record.OutboxKindHookPrompt)).Scan(&left); err != nil {
+		t.Fatalf("read the outbox rows of %s: %v", issue.key, err)
+	}
+	return left
+}
+
+// idleRigNoSessionRefusals is how many publishes the rig's listener refused with nothing kept
+// because they named no source session while no live session held the role, of a message whose
+// first line begins with header: its request line (`listener publish`) with the outcome
+// role_no_source_session, whose payload_summary begins as the message does.
+func idleRigNoSessionRefusals(rig *idleWakeRig, header string) int {
+	refused := 0
+	for _, line := range strings.Split(rig.listener.log(), "\n") {
+		var entry struct {
+			Msg            string `json:"msg"`
+			Outcome        string `json:"outcome"`
+			PayloadSummary string `json:"payload_summary"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		if entry.Msg == "listener publish" && entry.Outcome == "role_no_source_session" && strings.HasPrefix(entry.PayloadSummary, header) {
+			refused++
+		}
+	}
+	return refused
 }
 
 // idleRigPublishedText is text as a role session records a message the daemon published: the

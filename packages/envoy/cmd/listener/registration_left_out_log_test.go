@@ -26,6 +26,9 @@ import (
 // entry an earlier run stored, at a time that clock read ahead of the wall clock, suppresses this
 // run's first lines.
 func TestARegistrationLogsALeftOutTopicOncePerSessionAndTopicAnHour(t *testing.T) {
+	// Not parallel: it swaps the clock and memory of registrationLeftOutLogs, the one limiter
+	// of every registration in the process (leftOutLogLimiter.isolate), and asserts on the
+	// lines that limiter lets through.
 	const (
 		leftLine = "listener left a topic out of the session's consumer filter"
 		first    = "ses_registration_log_first"

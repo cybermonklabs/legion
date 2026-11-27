@@ -194,6 +194,10 @@ type serverChangeRun struct {
 // crosses the hub, and through the holder's listener H, so the publish route runs on the machine
 // the stand-in registered through.
 func TestServerChange(t *testing.T) {
+	// Not parallel: it orders each disruption by a time.Sleep, opening the stand-in's gates 1.5 s
+	// after its drop (serverChangeGateWindow), inside its 2 s reconnect wait, and requires each
+	// 3 s quiet window (serverChangeQuiet) to pass with the stand-in unmoved and every message
+	// received.
 	runs := []serverChangeRun{
 		{name: "senders through S"},
 		{name: "senders through H", sendThroughHolder: true},

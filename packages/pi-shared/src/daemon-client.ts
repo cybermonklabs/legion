@@ -1,3 +1,4 @@
+import { mayHaveReachedServer, outage, retryAfterMs } from "@legion/contracts/http-status";
 import {
   type LegionActivityRequest,
   LegionAgentActionResponse,
@@ -325,19 +326,26 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
-/** The daemon answered with a status that is not success. `detail` is the sentence it put
- * under `error`; workflow refusals also carry their stable `code`. A refusal the daemon wrote
- * says what it refused. A non-success answer this build cannot read as a refusal carries no code,
- * and its `detail` names the body's length in bytes, the contract this build speaks, the contract
- * the daemon stated and which side is behind, and quotes no part of the body, as
- * `LegionDaemonContractError` does for a success this build cannot read. */
+/** A request was answered with a status that is not success. `refusalShape` says by whom: true
+ * where the body was the daemon's refusal shape (`LegionErrorResponse`), which is the daemon's
+ * own answer, and false for any other body, such as a proxy's page in front of the daemon or an
+ * empty body. In the refusal shape, `detail` is the sentence the daemon put under `error`, and
+ * `code` the stable code workflow and credential refusals carry beside it; a refusal the daemon
+ * wrote says what it refused. Any other body carries no code, and its `detail` names the body's
+ * length in bytes, the contract this build speaks, the contract the daemon stated and which side
+ * is behind, and quotes no part of the body, as `LegionDaemonContractError` does for a success
+ * this build cannot read. `retryAfterMs` is the wait the answer's `Retry-After` header asked for
+ * (`retryAfterMs` of `@legion/contracts/http-status`), 0 where it sent none: a proxy's 429 or 503
+ * can send one, which the ready's retry waits within its bound (`callReadyWithRetry`). */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
     readonly code: string | undefined,
-    readonly detail: string
+    readonly detail: string,
+    readonly refusalShape: boolean,
+    readonly retryAfterMs: number
   ) {
     super(
       `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
@@ -396,9 +404,14 @@ export class LegionDaemonContractError extends Error {
   }
 }
 
-// Bounds retries of the transient `claims/ready` request.
+// Bounds retries of the transient `claims/ready` request: three attempts, the waits between them
+// 1 s, or as long as the answer's `Retry-After` asks but never longer than 30 s. So the retry
+// waits at most 60 s, well inside the daemon's registration deadline, whose default is 360 s
+// (`worker_boot_timeout_seconds` 120 times `worker_boot_registration_deadline_intervals` 3), past
+// which the daemon relaunches a pane that never said it was ready.
 const READY_RETRY_ATTEMPTS = 3;
 const READY_RETRY_DELAY_MS = 1_000;
+const READY_RETRY_AFTER_MAX_MS = 30_000;
 
 function isNetworkOrTimeoutError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -420,18 +433,38 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
   );
 }
 
-/** Runs a ready request, retrying only one that can pass on its own: a 5xx or a network failure.
- * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its
- * `claims/ready` through it, at boot and after each role regain. Each failed attempt is said on
- * `log`, the host's own writer.
+/** Runs a ready request, retrying only one that can pass on its own: an outage (`outage`: a 5xx, a
+ * 408 or a 429) or a network failure. It asks an outage again whatever its body, a body in the
+ * daemon's refusal shape included, where `daemonUnreachable` asks none such again: the ready
+ * route's own 503 is the daemon's refusal and means "try the ready again" (the daemon could not
+ * queue the publication of the issue's role sessions: `ready` in
+ * packages/daemon/internal/api/claims.go). The daemon answers no 408 and no 429 itself, so either
+ * is a proxy between the session and the daemon. Each Legion host's claim (pi-legion's claim
+ * session, claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each
+ * role regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
+ * answer's `Retry-After` asks for where that is longer, but never longer than
+ * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. Each
+ * failed attempt is said on `log`, the host's own writer.
  *
  * `signal` aborts when the host stops (R24 of dispatch://INFRA-3589). From then on nothing is
  * said and no attempt is made: a wait for the next attempt ends at once, and the call throws the
- * last attempt's error. */
+ * last attempt's error. `sleep` is the wait, a test's own, which ends at once when the signal it
+ * is given aborts. */
 export async function callReadyWithRetry(
   label: string,
   call: () => Promise<void>,
-  host: { readonly log: (line: string) => void; readonly signal?: AbortSignal | undefined }
+  host: { readonly log: (line: string) => void; readonly signal?: AbortSignal | undefined },
+  sleep: (ms: number, signal: AbortSignal | undefined) => Promise<void> = (ms, signal) => {
+    const waited = Promise.withResolvers<void>();
+    const timer = setTimeout(waited.resolve, ms);
+    const stop = (): void => {
+      clearTimeout(timer);
+      waited.resolve();
+    };
+    if (signal?.aborted === true) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+    return waited.promise.finally(() => signal?.removeEventListener("abort", stop));
+  }
 ): Promise<void> {
   const { log, signal } = host;
   // Read afresh at each use: the abort comes while an attempt or a wait is pending.
@@ -443,26 +476,19 @@ export async function callReadyWithRetry(
     } catch (error) {
       const retryable =
         error instanceof LegionDaemonApiError
-          ? error.status >= 500 && error.status < 600
+          ? outage(error.status)
           : isNetworkOrTimeoutError(error);
       if (!retryable || stopped()) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
         log(`${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
       }
+      const asked = error instanceof LegionDaemonApiError ? error.retryAfterMs : 0;
+      const wait = Math.min(Math.max(READY_RETRY_DELAY_MS, asked), READY_RETRY_AFTER_MAX_MS);
       log(
-        `${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying: ${messageFor(error)}`
+        `${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
       );
-      const retryDelay = Promise.withResolvers<void>();
-      const timer = setTimeout(retryDelay.resolve, READY_RETRY_DELAY_MS);
-      const stop = (): void => {
-        clearTimeout(timer);
-        retryDelay.resolve();
-      };
-      if (stopped()) stop();
-      else signal?.addEventListener("abort", stop, { once: true });
-      await retryDelay.promise;
-      signal?.removeEventListener("abort", stop);
+      await sleep(wait, signal);
       if (stopped()) throw error;
     }
   }
@@ -484,16 +510,21 @@ export const DAEMON_RESTART_BUDGET_MS = 10 * 60_000;
 const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
-/** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent);
- * `dropped` may have reached it (a connection reset or closed before a response, or a 502 or 503
- * from a proxy in front of it, whose body is not the daemon's refusal shape). Undefined for an
- * answer the daemon gave, which is never retried: a 4xx above all, and the daemon's own 502/503,
- * which carry a code. */
+/** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent: a
+ * refused connection, or a 429 whose body is not the daemon's refusal shape, a proxy in front of
+ * the daemon turning the request away before it forwarded anything); `dropped` may have reached it
+ * (a connection reset or closed before a response, or a 5xx or a 408 whose body is not the
+ * daemon's refusal shape: a proxy's page, which it may have sent once the daemon had the request,
+ * as a proxy whose own timeout ran out after it forwarded the request answers 408). Each of those
+ * statuses is an outage (`outage`), and `mayHaveReachedServer` says which of the two it is.
+ * Undefined for everything else, which is never retried: a body in the daemon's refusal shape
+ * (`refusalShape`), which is the daemon's answer whatever its status and whether or not it
+ * carries a code, such as a claim route's 500 that names no code or the 502 `DISPATCH_FAILED`;
+ * and any other body whose status is not an outage, which answers the same request the same way. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
   if (error instanceof LegionDaemonApiError) {
-    return (error.status === 502 || error.status === 503) && error.code === undefined
-      ? "dropped"
-      : undefined;
+    if (error.refusalShape || !outage(error.status)) return undefined;
+    return mayHaveReachedServer(error.status) ? "dropped" : "refused";
   }
   if (!(error instanceof Error)) return undefined;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
@@ -680,6 +711,7 @@ export function createLegionDaemonClient(
     const text = await response.text();
     const daemonContract = statedContract(response.headers);
     if (response.ok) return { status: response.status, text, daemonContract };
+    const asked = retryAfterMs(response.headers);
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(
@@ -687,7 +719,9 @@ export function createLegionDaemonClient(
         path,
         response.status,
         refusal.value.code,
-        refusal.value.error
+        refusal.value.error,
+        true,
+        asked
       );
     }
     // A body that is not the daemon's refusal was written by something in its place, which can
@@ -697,7 +731,9 @@ export function createLegionDaemonClient(
       path,
       response.status,
       undefined,
-      `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`
+      `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`,
+      false,
+      asked
     );
   };
 

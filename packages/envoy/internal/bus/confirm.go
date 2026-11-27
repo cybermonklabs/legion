@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // ErrPublishDenied is returned, wrapping nats.ErrPermissionViolation and the server's own text,
@@ -205,7 +207,19 @@ func observeWithin(ctx context.Context, conn *nats.Conn) (connState, bool) {
 // one publish, is rare. So it is accepted.
 func confirmPublished(ctx context.Context, conn *nats.Conn, subject string, before connState) error {
 	after, answered := observeWithin(ctx, conn)
-	if !answered || !after.connected || after.reconnects != before.reconnects {
+	after.connected = after.connected && answered
+	return confirmedAcross(subject, before, after)
+}
+
+// confirmedAcross is confirmPublished's judgment of a core publish to subject from the connection's
+// state observed before the publish and after its flush. The connection's last error, when it
+// changed and is no denial of this publish, prints by its class (natsconn.ConnectionClass), as every
+// NATS line of the bus does, and stays beneath for errors.Is: a server's -ERR that nats.go names no
+// refusal for sets the last error to the server's text just before nats.go closes the connection,
+// so an observation between the two holds that text, and nats.go's own fixed words and a server's
+// named refusal print as they are.
+func confirmedAcross(subject string, before, after connState) error {
+	if !after.connected || after.reconnects != before.reconnects {
 		return fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", ErrPublishUnconfirmed, subject)
 	}
 	if sameError(after.lastError, before.lastError) {
@@ -215,7 +229,7 @@ func confirmPublished(ctx context.Context, conn *nats.Conn, subject string, befo
 		return denied
 	}
 	return fmt.Errorf("bus: %w: NATS reported an error during the publish to %q: %w",
-		ErrPublishUnconfirmed, subject, after.lastError)
+		ErrPublishUnconfirmed, subject, natsconn.ConnectionError(after.lastError))
 }
 
 // publishDenial names err as ErrPublishDenied when it is the server's refusal of a publish to

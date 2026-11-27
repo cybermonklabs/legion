@@ -1,3 +1,4 @@
+import { outage } from "@legion/contracts/http-status";
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -92,7 +93,7 @@ export interface LegionClaimBoot {
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`; the
  * host's first-turn signal registered (`onFirstTurn`), which is why a turn that starts while the
  * ready below is still being retried is not lost; `afterRegister`; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
+ * `claims/ready`, retried on an outage or a transport failure (`callReadyWithRetry`); the regain
  * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
  * after this function has settled, the Envoy role claimed at the first turn the signal reported
  * or at the bound, whichever comes first.
@@ -113,16 +114,16 @@ export interface LegionClaimBoot {
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
- * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration are logged and `stop` the agent, since neither changes on retry. Any other
- * refusal of the registration (a 5xx) is logged and rejects, as a request that never reached the
- * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
- * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
- * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes. A refusal of the registration, and a failure
- * after a registration, once the host's `signal` aborted - the host stopping - is not logged,
- * and a failure after a registration is not stopped on either: the host's stop ends the agent
- * itself.
+ * A registration the daemon refuses (a 4xx other than a 408 or a 429: a spent boot token, another
+ * contract) and any failure after a registration are logged and `stop` the agent, since neither
+ * changes on retry. An outage at the registration (`outage`: a 5xx, a 408 or a 429) is logged and
+ * rejects, as a request that never reached the daemon does unlogged: both leave the agent to the
+ * daemon's registration deadline. A claim the listener refuses is logged and stops the agent in
+ * exactly the same words, now after the daemon may have delivered a task: the relaunch re-sends a
+ * delivery that is pending and unconfirmed, the path a death inside a turn already takes. A
+ * refusal of the registration, and a failure after a registration, once the host's `signal`
+ * aborted - the host stopping - is not logged, and a failure after a registration is not stopped
+ * on either: the host's stop ends the agent itself.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -135,7 +136,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     if (host.signal?.aborted !== true) {
       host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
     }
-    if (error.status < 400 || error.status >= 500) throw error;
+    if (error.status < 400 || outage(error.status)) throw error;
     host.stop();
     return { claimed: Promise.resolve() };
   }
@@ -202,8 +203,8 @@ function stopAfterRegistration(host: LegionClaimHost, role: string, error: unkno
  * claim step hands itself over: the step runs at once for a turn that has already started, and
  * at the signal otherwise.
  *
- * It exists because the claim step comes after `claims/ready`, and that ready is retried (a 5xx,
- * a transport failure). The daemon's task can reach the session while those retries run — the
+ * It exists because the claim step comes after `claims/ready`, and that ready is retried (an
+ * outage, a transport failure). The daemon's task can reach the session as those retries run — the
  * daemon took the first ready and its answer was lost — so the turn it starts would otherwise
  * find no step to run and the name would be taken only at the bound (INFRA-1573). A host may
  * report the same turn more than once — pi-legion reports one it kept from before this call and

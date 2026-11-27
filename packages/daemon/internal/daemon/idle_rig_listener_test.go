@@ -32,6 +32,7 @@ import (
 type idleRigListener struct {
 	t      *testing.T
 	url    string
+	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
 	// socket is the test's descriptor of the listening socket on port, which each start inherits
@@ -113,7 +114,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), cmd: cmd, socket: socket, port: port,
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, socket: socket, port: port,
 		client: &http.Client{Timeout: 10 * time.Second}}
 	var once sync.Once
 	l.stop = func() {
@@ -142,6 +143,16 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		return body.Status == "healthy"
 	})
 	return l
+}
+
+// log is the listener's own output so far, which a test reads its request lines from
+// (idleRigNoSessionRefusals).
+func (l *idleRigListener) log() string {
+	read, err := os.ReadFile(l.logs)
+	if err != nil {
+		return "(the listener's log could not be read: " + err.Error() + ")"
+	}
+	return string(read)
 }
 
 // publish publishes one message to a topic, as a sender's envoy_publish does. It answers the

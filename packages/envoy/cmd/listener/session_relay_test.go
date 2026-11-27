@@ -354,6 +354,8 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 // holds the message for an ack, and after done it holds nothing. The frame carries the contract's
 // headers.
 func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
+	// Not parallel: it orders its check that a received answer alone leaves the frame unacked by
+	// a 300 ms time.Sleep, a quiet window load can overrun so that a wrong ack lands after it.
 	rig := newRelayRig(t)
 	const sessionID = "ses_ack_on_done"
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
@@ -609,6 +611,8 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 // unanswered frame and the one stored during the pause, in stream order, which a session that is
 // answering again takes once.
 func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *testing.T) {
+	// Not parallel: it holds the relay's receipt wait to its 500 ms bound (newRelayRigReceipt),
+	// and a 900 ms quiet window that must end before the 2 s pause sends again.
 	// Shorter than the production bounds, long enough that the silent window below ends before
 	// the first probe: the relay sends again receipt + pauseFirst after the frame it got no
 	// answer for. The receipt wait is this row's own rather than production's three seconds,
@@ -650,6 +654,8 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 
 // A registration resumes a paused relay at once, long before its backoff would send again.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
+	// Not parallel: it holds the relay's receipt wait to its 500 ms bound (newRelayRigReceipt):
+	// the relay must pause within 1 s of the unanswered frame, then send nothing for 1.5 s.
 	// A backoff no test waits out: only the registration can make the relay send again here.
 	// The receipt wait is this row's own, as in the row above.
 	const receipt = 500 * time.Millisecond
@@ -789,6 +795,7 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 // bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to deliver
 // the message again.
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
+	t.Parallel()
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
@@ -1161,6 +1168,8 @@ func grantConfigBeforeSessionConsumers(public string) string {
 // which probes the grant again. The refusal is logged once. Without the backoff every heartbeat
 // of every session would call the server and log a permissions violation there and here.
 func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	server, uri := testnats.StartConfig(t, grantConfigBeforeSessionConsumers(public), []string{"-DV", "-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)

@@ -150,8 +150,9 @@ var dnsName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z
 
 // parseAllowedHosts reads ENVOY_ALLOWED_HOSTS: comma-separated host names or addresses, blank
 // entries skipped. An entry that is not a host name or an IP address (one carrying a port, a
-// scheme, a path or a stray bracket) is refused naming it, since a Host is compared by its name
-// alone.
+// scheme, a path or a stray bracket) is refused naming its position in the list, never its text,
+// which can be a credential or a URL holding one pasted there, since a Host is compared by its
+// name alone.
 //
 // CheckAllowedHosts in github.com/sjawhar/envoy/infra/core carries this rule by hand on the
 // plugin's side, so a component is refused before it deploys a listener that would not boot, and
@@ -162,7 +163,7 @@ var dnsName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z
 // rules and pins that asymmetry.
 func parseAllowedHosts(raw string) ([]string, error) {
 	var hosts []string
-	for _, entry := range strings.Split(raw, ",") {
+	for index, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -170,7 +171,7 @@ func parseAllowedHosts(raw string) ([]string, error) {
 		_, _, withPort := net.SplitHostPort(entry)
 		name := HostName(entry)
 		if withPort == nil || !hostEntry.MatchString(entry) || (net.ParseIP(name) == nil && !dnsName.MatchString(name)) {
-			return nil, fmt.Errorf("invalid ENVOY_ALLOWED_HOSTS entry %q: want a host name or address with no port, scheme or path", entry)
+			return nil, fmt.Errorf("invalid ENVOY_ALLOWED_HOSTS entry %d: want a host name or address with no port, scheme or path", index+1)
 		}
 		hosts = append(hosts, name)
 	}

@@ -910,6 +910,7 @@ func TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges(t *testing.
 // apply starts on the entry's change. The edge side, where the resume does fire, is
 // TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
 func TestAHubRoleClaimSendsNoRelayResume(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	relay := &recordingRelay{}
 	rig.deps.consumers.relay = relay
@@ -1191,6 +1192,8 @@ func listenerGrantBeforeSessionConsumers() []string {
 // reports one as live. The grant is the negative control: the same registration on a hub that
 // carries session consumers is answered consumer (the tests above).
 func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -1290,6 +1293,7 @@ func fillConsumerLimit(t *testing.T, client *bus.Client, limit int) {
 // holds is answered consumer delivery after that refusal: the cap refuses creates alone, which is
 // why this refusal takes no listener-wide backoff as no_grant does.
 func TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	const limit = 8
 	url := testnats.URL(t)
 	cappedNotificationStream(t, url, limit)

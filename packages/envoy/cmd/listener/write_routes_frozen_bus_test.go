@@ -130,6 +130,8 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 // read-then-delete. The negative control is each route asked before the freeze, on the same rig,
 // for a session of its own: each is served.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
+	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
 	const (
 		topic         = "notifications.team.write-routes"
 		otherTopic    = "notifications.team.write-routes-other"
@@ -231,6 +233,8 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 // past its budget either. The negative control is a hard claim of another role
 // (role-store-control) by the same claimant on the same rig before the freeze: it is served.
 func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
+	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
 	const claimant = "ses_role_store_claimant"
 	for _, freeze := range []struct {
 		name, trigger, body string
