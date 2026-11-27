@@ -38,8 +38,24 @@ import (
 // named it again — the second telling the architect ruled acceptable
 // (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410), which the oracle now
 // accepts once and only after such a failed write (keptRun.tell, afterFailedWrite). They run at
-// 300 steps because that is where each reaches it; 41 reaches its fault, and 262 its first, only
-// on some schedules of their rows.
+// 300 steps because that is where each reaches it; 262 reaches its first only on some schedules of
+// its rows. 41, 427 and 701 reached their faults on some schedules only, so each runs under a seek
+// that steers its run to the state of its fault (keptFaultSeeds), in this test and in
+// TestEachKeptFaultSeedReachesTheStateOfItsFault: 41 under seekToldAgainAfterAFailedWrite, whose
+// failed write is the told mark of a catch-up telling (toldKept), the one telling write whose
+// failure leaves the row untold and unclaimed for a ready's drop, so the fresh catch-up names the
+// decision again; 427 under seekDropBesideADeliveringTelling, which crashes a catch-up after its
+// receipt timeout and drops its tree's catch-ups while that row runs again and delivers beside its
+// re-held copy; and 701 under seekSpentRehold, which races a catch-up and its copies with receipt
+// timeouts, while their architect holds its launch, until the last copy's re-holds are spent, and
+// then holds that state open for the rest of the run: the drive leaves out the listener's switch
+// (togglePublisher) and switches a listener that refuses or denies to delivering, so quiesce does
+// not relaunch the held architect after a refusal (relaunchAfterRefusal), and for the held tree it
+// leaves out the death of the process in a task's turn (deathInTheTasksTurn), the root's park
+// where that tree is the root, and the adoption of the queued root into it (adoptQueued); so only
+// the spent branch's own hand-over (spentKept) can name what the spent copy claimed. The hold
+// changes no other seed's drive. Each seek steers the catch-ups of every tree the run drives, the
+// root's and those of the trees its members leave it for.
 var keptLongRegressionSeeds = []int64{11, 41, 48, 69, 73, 96, 125, 262, 311, 363, 365, 366, 367, 388, 414, 427, 432, 459, 475, 479, 701}
 
 // keptShortRegressionSeeds are the seeds whose runs at the default length found faults earlier in
@@ -64,6 +80,9 @@ func TestKeptDecisionsRegressionSeeds(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%d-at-300-steps", seed), func(t *testing.T) {
 			t.Parallel()
 			run := newKeptRun(t, seed, 300)
+			if seek := keptFaultSeek(seed); seek != nil {
+				seek(run)
+			}
 			run.drive()
 			run.quiesce()
 			run.held()
@@ -83,7 +102,7 @@ func TestKeptDecisionsRegressionSeeds(t *testing.T) {
 }
 
 // keptFaultSeed pairs one regression seed of keptLongRegressionSeeds with the fault state it is
-// kept for, the seek that steers the run to that state (none until the seeks are added), and the
+// kept for, the seek that steers the run to that state (kept_decision_faults_test.go), and the
 // marker that counts how many times the run reached it.
 type keptFaultSeed struct {
 	seed   int64
@@ -93,9 +112,26 @@ type keptFaultSeed struct {
 }
 
 var keptFaultSeeds = []keptFaultSeed{
-	{seed: 41, fault: keptFaultToldAgainAfterAFailedWrite, marker: func(r *keptRun) int64 { return r.faults.toldAgainAfterAFailedWrite.Load() }},
-	{seed: 427, fault: keptFaultDropBesideADeliveringTelling, marker: func(r *keptRun) int64 { return r.faults.dropBesideADeliveringTelling.Load() }},
-	{seed: 701, fault: keptFaultSpentRehold, marker: func(r *keptRun) int64 { return r.faults.spentRehold.Load() }},
+	{seed: 41, fault: keptFaultToldAgainAfterAFailedWrite,
+		seek:   func(r *keptRun) { r.seekToldAgainAfterAFailedWrite = true },
+		marker: func(r *keptRun) int64 { return r.faults.toldAgainAfterAFailedWrite.Load() }},
+	{seed: 427, fault: keptFaultDropBesideADeliveringTelling,
+		seek:   func(r *keptRun) { r.seekDropBesideADeliveringTelling = true },
+		marker: func(r *keptRun) int64 { return r.faults.dropBesideADeliveringTelling.Load() }},
+	{seed: 701, fault: keptFaultSpentRehold,
+		seek:   func(r *keptRun) { r.seekSpentRehold = true },
+		marker: func(r *keptRun) int64 { return r.faults.spentRehold.Load() }},
+}
+
+// keptFaultSeek is the seek the regression seed runs under, nil for a seed kept for no fault
+// state of keptFaultSeeds: each seek is set for its own seed alone, in both tests that run it.
+func keptFaultSeek(seed int64) func(*keptRun) {
+	for _, fault := range keptFaultSeeds {
+		if fault.seed == seed {
+			return fault.seek
+		}
+	}
+	return nil
 }
 
 // Each of seeds 41, 427 and 701 of keptLongRegressionSeeds is kept for a named fault of the

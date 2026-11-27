@@ -378,9 +378,13 @@ type keptForgetStore struct {
 	fails atomic.Bool
 	run   *keptRun
 	// failedTellings is every catch-up telling, by the outbox row its publish went out under (the
-	// row a re-held copy copies), whose forget failed: the telling's own write did not commit, so
-	// the decision it told stands kept and a later catch-up may name it again (held, tell).
+	// row a re-held copy copies), whose forget or told mark failed: the telling's own write did not
+	// commit, so the decision it told stands kept and a later catch-up may name it again (held,
+	// tell).
 	failedTellings sync.Map
+	// failsToldMark arms the failure of the next told mark of a catch-up telling (MarkProcessed),
+	// which only the seek of seed 41's state arms (seekToldAgainAfterAFailedWrite).
+	failsToldMark atomic.Bool
 }
 
 func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, root string, kept record.KeptDecisions, row int64) error {
@@ -396,7 +400,8 @@ func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, ro
 	return s.Store.ForgetKeptDecisions(ctx, tx, root, kept, row)
 }
 
-// tellingFailed is whether the catch-up telling published under row had its forget fail.
+// tellingFailed is whether the catch-up telling published under row had its forget or its told
+// mark fail.
 func (s *keptForgetStore) tellingFailed(row int64) bool {
 	_, failed := s.failedTellings.Load(row)
 	return failed
@@ -829,6 +834,24 @@ type keptRun struct {
 	// the time the race op runs so DropCatchUps can read it.
 	faults     keptFaultMarkers
 	delivering atomic.Int64
+	// seekToldAgainAfterAFailedWrite, seekDropBesideADeliveringTelling and seekSpentRehold each
+	// steer the drive to the fault state of one regression seed (41, 427 and 701), until that
+	// state's marker has fired, as seekHeldHandOver steers it to the hand-over: whenever a step of
+	// the way there is enabled, the drive takes that step rather than the generator's pick
+	// (faultSeekSteps), runRow and raceRow take the row the seek needs (soughtRow, soughtRace), a
+	// race runs the operation and draws the answer it needs (soughtRaceOp, soughtRaceMode), and
+	// runRow loses a finish to a crash where the seek needs it (crashesForTheDrop). Without a seek
+	// those states come only on some schedules, which a regression seed must not depend on. Only
+	// the regression seeds' tests set one, each for its seed alone (keptFaultSeeds), and what each
+	// takes is in kept_decision_faults_test.go.
+	seekToldAgainAfterAFailedWrite   bool
+	seekDropBesideADeliveringTelling bool
+	seekSpentRehold                  bool
+	// spentHold is the tree whose architect the seek of seed 701's state holds at its launch once
+	// that state's marker has fired (holdTheSpentState), nil until then and in every run whose
+	// seek is not seekSpentRehold: the drive leaves out each step that would end, refuse or
+	// relaunch that architect or give it a new launch (spentHolding, spentHoldOn).
+	spentHold *keptTree
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -1203,9 +1226,18 @@ func (r *keptRun) drive() {
 }
 
 // enabled is every operation the model state allows now, in a fixed order so one seed always picks
-// the same one.
+// the same one. While a fault seek has a step to take, it is the steps that seek allows
+// (faultSeekSteps); while the seek of seed 701's state holds that state open, the steps that would
+// end it are left out (spentHolding, spentHoldOn).
 func (r *keptRun) enabled() []func() {
-	ops := []func(){r.toggleForget, r.togglePublisher, r.toggleLaunch, r.restartDaemon}
+	if sought := r.faultSeekSteps(); sought != nil {
+		return sought
+	}
+	ops := []func(){r.toggleForget}
+	if !r.spentHolding() {
+		ops = append(ops, r.togglePublisher)
+	}
+	ops = append(ops, r.toggleLaunch, r.restartDaemon)
 	if !r.architectHears(r.root) {
 		ops = append(ops, r.decide)
 	}
@@ -1218,7 +1250,7 @@ func (r *keptRun) enabled() []func() {
 	if !r.queued.handed && r.waitsForItsSlot(r.queued) {
 		ops = append(ops, r.decideQueued)
 	}
-	if r.root.issue.Status == "in_progress" && !r.root.issue.Lingers() {
+	if r.root.issue.Status == "in_progress" && !r.root.issue.Lingers() && !r.spentHoldOn(r.root) {
 		ops = append(ops, r.park)
 	}
 	if record.OutOfWorkflow(r.root.issue.Status) && !r.root.issue.Lingers() {
@@ -1242,7 +1274,7 @@ func (r *keptRun) enabled() []func() {
 	if !reserved && r.orphanEnabled() {
 		ops = append(ops, r.orphanChild)
 	}
-	if !r.queued.handed && r.adoptionTarget() != nil {
+	if !r.queued.handed && r.adoptionTarget() != nil && !r.spentHoldOn(r.adoptionTarget()) {
 		ops = append(ops, r.adoptQueued)
 	}
 	if !reserved && r.closeEnabled() {
@@ -1281,7 +1313,7 @@ func (r *keptRun) enabled() []func() {
 		if r.lateRefusalEnabled(tree) {
 			ops = append(ops, func() { r.lateRefusalAfterAConfirmation(tree) })
 		}
-		if r.deathEnabled(tree) {
+		if r.deathEnabled(tree) && !r.spentHoldOn(tree) {
 			ops = append(ops, func() { r.deathInTheTasksTurn(tree) })
 		}
 	}
@@ -2109,10 +2141,15 @@ func (r *keptRun) mirroredBlockers(key string) []string {
 // noteCrash records the lease it left. The run lapses it keptCrashLapseSteps drive steps later
 // (lapseCrashes), and the row runs again at a later step under a fresh claim. A row whose run
 // failed is settled as its lane settles it (runOne). While the drive seeks the hand-over inside a
-// held task, a start of the root that names kept decisions is the row it runs (soughtStart).
+// held task, a start of the root that names kept decisions is the row it runs (soughtStart); while
+// a fault seek needs a row run, it is that row (soughtRow), and the finish is lost to a crash where
+// that seek needs it (crashesForTheDrop).
 func (r *keptRun) runRow() {
 	due := r.claimable()
 	pick := r.soughtStart(due)
+	if pick < 0 {
+		pick = r.soughtRow(due)
+	}
 	if pick < 0 {
 		pick = r.rng.IntN(len(due))
 	}
@@ -2122,7 +2159,7 @@ func (r *keptRun) runRow() {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
 	claimed, runErr := r.runOne(keptSiteRunRow, &row, payload)
-	crashed := claimed && runErr == nil && r.rng.IntN(6) == 0
+	crashed := claimed && runErr == nil && (r.rng.IntN(6) == 0 || r.crashesForTheDrop(row))
 	if claimed && runErr == nil && !crashed {
 		if err := r.finishRow(row); err != nil {
 			r.fatalf("finish outbox row %d: %v", row.ID, err)
@@ -2223,10 +2260,16 @@ func (r *keptRun) runTogether() {
 // the generation the catch-up states, while the row that is publishing still claims the decisions
 // it names. The row an operation runs is claimed as the race is prepared (prepareRace) and the
 // catch-up just before its run (runOne), so both are claimed before the publish starts, as two
-// lanes each hold their claim before they run their row.
+// lanes each hold their claim before they run their row. While a fault seek races a catch-up, it
+// is that catch-up, the operation and the answer that seek needs (soughtRace, soughtRaceOp,
+// soughtRaceMode).
 func (r *keptRun) raceRow() {
 	catchUps := r.keptCatchUps(r.claimable())
-	row := catchUps[r.rng.IntN(len(catchUps))]
+	pick := r.soughtRace(catchUps)
+	if pick < 0 {
+		pick = r.rng.IntN(len(catchUps))
+	}
+	row := catchUps[pick]
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
@@ -2235,8 +2278,16 @@ func (r *keptRun) raceRow() {
 	if len(ops) == 0 {
 		r.fatalf("no operation to interleave with the publish of outbox row %d", row.ID)
 	}
-	race := r.prepareRace(ops[r.rng.IntN(len(ops))])
-	race.mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
+	op := r.soughtRaceOp(row, ops)
+	if op < 0 {
+		op = r.rng.IntN(len(ops))
+	}
+	race := r.prepareRace(ops[op])
+	mode, sought := r.soughtRaceMode(row)
+	if !sought {
+		mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
+	}
+	race.mode = mode
 	r.markDelivering(race, row.ID)
 	answered := r.publisher.answers()
 	r.publisher.arm(race)
