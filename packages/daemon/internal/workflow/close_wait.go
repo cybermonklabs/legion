@@ -87,9 +87,12 @@ func (e *Engine) closeWaitFrom(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // openChildren is each child of the read's Dispatch issue that the children-first rule reads as
-// open (record.ChildOpen) and that the record does not hold in the workflow: a child the record
-// holds in the workflow is an issue beneath, whose own record judges it. So no close comes past a
-// child Dispatch holds open, whatever the daemon's copy of Dispatch holds.
+// open (record.ChildOpen) and that the issues beneath do not already count: a child the record
+// holds in the workflow as a member of this tree is an issue beneath (record.OpenBeneath), whose
+// own record judges it. A child that is a tree of its own is no member, so OpenBeneath never
+// counts it, and it is kept here as ChildOpen answers, its record read from the store whatever
+// tree holds it. So no close comes past a child Dispatch holds open, whatever the daemon's copy of
+// Dispatch holds.
 func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatch.IssueChild, members []record.Issue) ([]string, error) {
 	byKey := make(map[string]record.Issue, len(members))
 	for _, member := range members {
@@ -97,10 +100,9 @@ func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatc
 	}
 	var open []string
 	for _, child := range children {
-		var recorded *record.Issue
-		if member, ok := byKey[child.Key]; ok {
-			recorded = &member
-		} else {
+		member, beneath := byKey[child.Key]
+		recorded := &member
+		if !beneath {
 			read, err := e.store.Issue(ctx, tx, child.Key)
 			if err != nil {
 				return nil, err
@@ -110,7 +112,7 @@ func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatc
 		if !record.ChildOpen(record.DispatchIssueRow{Key: child.Key, Status: child.Status}, recorded) {
 			continue
 		}
-		if recorded != nil && record.InWorkflow(*recorded) {
+		if beneath && record.InWorkflow(member) {
 			continue
 		}
 		open = append(open, child.Key)
