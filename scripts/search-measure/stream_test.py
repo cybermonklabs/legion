@@ -135,7 +135,7 @@ def harvest_routes():
         "/api/v1/issues/ALPHA-1/asks": [ask("ask-a1")],
         "/api/v1/issues/ALPHA-1/messages": [
             {"message": message("m-1"), "replies": [message("m-2", "m-1", replies=[message("m-3", "m-2")])]},
-            {"message": message("m-4"), "replies": []},
+            {"message": message("m-4", target="role:reviewer"), "replies": []},
         ],
         "/api/v1/issues/ALPHA-2/comments": [],
         "/api/v1/issues/ALPHA-2/asks": [],
@@ -181,7 +181,7 @@ HARVESTED_MESSAGES = [
     {"id": "m-3", "issue_key": "ALPHA-1", "body": "The body of m-3", "created_at": "2026-11-03T10:00:00Z",
      "in_reply_to": "m-2", "target": None},
     {"id": "m-4", "issue_key": "ALPHA-1", "body": "The body of m-4", "created_at": "2026-11-03T10:00:00Z",
-     "in_reply_to": None, "target": None},
+     "in_reply_to": None, "target": "role:reviewer"},
     {"id": "m-5", "issue_key": "BETA-1", "body": "The body of m-5", "created_at": "2026-11-03T10:00:00Z",
      "in_reply_to": None, "target": None},
     {"id": "m-6", "issue_key": "BETA-1", "body": "The body of m-6", "created_at": "2026-11-03T10:00:00Z",
@@ -311,7 +311,8 @@ def write_load_corpus(directory):
             ("a-5", "ALPHA-1", None, {"state": "resolved"}))
     ])
     messages = []
-    harvest.flatten_threads([{"message": message("m-1"), "replies": [message("m-4", "m-1")]}], "ALPHA-1", messages)
+    harvest.flatten_threads([{"message": message("m-1", target="session:s1"), "replies": [message("m-4", "m-1")]}],
+                            "ALPHA-1", messages)
     harvest.flatten_threads([{"message": message("m-2")}], "ALPHA-9", messages)
     harvest.flatten_threads([{"message": message("m-3", body="")}], "ALPHA-3", messages)
     corpus.write_jsonl(directory, "messages.jsonl", messages)
@@ -329,13 +330,15 @@ LOADED = {
     "messages": ["m-1", "m-4", "m-3"],
 }
 # A COPY statement of a script load_fixture.copy writes, and the table it names.
-COPY = re.compile(r"^copy (\w+) \([^)]*\) from stdin[^;\n]*;\n", re.M)
+COPY = re.compile(r"^copy (\w+) \([^)]*\) from stdin with \(format text\);\n", re.M)
 # A backslash of COPY's text format and what it escapes, as PostgreSQL reads them
 # (CopyReadAttributesText in copyfromparse.c): one to three octal digits, an x and one or two hex
-# digits, or any one character. A backslash that ends its field escapes nothing.
-ESCAPE = re.compile(rb"\\(?:([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|(.))?", re.S)
+# digits, or any one character, a raw tab and a raw newline included.
+ESCAPE = re.compile(rb"\\(?:([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|(.))", re.S)
 # The letters that escape a control character; any other character escaped stands for itself.
 CONTROLS = {b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v"}
+# A field and the tab, newline or end of the data no backslash takes that ends it. A raw CR is in none.
+FIELD = re.compile(rb"((?:\\.|[^\\\t\n\r])*)([\t\n]|\Z)", re.S)
 
 
 def copy_data(script):
@@ -346,13 +349,19 @@ def copy_data(script):
     return statement[1], lines[:lines.index("\\.")]
 
 
-def copy_text_row(line):
-    r"""A line of COPY's text format as PostgreSQL reads it: its fields split on tab, a field that is
+def copy_text_rows(lines):
+    r"""The rows of the lines psql sends as a COPY's data, each field as FIELD reads it, a field that is
     `\N` NULL, and every backslash escape of the others decoded, an octal or hex byte included. A CR
-    is no character of a row: PostgreSQL ends the row at it or refuses it."""
-    if "\r" in line:
-        raise AssertionError(f"a raw CR in a row: {line!r}")
-    return [None if field == "\\N" else ESCAPE.sub(unescape, field.encode()).decode() for field in line.split("\t")]
+    no backslash takes is no character of a row: PostgreSQL ends the row at it or refuses it."""
+    data, row, at = "".join(line + "\n" for line in lines).encode(), [], 0
+    while at < len(data) and (field := FIELD.match(data, at)):
+        row.append(None if field[1] == b"\\N" else ESCAPE.sub(unescape, field[1]).decode())
+        at = field.end()
+        if field[2] != b"\t":
+            yield row
+            row = []
+    if at < len(data):
+        raise AssertionError(f"a raw CR, or a backslash with no character after it: {data[at:]!r}")
 
 
 def unescape(escape):
@@ -365,7 +374,7 @@ def unescape(escape):
     # line, and an earlier server stops reading there.
     if character == b".":
         raise AssertionError("an end-of-copy marker inside a row")
-    return CONTROLS.get(character, character or b"")
+    return CONTROLS.get(character, character)
 
 
 def copied(calls):
@@ -375,7 +384,7 @@ def copied(calls):
     for call in calls:
         if "-f" in call:
             table, data = copy_data(call["-f"])
-            tables[table] = [copy_text_row(line) for line in data]
+            tables[table] = list(copy_text_rows(data))
     return tables
 
 
@@ -438,7 +447,10 @@ class LoadTest(unittest.TestCase):
                          {"doc-1": AWKWARD_TEXT, "doc-2": MARKDOWN, "doc-4": ""})
         self.assertEqual([row[4] for row in copies["comments"]], [AWKWARD_TEXT, "The body of c-3", "The body of c-5"])
         self.assertEqual([row[3:5] for row in copies["messages"]],
-                         [["The body of m-1", None], ["The body of m-4", None], ["", None]])
+                         [["The body of m-1", "session:s1"], ["The body of m-4", None], ["", None]])
+        # Each boolean is copied as PostgreSQL's t or f, and the corpus holds both.
+        self.assertEqual([[row[6] for row in copies["artifacts"]], [row[4] for row in copies["artifact_versions"]],
+                          [row[5] for row in copies["comments"]]], [["f", "f", "f"], ["t", "t", "t"], ["f", "f", "f"]])
         # What psql is handed for doc-1, escaped by hand: each backslash doubled, and each newline, CR
         # and tab written as \n, \r and \t.
         escaped = r"A path, C:\\new\\table,\ta tab,\ra CR and a CRLF.\r\n\\.\nThe line after the \\. line.\n"
@@ -466,7 +478,7 @@ AWKWARD = [
 class CopyTextFormatTest(unittest.TestCase):
     r"""The data load_fixture.copy writes for a row holding each awkward value, read as psql and
     PostgreSQL read it: psql ends the data at the first line that is only `\.`, and PostgreSQL reads a
-    row as one line and its fields as the text between its tabs. copy's psql call is replaced with one
+    character at a time, each backslash taking the one after it. copy's psql call is replaced with one
     that keeps the script, so no server is needed."""
 
     def setUp(self):
@@ -499,11 +511,12 @@ class CopyTextFormatTest(unittest.TestCase):
                     script = self.written(row)
                     self.assertEqual([line for line in script.split("\n") if line == "\\."], ["\\."],
                                      "a line that is only \\. before the end of the data")
+                    self.assertRegex(script, COPY, "a COPY of any format but the text format alone")
                     table, data = copy_data(script)
                     self.assertEqual(table, "awkward")
                     self.assertEqual(len(data), 1, f"a newline inside the row: {data!r}")
                     self.assertEqual(data[0].count("\t"), len(row) - 1, f"a tab that separates no columns: {data[0]!r}")
-                    self.assertEqual(copy_text_row(data[0]), row)
+                    self.assertEqual(list(copy_text_rows(data)), [row])
 
 
 class CopyIntoPostgresTest(unittest.TestCase):
