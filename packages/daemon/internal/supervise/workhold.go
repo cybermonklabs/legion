@@ -461,8 +461,8 @@ func OpeningKeeps(pending *Delivery, generation uint64, entry int64, resend bool
 // opening's sentences: the claim takes it first, and the start that ends the hold waits behind it
 // (EndHold, OpeningKeeps).
 //
-// It is the one statement of the rule, and four readers ask it: EndHold, OpeningKeeps, and the
-// daemon's openingGoesFirst and startNewsOf. openingGoesFirst has a start that carries no
+// It is the one statement of the rule, and five readers ask it: EndHold, OpeningKeeps, and the
+// daemon's openingGoesFirst, startNewsOf and wakeComing. openingGoesFirst has a start that carries no
 // opening's sentences wait while the claim's own start of the opening is queued, so that start
 // ends the hold, and the daemon's waitForOpeningInFlight keeps that wait until that start's task
 // is queued, so it goes second. Where no such start is queued, the start that carries no

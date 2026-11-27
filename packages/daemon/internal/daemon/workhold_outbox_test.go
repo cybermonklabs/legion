@@ -4245,6 +4245,75 @@ func TestWorkHoldPhaseStartWithNoOpeningStartQueuedCarriesTheOwedOpening(t *test
 	}
 }
 
+// H14, check a3d61f8e: a hook prompt the work hold kept past its hour reaches a worker whose
+// opening gives it an operator's task first. The close stopped the implementer while it kept an
+// operator's task, and a hook prompt for its role is queued during the hold, which lasts more than
+// the hour such a prompt waits for a session of its role (keptRoleMessageHoldBound). The opening's
+// start ends the hold, and the claim takes the operator's task first while that start, whose own
+// task waits behind it, stays queued (supervise.Machine.EndHold): the claim is not held, its
+// pending task carries no opening's sentences, and its last ready predates the prompt's row. The
+// row still waits, as a claim the opening started whose first turn has not taken its first task
+// counts as a start that is coming (wakeComing), and once a session holds the role the prompt is
+// delivered, once: no hook-prompt-undelivered notice, and no message on the issue names it.
+func TestWorkHoldKeepsAHookPromptPastItsHourWhileTheOpeningGivesTheOperatorsTaskFirst(t *testing.T) {
+	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork), false)
+	token := r.token(claim.RoleImplementer)
+	r.publisher.setAbsent(notify.RoleTopicPrefix + string(token))
+	r.enqueue(firedHook)
+	r.drain()
+	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
+		t.Fatalf("the hook prompt ran with the role held (%d rows left), want it waiting for the opening", got)
+	}
+	var made time.Time
+	if err := r.pool.QueryRow(r.ctx, `select created_at from outbox where issue = $1 and kind = $2`, r.tree.key,
+		string(record.OutboxKindHookPrompt)).Scan(&made); err != nil {
+		t.Fatalf("read when the hook prompt's row was made: %v", err)
+	}
+	r.clock.advance(keptRoleMessageHoldBound + time.Minute)
+	r.drain()
+	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
+		t.Fatalf("the hook prompt's row ended past its hour with the role held (%d rows left), want it waiting for the opening", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	c := r.machine(claim.RoleImplementer).Claim()
+	if c.WorkHeld() || !supervise.KeptOperatorTask(c.Pending) || c.Pending.Task != heldOperatorTask || c.Pending.Opening != "" {
+		t.Fatalf("after the opening the implementer is %s by %q holding %+v, want the hold ended and the operator's task first, with no opening's sentences",
+			c.State, c.SuspendedBy, c.Pending)
+	}
+	if !c.LastReady.Before(made) {
+		t.Fatalf("the implementer's last ready is %s, want it before the hook prompt's row was made at %s", c.LastReady, made)
+	}
+	if got := r.startsSince(claim.RoleImplementer, 0); got != 1 {
+		t.Fatalf("after the opening the outbox holds %d starts of the implementer, want the opening's start waiting behind the operator's task", got)
+	}
+	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
+		t.Fatalf("the hook prompt's row ended past its hour once the opening gave the operator's task first (%d rows left, the architect told %q), want it waiting for the session",
+			got, undeliveredNotices(t, r.pool, r.publisher))
+	}
+
+	readyClaimAs(t, r.sup, token, claim.RoleImplementer, "ses-implementer")
+	r.publisher.setAbsent()
+	r.wantPrompts("at its ready", heldOperatorTask)
+	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.workerClose(4) || got[1] != firedHook.Message(r.tree.key) {
+		t.Fatalf("the implementer was told %q, want the close message and, once a session held its role, the hook's prompt once", got)
+	}
+	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 0 {
+		t.Fatalf("the hook prompt's row is still queued (%d rows) after its delivery", got)
+	}
+	if notices := undeliveredNotices(t, r.pool, r.publisher); len(notices) != 0 {
+		t.Fatalf("the architect was told of undelivered hook prompts %q, want none", notices)
+	}
+	for _, body := range issueMessages(t, r.pool) {
+		if strings.Contains(body, firedHook.Prompt) {
+			t.Fatalf("the issue holds a message naming the hook prompt as undelivered:\n%s", body)
+		}
+	}
+	r.takeTheTask(claim.RoleImplementer)
+	r.wantPrompts("after the operator's turn", heldOperatorTask, r.opening(4, 4)+"\n\n"+noPhaseOpeningWork)
+}
+
 // releasedMember creates role's claim of issue, a member of the root's tree, as an idle release
 // leaves it: suspended with the source `released`, its session intact. It answers the claim's
 // token.

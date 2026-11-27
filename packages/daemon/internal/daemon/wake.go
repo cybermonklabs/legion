@@ -382,17 +382,34 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 // A claim the work hold holds (supervise.Claim.WorkHeld) is coming as well: no wake reaches it,
 // but the hold's opening starts it (supervise.Machine.EndHold), and the row's message is owed to
 // that start, as the hold keeps every message of its role until the opening (deliveryWake). So is a
-// claim the opening has started whose first turn has not taken the opening's task yet (the
-// pending task carries the opening's sentences, supervise.Delivery.Opening, and is unconfirmed):
-// the hold kept the row past its hour, and the session it kept is on its way back. So the hour
-// does not end such a row while the hold stands or its opening's start is under way, and runs
-// again from the role's next ready.
+// claim the opening has started whose first turn has not taken its first task yet, whichever task
+// that is: the opening's own (the pending task carries the opening's sentences,
+// supervise.Delivery.Opening, and is unconfirmed), or an operator's task the claim kept, which the
+// opening gives it first (supervise.KeptOperatorTask), while the role's start of the opening that
+// ended the hold stands, its own task queued behind that one (openingStartStands, the read and
+// the rule the start that waits for it asks). Only a claim whose pending task is an operator's
+// that no turn has taken pays for that read, and for the read of the issue whose generation it
+// reads the role's rows at. The hold kept the row past its hour, and the session it kept is on
+// its way back. So the hour does not end such a row while the hold stands or its opening's start
+// is under way, and runs again from the role's next ready.
 func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
 	if wake.resume || wake.parked || wake.view.WorkHeld() {
 		return true, nil
 	}
 	if p := wake.view.Pending; p != nil && p.Opening != "" && p.ConfirmedAt.IsZero() {
 		return true, nil
+	}
+	if supervise.KeptOperatorTask(wake.view.Pending) {
+		recorded, err := r.issue(ctx, issue)
+		if err != nil {
+			return false, err
+		}
+		// The role's queued rows are read at the issue's generation, which the opening's start
+		// carries (workflow's openHeldClaims).
+		start := record.SuperviseRequest{Role: wake.view.Role, Generation: recorded.Generation}
+		if stands, err := r.openingStartStands(ctx, start, recorded, wake.view.Claim); err != nil || stands {
+			return stands, err
+		}
 	}
 	if wake.view.State != supervise.StateLaunching {
 		return false, nil

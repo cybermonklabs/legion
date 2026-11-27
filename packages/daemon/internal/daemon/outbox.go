@@ -5088,13 +5088,29 @@ func openingGoesFirst(held supervise.Claim, read heldStartRecord) bool {
 
 // waitForOpeningInFlight is the wait of a start that carries no opening's sentences, of held, a
 // claim the work hold no longer holds (openingMayBeInFlight), while the claim's last start is a
-// queued start of the opening, or a newer one stands. That start ended the hold over an operator's
-// task the claim kept, and its task waits behind that task (supervise.Machine.EndHold). Its later
-// attempt goes on only while it is the claim's last start (openingStartFindsNoHold), so this start
-// records no newer start until that start is done: the claim is given the operator's task, then the
-// opening's task, then this start's task. It reads the role's queued rows and the tree root in one
-// transaction (roleRunAndRoot), and answers a routine wait, or nil where no such start stands.
+// queued start of the opening, or a newer one stands (openingStartStands). That start ended the
+// hold over an operator's task the claim kept, and its task waits behind that task
+// (supervise.Machine.EndHold). Its later attempt goes on only while it is the claim's last start
+// (openingStartFindsNoHold), so this start records no newer start until that start is done: the
+// claim is given the operator's task, then the opening's task, then this start's task. It answers
+// a routine wait, or nil where no such start stands.
 func (r *outbox) waitForOpeningInFlight(ctx context.Context, payload record.SuperviseRequest, issue record.Issue, held supervise.Claim) error {
+	stands, err := r.openingStartStands(ctx, payload, issue, held)
+	if err != nil || !stands {
+		return err
+	}
+	return openingFirstWait(payload, issue)
+}
+
+// openingStartStands is whether held's last start is a queued start of the work hold's opening,
+// or a newer one stands (workflow.OpeningStartStands, with no phase and after held's last start
+// less one): the claim's own start of the opening, which ended the hold over an operator's task
+// the claim kept, is still in flight. It reads the queued rows of payload's role at payload's
+// generation and the tree root in one read-only transaction (roleRunAndRoot). It is the one
+// statement of that read and that rule, and two readers ask it: a start that waits for that start
+// (waitForOpeningInFlight), and a kept role message whose row that start holds past its hour
+// (wakeComing).
+func (r *outbox) openingStartStands(ctx context.Context, payload record.SuperviseRequest, issue record.Issue, held supervise.Claim) (bool, error) {
 	var run record.RoleRun
 	var root record.Issue
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -5102,12 +5118,9 @@ func (r *outbox) waitForOpeningInFlight(ctx context.Context, payload record.Supe
 		run, root, err = r.roleRunAndRoot(ctx, tx, payload, issue, held.Token)
 		return err
 	}); err != nil {
-		return fmt.Errorf("read the queued starts and the tree root of %s's %s: %w", issue.Key, payload.Role, err)
+		return false, fmt.Errorf("read the queued starts and the tree root of %s's %s: %w", issue.Key, payload.Role, err)
 	}
-	if !workflow.OpeningStartStands(run, root, "", held.LastStartRow-1) {
-		return nil
-	}
-	return openingFirstWait(payload, issue)
+	return workflow.OpeningStartStands(run, root, "", held.LastStartRow-1), nil
 }
 
 // openingFirstWait is the routine wait of a start that waits for the claim's own start of the work
