@@ -105,7 +105,7 @@ type artifactBlockChange struct {
 // of an id nobody holds. An id that names no artifact is that route's 404
 // ARTIFACT_NOT_FOUND, and a version the document does not have is its 404 NOT_FOUND. The artifact
 // is read before the query is, so an id that names nothing answers that 404 whatever the query
-// holds, as idRoutes says it does. Both numbers must be version numbers a document can have
+// holds, as each route's ID says it does. Both numbers must be version numbers a document can have
 // (parseVersionNumber) and from below to (400 INVALID_VERSION).
 //
 // It reads the two versions' stored markdown and parses it, never the block index, so it answers

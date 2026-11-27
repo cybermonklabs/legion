@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -95,7 +94,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
 	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
-	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil, false); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -176,8 +175,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got, want := resolved(current), []string{"ask", "ask_block", "comment", "comment_block", "issue", "message", "message_block"}; !slices.Equal(got, want) {
 		t.Errorf("this build resolves the kinds %v; want %v", got, want)
 	}
-	registry := nodeRegistry
-	previous := maps.Clone(registry)
+	previous := maps.Clone(nodeRegistry)
 	for kind, entry := range previous {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
@@ -188,9 +186,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		entry.load = nil
 		previous[kind] = entry
 	}
-	nodeRegistry = previous
-	older, err := resolveNodes(ctx, tx, serverReader, false, ends)
-	nodeRegistry = registry
+	older, err := resolveNodesWith(ctx, tx, serverReader, false, ends, previous)
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
 	}
@@ -226,7 +222,7 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
 	node := func(step, kind, id string) model.GraphNode {
 		t.Helper()
-		found, ok, err := Node(ctx, tx, model.Actor{}, kind, id, false)
+		found, ok, err := Node(ctx, tx, serverReader, kind, id, false)
 		if err != nil || !ok {
 			t.Fatalf("%s: the node %s %s = %v, %v; want it", step, kind, id, ok, err)
 		}
@@ -269,10 +265,10 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("tombstone the comment: %v", err)
 	}
-	if _, current, err := Node(ctx, tx, model.Actor{}, "comment_block", commentBlock, false); err != nil || current {
+	if _, current, err := Node(ctx, tx, serverReader, "comment_block", commentBlock, false); err != nil || current {
 		t.Fatalf("the deleted comment's block resolves = %v, %v; want no current node", current, err)
 	}
-	removed, held, err := RemovedItemBlockNode(ctx, tx, model.Actor{}, ItemComment, commentBlock, 2)
+	removed, held, err := RemovedItemBlockNode(ctx, tx, serverReader, ItemComment, commentBlock, 2)
 	if err != nil || !held {
 		t.Fatalf("the deleted comment's removed block = %v, %v; want its node", held, err)
 	}
@@ -301,14 +297,14 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	references, err := Closure(ctx, tx, serverReader, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1", text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, serverReader, handbook)
+	citers, err := ReferencedBy(ctx, tx, serverReader, handbook, "")
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}
@@ -345,7 +341,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	references, err := Closure(ctx, tx, serverReader, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1", text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}

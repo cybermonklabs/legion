@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -752,7 +751,7 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, origins, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}

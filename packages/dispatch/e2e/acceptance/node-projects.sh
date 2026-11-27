@@ -19,9 +19,9 @@
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
 # the backfill gives a live node, then removes that row, which leaves the live node with no row:
-# the census names it `orphaned` with the server's block-index tick as its cure, the backfill
-# leaves it, and once that build's removal event is in the log the tick states the node gone, so
-# the run leaves its database complete.
+# while that build's removal event is not in the log the census names it `orphaned`, with no
+# in-band cure, and the backfill leaves it; once that event is in the log the server's block-index
+# tick states the node gone, so the run leaves its database complete.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -40,7 +40,7 @@
 # to the fake Envoy's session list and puts the list back when it ends, and builds
 # `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
-# The node writers' own grep, where a reader wants one: `graphstore\.(QueueNodes|Write|WriteArms)\(|graphstore\.Node\{`,
+# The node writers' own grep, where a reader wants one: `graphstore\.(PlanUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
 # every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
 # node writer from the cause of another write.
@@ -103,12 +103,19 @@ readonly work
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 fixture_saved=""
+# cleanup closes the run's issue and puts the fake Envoy's list back. A close the server refuses
+# fails a run that had passed: the run leaves its database as a server can go on writing to, and
+# a refused status write on its issue says it did not (an event this driver wrote out of turn did
+# that once).
 cleanup() {
   local code=$?
   if [[ -n "$key" ]]; then
     send PATCH "/api/v1/issues/$key" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] || printf 'node-projects.sh: could not close %s: HTTP %s\n' "$key" "$status" >&2
+    if [[ "$status" != 200 ]]; then
+      printf 'FAIL: cleanup close %s: HTTP %s\n' "$key" "$status" >&2
+      [[ "$code" != 0 ]] || code=1
+    fi
   fi
   if [[ -n "$fixture_saved" ]]; then
     curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
@@ -141,9 +148,9 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
-# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and puts it
-# first on PATH, so an envoy-dispatch installed on the machine, of another build, is never the one
-# under test.
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and
+# puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
+# the one under test.
 if [[ -n "$harness" ]]; then
   require_commands go
   mkdir "$work/bin"
@@ -174,9 +181,21 @@ if [[ -n "$harness" ]]; then
   pass setup "made project $project and agent session $AGENT_SESSION on the harness"
 fi
 
+# quotable SECTION WHAT VALUE...: fails unless each VALUE holds no single quote, the one character
+# that ends the SQL string literal a statement names it in, as the checks below name an id or a
+# party.
+quotable() {
+  local section="$1" what="$2" value
+  shift 2
+  for value in "$@"; do
+    [[ "$value" != *"'"* ]] || fail "$section" "$what" "'$value' holds a single quote, which would end the SQL string that names it"
+  done
+}
+
 # node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
 # tuple says so.
 node_names_project() {
+  quotable "$1" "the $2 node of $3 names $project" "$3"
   query "$1" "the $2 node of $3 names $project" \
     "select coalesce((select project_key from graph_nodes where kind = '$2' and id = '$3'), '(no node)')"
   [[ "$answer" == "$project" ]] || fail "$1" "the $2 node of $3 names $project" "it names '$answer'"
@@ -192,6 +211,7 @@ node_names_parties() {
   local section="$1" kind="$2" id="$3" want
   shift 3
   want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  quotable "$section" "the $kind node of $id is between $want" "$id" "$want"
   query "$section" "the $kind node of $id is between $want" \
     "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
   [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
@@ -226,6 +246,13 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
 want_status 201 "$section" "create an issue"
 key="$(jq -r .key "$work/body")"
+# Each value read from the server's answer goes into the SQL text query passes to psql, or into a
+# request's path, so each is checked before a statement or a path names it: the issue key, the
+# ask's id and the empty document's id and address are held to their shapes, and
+# node_names_project, node_names_parties and sender_party refuse an id or a party that holds a
+# single quote (quotable).
+readonly uuid_shape='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+[[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
 pass "$section" "created $key"
 node_names_project "$section" issue "$key"
 node_names_project "$section" artifact "$key/spec"
@@ -245,6 +272,7 @@ node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
 want_status 201 "$section" "open an ask"
 ask="$(jq -r .id "$work/body")"
+[[ "$ask" =~ $uuid_shape ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
 node_names_project "$section" ask "$ask"
 
 send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"
@@ -278,6 +306,7 @@ node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 # the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
 # $answer. It reads the row the create wrote, not the node under test.
 sender_party() {
+  quotable "$section" "read the sender of $1" "$1"
   query "$section" "read the sender of $1" \
     "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
 }
@@ -302,6 +331,9 @@ send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $
 want_status 201 "$section" "$person makes an empty document"
 scratch="$(jq -r .artifact.id "$work/body")"
 scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+[[ "$scratch" =~ $uuid_shape ]] || fail "$section" "$person makes an empty document" "the answer's id is '$scratch', not a uuid"
+[[ "$scratch_ref" =~ ^"$key"/[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  fail "$section" "$person makes an empty document" "the answer's ref_key is '$scratch_ref', not a document address of $key"
 send_as_person DELETE "/api/v1/artifacts/$scratch"
 want_status 204 "$section" "$person removes the empty document"
 query "$section" "the removed document's node is gone" \
@@ -474,9 +506,13 @@ query "$section" "the node of $scratch_ref is live" \
 [[ "$answer" == live ]] || fail "$section" "the backfill gives $scratch_ref a live node" "it reads '$answer'"
 census_complete "$section" "after the backfill made $scratch_ref live"
 
-query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning id::text"
-[[ -n "$answer" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed no row"
-readonly removed_id="$answer"
+# The row's id goes into the removal event below, so it is held to its shape before a statement
+# names it, as the ids above are.
+query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning ref_key || ' ' || id::text"
+read -r removed_ref removed_id <<<"$answer"
+[[ "$removed_ref" == "$scratch_ref" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed '$answer'"
+[[ "$removed_id" =~ $uuid_shape ]] || fail "$section" "an earlier build removes $scratch_ref" "the removed row's id is '$removed_id', not a uuid"
+readonly removed_id
 for run in census backfill; do
   if [[ "$run" == backfill ]]; then
     envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
@@ -486,26 +522,31 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; this build's block-index tick states it gone" "$work/census" ||
-    fail "$section" "the census after the $run names $scratch_ref orphaned, with the tick that states it gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
-pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the tick that states it gone, and the backfill leaves it"
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"
 
 # That build's removal appends its artifact.removed event in the transaction that deletes the row.
 # It is appended here only now, so the census above read the orphan before any pass of this server
 # could cure it: with this build serving alone, the last pass (section pass) is 10 minutes behind,
 # and no event before this one names the orphaned node. The tick that reads it owes the object
 # pass (graphcensus.EventsOweObjectPass), whose sweep states the node gone as this build's own
-# removal does, under this event (graphcensus.StateOrphanedGone). The horizon is watched from 5 s
-# before the event, as section pass watches it.
+# removal does, under this event (graphcensus.StateOrphanedGone). The event is appended as every
+# build appends one, at the issue's next last_seq, which the same statement moves: an event written
+# past last_seq would take the seq of the server's next event on the issue, whose append then fails
+# on events_issue_key_seq_key. The horizon is watched from 5 s before the event, as section pass
+# watches it.
 start_horizon_watch "$section"
 query "$section" "the earlier build's removal event of $scratch_ref" "
+  with bumped as (update issues set last_seq = last_seq + 1 where key = '$key' returning last_seq)
   insert into events (issue_key, seq, type, actor, payload, notify)
-  select '$key', coalesce(max(seq), 0) + 1, 'artifact.removed', '{\"kind\":\"user\",\"id\":\"$person\"}',
+  select '$key', bumped.last_seq, 'artifact.removed', '{\"kind\":\"user\",\"id\":\"$person\"}',
          jsonb_build_object('artifact', jsonb_build_object('id', '$removed_id', 'issue_key', '$key',
            'slug', '${scratch_ref#*/}', 'ref_key', '$scratch_ref')), false
-  from events where issue_key = '$key'
+  from bumped
   returning id"
+[[ -n "$answer" ]] || fail "$section" "the earlier build's removal event of $scratch_ref" "no issue $key took the event"
 readonly removal="$answer"
 await_pass "$section" "$removal" "exists (select 1 from graph_nodes where kind = 'artifact' and id = '$scratch_ref' and state = 'gone')" \
   "gone node of $scratch_ref"

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -171,7 +170,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
 		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: blockPointers(artifactID, markdown, blocks, tree),
-		ServerURL: s.serverURL,
+		ServerURL: s.origins.Canonical(),
 	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -179,7 +178,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := write(ctx, tx, indexBlocks); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), won)
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.origins.Canonical()), won)
 	return changes, stated, err
 }
 
@@ -219,7 +218,7 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 		return model.ReferenceChanges{}, err
 	}
 	reader := refs.NewReader(ctx, tx, writer, "artifact", artifactID, s.origins)
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil)
+	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil, false)
 }
 
 // replaceVersionRefs reconciles the document's references, dated versionAt, to the mentions
@@ -315,38 +314,19 @@ func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.Versi
 }
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
-// document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
-// version's first author and the document's scope, from the version and the address this
-// transaction queued and has not written where that is the version, which no read of the table
-// answers yet, and else from the stored rows.
+// document's ref_key and scope, from its address as this transaction leaves it
+// (addressOfDocument), and the version's writer (versionWriterOf).
 func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
 	address, err := addressOfDocument(ctx, tx, artifactID)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
-			record := refs.IndexedVersion{RefKey: address.RefKey}
-			if len(pending.version.Authors) > 0 {
-				record.Writer = pending.version.Authors[0]
-			}
-			if _, created := pendingArtifact(ctx, artifactID); created {
-				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
-				return record, nil
-			}
-			stored, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
-			if err != nil {
-				return refs.IndexedVersion{}, err
-			}
-			record.Project, record.Parties = stored.Project, stored.Parties
-			return record, nil
-		}
-	}
-	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+	writer, err := versionWriterOf(ctx, tx, artifactID, version)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	record.RefKey = address.RefKey
+	record := refs.IndexedVersion{RefKey: address.RefKey, Writer: writer}
+	record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
 	return record, nil
 }
 
@@ -551,7 +531,7 @@ func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, qu
 // which each of the ask's edges shows, cut against r's deployment (refs.EditedTargets).
 func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, error) {
 	found := text.Refs(r.Mentions(question))
-	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.ServerURL(), found))
+	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.Origins().Canonical(), found))
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an
@@ -746,7 +726,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 				continue
 			}
 			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.origins)
-			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown))
+			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.origins.Canonical())
 		}
 		// The reconciliation appends no event, so what it moved is named nowhere: until it stores
 		// an excerpt, the route answers a mention owed one with the document's name.

@@ -18,7 +18,8 @@ import (
 // changed at each version, and the artifact.version event of each version; eventPlanComments
 // comments naming no node, each with the comment.created event that stored it; and
 // eventPlanFiller events of another type. The blocks and the comments each fit in one batch
-// (backfillBatch), so the first batch of each read reaches every one of them, and the filler makes a
+// (backfillBatch, the limit these reads are measured at, which is larger than the batch a run
+// takes from its Throttle), so the first batch of each read reaches every one of them, and the filler makes a
 // read of events whole cost the planner more than a probe of an index's key, as it does on any
 // deployment's events.
 const (
@@ -68,7 +69,7 @@ func TestTheBackfillsEventReadsProbeTheirIndexes(t *testing.T) {
 		from document_blocks d
 		join events e on e.type = 'artifact.version' and e.payload->>'artifact_id' = d.artifact_id::text
 			and e.payload->'version'->>'number' = d.changed_version::text`)
-	blocks, err := readBlockRows(ctx, database, "")
+	blocks, err := readBlockRows(ctx, database, "", backfillBatch)
 	if err != nil {
 		t.Fatalf("read the first block batch: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestTheBackfillsEventReadsProbeTheirIndexes(t *testing.T) {
 	requireSameEvents(t, "the block batch", gotBlockEvents, wantBlockEvents, eventPlanIssues*eventPlanVersions*eventPlanBlocksPerVersion)
 
 	wantCommentEvents := eventsByKey(t, pool, `select payload->>'id', id from events where type = 'comment.created'`)
-	commentIDs, causes, _, err := readCommentRows(ctx, database, "00000000-0000-0000-0000-000000000000")
+	commentIDs, causes, _, err := readCommentRows(ctx, database, "00000000-0000-0000-0000-000000000000", backfillBatch)
 	if err != nil {
 		t.Fatalf("read the first comment batch: %v", err)
 	}

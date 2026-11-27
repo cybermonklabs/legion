@@ -131,8 +131,9 @@ func (s *server) uploadAgentArtifact(w http.ResponseWriter, r *http.Request) {
 // dispatch://agent/<session id>/artifact/<slug> address without having pasted it.
 //
 // A conversation's files are part of the conversation, so the list admits exactly the callers the
-// conversation read GET /api/v1/agents/{session_id}/messages admits: the `person` scope its row
-// names (routeScopes) and actingPerson, which that read opens with too, before the path is read.
+// conversation read GET /api/v1/agents/{session_id}/messages admits: the `person` scope its
+// declaration names (OAuthScopes) and actingPerson, which that read opens with too, before the
+// path is read.
 // `session` therefore means what it means on that read, the session the request acts for, and a
 // credential that proved a session is refused one naming another (403 ACTOR_SESSION_MISMATCH).
 func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {

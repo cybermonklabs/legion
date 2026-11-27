@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	gws "github.com/gorilla/websocket"
-
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -20,7 +18,7 @@ func TestLastPeerDisconnectSettlesDocumentBeforeEviction(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
-	connection, response, err := gws.DefaultDialer.Dial(
+	connection, response, err := documentDialer(t).Dial(
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID,
 		http.Header{"X-Dispatch-User": []string{"alice"}},
 	)

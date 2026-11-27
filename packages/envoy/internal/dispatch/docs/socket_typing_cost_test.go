@@ -16,12 +16,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
-
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // typingCostPeers, typingCostKeystroke and typingCostWindow are the room the measurement types in:
@@ -69,6 +69,8 @@ const typingCostRosterRead = `select coalesce((select expires_at > now() from ro
 // every process runs it. It is a measurement, not a check: it runs only with
 // DISPATCH_BENCH_DOCSOCKET=1, against the database storetest opens.
 func TestDocumentRoomTypingCost(t *testing.T) {
+	// Not parallel: it measures the database's statements a second and the cursor frames' delivery
+	// latency by the wall clock, which the package's parallel tests would share the machine with.
 	if os.Getenv("DISPATCH_BENCH_DOCSOCKET") != "1" {
 		t.Skip("set DISPATCH_BENCH_DOCSOCKET=1 to measure a typing room's cost")
 	}
@@ -111,7 +113,7 @@ func measureTypingRoom(t *testing.T, private bool) {
 	seedServiceText(t, service, artifactID, seed)
 	runRoomSync(t, newRoomSync(service))
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + fmt.Sprint(pmdoc.SchemaVersion())
 	peers := make([]*docstest.Peer, typingCostPeers)

@@ -20,7 +20,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -2660,10 +2659,12 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
-		// the person and this version stores byte for byte the text it named, which keeps it with
-		// the person (MoveApprovalAsk). A move over versions written while the issue was closed
-		// names the editor a closed issue's settlement kept, where this version names
-		// SettlementActor only because it adds none of that editor's text (versionWrite.keptEditor).
+		// the person and this version holds the text it named (restoresVersionText: byte for byte,
+		// or, for a version another renderer version stored, as this build renders it), which
+		// keeps it with the person (MoveApprovalAsk). A move over versions written while the
+		// issue was closed names the editor a closed issue's settlement kept, where this version
+		// names SettlementActor only because it adds none of that editor's text
+		// (versionWrite.keptEditor).
 		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.origins); err != nil {
 			return versionWriteResult{}, err
 		}

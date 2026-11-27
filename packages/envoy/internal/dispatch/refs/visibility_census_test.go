@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -168,7 +167,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // read through a read that binds that node's predicate and answers nothing of any other node, or
 // only an access account reads its answer, never a person or a session. A read whose answer
 // reaches a person and names a node is none of these: it takes the acting person instead, and the
-// census above holds it to the registry.
+// census above holds it to the registry. The one other reason is a rule of a write that must hold
+// over every node, seen or not (IssueAncestors, IssueDescendantRows): such a read binds no
+// predicate, because a rule that skipped a node would let the write break it, and its entry says
+// which nodes the write names to the caller who asked for it.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
@@ -183,8 +185,10 @@ const (
 var readsWithoutAViewer = map[string]string{
 	"BlockChanges":        nodeDetail,
 	"BlockIndexing.Cited": serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":        serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":         nodeDetail,
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
@@ -408,7 +412,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1", "")
+		_, err := Closure(ctx, recorder, who, "CORE-1", text.NewOrigins(""))
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -501,10 +505,6 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
-	record("IssueAncestorsAsSeen", "IssueAncestorsAsSeen of CORE-1", func() error {
-		_, err := IssueAncestorsAsSeen(ctx, recorder, who, "CORE-1")
-		return err
-	})
 	return reads
 }
 
@@ -529,7 +529,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

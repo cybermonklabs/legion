@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 

@@ -453,7 +453,7 @@ func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
 			if !errors.Is(markErr, docs.ErrAnchorMissing) {
 				t.Fatalf("the suggestion's mark after the delete = %v, want it gone from the document", markErr)
 			}
-			markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 			if err != nil || markdown != test.want {
 				t.Fatalf("the document after the delete = %q (%v), want %q", markdown, err, test.want)
 			}

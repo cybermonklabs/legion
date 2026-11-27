@@ -47,8 +47,8 @@ type listedPackage struct {
 	Module     *struct{ Main bool }
 }
 
-// sharedServerSource is the source both static tests read, loaded once per test binary: loading
-// runs go list, which builds every dependency's export data, and type-checks the server.
+// sharedServerSource is the source TestMetricsNameNoProject reads, loaded once per test binary:
+// loading runs go list, which builds every dependency's export data, and type-checks the server.
 var sharedServerSource = sync.OnceValues(loadServerSource)
 
 func loadedServerSource(t *testing.T) *serverSource {
@@ -190,36 +190,4 @@ func (p *checkedPackage) calledFunc(call *ast.CallExpr) *types.Func {
 		return called
 	}
 	return nil
-}
-
-// receiverNamed reports whether fn is a method of the named type pkgPath.name, on it or on a
-// pointer to it.
-func receiverNamed(fn *types.Func, pkgPath, name string) bool {
-	receiver := fn.Signature().Recv()
-	if receiver == nil {
-		return false
-	}
-	typ := receiver.Type()
-	if pointer, ok := typ.(*types.Pointer); ok {
-		typ = pointer.Elem()
-	}
-	named, ok := typ.(*types.Named)
-	return ok && named.Obj().Name() == name && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == pkgPath
-}
-
-// functionsOf calls visit for every node of file with the name of the function declaration that
-// holds it, "" outside any.
-func functionsOf(file *ast.File, visit func(function string, node ast.Node)) {
-	for _, decl := range file.Decls {
-		function := ""
-		if fn, ok := decl.(*ast.FuncDecl); ok {
-			function = fn.Name.Name
-		}
-		ast.Inspect(decl, func(node ast.Node) bool {
-			if node != nil {
-				visit(function, node)
-			}
-			return true
-		})
-	}
 }

@@ -7,10 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -21,6 +18,23 @@ import (
 // names, bob a restricted member PRIV's list names, and carol a full member PRIV's list names.
 // carol made both projects, so she owns both. bob and carol are emails because an access list
 // names a person by email (access.PersonPrincipal); alice is the test server's own "alice".
+//
+// This slice carries the seed's reads, so three of its writes are held back, each with its row.
+// PRIV's access list is filled through the code the route calls (access.AddPrincipal), because
+// the route that names a person on it is the access routes' (S2:
+// PUT /api/v1/projects/{key}/access/people/{email}, which answers 404 here); S2 restores the
+// route call. bob is a full member, because the write that marks a person restricted is that
+// slice's too (markRestricted). And a caller acts as a person at a browser or through a personal
+// token, never as a session, because a session's own credential is the broker's
+// (stubBrokerTokens, S7).
+//
+// The seed's rule (access.CredentialCovers, access.Credential.Sees): a credential that lists no
+// projects sees every project that is not private; one that lists projects sees those alone among
+// the private ones. A browser lists nothing and is its person, so it sees what its person sees. A
+// token that lists no projects does not see a private project. At this head every caller is
+// answered both projects by GET /api/v1/projects, PRIV included, with bob and carol both on
+// PRIV's list: the read binds an open viewer while the deployment holds no restricted member,
+// which is this slice's own premise.
 const (
 	seedPublic  = "PUB"
 	seedPrivate = "PRIV"
@@ -28,21 +42,6 @@ const (
 	seedBob     = "bob@outside.example"
 	seedCarol   = "carol@example.com"
 )
-
-// storeRepoMapping writes one repo_projects row as the last release that wrote the mapping left
-// it: no route writes the mapping now (`PUT /api/v1/settings/repo-projects/{owner}/{repo}` is
-// gone), but the read-only list still answers its rows, by the projects its caller sees. isDefault
-// is the row's own flag; a project's default repository is projects.default_repo, which
-// PUT /api/v1/projects/{key}/default-repository writes.
-func storeRepoMapping(t *testing.T, database *store.Store, repo, project string, isDefault bool) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into repo_projects (repo, project, is_default, created_by)
-		values ($1, $2, $3, '{"kind":"user","id":"carol@example.com"}')
-	`, repo, project, isDefault); err != nil {
-		t.Fatalf("store the mapping of %s to %s: %v", repo, project, err)
-	}
-}
 
 // privateCaller is one caller of verification v16, by the name a failure prints.
 type privateCaller string
@@ -62,12 +61,6 @@ const (
 	callerCarolToken     privateCaller = "carol's token that lists no project"
 	callerSharedToken    privateCaller = "the shared token"
 )
-
-// privateCallers is every caller of the seed, in the order verification v16 names them, bob's
-// token last of the tokens.
-var privateCallers = []privateCaller{
-	callerAlice, callerBob, callerCarol, callerCarolPrivToken, callerAlicePrivToken, callerBobPrivToken, callerCarolToken, callerSharedToken,
-}
 
 // privateSeed is verification v16's seed on a running test server, written through the server's
 // own routes wherever a route can write it: each project and its issue are created, each access
@@ -89,13 +82,6 @@ type privateSeed struct {
 	issue map[string]string
 	// tokens are the plaintext personal tokens, by the caller each one is.
 	tokens map[privateCaller]string
-	// brokered are the broker-issued tokens a caller presents under DPoP with agent's key, by the
-	// caller each one is: requestIn presents one where a caller has one.
-	brokered map[privateCaller]string
-	// broker is the stub secrets broker the server asks about a DPoP-bound token, and agent the
-	// key an agent of carol's presents such a token with (asSession).
-	broker *ciphertokentest.StubBroker
-	agent  *brokerCaller
 }
 
 // seedPrivateProject stands up a test server holding verification v16's seed.
@@ -104,39 +90,25 @@ func seedPrivateProject(t *testing.T) privateSeed {
 	return seedPrivateProjectWith(t, testServerOptions{})
 }
 
-// seedPrivateProjectWith is seedPrivateProject on a test server built from options. The server
-// takes broker-issued tokens from a stub broker, so a seed's session can act under a credential
-// that proves it (asSession), and, unless options names one, writes the private-projects record
-// through acceptingBus, as a deployment that holds a private project has a hub that takes it: a
-// mapping into PRIV writes that record before it commits. The deployment admits restricted
-// members (admitsRestricted), as one that holds a restricted member does: bob is one, and
-// his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
+// seedPrivateProjectWith is seedPrivateProject on a test server built from options.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	if options.busProjects == nil {
-		options.busProjects = acceptingBus{}
-	}
 	seed := seedPublicProjectsWith(t, options)
 	seed.makePrivate(t, seedPrivate)
 	return seed
 }
 
-// seedPublicProjectsWith is verification v16's seed on a test server built from options, its
-// private-projects record written through options.busProjects alone, with both projects still
-// public: a test that makes PRIV private through the visibility route itself starts from it.
+// seedPublicProjectsWith is verification v16's seed on a test server built from options, with both
+// projects still public: a test that makes PRIV private through the visibility route itself starts
+// from it.
 func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	broker := ciphertokentest.NewStubBroker(t)
-	options.brokerTokens = stubBrokerTokens(t, broker)
-	options.admitsRestricted = true
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
-		issue: map[string]string{}, tokens: map[privateCaller]string{}, brokered: map[privateCaller]string{},
-		broker: broker, agent: newBrokerCaller(t),
+		issue: map[string]string{}, tokens: map[privateCaller]string{},
 	}
 	seedPeople(t, database, seedBob, seedCarol)
-	markRestricted(t, database, seedBob)
 	for _, project := range []string{seedPublic, seedPrivate} {
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{
 			"key": project, "name": "Project " + project,
@@ -149,7 +121,7 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 		}](t, created).Key
 	}
 	for _, person := range []string{seedBob, seedCarol} {
-		seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+person, nil, http.StatusOK)
+		seed.addToAccessList(t, seedPrivate, person)
 	}
 	for _, token := range []struct {
 		caller   privateCaller
@@ -162,7 +134,7 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 		{callerCarolToken, seedCarol, []string{}},
 	} {
 		minted := decodeBody[agentTokenResponse](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
-			mintBody(string(token.caller), token.projects), token.login))
+			seedMintBody(string(token.caller), token.projects), token.login))
 		if minted.Token == "" {
 			t.Fatalf("mint %s: no token in the answer", token.caller)
 		}
@@ -171,10 +143,36 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 	return seed
 }
 
-// acceptingBus is a writer of the private-projects record that takes every write.
-type acceptingBus struct{}
+// addToAccessList names person on project key's access list as its owner carol, through the write
+// the access route makes (access.AddPrincipal). The route itself,
+// PUT /api/v1/projects/{key}/access/people/{email}, is the access routes' (S2), which answers 404
+// at this slice.
+func (s privateSeed) addToAccessList(t *testing.T, key, person string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin naming %s on %s's access list: %v", person, key, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := access.AddPrincipal(ctx, tx, s.deps.Events, key, "person", person, model.Actor{Kind: "user", ID: seedCarol}); err != nil {
+		t.Fatalf("name %s on %s's access list: %v", person, key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit naming %s on %s's access list: %v", person, key, err)
+	}
+}
 
-func (acceptingBus) EnsurePrivate(context.Context, access.Querier, string) error { return nil }
+// seedMintBody is the body that mints a personal token named name listing projects, which
+// credential_projects_test.go's mintBody writes once S3c-issues carries that file; this slice has
+// the seed and not the file.
+func seedMintBody(name string, projects []string) map[string]any {
+	body := map[string]any{"name": name}
+	if projects != nil {
+		body["projects"] = projects
+	}
+	return body
+}
 
 // makePrivate makes project key private as its owner carol, through the write the visibility
 // route makes, after the fill marker the switch requires: a deployment holding a private project
@@ -218,22 +216,6 @@ func (caller privateCaller) login() string {
 	return ""
 }
 
-// sees is the projects caller sees by the rule, sorted: carol and carol's token that lists PRIV
-// both, since a full member's list decides only which private projects it sees; bob and bob's token
-// that lists PRIV PRIV alone; and alice, alice's token that lists PRIV, carol's token that lists
-// none and the shared token PUB alone, since alice does not see PRIV.
-func (caller privateCaller) sees() []string {
-	switch caller {
-	case callerCarol, callerCarolPrivToken:
-		return []string{seedPrivate, seedPublic}
-	case callerBob, callerBobPrivToken:
-		return []string{seedPrivate}
-	case callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken:
-		return []string{seedPublic}
-	}
-	return []string{}
-}
-
 // request makes one request to the seeded server as caller: a person at a browser by the test
 // identity's header, a personal token or the shared token by its bearer. body is encoded as JSON;
 // nil sends none.
@@ -252,15 +234,6 @@ func (s privateSeed) requestIn(t *testing.T, ctx context.Context, caller private
 			t.Fatalf("encode the body %s sends to %s %s: %v", caller, method, target, err)
 		}
 		payload = encoded
-	}
-	if token, brokered := s.brokered[caller]; brokered {
-		var sent any
-		if payload != nil {
-			sent = json.RawMessage(payload)
-		}
-		response := httptest.NewRecorder()
-		s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, sent).WithContext(ctx))
-		return response
 	}
 	request := httptest.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -281,44 +254,6 @@ func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, tar
 	if response.Code != status {
 		t.Fatalf("%s: %s %s = %d %s, want %d", caller, method, target, response.Code, response.Body.String(), status)
 	}
-	return response
-}
-
-// asSession makes one request as session, an agent of carol's working in project, under the one
-// credential that proves a session: a broker-issued token the stub broker answers for session,
-// carol's and scoped to project, presented under DPoP with a fresh proof of the seed's agent key.
-// Only such a write makes the session one of the project's agents (session_projects,
-// events.provedSession); a session a request body names under a token that proves none is
-// recorded nowhere. It fails the test unless the answer is status.
-func (s privateSeed) asSession(t *testing.T, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
-	t.Helper()
-	return s.asSessionOf(t, seedCarol, session, project, method, target, body, status)
-}
-
-// asSessionOf is asSession for a session of person, whose broker token names project. The token is
-// one of its own for each person, session and project, so the server, which may hold a token's
-// introspection for a while, never reads one person's answer for another's.
-func (s privateSeed) asSessionOf(t *testing.T, person, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
-	t.Helper()
-	response := s.sessionRequest(t, person, session, project, method, target, body)
-	if response.Code != status {
-		t.Fatalf("session %s of %s in %s: %s %s = %d %s, want %d", session, person, project, method, target, response.Code, response.Body.String(), status)
-	}
-	return response
-}
-
-// sessionRequest is asSessionOf's request, answered whatever its status, for a row that compares
-// what a session is answered.
-func (s privateSeed) sessionRequest(t *testing.T, person, session, project, method, target string, body any) *httptest.ResponseRecorder {
-	t.Helper()
-	token := "broker-token-of-" + session + "-for-" + person + "-in-" + project
-	s.broker.Says(token, ciphertoken.Introspection{
-		Active: true, Session: session, Person: person,
-		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
-		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
-	})
-	response := httptest.NewRecorder()
-	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))
 	return response
 }
 

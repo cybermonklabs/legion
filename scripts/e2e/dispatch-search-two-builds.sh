@@ -70,14 +70,11 @@
 #   case 4   GET /api/v1/search carrying it, sent to this build, answers 200, narrowed the same
 #            way: the old page of an earlier release is still served correctly.
 #
-# The negative control is cases 2 and 3 together: with the GET /api/v1/search/results row of
-# packages/envoy/internal/dispatch/api/routes_table.go commented out, neither build serves the
-# path, so case 3 can no longer pass. Run that way once, this build does not start at all — the
-# route table's shape map (routes_shapes.go) still names the path, and a shape naming a route the
-# table does not mount panics at boot — so the run fails at `head-build`. With that shape
-# commented out beside it, this build boots and the run fails at `number_project` case 3, with
-# this build answering the same 404 NOT_FOUND "no route for GET /api/v1/search/results" the base
-# build answers. Either way nothing serves the path and the run does not pass.
+# The negative control is cases 2 and 3 together: with GET /api/v1/search/results's route file
+# (packages/envoy/internal/dispatch/api/route_api_v1_search_results+get.go) deleted, neither build
+# serves the path, so case 3 can no longer pass: this build boots and the run fails at
+# `number_project` case 3, with this build answering the same 404 NOT_FOUND "no route for GET
+# /api/v1/search/results" the base build answers, and the run does not pass.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

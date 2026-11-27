@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // docsocketHeartbeat is the heartbeat these rows run the access re-check on (RunAccessRecheck), in
@@ -35,7 +35,7 @@ func runAccessHeartbeat(t *testing.T, service *Service) {
 		defer close(done)
 		service.RunAccessRecheck(ctx, docsocketHeartbeat)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-done
 	})
@@ -85,6 +85,7 @@ func awaitAccessPasses(t *testing.T, service *Service, passes uint64, open map[s
 // Control: the heartbeat's loop runs no re-check; the losing socket stays open and the row fails
 // at its wait.
 func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	for _, row := range []struct {
 		name string
@@ -118,7 +119,7 @@ func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone
 				})
 			}
 			httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(httpServer.Close)
+			testcleanup.Add(t, httpServer.Close)
 			runAccessHeartbeat(t, service)
 
 			missing := documentSocketRefusal(t, httpServer.URL, uuid.NewString(), row.loser)
@@ -160,10 +161,11 @@ func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone
 // re-checks begun shows have run, and each is still served: the room answers its next ask for the
 // document.
 func TestDocumentSocketsOutliveTheAccessHeartbeatWithNoPrivateProjectAndNoChange(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	runAccessHeartbeat(t, service)
 	var private bool
 	if err := service.store.Pool.QueryRow(context.Background(), `select exists (select 1 from projects where visibility = 'private')`).Scan(&private); err != nil || private {

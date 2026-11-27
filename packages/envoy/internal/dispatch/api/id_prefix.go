@@ -78,8 +78,8 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // write is the caller's to make and the handler that then makes it read one value and cannot
 // disagree about which object the path named (project_scope.go). What each route's wildcards
 // name, which routes name none of the five kinds, and what 404 each route answers for an id it
-// does not hold is idRoutes; a route whose pattern carries no id is returned unwrapped and pays
-// nothing.
+// does not hold is its declaration's ID; a route that states none, whose pattern carries no id,
+// is returned unwrapped and pays nothing.
 //
 // A value that is no id written short (text.IsIDPrefix — at least eight hex digits and hyphens,
 // never a whole uuid) is left as written with no query, so a whole id, a slug, a numbered id, a
@@ -106,10 +106,10 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // an authenticated one, and its refusal is written further in, by the keyed layer for a keyed
 // write and by the handler for any other.
 func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	entry, named := idRoutes[route.Method+" "+route.Pattern]
-	if !named {
+	if route.ID == nil {
 		return handler
 	}
+	entry := *route.ID
 	return func(w http.ResponseWriter, r *http.Request) {
 		canonicalizeUUIDPath(r, "id")
 		var id, blockID string

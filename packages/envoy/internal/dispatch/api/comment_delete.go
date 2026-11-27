@@ -45,6 +45,10 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -53,7 +57,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, ok := s.lockedCommentForCorrection(w, r, tx, actor, "delete")
+	comment, ok := s.lockedCommentForCorrection(w, r, tx, who, actor, "delete")
 	if !ok {
 		return
 	}
@@ -217,7 +221,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
 	// each one's receipt is built from that. The settle refuses should a row no longer stand as
 	// this read found it (queueDeletedPostSettlement).
-	answer, err := s.hydrateWrittenComment(r.Context(), tx, actor, comment)
+	answer, err := s.hydrateWrittenComment(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

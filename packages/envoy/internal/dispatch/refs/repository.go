@@ -165,9 +165,9 @@ func RepositoryHidden(repoExpr, viewerParam string) string {
 //     it in that project, which the first question finds, or to its project's default through a
 //     top issue of that project, which the second finds. An issue whose chain leaves its project
 //     resolves as the last issue of its project on the chain does, the one whose parent is of
-//     another project, so only those are walked. No API write gives an issue a parent of another
-//     project (api/issue_parent.go), so a deployment whose rows only the API wrote holds none, and
-//     the walk reads no issue.
+//     another project, so only those are walked: the chain stops at the project edge
+//     (IssueRepoTerms), so such an issue resolves to its own project's default, never to a
+//     repository its parent's project names.
 //
 // It sits under RepositoryClause's CASE, so each `exists` ends in `offset 0`, as every `exists` a
 // clause adds there does (#3178 at 0f8b389c).

@@ -14,12 +14,11 @@ import (
 	"unsafe"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"golang.org/x/sync/singleflight"
 )
 
 // DocumentStamp names one stored state of a document: Version is the head Load folds the stored

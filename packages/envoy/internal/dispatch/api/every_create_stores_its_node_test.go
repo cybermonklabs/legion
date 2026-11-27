@@ -19,11 +19,11 @@ import (
 
 // TestEveryCreateStoresItsNode holds every write route to leaving no row of a project-owned kind
 // without its node in the project, or between the parties, the row belongs to
-// (the node a read limited to a project depends on). It calls every POST row of writeClasses -
-// read from the table, so the set is the server's own - on a server seeded with one object of
-// each kind, settles every document the calls left owing a settlement, then asks
-// graphcensus.ProjectComplete, the census's completeness read, which names any row left without
-// a node, with no project, or with another than its row's.
+// (the node a read limited to a project depends on). It calls every POST route whose declaration
+// states a write class (routeDecl.WriteClass) - read from the registry, so the set is the
+// server's own - on a server seeded with one object of each kind, settles every document the
+// calls left owing a settlement, then asks graphcensus.ProjectComplete, the census's completeness
+// read, which names any row left without a node, with no project, or with another than its row's.
 //
 // A POST row needs a request the route takes. postCalls holds one for every row. A route that can
 // create an issue, a document, an ask or a message gets a body that makes one, which the test
@@ -48,20 +48,20 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 	fixture := seedEveryKind(t, rig)
 
 	var posts []string
-	for name := range writeClasses {
-		if strings.HasPrefix(name, http.MethodPost+" ") {
-			posts = append(posts, name)
+	for _, route := range routeRegistry {
+		if route.Method == http.MethodPost && route.WriteClass != "" {
+			posts = append(posts, route.Method+" "+route.Pattern)
 		}
 	}
 	slices.Sort(posts)
 	if len(posts) == 0 {
-		t.Fatal("writeClasses holds no POST row, so the test calls nothing")
+		t.Fatal("no POST route declares a write class, so the test calls nothing")
 	}
 	var blocks []string
 	for _, name := range posts {
 		call, listed := postCalls[name]
 		if !listed {
-			t.Errorf("%s is a POST row of writeClasses that postCalls holds no request for: write down how to call it", name)
+			t.Errorf("%s is a POST route with a write class that postCalls holds no request for: write down how to call it", name)
 			continue
 		}
 		pattern := strings.TrimPrefix(name, http.MethodPost+" ")
@@ -83,7 +83,7 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 	if len(incomplete) != 0 {
 		t.Errorf("after every POST route, these rows have no node in their project: %v", incomplete)
 	}
-	t.Logf("called %d POST routes of writeClasses; the settlements opened the asks %v", len(posts), asks)
+	t.Logf("called %d POST routes that declare a write class; the settlements opened the asks %v", len(posts), asks)
 }
 
 // everyKindFixture is the object of each kind the routes address: the rig's issue and project

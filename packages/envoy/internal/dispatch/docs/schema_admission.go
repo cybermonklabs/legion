@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/url"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -262,18 +262,19 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 }
 
 // RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. The
-// API runs it on the document sockets' heartbeat (its Deps.StreamHeartbeat, accessRecheckEvery),
-// on which the live socket and the Delivery views resolve their readers again too. An access change
-// made by SQL alone - a statement at a psql prompt - appends no event and announces nothing on
-// store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
-// what a person sees all the same: this pass is what finds it, a heartbeat at most after it
-// committed, and closes each socket whose person lost its room with the code an announced change
-// closes it with (errAccessRevoked). Each beat moves the access epoch first (accessEpoch), so
-// every socket asks its rule again before its next data frame too (socketStillReads). The pass's
-// read of each person's rooms refreshes the stored listener answer first (readableRooms, through
-// refreshRosterForReader), as each socket's ask does. A pass while this process holds no socket
-// reads nothing. ctx is a process-lifetime context, outside any transaction of the pool: the
-// passes run on a hold mark of their own (store.ForConcurrentWorker), as each room-sync lane does.
+// API starts it as it mounts the document socket (api.register), on the sockets' heartbeat
+// (api.Deps.StreamHeartbeat); the live socket and the Delivery views resolve their readers again
+// on that beat from S4 on. An access change made by SQL alone - a statement at a psql prompt -
+// appends no event and announces nothing on store.AccessChangedChannel, so no notification reaches
+// room sync's access lane, and it moves what a person sees all the same: this pass is what finds
+// it, a heartbeat at most after it committed, and closes each socket whose person lost its room
+// with the code an announced change closes it with (errAccessRevoked). Each beat moves the access
+// epoch first (accessEpoch), so every socket asks its rule again before its next data frame too
+// (socketStillReads). The pass's read of each person's rooms refreshes the stored listener answer
+// first where something set a refresh (readableRooms, through refreshRosterForReader), as each
+// socket's ask does. A pass while this process holds no socket reads nothing. ctx is a
+// process-lifetime context, outside any transaction of the pool: the passes run on a hold mark of
+// their own (store.ForConcurrentWorker), as each room-sync lane does.
 func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 	ctx = store.ForConcurrentWorker(ctx)
 	ticker := time.NewTicker(every)
@@ -300,6 +301,9 @@ func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 // every socket of theirs closed too, as recheckAdmission closes a socket whose read fails: the pass
 // cannot show they still read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
+	if serverStopping(ctx) {
+		return
+	}
 	// hidden is each socket whose person's read answered that they no longer read its room, and
 	// unread each socket whose person's read failed.
 	hidden := make(map[*schemaAdmission]bool)
@@ -307,6 +311,9 @@ func (s *Service) recheckAccess(ctx context.Context) {
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
 		readable, err := s.readableRooms(ctx, person, admissions)
 		if err != nil {
+			if serverStopping(ctx) {
+				return
+			}
 			if ctx.Err() == nil {
 				slog.Warn("dispatch: read which documents a person with an open document socket still reads; their sockets close and the provider reconnects", "sockets", len(admissions), "error", err)
 			}
@@ -321,7 +328,7 @@ func (s *Service) recheckAccess(ctx context.Context) {
 			}
 		}
 	}
-	if len(hidden) == 0 && len(unread) == 0 {
+	if serverStopping(ctx) || (len(hidden) == 0 && len(unread) == 0) {
 		return
 	}
 	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {
@@ -387,10 +394,11 @@ func (s *Service) readableRooms(ctx context.Context, person string, admissions [
 // who's documents, unless who reads every document (readsEveryDocument): a session's file follows
 // the session content rule (access.DocumentClause through access.PartyClause), which reads a
 // listener list only from a stored answer that has not passed its expires_at and judges a listed
-// session of an expired one as a session with no list. It is the api's refresh on resolving a
-// reader (readerFor), made where this service resolves one: a socket's admission and each read of
-// which rooms a person still reads. An open reader of a deployment that holds no private project
-// reads nothing for it (R9).
+// session of an expired one as a session with no list. It is the refresh the api makes on resolving
+// a reader (readerFor) from S3c-issues on, made where this service resolves one: a socket's
+// admission and each read of which rooms a person still reads. Before that slice nothing sets it,
+// and this refreshes nothing. An open reader of a deployment that holds no private project reads
+// nothing for it (R9).
 func (s *Service) refreshRosterForReader(ctx context.Context, who model.Actor) {
 	if readsEveryDocument(who) {
 		return
@@ -425,6 +433,17 @@ func (schemaRevoked) CloseCode() (int, string) {
 // provider reconnects, and the reconnect's admission refuses the room as a room no document holds
 // (readIssue) when the person no longer reads it.
 var errAccessRevoked error = accessRevoked{}
+
+// ErrServerStopping is the cause cmd/dispatch cancels the process context with at shutdown
+// (context.WithCancelCause): the access re-check returns without revoking when it is the cause
+// of ctx, so the close code tells the truth (shutdown's going-away, not a loss of access). A
+// plain cancelled context, as a per-pass deadline, still fails closed with errAccessRevoked.
+var ErrServerStopping = errors.New("server stopping")
+
+// serverStopping reports whether ctx was cancelled with ErrServerStopping.
+func serverStopping(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), ErrServerStopping)
+}
 
 // accessRevoked is that cause's type.
 type accessRevoked struct{}

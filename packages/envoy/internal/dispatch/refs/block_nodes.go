@@ -95,9 +95,9 @@ func membership(address, refKey string, joined time.Time, writer model.Actor) gr
 }
 
 // BlockInDocument is block blockID's node, live, and its in_document tuple, its membership of the
-// document record.RefKey names, both as the index pass states them (blockNode, membership): made,
-// dated and stated by record.Writer at at, in record's project or between its parties, and caused
-// by event. fits is false, and the two are zero, for a block whose address is past
+// document record names, both as the index pass states them (blockNode, membership): in the
+// document's project or between its parties, made, dated and stated by record's writer at at, and
+// caused by event. fits is false, and the two are zero, for a block whose address is past
 // MaxBlockNodeBytes, which is no node of the store. It is the one statement of a block's node and
 // its membership for a writer that holds its cause already: the backfill of the block rows
 // written before the store (graphcensus), under the event that recorded each row's version.
@@ -173,10 +173,11 @@ func (b *BlockIndexing) planBlockNodes(
 	stale bool,
 	nodes []model.ArtifactBlock,
 	texts blockTexts,
-	record IndexedVersion,
+	version VersionBlocks,
 	now time.Time,
 ) (map[string][]heldLink, error) {
-	refKey, versionAt, writer := b.refKey, b.versionAt, record.Writer
+	refKey, versionAt := b.refKey, b.versionAt
+	record, writer := version.Record, version.Record.Writer
 	// The nodes this pass states are the blocks whose document_blocks row it writes - the new,
 	// the changed and the restored - the ids the version dropped, and the blocks whose row
 	// names no node, and no other. The first two are exactly the set R16's foreign key needs a

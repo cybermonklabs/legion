@@ -33,9 +33,9 @@ var CommentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 
 // commentRow is one comments row the comment write reads (CommentsNamingNoNode): its id, its
 // author as the row stored it, when it was written, the addresses of the artifact it is anchored
-// to and the artifact that owns it, the event that stored it, and the project of the issue or the
-// document it belongs to, or the session of the conversation that owns that document
-// (graphstore.ScopeOf's rule).
+// to and the artifact that owns it, the event that stored it, and the project its issue or its
+// document belongs to or the parties of the conversation that holds it (graphstore.SessionScope),
+// which its node carries.
 type commentRow struct {
 	id        string
 	author    model.Actor
@@ -116,7 +116,8 @@ func LockCommentOwners(ctx context.Context, tx pgx.Tx, ids []string) error {
 }
 
 // scanCommentRows reads every row of rows, a read of commentRow's columns in its order, and
-// closes it.
+// closes it. A row whose parties graphstore.PartiesValue refuses is left out, as
+// CommentsNamingNoNode says: no writer can give that comment a node.
 func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 	defer rows.Close()
 	var batch []commentRow
@@ -160,9 +161,10 @@ type CommentWrite struct {
 // Comments is how many comments rows the write names the nodes of.
 func (w CommentWrite) Comments() int { return len(w.ids) }
 
-// BaseAttributes is how many base attributes the store write states of the comment nodes it
-// makes, which its writer counts beside its own Tuples: no comment here names its node yet, so
-// the write makes every one.
+// BaseAttributes is how many base attributes the store write states of the comment nodes it makes,
+// which the writer does not state itself: every comment it reads names no node yet, so its insert
+// makes each one, stating its visibility and its state, and its project or its parties where it
+// belongs to one.
 func (w CommentWrite) BaseAttributes() int64 { return w.baseAttributes }
 
 // Queue queues the write on b: its one store write of every node and every tuple

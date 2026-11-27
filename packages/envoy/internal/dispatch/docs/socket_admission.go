@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -419,22 +418,21 @@ func (w *revocableSocketWriter) hidden() bool {
 
 func (w *revocableSocketWriter) WriteHeader(code int) {
 	if !w.hidden() {
-		w.ResponseWriter.WriteHeader(code)
+		rw := w.ResponseWriter
+		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		rw.WriteHeader(code)
 	}
 }
 
-// Write writes ygo's answer, which before an upgrade is only ever plain text (http.Error's), as
-// plain text: it sets Content-Type text/plain and X-Content-Type-Options nosniff on the inner
-// writer first, so no answer this writer carries is read as HTML, even one written before any
-// WriteHeader fixed its headers. ygo writes through http.Error, which has sent those same two
-// headers by then, so the bytes the socket's peer reads do not change.
 func (w *revocableSocketWriter) Write(body []byte) (int, error) {
 	if w.hidden() {
 		return len(body), nil
 	}
-	w.ResponseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
-	return w.ResponseWriter.Write(body)
+	rw := w.ResponseWriter
+	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	rw.Header().Set("X-Content-Type-Options", "nosniff")
+	return rw.Write(body)
 }
 
 // Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room, and

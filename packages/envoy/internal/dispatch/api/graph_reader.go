@@ -51,18 +51,6 @@ func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 // readerFor is actor as a read answers for it (model.Actor.Reader), with what its credential sees
 // now (access.Resolve): the one resolution behind resolveReader, and the one a live socket makes
 // again of the caller its upgrade resolved (feedEvents, the delivery hub's access re-check).
-//
-// A reader that does not see every object (seesEveryObject) has the session content rule asked
-// about every session party of what it reads (access.SessionContentClause, through PartyClause,
-// MessageClause, DocumentClause and ItemOwnerClause), and that rule reads a listener list only from
-// a stored listener answer that has not passed its expires_at. So such a resolution refreshes the
-// stored answer first (refreshRosterForContent), once, before the request or the re-check it is
-// made for reads anything, taking it only while it has the margin left that the request's reads
-// need: a listed session tied to nobody is then judged by its list rather than as one with no list,
-// which passes no viewer but its own. A handler that waits on the listener after this refreshes
-// again before it reads back (refreshRosterBeforeReadBack). A reader that sees every object - the
-// server's, or an open one of a deployment that holds no private project (R9) - reads nothing for
-// it.
 func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor, error) {
 	reader := actor.Reader()
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
@@ -74,9 +62,6 @@ func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor,
 		return model.Actor{}, err
 	}
 	reader.Viewer = &viewer
-	if !seesEveryObject(reader) {
-		s.refreshRosterForContent(ctx)
-	}
 	return reader, nil
 }
 
@@ -119,23 +104,28 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 }
 
 // everyReader is who a read of the graph answers for when what it reads is kept or sent where
-// many readers read it rather than answered to the one person whose request made it: the server's
-// own viewer (model.ServerViewer), which sees every project and every party and proves no author,
-// so a node reserved for its author is never in what everyone reads, whoever's request wrote it.
-// Each read it makes reads content that belongs to one owner, one project or one conversation,
-// and is gated per viewer where it leaves the server. TestEveryServerReadIsNamed holds every use
-// to serverReads, which says why no single caller is its reader:
+// many readers read it rather than answered to the one person whose request made it, or when the
+// server reads for no request at all: the server's own viewer (model.ServerViewer), which sees
+// every project and every party and proves no author, so a node reserved for its author is never
+// in what everyone reads, whoever's request wrote it. TestEveryServerReadIsNamed
+// (server_reads_test.go) holds every use of it, and of model.ServerReader and model.ServerViewer,
+// to serverReads, which says for each why no single caller is its reader:
 //
-//   - an event's payload (commentEventPayload, and messageCorrectionEvent for a message's edit
-//     and delete) is appended once and read by every subscriber of the event's topics and every
-//     reader of the issue's event log;
+//   - an event's payload (commentEventPayload, commentAnchorRefreshEvent, and
+//     messageCorrectionEvent for a message's edit and delete) is appended once and read by every
+//     subscriber of the event's topics and every reader of its owner's event log;
 //   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
 //     read again by every reader of the conversation, not by the person who wrote the message;
 //   - the record of a comment thread a document projects (ProjectMark, through
-//     projectThreadMark from reopenComment, editComment and deleteComment, and from
-//     commentAction and createCommentFor) is written into the document every reader of that
-//     document reads;
+//     projectThreadMark, commentAction and createCommentFor) is written into the document every
+//     reader of that document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
-//     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     and handed to the next reader whose request names the same pair;
+//   - the server's own work for no request: the delivery sweep (resumeOwedDelivery and the two
+//     settles), a mention sender's claim (claimCommentDeliveryAttempt), the boot fix of a parent's
+//     status, CI's result lines (deriveCIResults), and a keyed repeat's check of whether its object
+//     exists at all (heldAnswerRefusal);
+//   - and four reads a later slice gives the caller's reader, each named with that slice: the
+//     going run's search (S3c-issues), and the live socket's event relay, its replay and its five
+//     Delivery views (S4).
 var everyReader = model.ServerReader

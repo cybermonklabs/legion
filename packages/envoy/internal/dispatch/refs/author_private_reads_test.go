@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"errors"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"maps"
 	"reflect"
 	"slices"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -51,7 +51,7 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 // closureOf is the members of CORE-1's references read as who reads it.
 func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("read the closure as %s: %v", who.ID, err)
 	}
@@ -63,7 +63,7 @@ func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 // links and its via, sorted.
 func linkedFromOf(t *testing.T, tx pgx.Tx, who model.Actor) []string {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("read the references as %s: %v", who.ID, err)
 	}

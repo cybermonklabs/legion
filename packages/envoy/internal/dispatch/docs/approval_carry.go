@@ -16,7 +16,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -333,10 +332,11 @@ func versionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdo
 // (versionBlocks), when that version holds a block whose row is open, each of those open rows is
 // an ask the close withdrew before A was written and the reopen restored after it
 // (reopenRestoredSince), and the version, rendered with every such block shown resolved
-// (withOpenBlocksResolved), is byte for byte A's stored text (restoresVersionText); it appends
-// nothing otherwise, and hands sink what it appends, as carryApproval does. The rows are decided
-// first, from the asks' events: a version write whose open blocks hold any other ask renders
-// nothing more.
+// (withOpenBlocksResolved), holds A's stored text as the restore compares it
+// (restoresVersionText: byte for byte, or, for a version another renderer version stored, as
+// this build renders it); it appends nothing otherwise, and hands sink what it appends, as
+// carryApproval does. The rows are decided first, from the asks' events: a version write whose
+// open blocks hold any other ask renders nothing more.
 func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, origins text.Origins, sink func(model.Event)) error {
 	var opened []string
 	for _, ask := range blocks {
@@ -893,9 +893,10 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// own (refs.NewReader), planned here and written in the step below, after the update whose
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
-	// of its own.
+	// of its own. The answer holds the parts alone, so the step reconciles the question's
+	// references after them too and settles the forms queue there (questionReconciled false).
 	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, origins),
-		answered, answer.At, model.ReferenceChanges{})
+		answered, answer.At, false, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -64,7 +63,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 	}
 
 	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, text.NewOrigins(refsGrammarServer)).Mentions("Blocked on CORE-1.")
-	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil, false); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 

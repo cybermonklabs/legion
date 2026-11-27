@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -705,7 +704,7 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 // resolveNodesWith is resolveNodes resolving each kind through registry in place of nodeRegistry,
 // as a build whose registry is registry would: a test reads an older build's answer through it
 // without writing the package's registry under every other test of the process.
-func resolveNodesWith(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow, registry map[string]nodeLoader) (map[[2]string]resolvedNode, error) {
+func resolveNodesWith(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow, registry map[string]nodeKind) (map[[2]string]resolvedNode, error) {
 	byKind := make(map[string][]string)
 	seen := make(map[[2]string]struct{})
 	for _, row := range rows {
@@ -718,7 +717,7 @@ func resolveNodesWith(ctx context.Context, q Queryer, who model.Actor, byRefKey 
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		entry, known := nodeRegistry[kind]
+		entry, known := registry[kind]
 		if !known || entry.load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
@@ -1036,15 +1035,17 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 }
 
 // loadCommentNodes resolves comment nodes. A comment is made by its author, and only its author
-// edits it, so its last change is its author at edited_at; a resolution is no change of it. A
-// reply that names a block it answers belongs to that block, another reply to its thread's head
-// comment, a comment in an ask's thread to the ask, and another comment to the document it is
-// written on: the one its anchor names, at the anchored version, else the document that owns it,
-// at the version current when it was written (written_version). A comment written on no document
-// belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
-// reference of the block it names, are written under. The document is joined only where the
-// reader sees its node (VisibleKind), as loadAskNodes joins an ask's: an anchor naming a document
-// the reader may not see names no parent, as one naming a uuid no document holds does.
+// edits it, so its last change is its author at edited_at; a resolution is no change of it, and
+// a delete is no change of it either: it is the mark model.DeletedPostMark reads, which the node
+// carries beside the empty body a delete leaves. A reply that names a block it answers belongs to
+// that block, another reply to its thread's head comment, a comment in an ask's thread to the
+// ask, and another comment to the document it is written on: the one its anchor names, at the
+// anchored version, else the document that owns it, at the version current when it was written
+// (written_version). A comment written on no document belongs to its issue. A reply shares its
+// head's owner, and so the owner its reference, and the reference of the block it names, are
+// written under. The document is joined only where the reader sees its node (VisibleKind), as
+// loadAskNodes joins an ask's: an anchor naming a document the reader may not see names no
+// parent, as one naming a uuid no document holds does.
 //
 // Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {

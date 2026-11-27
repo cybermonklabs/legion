@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames: while no LISTEN of the process stands, the
@@ -25,11 +26,12 @@ import (
 // Control: the connection asking nothing before a batch (revocableSocketWriter hands ygo the
 // connection as it is); carol's copy holds "after" and her socket stays open.
 func TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames(t *testing.T) {
+	t.Parallel()
 	const carol = "carol@example.com"
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	losing := connectPeer(t, httpServer.URL, artifactID, carol)
 	if err := losing.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {

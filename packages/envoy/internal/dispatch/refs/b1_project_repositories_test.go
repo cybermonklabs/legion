@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
@@ -40,7 +41,7 @@ func TestProjectRepositoriesAnswersTheRepositoriesItsIssuesResolveTo(t *testing.
 		t.Fatalf("seed EMPTY and PRIV-20: %v", err)
 	}
 	for project, want := range map[string][]string{
-		"PRIV":  {"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone", "acme/privparent", "acme/pubwalk", "acme/upper"},
+		"PRIV":  {"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone", "acme/upper"},
 		"PRIV2": {"acme/privparent"},
 		"PUB":   {"acme/both", "acme/privmapped", "acme/pub", "acme/pubwalk"},
 		"EMPTY": {},
@@ -80,10 +81,11 @@ func seedLoopedChain(t *testing.T, database *store.Store, project string, number
 
 // TestAPublicProjectsPeopleReadARepositoryAPrivateProjectWorksInToo (BuildAG11's probe): where
 // issues of a private project and of a public project work in one repository, the public project's
-// people read it. OTHER is public and OTHER-2 names acme/two; PRIV is private, and its PRIV-3, a
-// child of OTHER-2 naming none, resolves to acme/two too. alice, open and seeing OTHER, and carl, a
-// restricted member seeing only OTHER, each read acme/two; ProjectRepositories lists acme/two for
-// OTHER and for PRIV alike, so the edge and the proxy agree.
+// people read it. OTHER is public and OTHER-2 names acme/two; PRIV is private, and its PRIV-3 names
+// acme/two too. alice, open and seeing OTHER, and carl, a restricted member seeing only OTHER, each
+// read acme/two; ProjectRepositories lists acme/two for OTHER and for PRIV alike, so the edge and
+// the proxy agree. PRIV-3 names the repository itself: an issue under a parent of another project
+// does not take that parent's repository (TestAnIssueUnderAParentOfAnotherProjectKeepsItsOwnRepository).
 //
 // Control: the rule before this change (a private owner the viewer does not see hides the
 // repository whatever the viewer sees, `not bool_or(not seen and owner.visibility = 'private')`),
@@ -96,7 +98,7 @@ func TestAPublicProjectsPeopleReadARepositoryAPrivateProjectWorksInToo(t *testin
 		insert into projects (key, name, default_assignee, visibility) values ('OTHER', 'Other', 'olga', 'public'), ('PRIV', 'Private', 'olga', 'private');
 		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
 			('OTHER-2', 'OTHER', 2, 'Names acme/two', '{"kind":"user","id":"olga"}', 'a', null, 'acme/two', 'triage'),
-			('PRIV-3', 'PRIV', 3, 'Under OTHER-2', '{"kind":"user","id":"olga"}', 'a', 'OTHER-2', null, 'triage');
+			('PRIV-3', 'PRIV', 3, 'Names acme/two', '{"kind":"user","id":"olga"}', 'a', null, 'acme/two', 'triage');
 	`); err != nil {
 		t.Fatalf("seed the probe: %v", err)
 	}
@@ -126,6 +128,44 @@ func TestAPublicProjectsPeopleReadARepositoryAPrivateProjectWorksInToo(t *testin
 		if old {
 			t.Errorf("the old rule shows acme/two to %s: the row cannot tell the two rules apart", viewer.name)
 		}
+	}
+}
+
+// TestAnIssueUnderAParentOfAnotherProjectKeepsItsOwnRepository holds the repository walk to the
+// project edge (#4896): an inherited value stops there, as an issue's components do. PRIV-3 names
+// no repository and is a child of OTHER-2, of another project, which names acme/two; PRIV's default
+// is acme/privdefault. PRIV-3 resolves to its own project's default, so ProjectRepositories(PRIV)
+// lists acme/privdefault and not acme/two.
+//
+// Control: the same walk with the edge taken out of its join (a parent of any project is followed,
+// as the reviewed tree's walk was before #4896) answers acme/two for PRIV-3, so the rows can tell the
+// two walks apart; the test fails if it does not.
+func TestAnIssueUnderAParentOfAnotherProjectKeepsItsOwnRepository(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, default_repo) values ('OTHER', 'Other', 'olga', null), ('PRIV', 'Private', 'olga', 'acme/privdefault');
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
+			('OTHER-2', 'OTHER', 2, 'Names acme/two', '{"kind":"user","id":"olga"}', 'a', null, 'acme/two', 'triage'),
+			('PRIV-3', 'PRIV', 3, 'Under OTHER-2', '{"kind":"user","id":"olga"}', 'a', 'OTHER-2', null, 'triage');
+	`); err != nil {
+		t.Fatalf("seed the probe: %v", err)
+	}
+	if got, err := ProjectRepositories(ctx, database.Pool, "PRIV"); err != nil || !slices.Equal(got, []string{"acme/privdefault"}) {
+		t.Errorf("ProjectRepositories(PRIV) = %q, %v, want [acme/privdefault]: PRIV-3 keeps its own project's default", got, err)
+	}
+	const edge = " and p.project_key = c.project_key"
+	statement := ProjectRepositoriesSQL("i.project_key = 'PRIV'")
+	crossing := strings.Replace(statement, edge, "", 1)
+	if crossing == statement {
+		t.Fatalf("the walk holds no %q, so the control is the statement itself", edge)
+	}
+	var repo *string
+	if err := database.Pool.QueryRow(ctx, `select repo from (`+crossing+`) owned where owned.issue = 'PRIV-3'`).Scan(&repo); err != nil {
+		t.Fatalf("the walk across the edge: %v", err)
+	}
+	if repo == nil || *repo != "acme/two" {
+		t.Errorf("the walk across the edge resolves PRIV-3 to %v, want acme/two: the rows cannot tell the two walks apart", repo)
 	}
 }
 

@@ -152,6 +152,9 @@ func BackfillThrottled(ctx context.Context, database *store.Store, out io.Writer
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int, p *pacer) (BackfillReport, error) {
 	report := BackfillReport{}
 	fmt.Fprintf(out, "backfill-graph-store: throttle %s\n", p.throttle)
+	if err := requireBackfillIndexes(ctx, database); err != nil {
+		return report, err
+	}
 	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
 	// reads as "no event recorded this write" and is exactly true of a row written before the
 	// store existed. The run appends no event of its own: events.Broker is the one writer of
@@ -169,6 +172,9 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		return report, err
 	}
 	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	if err := analyzeWalkedColumns(ctx, database); err != nil {
+		return report, err
+	}
 	blocks := func(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
 		return backfillBlocks(ctx, database, rule, p)
 	}

@@ -1699,10 +1699,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the mentioned
-	// role now, while it is live: a different session that took the role from the one the
-	// attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	// role now, while it is live, and a session that replaced the one the attempt names: a
+	// different session that took the role, or that replaced the session, is handed what that
+	// session had not read (lookUpRoleHolderReply).
 	if (attempt.SessionID == nil || *attempt.SessionID != actor.ID) && !roleReply.allows(attempt.Target) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, replyForbiddenSession)
 		return
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored

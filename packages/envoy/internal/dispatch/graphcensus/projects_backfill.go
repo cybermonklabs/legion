@@ -40,9 +40,9 @@ type objectKind struct {
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
 	// owners answers, for a kind some writer deletes rows of, the owner each row of the ids $1
-	// stands under, as (issue, document id, id): the owner whose lock that writer takes before
-	// anything else (api's removeArtifact takes its document's issue's). It is empty for a kind no
-	// writer deletes a row of.
+	// stands under, as (issue, document id): the owner whose lock that writer takes before anything
+	// else (api's removeArtifact takes its document's issue's). It is empty for a kind no writer
+	// deletes a row of.
 	owners string
 }
 
@@ -67,8 +67,8 @@ const scopedNode = `(n.project_key is not null or n.parties is not null)`
 // the row a's address that is that row's own - any such node, for a row no removal takes, and for
 // one a removal can take, one whose live statement was made for it (ownLiveStatement). A node
 // whose live statement is not the row's is a document a build before this one removed and then
-// made again at the address before this build's block-index tick stated the node gone, and that
-// row is owed its own live statement as much as a row with none (classGone).
+// made again at the address, and that row is owed its own live
+// statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
@@ -109,7 +109,7 @@ var objectKinds = []objectKind{
 		  and ` + unmarkedDocument("a") + `
 		order by a.ref_key limit $2`,
 		rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
-		owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`},
+		owners: `select coalesce(issue_key, ''), id::text from artifacts where ref_key = any($1::text[])`},
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
 		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text, null::bigint, k.id::text
@@ -139,10 +139,10 @@ var objectKinds = []objectKind{
 }
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
-// node for from its rows (objectKinds), and false for any other kind. The block-index tick's sweep
-// reads it under its lock of a node to leave a node whose row stands (StateOrphanedGone). An ask's
-// and a message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers
-// false for it rather than let the cast in objectKind.rows abort the caller's transaction.
+// node for from its rows (objectKinds), and false for any other kind. The sweep of an orphaned
+// document's node reads it under the node's lock (StateOrphanedGone). An ask's and a message's row
+// is keyed by a uuid, so an id that is no uuid names no row of them; it answers false for it rather
+// than let the cast in objectKind.rows abort its caller's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
@@ -301,6 +301,7 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		report.Rows += written.Rows
 		report.Nodes += written.Nodes
 		report.Tuples += written.Tuples
+		report.Skipped += written.Skipped
 	}
 	p.begin(kind.kind)
 	defer p.end()
@@ -549,9 +550,8 @@ func derefText(value *string) string {
 // document has another UUID even when its created_at is identical; it is left for the next run,
 // which the report's remaining count names. A removal waiting for this batch removes a row whose
 // node is live, and this build's removal then states that node gone. The owner locks come first
-// and the nodes after them, the order every writer of these nodes takes (a document's create, its
-// removal, the block-index tick's sweep). A kind no writer deletes a row of takes no lock and is
-// read again the same way.
+// and the nodes after them, the order every writer of these nodes takes (a document's create and
+// its removal). A kind no writer deletes a row of takes no lock and is read again the same way.
 //
 // Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
@@ -631,8 +631,8 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 					stated = append(stated, stateTuple(statement), stateTuple(node))
 				}
 			}
-			// PlanUncaused sets each node's SourceEvent to the sentinel, so the cause is read
-			// before it. The run's nodes share one cause (the loop above grouped them by it).
+			// PlanUncaused sets each node's SourceEvent to the sentinel where it stands, so the
+			// run's one cause (the loop above grouped the nodes by it) is read before it.
 			cause := run[0].SourceEvent
 			made := graphstore.PlanUncaused(run, stated)
 			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -722,8 +722,8 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
 	owners := events.OwnerRows{}
-	var issue, document, id string
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
+	var issue, document string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document}, func() error {
 		owners.Add(issue, document)
 		return nil
 	}); err != nil {

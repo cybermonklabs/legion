@@ -15,19 +15,24 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// roleHolderReply is what a reply route learned, before its transaction opened, of whether the
-// session replying holds the role an attempt was sent for. route is the attempt's route as its
-// row names it (a message's target, a mention's target), and holder is true only when the
-// listener's role lookup named that session as the holder of route's role and called it live.
+// replyForbiddenSession is the 403 REPLY_FORBIDDEN both reply routes give a session that may not
+// answer the attempt it names (lookUpRoleHolderReply says who may).
+const replyForbiddenSession = "session may reply only to its own delivery, to one sent for a role it holds while it is live, or to one the listener handed it from a session it replaced"
+
+// roleHolderReply is what a reply route learned, before its transaction opened, of whether a
+// session the attempt does not name may answer it. route is the attempt's route as its row names
+// it (a message's target, a mention's target), and named is true only when the listener named the
+// session replying for that route: as the holder of route's role, called live, for a route to a
+// role; as a session that replaced the attempt's session, for a route to a session.
 type roleHolderReply struct {
-	route  string
-	holder bool
+	route string
+	named bool
 }
 
-// allows reports whether a session the attempt on route does not name may still answer it: it is
-// the live holder of the role route names, by the lookup made for that same route.
+// allows reports whether a session the attempt on route does not name may still answer it: the
+// listener named it, by the lookup made for that same route.
 func (r roleHolderReply) allows(route string) bool {
-	return r.holder && r.route == route
+	return r.named && r.route == route
 }
 
 // messageReplyRoleHolderOf is the lookUpRoleHolderReply of a reply to attempt of message id: the
@@ -214,22 +219,58 @@ func pinnedHidden(seen references, pinned *string) bool {
 // locked row names. An attempt pins its session once and never changes it, so a row that named
 // actor when it was read here names actor under the lock too, and no lookup is made for it.
 //
-// A route that is not a role's, an attempt that names actor, and a listener that answers that
-// another session holds the role, or none does, are no holder's reply. A lookup the listener did
-// not answer (dispatchenvoy.ErrUnavailable) is the error, which the route answers 503
-// ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a refusal
-// would end a reply its host could make again.
-func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor) (roleHolderReply, error) {
+// Any other route, an attempt that names actor, and a listener that answers that another session
+// holds the role, or none does, or that names actor among no successors, or names it for another
+// principal than the one actor's credential acts for (actsFor, callerPrincipal), are no reply it
+// allows. A
+// lookup the listener did not answer (dispatchenvoy.ErrUnavailable) is the error, which the route
+// answers 503 ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a
+// refusal would end a reply its host could make again.
+func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor, actsFor string) (roleHolderReply, error) {
 	verdict := roleHolderReply{route: route}
 	parsed, err := model.ParseRoute(route)
-	if err != nil || parsed.Kind != "role" || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
+	if err != nil || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
 		return verdict, nil
 	}
-	holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
-	if errors.Is(err, dispatchenvoy.ErrUnavailable) {
-		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
-			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
+	switch parsed.Kind {
+	case "role":
+		holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
+		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
+			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
+				"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
+		}
+		verdict.named = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
+	case "session":
+		if attemptSession == nil {
+			return verdict, nil
+		}
+		successors, err := s.deps.Envoy.Successors(ctx, *attemptSession)
+		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
+			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
+				"the Envoy listener did not say which sessions replaced %s, so Dispatch cannot tell whether %s may answer this delivery: %s", *attemptSession, actor.ID, err.Error())
+		}
+		verdict.named = err == nil && slices.Contains(successors.Successors, actor.ID) && actsForSuccessorPrincipal(actor, actsFor, successors.Principal)
 	}
-	verdict.holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
 	return verdict, nil
+}
+
+// actsForSuccessorPrincipal reports whether actor, on a credential acting for actsFor, may answer,
+// as a successor the listener names, a delivery of a session that last registered as principal
+// (listenerwire.SessionSuccessors). A credential that proved the replying session itself (a
+// broker token, actor.Proven) acts for the principal its token names, in the form that names the
+// token's kind and scope (ciphertoken.Caller.Principal, callerPrincipal) - the principal the
+// listener records a registration on that token as (cmd/listener's requestPrincipal) - and must
+// act for principal: the listener names a successor by the records of the two sessions' last
+// registrations, and a session run on another principal's credential before its registration
+// records that may not answer the earlier principal's deliveries. So an agent's token that an
+// operator's entry gave a person for a project may not answer a delivery of that person's own
+// session. A proven credential naming no principal, and a principal of none, which no proven
+// credential acts for, allow nothing. A credential that proves no session - the shared agent
+// token, a personal token, a service-account token - names whichever session its body names, the
+// attempt's own among them, so nothing more is asked of it here.
+func actsForSuccessorPrincipal(actor model.Actor, actsFor, principal string) bool {
+	if !actor.Proven {
+		return true
+	}
+	return actsFor != "" && actsFor == principal
 }

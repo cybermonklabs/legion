@@ -1,13 +1,15 @@
 package legion
 
 // phase_work.go holds the one read of the phase-work half of tree.go's rule: which issues carry
-// Legion phase work. Its two readers ask it differently. The metrics read it over the whole log,
-// with the rest of their population (PhaseWorkKeys, legion/metrics). The Legion board reads it
-// only for the issues its tree walk can climb onto that the daemon reports nothing of, and only
-// on a board read that meets one (PhaseWorkOf, api/legion_board.go's readPhaseWork). Both come
-// through one read (readPhaseWork), under one title rule, and the board's is that read over the
-// issues it names rather than a second rule, so an issue carries the same phase work whichever
-// asks, and the two place it in the same tree.
+// Legion phase work. Its readers ask it two ways. The metrics' whole read of a project reads it
+// over the whole log, with the rest of that population (PhaseWorkKeys, metrics.ReadProject), and
+// their narrow read of some issues, which each pass of the Legion facts consumer makes, reads it
+// only for the issues its computation can place (PhaseWorkOf, metrics.ReadIssues). The Legion
+// board reads it only for the issues its tree walk can climb onto that the daemon reports nothing
+// of, and only on a board read that meets one (PhaseWorkOf, api/legion_board.go's readPhaseWork).
+// All come through one read (readPhaseWork), under one title rule, and a read of named issues is
+// that read over the issues it names rather than a second rule, so an issue carries the same phase
+// work whichever asks, and every reader places it in the same tree.
 
 import (
 	"context"
@@ -22,11 +24,12 @@ import (
 
 // PhaseWorkKeys is every issue that carries Legion phase work, over the whole log of every
 // project: the issues a handoff was recorded for, and the issues an event of a session titled
-// `Legion <role> · <that issue's key>` was written on. The metrics read it, once per answer beside
-// the rest of their population (legion/metrics' readPhaseWork). It takes no project, so it answers
-// every project's issues and the metrics look up their own project's among them; and it takes no
-// window, since an issue's tree is a fact of its project rather than of the window a metric
-// measures (tree.go).
+// `Legion <role> · <that issue's key>` was written on. The metrics' whole read of a project reads
+// it, once per read beside the rest of its population (metrics.ReadProject). It takes no
+// project, so it answers every project's issues and the metrics look up their own project's among
+// them; and it takes no window, since an issue's tree is a fact of its project rather than of the
+// window a metric measures (tree.go). It reads the session half of the whole log, so a reader
+// that asks about some issues alone asks PhaseWorkOf.
 //
 // The title rule is this package's own (WorkerTitle and RoleSessionWorks, session_title.go), and
 // the titles are resolved the one way Dispatch resolves them, each session's newest

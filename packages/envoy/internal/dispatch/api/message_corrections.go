@@ -61,9 +61,9 @@ type editMessageInput struct {
 //
 // ok is false once it has written the refusal.
 func (s *server) lockedMessageForCorrection(
-	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, verb, past string,
+	w http.ResponseWriter, r *http.Request, tx pgx.Tx, who, actor model.Actor, verb, past string,
 ) (model.Message, time.Time, bool) {
-	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
+	message, err := s.loadMessage(r.Context(), tx, who, "", r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return model.Message{}, time.Time{}, false
@@ -115,6 +115,10 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// An edit stores line feeds alone, as a message's creation does (validateCreateMessage) and as
 	// the comment edit does: a body that holds a carriage return draws differently in every reader
 	// of the stored text, the message.edited event and its deliveries among them.
@@ -133,7 +137,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, editedAt, ok := s.lockedMessageForCorrection(w, r, tx, actor, "edit", "edited")
+	message, editedAt, ok := s.lockedMessageForCorrection(w, r, tx, who, actor, "edit", "edited")
 	if !ok {
 		return
 	}
@@ -165,7 +169,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The answer lists the attempts as a read of the message lists them: the edit writes none,
 	// so they are read here, in the read phase, and a read that fails writes nothing.
-	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
+	if err := s.hydrateWrittenMessage(r.Context(), tx, who, &message); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -218,13 +222,17 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, deletedAt, ok := s.lockedMessageForCorrection(w, r, tx, actor, "delete", "deleted")
+	message, deletedAt, ok := s.lockedMessageForCorrection(w, r, tx, who, actor, "delete", "deleted")
 	if !ok {
 		return
 	}
@@ -246,7 +254,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	// queued below, so the attempts it settles are set in the answer as it leaves them, and each
 	// one's receipt is built from that. The settle refuses should a row no longer stand as this
 	// read found it (queueDeletedPostSettlement).
-	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
+	if err := s.hydrateWrittenMessage(r.Context(), tx, who, &message); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

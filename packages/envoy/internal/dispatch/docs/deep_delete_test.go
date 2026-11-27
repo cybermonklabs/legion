@@ -11,7 +11,6 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/stacktest"
 	"github.com/sjawhar/envoy/internal/testcleanup"

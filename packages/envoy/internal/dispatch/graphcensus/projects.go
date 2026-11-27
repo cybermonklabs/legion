@@ -33,24 +33,24 @@ var projectKinds = []string{
 // authorParty is, for an actor stored as jsonb at column, the party graphstore.AuthorOf names it
 // as: a person by their canonical login, a session by its id, a personal token's owner by theirs,
 // or null for an actor that names nobody. The login is canonical by model.CanonicalLogin's rule,
-// spelled in SQL (CanonicalLoginSQL).
+// spelled in SQL (canonicalLoginSQL).
 func authorParty(column string) string {
 	return `case
 		when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
-			then '` + graphstore.KindPerson + `:' || ` + CanonicalLoginSQL(column+`->>'id'`) + `
+			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'id'`) + `
 		when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> ''
 			then '` + graphstore.KindSession + `:' || (` + column + `->>'id')
 		when coalesce(` + column + `->>'owner', '') <> ''
-			then '` + graphstore.KindPerson + `:' || ` + CanonicalLoginSQL(column+`->>'owner'`) + `
+			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'owner'`) + `
 	end`
 }
 
-// CanonicalLoginSQL is model.CanonicalLogin spelled in SQL over the text expression login: every
+// canonicalLoginSQL is model.CanonicalLogin spelled in SQL over the text expression login: every
 // Unicode white space trimmed from both ends, as strings.TrimSpace trims it, and the ASCII letters
 // lowered and nothing else, as fold.ASCII lowers them. Postgres's lower() would fold a non-ASCII
 // letter too (U+212A KELVIN SIGN to "k"), and a btrim() with no set trims the space alone, so
 // either would name a person other than the one the writer names.
-func CanonicalLoginSQL(login string) string {
+func canonicalLoginSQL(login string) string {
 	return `translate(btrim(` + login + `, '` + whiteSpaceSQL + `'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`
 }
 
@@ -268,16 +268,15 @@ var rowClass = `case
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
 // a complete one, and every node of an object kind at a state but gone that no row of scoped stands
-// behind, as orphaned, each with the project of its row (row_project, null for an orphaned node,
-// which stands behind none), whether it is a row the store projects, whether its address is past
-// the store's bound, and whether the row names a party the store refuses (refusedPartySQL).
+// behind, as orphaned, each with whether it is a row the store projects, whether its address is
+// past the store's bound, and whether the row names a party the store refuses (refusedPartySQL).
 var classedRows = `,
-	classed (kind, id, row_project, class, is_row, past_bound, refused) as (
-		select scoped.kind, scoped.id, scoped.project, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
+	classed (kind, id, class, is_row, past_bound, refused) as (
+		select scoped.kind, scoped.id, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
 		from scoped
 		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id and not scoped.past_bound
 		union all
-		select n.kind, n.id, null::text, '` + classOrphaned + `', false, false, false
+		select n.kind, n.id, '` + classOrphaned + `', false, false, false
 		from graph_nodes n
 		where n.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateGone + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
@@ -369,25 +368,14 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // a node's project would answer wrongly. An empty answer is every row and every node of every kind
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
 // node naming neither a project nor parties (backfillCure), but for a row that names a party the
-// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); for
-// an orphaned document node at an issue's address, the block-index tick of this build, which
-// states it gone as this build's removal states a removed document's node (sweptCure, docs'
-// writeObjectNodesAnotherBuildWrote and StateOrphanedGone), since no backfill reads a node no row
-// stands behind; none in-band for any other orphaned node, whose row no release removes, so only a
-// delete outside the builds made it (unsweptCure); and none for a node that names another project
-// or other parties than its row, since the backfill walks no node naming either and only a person
-// can tell which of the two is wrong (differsCure).
+// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); none
+// in band for an orphaned node, since no backfill reads a node no row stands behind, unless an
+// older build's removal made it during a two-build roll, whose node this build's block-index tick
+// then states gone (orphanedCure); and none for a node that names another project or
+// other parties than its row, since the backfill walks no node naming either and only a person can
+// tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	return projectIncomplete(ctx, q, nil)
-}
-
-// ProjectCompleteFor is ProjectComplete restricted to the rows of project key: the rows whose node
-// the store does not hold, holds gone or holds for another row, or whose node names no project or
-// another than the row's, each with its cure. An orphaned node stands behind no row, so it is no
-// row of key's. A switch of key to private reads it in its own transaction, since a private
-// project's reads would answer such a row wrongly.
-func ProjectCompleteFor(ctx context.Context, q graphstore.Queryer, key string) ([]string, error) {
-	return incompleteLines(ctx, q, "row_project = $2", nil, key)
 }
 
 // The cures ProjectComplete ends its lines with.
@@ -395,42 +383,34 @@ const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
 	differsCure  = "; no command cures it: compare the row with its node"
 	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
-	sweptCure    = "; this build's block-index tick states it gone"
-	unsweptCure  = "; no in-band cure: a delete outside the builds made it"
+	// orphanedCure: an orphaned node an older build's removal left during a two-build roll is
+	// stated gone by this build's block-index tick (docs/block_index_roll.go:424-436, its sweep of
+	// graphcensus.OrphanedDocumentNodes through StateOrphanedGone); no pass cures any other.
+	orphanedCure = "; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is
 // not nil: the store census prints only its first lines (reportedDifferences), and a database an
 // earlier release left without nodes holds every row of it.
 func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([]string, error) {
-	return incompleteLines(ctx, q, "true", limit)
-}
-
-// incompleteLines is the read of ProjectComplete over the lines of classed that restriction
-// admits, of at most limit lines in its order when limit is not nil. limit is bound at $1, and
-// args, which restriction reads, from $2 on.
-func incompleteLines(ctx context.Context, q graphstore.Queryer, restriction string, limit *int, args ...any) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
-		select kind, id, class, refused,
-		       class = '`+classOrphaned+`' and kind = '`+graphstore.KindArtifact+`' and `+issueDocumentAddress("classed.id")+`
+		select kind, id, class, refused
 		from classed
-		where class is not null and `+restriction+`
+		where class is not null
 		order by kind, id
 		limit $1
-	`, append([]any{limit}, args...)...)
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}
 	var incomplete []string
 	var kind, id, class string
-	var refused, swept bool
-	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class, &refused, &swept}, func() error {
+	var refused bool
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class, &refused}, func() error {
 		line := kind + " " + id + ": " + class
 		switch {
-		case class == classOrphaned && swept:
-			line += sweptCure
 		case class == classOrphaned:
-			line += unsweptCure
+			line += orphanedCure
 		case class == classDiffers:
 			line += differsCure
 		case refused:

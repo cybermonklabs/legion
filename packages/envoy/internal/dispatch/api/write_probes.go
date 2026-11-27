@@ -4,8 +4,9 @@ package api
 // {session_id}): the object each wildcard is filled with (a Probe, as a GET row's), and the JSON
 // body sent with every fill, "" for none. The body is one the row takes as far as the read of the
 // object its path names, from a person at a browser and from a personal token alike, so a call
-// naming an object nobody holds is answered as missing rather than refused for its body
-// (TestNoWriteReachesAHiddenObject holds every row to that).
+// naming an object nobody holds is answered as missing rather than refused for its body. The
+// acceptance driver walks every row with these bodies (RouteProbes), and
+// TestRouteProbesNameEveryRowAndFillEveryGETWildcard holds the two tables to the same rows.
 type writeProbe struct {
 	Probe readProbe
 	Body  string
@@ -43,11 +44,15 @@ var (
 )
 
 // writeProbes is how every write row whose pattern names an object is called, by "<method>
-// <pattern>", beside writeClasses. TestNoWriteReachesAHiddenObject holds the two in exact
-// correspondence and calls every entry, and the acceptance driver reads it through RouteProbes.
+// <pattern>", beside the route table's own scopes. undecidableWrites refuses to mount a project's
+// write that names no entry here, TestEveryMutatingRouteIsClassed walks the table through it, and
+// the acceptance driver reads the bodies through RouteProbes.
 var writeProbes = map[string]writeProbe{
 	// An issue, and what it holds.
-	"PATCH /api/v1/issues/{key}":                           {byIssue, `{` + probeActor + `,"labels":["walked"]}`},
+	"PATCH /api/v1/issues/{key}": {byIssue, `{` + probeActor + `,"labels":["walked"]}`},
+	// main's status change (#4631) reads its issue as the caller sees it before any step
+	// (planStatusChange, loadIssue), so a key the caller cannot see is a key no issue holds.
+	"POST /api/v1/issues/{key}/status-change":              {byIssue, `{` + probeActor + `,"status":"triage","dry_run":true}`},
 	"POST /api/v1/issues/{key}/claim":                      {byIssue, `{` + probeActor + `}`},
 	"DELETE /api/v1/issues/{key}/claim":                    {byIssue, `{` + probeActor + `}`},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {readProbe{"key": probeIssue, "session_id": probeSession}, ""},
@@ -70,24 +75,20 @@ var writeProbes = map[string]writeProbe{
 	// Each record write reads its issue as the caller sees it before it judges the writer
 	// (lockRecordedIssue), so a key the caller cannot see is a key no issue holds whatever session
 	// the body names.
-	"PUT /api/v1/issues/{key}/steps/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"PUT /api/v1/issues/{key}/steps/{id}/rating": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"PUT /api/v1/issues/{key}/plans/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"POST /api/v1/results/{id}/retract":          {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
+	"PUT /api/v1/issues/{key}/steps/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `,"experiment":"walked","variant":"a"}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating":     {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/plans/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"POST /api/v1/results/{id}/retract":              {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
 
 	// A project, and what it holds.
 	"POST /api/v1/projects/{key}/artifacts":                                {byProject, `{` + probeActor + `,"name":"walked.md","content":"# Walked\n"}`},
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions":                {byProjectSlug, `{` + probeActor + `,"summary":"A walked version."}`},
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   {byProjectSlug, `{` + probeActor + `,"summary":"A walked edit.","ops":[]}`},
 	"PUT /api/v1/projects/{key}/default-assignee":                          {byProject, `{"assignee":"alice"}`},
-	"PATCH /api/v1/projects/{key}/access":                                  {byProject, `{"visibility":"public"}`},
-	"PUT /api/v1/projects/{key}/access/people/{email}":                     {readProbe{"key": probeProject, "email": probeEmail}, ""},
-	"DELETE /api/v1/projects/{key}/access/people/{email}":                  {readProbe{"key": probeProject, "email": probeEmail}, ""},
-	"POST /api/v1/projects/{key}/access/people/{email}/invitations":        {readProbe{"key": probeProject, "email": probeEmail}, ""},
-	"POST /api/v1/projects/{key}/access/people/{email}/reset":              {readProbe{"key": probeProject, "email": probeEmail}, ""},
-	"PUT /api/v1/projects/{key}/access/groups/{name}":                      {readProbe{"key": probeProject, "name": probeGroup}, ""},
-	"DELETE /api/v1/projects/{key}/access/groups/{name}":                   {readProbe{"key": probeProject, "name": probeGroup}, ""},
 	"PUT /api/v1/projects/{key}/gated-steps":                               {byProject, `{` + probeActor + `,"steps":[]}`},
+	"PUT /api/v1/projects/{key}/proven-sessions":                           {byProject, `{` + probeActor + `}`},
+	"DELETE /api/v1/projects/{key}/proven-sessions":                        {byProject, ""},
 	"PUT /api/v1/projects/{key}/legion/daemon":                             {byProject, `{` + probeActor + `,"state_url":"http://legion-walked.internal"}`},
 	"PUT /api/v1/projects/{key}/default-repository":                        {byProject, `{` + probeActor + `,"repo":"acme/walked"}`},
 	"DELETE /api/v1/projects/{key}/legion/daemon":                          {byProject, ""},
@@ -134,10 +135,13 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/comments/{id}/reply":                       {byComment, `{` + probeActor + `,"attempt":1,"body":"A walked reply."}`},
 	"POST /api/v1/comments/{id}/accept":                      {byComment, `{` + probeActor + `}`},
 	"PATCH /api/v1/comments/{id}":                            {byComment, `{"body":"A walked edit."}`},
+	"DELETE /api/v1/comments/{id}":                           {byComment, ""},
 	"POST /api/v1/comments/{id}/reject":                      {byComment, `{` + probeActor + `}`},
 	"POST /api/v1/messages/{id}/deliveries":                  {byMessage, `{` + probeActor + `,"delivery":"btw"}`},
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {readProbe{"id": probeMessage, "attempt": probeAttempt}, `{` + probeActor + `}`},
 	"POST /api/v1/messages/{id}/reply":                       {byMessage, `{` + probeActor + `,"attempt":1,"body":"A walked reply."}`},
+	"PATCH /api/v1/messages/{id}":                            {byMessage, `{"body":"A walked edit."}`},
+	"DELETE /api/v1/messages/{id}":                           {byMessage, ""},
 
 	// An agent session.
 	"POST /api/v1/agents/{session_id}/messages":             {bySession, `{"body":"A walked message.","delivery":"btw"}`},
@@ -179,7 +183,4 @@ type noProjectWrite struct {
 // no object of a private project for it to reach and writeProbes holds no entry for it. Its class
 // is scopeDeployment, which refuses every caller that is not open, and the acceptance driver holds
 // each row to that refusal for every such caller (RouteProbe.NoProject).
-var noProjectWrites = map[string]noProjectWrite{
-	"PUT /api/v1/access-groups/{name}":    {"an access group is the deployment's, which no project owns", `{"members":[]}`},
-	"DELETE /api/v1/access-groups/{name}": {"an access group is the deployment's, which no project owns", ""},
-}
+var noProjectWrites = map[string]noProjectWrite{}

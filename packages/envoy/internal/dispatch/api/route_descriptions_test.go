@@ -15,6 +15,15 @@ import (
 // answers each caller only what it may see, so its description must not promise it to everyone.
 var everyCallerPromises = []string{"any authenticated caller", "every authenticated caller", "any signed-in"}
 
+// stillReachedElsewhere are the GET rows whose description says, truly while GET /ws/live's events
+// view and GET /api/v1/events read every caller's events alike, that their direct-message text
+// reaches every caller by that other road. The slice that holds those two reads to the caller
+// writes each row's description without the sentence and deletes its entry here.
+var stillReachedElsewhere = map[string]bool{
+	"GET /api/v1/messages/{id}":               true,
+	"GET /api/v1/agents/{session_id}/answers": true,
+}
+
 // TestNoReadDescriptionPromisesEveryCaller walks routes(): no GET row whose read classes include a
 // class other than none and caller describes its answer as one every caller reads. A description
 // is no comment: GET /api/v1 lists it and the OpenAPI document and every generated client carry
@@ -38,6 +47,17 @@ func TestNoReadDescriptionPromisesEveryCaller(t *testing.T) {
 	}
 	for _, promise := range readDescriptionPromises(routes) {
 		t.Error(promise)
+	}
+	// An entry of stillReachedElsewhere whose row no longer makes the promise has served its
+	// purpose, and one that names no row never had one: either fails here, so the entry leaves
+	// with the sentence it excused.
+	for name := range stillReachedElsewhere {
+		index := slices.IndexFunc(routes, func(route apiRoute) bool { return route.Method+" "+route.Pattern == name })
+		if index < 0 || !heldToTheCaller(routes[index]) || !slices.ContainsFunc(everyCallerPromises, func(promise string) bool {
+			return strings.Contains(strings.ToLower(routes[index].Description), promise)
+		}) {
+			t.Errorf("stillReachedElsewhere names %s, which is no GET row held to its caller whose description makes a promise: delete the entry", name)
+		}
 	}
 
 	t.Run("the priorities description of 6237057940 fails the walk", func(t *testing.T) {
@@ -72,7 +92,7 @@ func heldToTheCaller(route apiRoute) bool {
 func readDescriptionPromises(routes []apiRoute) []string {
 	var promises []string
 	for _, route := range routes {
-		if !heldToTheCaller(route) {
+		if !heldToTheCaller(route) || stillReachedElsewhere[route.Method+" "+route.Pattern] {
 			continue
 		}
 		description := strings.ToLower(route.Description)

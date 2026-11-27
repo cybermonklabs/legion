@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -49,7 +48,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour, BuildCommit: commit})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)

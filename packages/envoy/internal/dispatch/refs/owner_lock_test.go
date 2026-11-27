@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -173,7 +172,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 				t.Fatalf("read the comment's block index: %v", err)
 			}
 			located := text.ExtractAt(drainer.editedBody, text.NewOrigins(itemBlockServer))
-			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, editedAt, located, nil)
+			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, itemBlockServer, editedAt, located, nil)
 			if err != nil {
 				t.Fatalf("plan the edited comment's blocks: %v", err)
 			}

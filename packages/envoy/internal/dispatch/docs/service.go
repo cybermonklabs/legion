@@ -25,7 +25,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -84,9 +83,10 @@ type Deps struct {
 	Events      *events.Broker
 	Identity    identity.Identity
 	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
-	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
-	// either that a text writes is read as the reference its page names. The zero value reads only
-	// `dispatch://` references.
+	// first: a dashboard URL of any of them that a text writes is read as the reference its page
+	// names. cmd/dispatch passes the canonical origin alone; the second origin
+	// (DISPATCH_OUTSIDE_ORIGIN) is set from slice S6a. The zero value reads only `dispatch://`
+	// references.
 	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
@@ -204,10 +204,11 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
-	// objectPassFinished is when this process's last object pass finished with nothing left, in
-	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
-	// owes the pass on the process's first tick and once objectPassInterval has passed since
-	// (readEventsAfterCursor).
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
@@ -490,6 +491,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time

@@ -18,12 +18,7 @@ import (
 // whose rows only their own creates write - an issue, a document, an ask and a message - since
 // the store census reads that direction for a comment and a block already: a live node of one of
 // those kinds that no row stands behind is a node a read limited to its project would answer for
-// an object that is gone. A node the removal of its object stated gone is no finding. No issue row
-// stands at ORPH-1, so the document node is at no issue's address, which no release's removal
-// leaves and the block-index tick does not state gone: each of the four lines says it has no
-// in-band cure, since only a delete outside the builds leaves such a node
-// (TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval reads the cure of a document node at an
-// issue's address).
+// an object that is gone. A node the removal of its object stated gone is no finding.
 //
 // Its control is the orphaned class taken out of the census: the four live nodes with no row then
 // read as nothing at all.
@@ -64,12 +59,40 @@ func TestTheProjectCensusNamesALiveNodeWhoseRowIsGone(t *testing.T) {
 		t.Fatalf("read the incomplete nodes: %v", err)
 	}
 	want := []string{
-		"artifact ORPH-1/notes-md: orphaned; no in-band cure: a delete outside the builds made it",
-		"ask 33333333-3333-4333-8333-000000000001: orphaned; no in-band cure: a delete outside the builds made it",
-		"issue ORPH-1: orphaned; no in-band cure: a delete outside the builds made it",
-		"message 33333333-3333-4333-8333-000000000002: orphaned; no in-band cure: a delete outside the builds made it",
+		"artifact ORPH-1/notes-md: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"ask 33333333-3333-4333-8333-000000000001: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"issue ORPH-1: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"message 33333333-3333-4333-8333-000000000002: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
 	}
 	if !slices.Equal(incomplete, want) {
-		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, none of which the tick states gone, and not the gone one", incomplete, want)
+		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, each with no in-band cure, and not the gone one", incomplete, want)
+	}
+}
+
+// An orphaned node's line names the node by its address as it stands and ends with its cure, which
+// is none in band. A conversation's file belongs to no project and is addressed by its session's
+// id, which the session names, here one holding a quote and a dollar sign: the line names it
+// whole, `artifact <address>: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+//
+// Its control is the cure taken off the orphaned class's line (orphanedCure): the line then ends
+// at its class.
+func TestAnOrphanedNodesLineNamesItsAddressWhole(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	session := `it's$HOME`
+	ref := "agent/" + session + "/notes-md"
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{
+			graphstore.ArtifactNode(ref, "", session, model.Actor{Kind: "session", ID: session}, time.Now().UTC()),
+		}, nil)
+	}); err != nil {
+		t.Fatalf("write the conversation file's node no row stands behind: %v", err)
+	}
+	incomplete, err := ProjectComplete(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the incomplete nodes: %v", err)
+	}
+	if want := []string{"artifact " + ref + ": orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"}; !slices.Equal(incomplete, want) {
+		t.Errorf("ProjectComplete answers %q, want %q", incomplete, want)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -91,8 +90,8 @@ const movedParents = "block_parent_moved"
 //     reference, the pair's assertion and, at most, the retraction that ends it, which no table
 //     records once the pair is gone;
 //   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
-//     gone state a document's removal states of its node, each written by its own create or
-//     removal on this branch;
+//     gone state a document's removal states of its node, each written by this build's own create
+//     or removal;
 //   - the blocks child's text value and rank value of each block whose text a version wrote;
 //   - the inbox child's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of

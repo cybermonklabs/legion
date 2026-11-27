@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The burst Job of check o2 of INFRA-5789 (verification of the repository cache's bucket): with the
-# cache's bucket on, 20 `workspace-init fetch` runs at once leave the cache pod's CPU below 0.2 CPU,
-# each logging the bucket as its source; with it off, the same 20 read /tar, each logging that /packs
-# is not served, and the cache's CPU rises above 0.5 CPU. One Kubernetes Job, on the worker image the
-# caller names by digest, under gVisor, runs the image's own `legion workspace-init cache` and
-# `workspace-init fetch` against a double of Cloud Storage, IAM signBlob and the metadata server
-# (packages/daemon/internal/repocache/fakegcs), because no identity a Job may use can sign an
-# address (iam.serviceAccounts.signBlob). What this proves is the cache's CPU and each fetch's
+# cache's bucket on, 20 `workspace-init provision` runs at once leave the cache pod's CPU below 0.2
+# CPU, each logging the bucket as its source; with it off, the same 20 read /tar, each logging that
+# /packs is not served, and the cache's CPU rises above 0.5 CPU. One Kubernetes Job, on the worker
+# image the caller names by digest, under gVisor, runs the image's own `legion workspace-init cache`
+# and `workspace-init provision` against a double of Cloud Storage, IAM signBlob and the metadata
+# server (packages/daemon/internal/repocache/fakegcs), because no identity a Job may use can sign an
+# address (iam.serviceAccounts.signBlob). What this proves is the cache's CPU and each provision's
 # source; that Cloud Storage accepts a real signature is the production check's to prove, and is no
 # claim of this run.
 #
@@ -25,7 +25,9 @@
 #   cache     the conductor and the measured container: the image's `workspace-init cache`, with a
 #             CPU request and limit of exactly the production cache's default, 1 CPU and 4Gi, which
 #             nothing here changes, and the sampler of its own cgroup's cumulative CPU counter.
-#   fetchers  20 `workspace-init fetch` runs at once, released together by a file on the volume.
+#   fetchers  20 `workspace-init provision` runs at once, each on an issue root and a TMPDIR of its
+#             own, as an issue pod's one init container runs it, released together by a file on the
+#             volume.
 #   init      two init containers write the probe and the double's sources onto the volume first.
 #
 # Inputs. Every value private to a deployment is an input and never a literal here: this repository
@@ -62,17 +64,20 @@
 #                                   namespace's default account). The pod mounts no token either way.
 #   --disk <quantity>               the disk volume's size (default 120Gi). The default repository's
 #                                   one pack and index are 1,777,396,269 bytes (measured 2026-11-26
-#                                   in Job infra-5789-cache-burst-fbmgg); the cache's clone, the
-#                                   double's copy of both and 20 fresh feeds at once are 22 copies,
-#                                   about 39 GB, and the 120Gi (129 GB) leaves room. The probe reads
-#                                   the clone's real size and refuses (void) when the volume cannot
-#                                   hold 20 feeds beside it.
+#                                   in Job infra-5789-cache-burst-fbmgg); the volume holds the
+#                                   cache's clone, the double's copy of both and 20 fresh issue roots
+#                                   at once, each the clone's packs, jj's import of them and a
+#                                   checkout of the default branch's files. The probe reads the
+#                                   clone's real size and the bytes of its default branch's files,
+#                                   and refuses (void) when the volume cannot hold 20 roots beside it.
 #   --fetch-cpu <quantity>          the fetchers container's CPU, request and limit (default 16),
 #                                   sized for 20 `git fsck --connectivity-only` runs at once: on
 #                                   firefox's history, 20 of them on 8 CPU ran out of both the
 #                                   bucket attempt's 15-minute bound and /tar's 30-minute bound;
-#                                   on the default repository, 16 CPU ran each of the 20 fetches
-#                                   in 91 to 208 s (Job infra-5789-cache-burst-fbmgg).
+#                                   on the default repository, 16 CPU ran each of the 20 fills in 91
+#                                   to 208 s (Job infra-5789-cache-burst-fbmgg, before the provision
+#                                   took the fill over). A provision runs its jj steps and its
+#                                   checkout after its fill.
 #   --fetch-memory <quantity>       its memory, request and limit (default 32Gi), which is no
 #                                   measurement: 20 `git fsck --connectivity-only` and 20 SHA-256
 #                                   passes over one pack run in this container at once.
@@ -182,7 +187,7 @@ usage: scripts/e2e/repository-cache-burst-job.sh --image <ref>@sha256:<64 hex>
 
   --image            the worker image to test, by digest.
   --node-selector    the compute class the pod selects; it must admit runtimeClassName: gvisor.
-  --storage-class    the storage class of the disk volume the clone and the feeds go on.
+  --storage-class    the storage class of the disk volume the clone and the issue roots go on.
   --namespace        the namespace to run in; the default is the one the pod's credential names.
   --job-settings     a file of `<name>=<value>` lines holding the deployment's node-selector,
                      storage-class, namespace, service-account, label and annotation values.
@@ -425,7 +430,7 @@ work=""
 workload=""
 run_label=""
 
-# shellcheck disable=SC2317 # the EXIT trap below is what runs it
+# shellcheck disable=SC2317,SC2329 # the EXIT trap below is what runs it
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP

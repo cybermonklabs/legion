@@ -81,13 +81,6 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
- * - `wholeIndexSweep`, against 82 s: the one run of `restricted-sweep-judging.test.ts` over the
- *   whole route index, about 400 requests to that file's fake Dispatch, each a curl and a jq. On
- *   the dev box at a load of 500 to 1200, with two more runs of that file and a run of
- *   `restricted-sweep.test.ts`'s stacks beside it, on 2026-11-20 and 2026-11-21, it finished in
- *   32.4 s, 37.6 s, 48.7 s and 49.4 s, and was stopped at the `short` bound it then had after 65 s
- *   and after 82 s, so a correct run there takes longer than 82 s. 300 s is more than three times
- *   82 s.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -114,18 +107,35 @@
  *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
  *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
  *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
- * - `runnerSweep`, against 48 s: a runner of `e2e/acceptance/restricted-sweep.sh` in
- *   `restricted-sweep-split.test.ts` that reads the member's live feed, whose window is the fixed
- *   45 s a runner takes at least (the script's `runner_live_floor`). Each of the six such rows'
- *   runners took about 48 s in the build cluster's whole-file run of that file at 9ce18a69c9 (Job
- *   legion-judging-c5xpq, 2026-11-23), against the `short` bound's 60 s. Three times 48 s,
- *   rounded up, is 150 s.
+ * - `publicRun`, against 67.59 s: the slowest of 1,008 runs of `e2e/acceptance/outside-agent-public.sh`
+ *   against the stand-ins of `outside-agent-public.test.ts`, each of which ended by itself, in two
+ *   build pods of 10 CPUs under gVisor on 2026-11-26. In each pod the file's two rows, six runs a
+ *   pass, ran one pass after another beside the whole lane looping, for 30 minutes, then 25 more
+ *   with ten fork-exec loops beside them too. At #5655's head, 990aaf97f9e8, which still ran these
+ *   rows under `short` (run 20261126T101920Z-990aaf97f9e8-4fdc), 540 runs read medians, by row and
+ *   stretch, of 20.9 s to 21.6 s and at most 67.59 s. At a tree of this bound with open #5697's
+ *   change, which ends the stand-in's relay socket at the leg's first trade after its refusal (run
+ *   20261126T123513Z-f04c01c78a5f-3aba), 468 runs read medians of 25.6 s to 26.9 s and at most
+ *   65.78 s. A complete run starts the stand-in probe, a Bun process, 26 times and sleeps 10 s
+ *   between two trades. Under `short` one such run was killed at 60.08 s in a whole-suite run at
+ *   62602165bd9e the same day, while five others of the same file took 23.4 s to 33.2 s. Three
+ *   times 67.59 s, rounded up to the minute, is 240 s: 3.55 times the larger maximum.
+ * - `stuckOnPurpose`, against 309.8 ms: the slowest of 200 shells that wrote 252 lines to stdout,
+ *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
+ *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
+ *   more than three times that reading and keeps the suite's deliberate stuck child short.
+ * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
+ *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
+ *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
+ *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
+ *   rounded up to 30 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * sweep runner that reads the live feed after 2.5 minutes, a whole-index sweep after 5 minutes, a
- * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
- * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
+ * row's driver (`stoppedLeg`) after 90 s, a listing after 6 minutes, the generation after 6.5
+ * minutes, a run of the Codex leg after 3 minutes, a run of the public leg after 4 minutes, a run
+ * of the edge check after 9 minutes, and
+ * the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -162,9 +172,6 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
-  /** One run of `e2e/acceptance/restricted-sweep.sh` over the whole route index against the fake
-   *  Dispatch of `restricted-sweep-judging.test.ts`: about 400 requests, each a curl and a jq. */
-  wholeIndexSweep: 300_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
   /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
@@ -172,9 +179,12 @@ export const bounds = Object.freeze({
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
-  /** One runner of `e2e/acceptance/restricted-sweep.sh` against the fake Dispatch of
-   *  `restricted-sweep-split.test.ts` that reads the member's feed over the 45 s live window. */
-  runnerSweep: 150_000,
+  /** The deliberate stuck child that proves a timeout reports its output and live processes. */
+  stuckOnPurpose: 5_000,
+  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
+  publicT5Diagnostic: 30_000,
+  /** One run of `e2e/acceptance/outside-agent-public.sh` against the stand-ins of its tests. */
+  publicRun: 240_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

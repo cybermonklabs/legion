@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"os"
 	"os/exec"
 	"regexp"
@@ -150,11 +151,11 @@ func TestLeakCheckChild(t *testing.T) {
 	}
 	testcleanup.Add(t, database.Pool.Close)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   time.Hour,
 	})
 	switch child {
 	case "shut-down-held":

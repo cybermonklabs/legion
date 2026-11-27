@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -253,7 +252,7 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 	return itemBlockSource{
 		blocks:    parts,
 		bodySum:   sum,
-		serverURL: r.serverURL,
+		serverURL: r.origins.Canonical(),
 		madeBy:    makers,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
@@ -311,11 +310,12 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // planAskIfOwed is PlanItemIfOwed for an ask: it plans the index of the ask's parts when they
 // are owed, which is when its state row is missing (a build older than the part index wrote the
 // ask), owed (owed_at set by such a build's write, or by rebuild-refs), or indexed from other
-// parts than the ask holds now. The caller holds the ask's owner, and the repair it returns
-// reconciles no reference of the ask's own: those are its question's, which the grammar
-// reconciliation writes (ReindexOwed), where the links a part holds belong to the part index
-// this plans. The question's and the options' short ids resolve for the ask's author, whom its
-// row records (NewReader), and the answer's for its answerer (askPartPairs).
+// parts than the ask holds now, and the reconciliation of the question's own references with
+// them, dated the time the ask was last written, which the repair queues after the parts
+// (ItemRepair.Queue): so it settles the ask's row of the forms queue after the ask's whole text
+// (Replacement.SettlingForms). The question's and the options' short ids resolve for the ask's
+// author, whom its row records (NewReader), and the answer's for its answerer (askPartPairs).
+// The caller holds the ask's owner.
 func planAskIfOwed(ctx context.Context, q Queryer, askID string, origins text.Origins) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string

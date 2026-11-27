@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -67,11 +66,21 @@ type Rebuild struct {
 // grammar, and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it
 // has just re-read every comment, ask and issue message with this build's grammar itself.
 //
-// It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
-// own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
-// re-index of the sources around a document rather than one source, are deleted at the end for
-// every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
-// keeps its place: the rebuild may have read that source already.
+// It clears the whole grammar's queue (refs_grammar_owed) for every source it re-indexes: each
+// source's own row goes in that source's transaction (replaceRefs), and the `scope` rows, which
+// owe a re-index of the sources around a document rather than one source, are deleted at the end
+// for every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
+// keeps its place: the rebuild may have read that source already. It settles nothing of the forms
+// queue (refs_forms_owed, RefsFormsOwed) for a source it re-indexes: it reads a source's own
+// references alone and leaves its blocks to the block index it marks owed, which a process of an
+// older build may take during a roll and write without those forms, so each source stays owed
+// until this build's own block index of it settles the row after its whole text
+// (IndexOwedItemBlocks, docs.Service.indexOwedDocument), or the forms drain does.
+//
+// The orphan sweep deletes the edges of every source that is gone and, in the same transaction,
+// what refs_forms_owed holds for every source that is gone: the sweep's delete owes that queue
+// each source whose edges it deletes (migration 20261117025906's trigger), and a gone source owes
+// no text.
 func RebuildAll(ctx context.Context, pool Pool, origins text.Origins) (Rebuild, error) {
 	var report Rebuild
 	var started time.Time
@@ -227,6 +236,10 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // length of that source's own transaction, so a rebuild still never holds every owner: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // owner for the length of the pass, which is minutes on a large database.
+//
+// It reads the source's own references alone, and its blocks wait for the block index RebuildAll
+// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed
+// (replaceRefs).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID string, origins text.Origins) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
 	if err != nil {
@@ -248,7 +261,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID string, origin
 		return false, fmt.Errorf("read the author of %s %s: %w", fromKind, fromID, err)
 	}
 	located := NewReader(ctx, tx, writer, fromKind, fromID, origins).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil, false); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -650,6 +663,9 @@ type reindexPlan struct {
 // (PlanItemIndex, whose first queued statement takes the item's block state row), and an ask its
 // parts (PlanAskParts, read from the row the owner lock guards and through the same reader), so
 // the mentions its blocks hold are read with the same grammar as its own.
+// The reconciliation of its own references is queued after the blocks, so where the plan holds
+// the source's blocks it settles the forms queue too (Replacement.SettlingForms), after both
+// deletes, and the source's row is settled only for its whole text.
 func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body string, origins text.Origins, author []byte, writtenAt time.Time, found bool) (reindexPlan, error) {
 	plan := reindexPlan{kind: kind, id: id, found: found}
 	if !found {
@@ -667,7 +683,7 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body string, origins 
 		if err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
-		if plan.indexing, err = PlanItemIndex(index, itemKind, id, body, serverURL, writtenAt, located, nil); err != nil {
+		if plan.indexing, err = PlanItemIndex(index, itemKind, id, body, origins.Canonical(), writtenAt, located, nil); err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
 		plan.indexed = true

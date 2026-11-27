@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -200,6 +201,9 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 // block-index tick's window write does (refs.writeWindows) - and never reported as a rig problem;
 // a sleep after that write is caught there as it is under a poller that saw the xid.
 func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	for _, write := range []struct {
 		name, sql string
 	}{

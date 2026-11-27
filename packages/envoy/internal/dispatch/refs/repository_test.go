@@ -57,14 +57,15 @@ func seedRepositoryIssues(t *testing.T) *store.Store {
 // done; and for an open viewer also when no project the viewer does not see owns it. A mapping's
 // rename is read by no part of it. alice, open and seeing PUB, reads acme/pub, acme/none,
 // acme/both, which PUB-2 names beside PRIV-5, and acme/newname, which no issue names; bob, a
-// restricted member seeing PRIV, reads every repository a PRIV issue resolves to: acme/privparent,
-// which PRIV-3 resolves to through PRIV2-1, among them, and acme/oldname but not acme/newname;
+// restricted member seeing PRIV, reads every repository a PRIV issue resolves to, and acme/oldname
+// but not acme/newname: not acme/privparent, which PRIV2-1 names and PRIV-3, its child in another
+// project, does not take, since an inherited value stops at the project edge (#4896);
 // carol, seeing every project, and the server's own viewer read all nine; the closed viewer reads
 // none. Names are compared without case, and the clause is never null.
 //
 // The plan's four controls each fail this test, naming a repository: show every repository to an
 // open viewer (alice reads acme/priv); count open issues only (alice reads acme/privdone); resolve
-// an issue's own repository only (alice reads acme/privdefault, bob loses acme/privparent); compare
+// an issue's own repository only (alice reads acme/privdefault); compare
 // names through CanonicalRepoSQL (bob reads acme/newname, alice loses it).
 func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T) {
 	database := seedRepositoryIssues(t)
@@ -76,7 +77,7 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		{"alice", model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
 			[]string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
 		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}},
-			[]string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"}},
+			[]string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname"}},
 		{"carol", model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}},
 			clauseRepositories},
 		{"the server's own viewer", model.Actor{Viewer: model.ServerViewer}, clauseRepositories},
@@ -152,13 +153,13 @@ func TestProjectRepositoriesSQLAnswersEveryProjectThatOwnsARepository(t *testing
 		"acme/pub":         {"PUB"},
 		"acme/priv":        {"PRIV"},
 		"acme/privdone":    {"PRIV"},
-		"acme/privparent":  {"PRIV", "PRIV2"},
+		"acme/privparent":  {"PRIV2"},
 		"acme/privdefault": {"PRIV"},
 		"acme/both":        {"PRIV", "PUB"},
 		"acme/oldname":     {"PRIV"},
 		"ACME/OldName":     {"PRIV"},
 		"acme/privmapped":  {"PUB"},
-		"acme/pubwalk":     {"PRIV", "PUB"},
+		"acme/pubwalk":     {"PUB"},
 		"acme/movednew":    {"PRIV"},
 	}
 	asked := slices.Concat(slices.Sorted(maps.Keys(want)), []string{"acme/none", "acme/newname", "acme/privonlymapped", "acme/movedold"})
@@ -236,11 +237,11 @@ func TestRepositoryClauseHidesWhatAProjectTheViewerCannotSeeOwnsAndNothingElse(t
 // project the viewer sees owns passes for that viewer, whatever other project owns it too. To
 // seedRepositoryIssues' and seedHiddenRepositories' rows it adds PRIV2-2, which names
 // acme/privdefault, PRIV's default. For bob (a restricted member seeing PRIV), carol's token listing
-// PRIV and an open viewer seeing PRIV and PUB alike: acme/privparent, which PRIV-3 resolves to and
-// private PRIV2's PRIV2-1 names, acme/privdefault, PRIV's default, which PRIV2-2 names, acme/both,
-// which PRIV shares with public PUB, and acme/pubwalk, which PUB-5 names and its PRIV child resolves
-// to, pass. alice, who sees PUB alone, reads acme/both and acme/pubwalk and neither of the two that
-// only private projects own.
+// PRIV and an open viewer seeing PRIV and PUB alike: acme/privdefault, PRIV's default, which
+// PRIV2-2 names, and acme/both, which PRIV shares with public PUB, pass. acme/privparent and
+// acme/pubwalk are not PRIV's: the PRIV issues under PRIV2-1 and PUB-5 do not take their parents'
+// repositories, since an inherited value stops at the project edge (#4896). alice, who sees PUB
+// alone, reads acme/both and not acme/privdefault, which only private projects own.
 func TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsIt(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	seedHiddenRepositories(t, database)
@@ -250,7 +251,7 @@ func TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsI
 	`); err != nil {
 		t.Fatalf("seed PRIV2-2: %v", err)
 	}
-	shared := []string{"acme/privparent", "acme/privdefault", "acme/both", "acme/pubwalk"}
+	shared := []string{"acme/privdefault", "acme/both"}
 	for _, viewer := range []struct {
 		name string
 		who  model.Actor
@@ -267,7 +268,7 @@ func TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsI
 	}
 	alice := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}
 	for _, repository := range shared {
-		if got, want := repositoryPasses(t, database, alice, repository), repository == "acme/both" || repository == "acme/pubwalk"; got != want {
+		if got, want := repositoryPasses(t, database, alice, repository), repository == "acme/both"; got != want {
 			t.Errorf("RepositoryClause(%s) for alice = %t, want %t", repository, got, want)
 		}
 	}
@@ -294,7 +295,7 @@ func TestARestrictedMemberReadsOnlyWhatItsIssuesGiveItWithNoProjectPrivate(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone", "acme/privparent", "acme/pubwalk"}; !slices.Equal(reads, want) {
+	if want := []string{"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone"}; !slices.Equal(reads, want) {
 		t.Fatalf("ProjectRepositories(PRIV) = %q, want %q: the row proves nothing", reads, want)
 	}
 	dave := model.Actor{Viewer: &model.Viewer{Person: "dave", Restricted: true, Sees: []string{"PRIV"}}}

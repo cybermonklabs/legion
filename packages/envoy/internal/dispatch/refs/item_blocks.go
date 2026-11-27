@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1130,7 +1129,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // mention it records is of text an earlier write already appended an event for. A block mention
 // takes the source_seq of the item's own refs row for its target at the item's first indexing
 // (PlanItemIndex) and none otherwise, and no ?since= read lists a row with none until a later
-// write of the item stamps it (Stamp).
+// write of the item stamps it (Stamp). Its index is the item's whole text - the blocks, then the
+// item's own references, an ask's question's after its parts - so it settles what the forms queue
+// holds for the item after every delete it made (RefsFormsOwed), which rebuild-refs leaves owed
+// until this index runs.
 func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, origins text.Origins) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {

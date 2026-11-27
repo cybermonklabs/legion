@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -83,18 +81,17 @@ type prefixKey struct {
 }
 
 // NewReader is the Reader of one write of the text of the source fromKind/fromID, over q, the
-// pool or transaction that write runs in, with origins the server's, whose dashboard URLs its
-// mentions are read as, for writer, the source's author: a comment's, a message's or an ask's
-// author, and a document version's writer, the first author its row records (IndexedVersion). A
-// short id the text writes resolves only among the items writer may see, through the predicate
-// every read of the graph binds (ResolvePrefix, VisibleKind): an answer that counted an item writer
-// may not see - a prefix it shares with a visible one, left ambiguous - would tell the writer that
-// item exists (R9, R19). The writer is the author the source records and not the credential that
-// made the write, so every path that indexes the stored text again (RebuildAll, ReindexOwed)
-// resolves it for the same person the write did. A source that records no author resolves for the
-// zero actor, which proves nobody and so sees no item reserved for its author. An ask's answer part
-// is the one text of a source that another person wrote, and it resolves for its answerer
-// (writtenBy).
+// pool or transaction that write runs in, with origins the server its mentions are read with,
+// for writer, the source's author: a comment's, a message's or an ask's author, and a document
+// version's writer, the first author its row records (IndexedVersion). A short id the text writes
+// resolves only among the items writer may see, through the predicate every read of the graph
+// binds (readPrefixCandidates, VisibleKind): an answer that counted an item writer may not see -
+// a prefix it shares with a visible one, left ambiguous - would tell the writer that item exists
+// (R9, R19). The writer is the author the source records and not the credential that made the
+// write, so every path that indexes the stored text again (RebuildAll, ReindexOwed) resolves it
+// for the same person the write did. A source that records no author resolves for the zero actor,
+// which proves nobody and so sees no item reserved for its author. An ask's answer part is the one
+// text of a source that another person wrote, and it resolves for its answerer (writtenBy).
 func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID string, origins text.Origins) *Reader {
 	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, origins: origins, source: &sourceReads{}}
 }
@@ -116,11 +113,10 @@ func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKi
 	return reader
 }
 
-// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
-// references: what a write that cuts the head of the same text an edge shows cuts it against
-// (EditedTargets).
-func (r *Reader) ServerURL() string {
-	return r.serverURL
+// Origins are the deployments whose dashboard URLs the reader reads as references: what a write
+// that cuts the head of the same text an edge shows cuts it against (EditedTargets).
+func (r *Reader) Origins() text.Origins {
+	return r.origins
 }
 
 // writtenBy is the Reader of the same write for a text of r's source that writer wrote rather
@@ -298,12 +294,9 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	candidate, err := ResolvePrefix(r.ctx, r.q, writer, key.kind, key.scope, key.prefix, Viewer{})
-	switch {
-	case err == nil:
-		return candidate.ID, nil
-	case errors.Is(err, pgx.ErrNoRows), errors.As(err, new(*ErrPrefixAmbiguous)):
-		return "", nil
+	found, err := readPrefixCandidates(r.ctx, r.q, writer, key.kind, key.scope, key.prefix, Viewer{})
+	if err != nil {
+		return "", err
 	}
 	if candidate, ok := pickPrefixCandidate(key.kind, key.prefix, found); ok {
 		return candidate.ID, nil

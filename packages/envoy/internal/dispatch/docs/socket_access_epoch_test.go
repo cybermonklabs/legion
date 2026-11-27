@@ -17,13 +17,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // socketAskReads counts the statements a document socket's ask sends (socketStillReads): the
@@ -129,6 +129,7 @@ func awaitEpochMove(t *testing.T, service *Service, from uint64) {
 // not move, carol's socket asks nothing before bob's frame, and her copy holds his edit: so
 // between notifications a socket reads nothing, and the notification is what makes it read.
 func TestADocumentSocketEndsAtTheFirstFrameAfterASessionWriteIsAnnounced(t *testing.T) {
+	t.Parallel()
 	const bob, carol, session = "bob@outside.example", "carol@example.com", "session-epoch-0123456789"
 	for _, row := range []struct {
 		name string
@@ -175,7 +176,7 @@ func TestADocumentSocketEndsAtTheFirstFrameAfterASessionWriteIsAnnounced(t *test
 				seedServiceText(t, service, artifactID, "before")
 				runRoomSync(t, newRoomSync(service))
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-				t.Cleanup(httpServer.Close)
+				testcleanup.Add(t, httpServer.Close)
 
 				losing := connectPeer(t, httpServer.URL, artifactID, carol)
 				if err := losing.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
@@ -258,7 +259,7 @@ func openSocketStream(t *testing.T, private, roomSync bool) *socketStream {
 		runRoomSync(t, newRoomSync(service))
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	stream := &socketStream{service: service, reads: reads, text: "before"}
 	stream.reader = connectPeer(t, httpServer.URL, artifactID, "carol@example.com")
 	if err := stream.reader.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
@@ -304,6 +305,7 @@ func (s *socketStream) typeFrames(t *testing.T, n int) {
 // Control, per deployment: the same stream with no room sync, so no LISTEN stands and the epoch
 // keeps no answer; every data frame reads again, at least one read per keystroke.
 func TestADocumentSocketReadsNothingForFramesWithNoAccessChange(t *testing.T) {
+	t.Parallel()
 	const keystrokes = 20
 	for _, row := range []struct {
 		name    string
@@ -342,6 +344,7 @@ func TestADocumentSocketReadsNothingForFramesWithNoAccessChange(t *testing.T) {
 //
 // Control: with no LISTEN standing the epoch keeps no answer, and each of the ten reads.
 func TestTheAccessEpochReadsWhetherAProjectIsPrivateOncePerMove(t *testing.T) {
+	t.Parallel()
 	for _, listening := range []bool{true, false} {
 		t.Run(map[bool]string{true: "listening", false: "control: no listener"}[listening], func(t *testing.T) {
 			reads := &socketAskReads{}
@@ -384,6 +387,7 @@ func TestTheAccessEpochReadsWhetherAProjectIsPrivateOncePerMove(t *testing.T) {
 // fails, and carol's socket closes with the code a revoked admission gets (it fails closed), and
 // her copy never holds the keystroke.
 func TestAnOpenPersonsSocketOutlivesAFailedReadWhileNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no project is private (R9)", true: "control: a project is private"}[private], func(t *testing.T) {
 			stream := openSocketStream(t, private, true)
@@ -448,6 +452,7 @@ func (c *recordingConn) Write(p []byte) (int, error) {
 //
 // Control: the same frames on a socket whose context stands pass, data frame included.
 func TestADocumentSocketDropsDataFramesOnceItsContextHasEnded(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	upgrade := []byte("HTTP/1.1 101 Switching Protocols\r\n\r\n")
 	data := []byte{0x82, 0x02, 0xAA, 0xBB}

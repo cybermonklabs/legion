@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -151,7 +152,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -229,7 +230,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -300,7 +301,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
 		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, text.NewOrigins(resolverServer)).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {
@@ -636,7 +637,7 @@ func loggedErrors(t *testing.T, q Queryer, body string) []error {
 	recorder := &logtest.Recorder{}
 	restore := logtest.Swap(t, recorder)
 	defer restore()
-	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body)
+	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body)
 	var logged []error
 	for _, record := range recorder.Records() {
 		record.Attrs(func(attr slog.Attr) bool {
@@ -695,7 +696,7 @@ func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
 	shared, lone := resolverAmbiguous[:8], resolverAsk[:8]
 	body := "See dispatch://ACME-1/ask/" + shared + ", dispatch://ACME-1/ask/" + lone + " and dispatch://ACME-1/ask/deadbeef."
 	var read []string
-	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body) {
+	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body) {
 		read = append(read, mention.Kind+"/"+mention.ID)
 	}
 	if want := []string{"ask/" + shared, "ask/" + resolverAsk, "ask/deadbeef"}; !slices.Equal(read, want) {
@@ -705,7 +706,16 @@ func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
 		t.Errorf("the body logged %q; want nothing logged", record.Message)
 	}
 
-	_, err = ResolvePrefix(ctx, tx, prefixAuthor, "ask", Scope{IssueKey: issue}, shared, Viewer{})
+	// ResolvePrefix answers a caller that carries its viewer, as the API's readerOf resolves one.
+	// prefixAuthor is the author a stored row records, which carries none, so it asks as the person
+	// it records sees now, which is how the reader above resolved it (Reader.seenBy).
+	viewer, err := access.RecordedViewer(ctx, tx, prefixAuthor)
+	if err != nil {
+		t.Fatalf("read the viewer %s records: %v", prefixAuthor.ID, err)
+	}
+	asker := prefixAuthor
+	asker.Viewer = &viewer
+	_, err = ResolvePrefix(ctx, tx, asker, "ask", Scope{IssueKey: issue}, shared, Viewer{})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || ambiguous.Prefix != shared || len(ambiguous.Candidates) != 2 ||
 		ambiguous.Candidates[0].ID != resolverAmbiguous || ambiguous.Candidates[1].ID != resolverTwin {

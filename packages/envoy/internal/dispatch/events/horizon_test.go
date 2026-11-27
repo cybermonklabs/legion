@@ -1753,6 +1753,44 @@ func commitHorizonEvent(ctx context.Context, t *testing.T, database *store.Store
 	return id
 }
 
+// holdOtherDatabaseTransactionID opens a transaction in the test cluster's postgres database and
+// takes a transaction id, as another service's job on the instance does, and holds it open until
+// the test ends.
+func holdOtherDatabaseTransactionID(ctx context.Context, t *testing.T) {
+	t.Helper()
+	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	if err != nil {
+		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
+	}
+	config.Database = "postgres"
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect to the cluster's postgres database: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	elsewhere, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other database's transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = elsewhere.Rollback(context.Background()) })
+	if _, err := elsewhere.Exec(ctx, `select pg_current_xact_id()`); err != nil {
+		t.Fatalf("take the other database's transaction id: %v", err)
+	}
+}
+
+// holdTransactionIDWithoutAnEvent opens a transaction in Dispatch's own database that takes a
+// transaction id and writes a table other than events, and holds it open until the test ends.
+func holdTransactionIDWithoutAnEvent(ctx context.Context, t *testing.T, database *store.Store) {
+	t.Helper()
+	holder, _ := openEventWriter(ctx, t, database)
+	if _, err := holder.Exec(ctx, `create temporary table no_event (id int) on commit drop`); err != nil {
+		t.Fatalf("create the table the holder writes: %v", err)
+	}
+	if _, err := holder.Exec(ctx, `insert into no_event values (1)`); err != nil {
+		t.Fatalf("write a table other than events: %v", err)
+	}
+}
+
 // resetEventLog empties the event log and restarts its ids, as e2e/seed.ts's reset does: with every
 // table that references events (project_access_changes), which a truncate of events alone refuses.
 func resetEventLog(ctx context.Context, t *testing.T, database *store.Store) {

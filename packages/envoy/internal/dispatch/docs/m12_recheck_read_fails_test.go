@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // recheckReadFailedLog is what the access re-check logs, at WARN, for each person whose access it
@@ -88,7 +88,7 @@ func openM12Sockets(t *testing.T, private bool) m12Sockets {
 		t.Fatalf("a project is private: %t; the row needs %t", anyPrivate, private)
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	peers := make(map[string]*docstest.Peer)
 	for _, login := range []string{"alice", m12Bob} {
 		peer := connectPeer(t, httpServer.URL, room, login)
@@ -180,6 +180,8 @@ func (s m12Sockets) requireOutcome(t *testing.T, closed, kept []string) {
 // the test's own database; and the database refuses bob's read alone. A failure while the
 // re-check's context stands is logged at WARN once for each person whose sockets it closes.
 func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *testing.T) {
+	// Not parallel: each row replaces the process's default logger (captureWarnings,
+	// logtest.SetDefault) to count the WARN lines the re-check writes.
 	for _, row := range []struct {
 		name string
 		// fail breaks the re-check's read and answers the context the re-check runs on, and what
@@ -213,7 +215,7 @@ func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *tes
 						rename("project_access_unread", "project_access")
 					}
 				}
-				t.Cleanup(mend)
+				testcleanup.Add(t, mend)
 				return context.Background(), mend
 			},
 			closed: []string{"alice", m12Bob},
@@ -261,6 +263,8 @@ func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *tes
 // deployment where no project is private, as before the re-check closed anything, and with DOC
 // private and bob on its list.
 func TestAnAccessRecheckWhoseReadAnswersKeepsEverySocketWhosePersonStillReadsTheRoom(t *testing.T) {
+	// Not parallel: each row replaces the process's default logger (captureWarnings,
+	// logtest.SetDefault) to read that the re-check writes nothing.
 	for _, row := range []struct {
 		name    string
 		private bool

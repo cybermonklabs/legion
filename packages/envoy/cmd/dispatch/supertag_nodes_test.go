@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -841,8 +840,8 @@ func requireNoRouteOrCommandWritesAType(t *testing.T) {
 		}
 		if route.Path == "/api/v1/schema/blocks" {
 			schemaRoutes++
-			if route.Method != "GET" || route.Auth != "any" {
-				t.Errorf("the block schema route is %s %s (%s), want a GET any authenticated caller reads", route.Method, route.Path, route.Auth)
+			if route.Method != "GET" || route.Auth != "public" {
+				t.Errorf("the block schema route is %s %s (%s), want a public GET", route.Method, route.Path, route.Auth)
 			}
 		}
 	}

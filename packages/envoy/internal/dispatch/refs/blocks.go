@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -308,8 +307,9 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	indexing.won, indexing.namesSurvivingRows = true, index.stand.owed || stale
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
-	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
-	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version.Record, now)
+	texts := indexing.planBlockTexts(index, version.Markdown, version.ServerURL, nodes, fits, now)
+	indexing.candidates = aloneCandidates(version.Blocks, indexing.candidates)
+	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version, now)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
@@ -1351,9 +1351,8 @@ type DocumentAddress struct {
 	PendingParent string
 	// Project is the project the document belongs to, an issue's or its own, and Session the
 	// session whose conversation holds it, "" where it is a project's: the scope its block
-	// nodes carry (IndexedVersion's Project and Parties). Only an address this transaction
-	// recorded for a row it is creating carries them; a stored row's version is read with its
-	// scope (ReadIndexedVersion).
+	// nodes carry (IndexedVersion's Project and Parties), from the address this transaction
+	// recorded for a row it is creating or from the stored row (docs' addressOfDocument).
 	Project, Session string
 }
 

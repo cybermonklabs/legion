@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -29,10 +28,12 @@ func itemBlockNodeID(kind ItemKind, itemID, blockID string) string {
 // them as one batch of its own (api.planItemWrite), and counts what both moved for its event
 // (CountedChanges); no test here reads those counts, so this runs the two writes alone.
 func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body, serverURL string, at time.Time) {
+	// The reference grammar reads this one URL as the deployment's origins.
+	origins := text.NewOrigins(serverURL)
 	t.Helper()
 	ctx := context.Background()
-	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, text.NewOrigins(serverURL)).Mentions(body)
-	if _, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil); err != nil {
+	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, origins).Mentions(body)
+	if _, err := IndexItem(ctx, tx, kind, itemID, body, serverURL, at, located, nil); err != nil {
 		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
 	}
 	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil, true); err != nil {

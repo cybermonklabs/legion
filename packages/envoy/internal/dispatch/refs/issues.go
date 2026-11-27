@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -31,11 +30,16 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // a block pointer's ancestor rule (docs' refuseBlockPointers) and the plan of a status change that
 // passes include_parent (api's readStatusChange) are all this query.
 //
-// It binds no visibility predicate and takes no acting person, because it lists no issue to a
-// reader: every caller is a rule of a write - those three and the scope a result's check resolves
-// in - and a rule that skipped an issue it may not see would let a cycle through that issue, or
-// route an event short of its root. The near-copy gate reads the chain as its caller sees it
-// (IssueAncestorsAsSeen), since it runs before the create knows its parent is one the caller sees.
+// It binds no visibility predicate and takes no acting person, because every caller is a rule of
+// a write - those four, the near-copy gate's exclusion of the new issue's chain and the scope a
+// result's check resolves in - and a rule that skipped an issue it may not see would let a cycle
+// through that issue, route an event short of its root, or leave an ancestor out of work above an
+// issue in work. The status change's plan moves each ancestor that is not in work into work, so
+// that the parent status rule (R24) holds. It names those ancestors to the caller who asked to
+// move them: its dry run and its answer list them. It leaves out an ancestor in a private project
+// that the caller's credential does not name (access.CredentialCovers), and each ancestor above
+// it, which the plan reaches only through it: it does not move those ancestors and names them
+// nowhere, and the parent status rule still judges the private one.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -52,35 +56,6 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 		)
 		select coalesce(array_agg(key order by depth), '{}') from ancestors
 	`, key, IssueDepthCap).Scan(&ancestors); err != nil {
-		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
-	}
-	return ancestors, nil
-}
-
-// IssueAncestorsAsSeen is IssueAncestors for a write that names key on behalf of who before it
-// knows who may see it: the near-copy gate of a create with a parent, which runs before the
-// create's transaction. An issue who may not see answers [], as an issue no row has does, in the
-// same one statement, so a parent of a project who may not see costs the rows a parent nobody
-// holds costs. Only the walk's first issue is judged: a parent and the issues above it are of one
-// project, since a parent names an issue of its child's project and no route moves an issue
-// between projects.
-func IssueAncestorsAsSeen(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
-	ancestors := []string{}
-	if key == "" {
-		return ancestors, nil
-	}
-	if err := q.QueryRow(ctx, `
-		with recursive ancestors as (
-			select p.key, p.parent_key, 1 as depth
-			from issues i join issues p on p.key = i.parent_key
-			where i.key = $1 and `+VisibleKind("issue", "i.key", "$3")+`
-			union
-			select i.key, i.parent_key, a.depth + 1
-			from issues i join ancestors a on i.key = a.parent_key
-			where a.depth < $2
-		)
-		select coalesce(array_agg(key order by depth), '{}') from ancestors
-	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&ancestors); err != nil {
 		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
 	}
 	return ancestors, nil

@@ -1214,8 +1214,8 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
 			refusal := decodeBody[refusalAnswer](t, response)
@@ -1989,8 +1989,8 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(write.request(t))
 			if response.Code < 200 || response.Code > 299 {

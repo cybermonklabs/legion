@@ -100,13 +100,16 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 		t.Errorf("the second run appended %d tuples, want none", tuplesAfter-tuplesBefore)
 	}
 
-	// The control: a row whose node is taken away is named again, by its kind and its id. No
-	// writer of the store deletes a node, so the test deletes the ask's node and every tuple of
-	// either side of it itself, as node-projects.sh's control does.
-	if _, err := database.Pool.Exec(ctx, `
-		with tuples as (delete from graph_tuples where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))
-		delete from graph_nodes where kind = $1 and id = $2
-	`, graphstore.KindAsk, seeded.ask); err != nil {
+	// The control: a row whose node is taken away is named again, by its kind and its id. No path
+	// of the tree deletes a node, so the control takes the ask's node and every tuple on either side
+	// of it out of the store itself.
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			with tuples as (delete from graph_tuples where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))
+			delete from graph_nodes where kind = $1 and id = $2
+		`, graphstore.KindAsk, seeded.ask)
+		return err
+	}); err != nil {
 		t.Fatalf("take the ask's node away: %v", err)
 	}
 	incomplete, err := ProjectComplete(ctx, database.Pool)

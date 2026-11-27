@@ -416,25 +416,33 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case "session_group", "settings":
+	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
 		return true
-	case "pull_request":
+	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline:
-			// The waiting line reads merges before the window, so every merge before its end can move it.
+		case deliveryLiveTimeline, deliveryLiveMeasures:
+			// The timeline's waiting line reads merges before the window, and the measures'
+			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
+			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
-		case deliveryLiveMeasures:
-			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
 			return len(times) == 0 || some(atOrAfterFrom)
 		}
-	case "run", "run_job":
+	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:
 		switch change.RunKind {
 		case string(delivery.DeliveryRunKindPRChecks):
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))
 		case string(delivery.DeliveryRunKindDeploy):
-			// The waiting line at the window's start reads deploy runs of any age.
-			return view.spec.kind == deliveryLiveTimeline || len(times) == 0 || some(atOrAfterFrom)
+			switch view.spec.kind {
+			case deliveryLiveTimeline, deliveryLiveMeasures:
+				// The timeline's waiting line at the window's start reads deploy runs of any age,
+				// and the measures' deploys_with_prs reads the runs created before the window too:
+				// a run of any age whose production job lands late can ship a pull request a deploy
+				// of the window shipped first until then (pop.windowShipped).
+				return true
+			default:
+				return len(times) == 0 || some(atOrAfterFrom)
+			}
 		}
 	}
 	return true

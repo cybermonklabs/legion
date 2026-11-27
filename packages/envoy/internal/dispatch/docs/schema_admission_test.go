@@ -22,7 +22,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -119,16 +118,18 @@ func page(version, creatable int) url.Values {
 	return query
 }
 
-// dialPage opens a document socket to artifactID's room as alice's page presenting query.
-func dialPage(serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+// dialPage opens a document socket to artifactID's room as alice's page presenting query, through
+// documentDialer.
+func dialPage(t *testing.T, serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+	t.Helper()
 	address := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/doc/" + artifactID + "?" + query.Encode()
-	return gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
+	return documentDialer(t).Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
 }
 
 // mustDialPage is dialPage for a socket that must be accepted. It closes when the test ends.
 func mustDialPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
-	connection, response, err := dialPage(serverURL, artifactID, query)
+	connection, response, err := dialPage(t, serverURL, artifactID, query)
 	if err != nil {
 		t.Fatalf("connect a page presenting %v: response=%#v err=%v", query, response, err)
 	}

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -18,17 +17,18 @@ import (
 // blocks are owed: its state row is missing (an older build wrote it before the state existed),
 // owed (owed_at set by an older build's write, or by rebuild-refs), or indexed from another text
 // than the stored one. It indexes as ReindexOwed does: the blocks and the mentions each
-// holds, and for a comment or an issue message its own refs, at the time its text was written; a
-// direct message writes no mention, and an ask's own refs are its question's, which the grammar
-// reconciliation owns (ReindexOwed). The block-index reconciliation drains owed items
-// through it (IndexOwedItemBlocks); a reply that names a block of an owed item plans the same
-// index (PlanItemIfOwed) and writes it before its own writes, so the block it names is one the
-// item holds now. The caller holds the item's owner, the reconciliation included, and a reply
-// holds the message row it answers; the index takes the state row after them. It reports whether
-// the item was owed and so indexed. It is PlanItemIfOwed and ItemRepair.Write back to back, the
-// repair's statements run at once as a batch of their own; a transaction that decides before it
-// writes plans the repair and queues it in its write phase, reading the blocks it leaves from
-// the plan (ItemRepair.Block).
+// holds, and for a comment or an issue message its own refs, at the time its text was written,
+// after the blocks, so their settle of the forms queue comes after both deletes
+// (Replacement.SettlingForms); a direct message writes no mention, and an ask's repair reconciles
+// its question's refs after its parts, settling the forms queue there (planAskIfOwed). The
+// block-index reconciliation drains owed items through it (IndexOwedItemBlocks); a reply that
+// names a block of an owed item plans the same index (PlanItemIfOwed) and writes it before its
+// own writes, so the block it names is one the item holds now. The caller holds the item's
+// owner, the reconciliation included, and a reply holds the message row it answers; the index
+// takes the state row after them. It reports whether the item was owed and so indexed. It is
+// PlanItemIfOwed and ItemRepair.Write back to back, the repair's statements run at once as a
+// batch of their own; a transaction that decides before it writes plans the repair and queues it
+// in its write phase, reading the blocks it leaves from the plan (ItemRepair.Block).
 func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string, origins text.Origins) (bool, error) {
 	repair, err := PlanItemIfOwed(ctx, tx, kind, itemID, origins)
 	if err != nil {
@@ -104,7 +104,7 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string
 	if err != nil {
 		return ItemRepair{}, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)
 	}
-	if repair.indexing, err = PlanItemIndex(index, kind, itemID, body, serverURL, writtenAt, located, nil); err != nil {
+	if repair.indexing, err = PlanItemIndex(index, kind, itemID, body, origins.Canonical(), writtenAt, located, nil); err != nil {
 		return ItemRepair{}, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)
 	}
 	if !mentions {

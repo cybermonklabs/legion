@@ -23,8 +23,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -53,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"golang.org/x/sync/singleflight"
 )
 
 // issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
@@ -87,17 +86,6 @@ type AgentPublisher interface {
 	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
 }
 
-// PersonStanding answers whether Dispatch holds a person's personal tokens and broker credentials
-// until they sign in again, or until a refresh confirms them: *identity.Membership is the one
-// Dispatch serves with (identity.Membership.Standing). Its error is no answer. ChecksDirectory
-// reports whether it follows the Workspace Directory (IAP identity), where no refresh token or
-// sign-in confirmation is kept, so a personal token's own read of those columns answers nothing
-// and personalTokenHeld asks Standing at every use.
-type PersonStanding interface {
-	Standing(ctx context.Context, email string) (identity.Standing, error)
-	ChecksDirectory() bool
-}
-
 // Deps are the API's application dependencies.
 type Deps struct {
 	Store       *store.Store
@@ -110,9 +98,9 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
-	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
-	// read as the reference its page names.
+	// Origins is the server's canonical web origin (text.NewOrigins of DepsInput.ServerURL): a
+	// dashboard URL that a text or a request writes is read as the reference its page names. S6a
+	// adds the outside origin with the code that reads DISPATCH_OUTSIDE_ORIGIN.
 	Origins text.Origins
 	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
@@ -149,51 +137,12 @@ type Deps struct {
 	// verifier stays non-nil while its issuer is undiscovered, so such a bearer
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
-	// OIDCAccounts are the Kubernetes service-account subjects this deployment admits
-	// (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS), each `system:serviceaccount:<namespace>:<name>`. A
-	// verified token of any other subject is refused 401 SERVICE_ACCOUNT_NOT_ADMITTED before any
-	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
-	// and audience, as a deployment that names none always did.
-	OIDCAccounts []string
 	// AccessAccounts are the service-account subjects that may read the routes of the read class
-	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
-	// caller with no credential, or one whose credential does not verify, is refused there as
-	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
-	// ACCESS_ACCOUNT_REQUIRED.
+	// accessAccount. S7 reads DISPATCH_ACCESS_ACCOUNTS and fills this list; until then the
+	// slice's own tests supply them. A caller with no credential, or one whose credential does
+	// not verify, is refused there as every route refuses it (401 NO_IDENTITY for none), and
+	// every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
-	// RestrictedAdmission is the sign-in rule's own answer to whether a restricted member would
-	// be signed in now (identity.SignInRule's AdmitsRestricted; cmd/dispatch hands the router its
-	// rule). A restricted member's personal token, and a broker-issued token naming them, act only
-	// while it admits them (restrictedOwnerAdmitted), so they stop at their next use when outside
-	// sign-in is off, no project names them, or their address is on a domain the Workspace owns.
-	// Nil, a server with no sign-in rule (header identity, dev sign-in), admits no restricted
-	// member. A full member's token never asks it.
-	RestrictedAdmission identity.RestrictedAdmission
-	// Standing answers whether Dispatch holds a person's personal tokens and broker credentials
-	// until they sign in again (identity.Membership.Standing): a personal token whose owner's
-	// confirmation is older than identity.MembershipMaxAge asks it, and under IAP identity every
-	// personal token asks it (personalTokenActor), and the person route answers its held, as_of
-	// and not_held_until (getAccessPerson). It is set only where a Google rule signs people in
-	// (identity.SignInRule's Holds), IAP's included; nil holds nobody, a recorded hold included.
-	Standing PersonStanding
-	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
-	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): their switch to private is
-	// the full switch (privateProjectProvisioned). With PrivateBeforeFullSwitch empty too, every
-	// switch to private is refused 409 PRIVATE_PROJECTS_OFF before anything is read, as every
-	// deployment before the settings did.
-	PrivateProjects []string
-	// PrivateBeforeFullSwitch are the keys of the projects this deployment makes private before
-	// their full switch, sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_BEFORE_FULL_SWITCH).
-	// Such a project's switch to private needs neither the provisioning PrivateProjects names nor
-	// the bus record (BusProjects), and still needs a complete store: Dispatch hides it as any
-	// private project, and its namespace, stores and bus gate come with its full switch. It shares
-	// no key with PrivateProjects: NewDeps refuses lists that do, and cmd/dispatch takes a key both
-	// settings name off this list, since that project takes its full switch.
-	PrivateBeforeFullSwitch []string
-	// BusProjects writes the private-projects record the listeners hold a private project's
-	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
-	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
-	BusProjects BusProjects
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -209,46 +158,22 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
-	// Outliving answers whether a person has access that outlives their browser session: an
-	// unrevoked personal token, or a live broker credential, an exchange entry or an account
-	// BROKER_POD_OPERATORS maps to them (cipher.OutlivingAccess). A sign-out under a Google rule
-	// keeps the person's refresh token while it answers yes or cannot answer (routes'
-	// authLogout). NewDeps builds it from Store's pool and AgentSecrets, so with no broker it reads
-	// agent_tokens alone.
-	Outliving cipher.OutlivingAccess
-	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER), as
-	// oidc.CanonicalIssuer spells it: the issuer of every Google account people records, which a
-	// machine login's approve names the approving account under (approveCredentialRecord) and the
-	// membership answer compares an account with (accountHolder). Empty for a deployment whose
-	// sign-in records no account (a Cognito pool's group, cmd/dispatch's accountIssuer) or that
-	// signs nobody in.
-	SignInIssuer string
-	// Passkeys is the restricted members' passkey sign-in at the outside origin (identity.Passkeys:
-	// the ceremonies, their store, Passkeys.Store, and the Workspace's address rule,
-	// Passkeys.WorkspaceAddress), where it is on (cmd/dispatch: DISPATCH_SIGNIN_PASSKEY=1); nil
-	// where it is off. An owner makes a link and resets a person only where it is set
-	// (project_access.go), the owner's access answer carries the passkey fields only then, and a
-	// broker token whose account is a passkey's is held to it as one of the sign-in issuer's is
-	// (brokerTokenAccount).
-	Passkeys *identity.Passkeys
-	// PasskeyAccounts is the passkeys and passkey accounts the database holds (store.PgPasskeys),
-	// set wherever Dispatch keeps people, whatever DISPATCH_SIGNIN_PASSKEY says: passkeys
-	// enrolled while the setting was on outlive it being turned off, so the one-owner refusals of
-	// a list and a transfer and the end of a person's account at their last list's removal run
-	// with it off too (project_access.go), and nothing written while it is off leaves a passkey
-	// that reads another owner's project or a removed person's account standing once it is on
-	// again. It is Passkeys.Store() where Passkeys is set.
-	PasskeyAccounts *store.PgPasskeys
+	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
+	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
+	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus, but for the
+	// status write of the architect of an issue above (legion_status_scope.go). False refuses none
+	// of them, which is every deployment that has not turned it on.
+	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, how often the document
-	// service re-checks its sockets' access (docs.Service.RunAccessRecheck) and the live socket and
-	// the delivery hub their readers (accessRecheckEvery), and how often a live socket pings its page
-	// and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves, how often the
+	// document service re-checks its sockets' access (docs.Service.RunAccessRecheck), and how
+	// often a live socket pings its page and sends it a heartbeat frame.
 	StreamHeartbeat time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
@@ -305,9 +230,8 @@ type Deps struct {
 	// the wait would never end: the send goes at once, as it does in every test of this package
 	// that runs no outbox.
 	OutboxPublishes bool
-	// Metrics is the process's registry: GET /metrics serves it (getMetrics), and register adds
-	// the gauges of the mention sends held behind an earlier event to it (registerHeldGauges). Nil,
-	// as this package's tests run, serves an empty one and adds none.
+	// Metrics is the process's registry, which register adds the gauges of the mention sends held
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
 	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
 	// serves from the moment it enters the route's handler chain, as the access-log line times
@@ -324,9 +248,25 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
-	// BrokerRevocationsSuperseded counts each revocation the broker answered superseded
-	// (NewBrokerRevocationsSuperseded); nil counts nothing.
-	BrokerRevocationsSuperseded *metrics.Counter
+	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
+	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
+	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
+	// client's window, the take-over's tries (takeoverRetry), the related-item check's allowance
+	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout) and the time
+	// each access-log line records (accesslog.HandlerOn), which a test hands AnswersLatency's
+	// clock too. Three listener lookups bound themselves on the wall clock instead
+	// (context.WithTimeout), and only the listener client's window of each runs on this clock:
+	// roleHolderMayBe, the question whether a session may hold a role (mentionLookupTimeout);
+	// listRouteRoster, the read of the listener's session list (routeRosterTimeout); and a
+	// broadcast's resolution of its recipients (resolveBroadcastSessions,
+	// broadcastResolveAllowance). Nil, which every deployment leaves it, is clock.Real(), for a
+	// server Register builds and for one built directly alike (server.clock); a test passes a
+	// clocktest.Fake and moves it.
+	Clock clock.Clock
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
+	// a parent's status out of line with its children's (R24) is refused 409
+	// PARENT_STATUS_CONFLICT. The zero value is off.
+	ParentStatusRule ParentStatusRule
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -342,10 +282,7 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
-	// none), which Deps.Origins reads dashboard URLs of beside ServerURL's.
-	OutsideOrigin string
-	EnvoyURL      string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -384,20 +321,6 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
-	// OIDCAccounts and AccessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts; cmd/dispatch
-	// has checked each subject's form and that every access account is also admitted.
-	OIDCAccounts   []string
-	AccessAccounts []string
-	// RestrictedAdmission is Deps.RestrictedAdmission: the sign-in rule, which a restricted
-	// member's tokens are held to.
-	RestrictedAdmission identity.RestrictedAdmission
-	// Standing is Deps.Standing: nil where no Google rule signs people in.
-	Standing PersonStanding
-	// PrivateProjects, PrivateBeforeFullSwitch and BusProjects are Deps.PrivateProjects,
-	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects.
-	PrivateProjects         []string
-	PrivateBeforeFullSwitch []string
-	BusProjects             BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -411,14 +334,8 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
-	// oidc.CanonicalIssuer does.
-	SignInIssuer string
-	// Passkeys is the passkey sign-in where it is on; see Deps.Passkeys.
-	Passkeys *identity.Passkeys
-	// PasskeyAccounts is the database's passkeys whatever the setting says; see
-	// Deps.PasskeyAccounts. NewDeps takes Passkeys.Store() where Passkeys is set.
-	PasskeyAccounts *store.PgPasskeys
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -454,9 +371,11 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
-	// BrokerRevocationsSuperseded is the process's count of revocations the broker answered
-	// superseded; see Deps.BrokerRevocationsSuperseded.
-	BrokerRevocationsSuperseded *metrics.Counter
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
+	ParentStatusRule ParentStatusRule
 }
 
 // NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
@@ -469,12 +388,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
-	for _, key := range input.PrivateBeforeFullSwitch {
-		if _, both := slices.BinarySearch(input.PrivateProjects, key); both {
-			return Deps{}, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS and DISPATCH_PRIVATE_BEFORE_FULL_SWITCH both name %q: "+
-				"a project takes its full switch or is private before it, never both", key)
-		}
-	}
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
@@ -483,7 +396,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	// The `/` trimmed here is not redundant with parseServer, which trims one from each base path:
 	// together they read a server URL ending in `//` as the one ending in `/`.
-	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"))
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
@@ -502,13 +415,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
-	// GitHub budgets the App and each installation, not this process. While a project is private it
-	// holds every request that names a repository to that repository (githubapp.WithPrivateProjects).
+	// GitHub budgets the App and each installation, not this process.
 	var githubOptions []githubapp.Option
 	if input.Store != nil {
-		pool := input.Store.Pool
-		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(pool)),
-			githubapp.WithPrivateProjects(func(ctx context.Context) (bool, error) { return access.AnyProjectPrivate(ctx, pool) }))
+		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {
@@ -518,70 +428,48 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
 		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
-	passkeyAccounts := input.PasskeyAccounts
-	if input.Passkeys != nil {
-		passkeyAccounts = input.Passkeys.Store()
-	}
-	outliving := cipher.OutlivingAccess{Broker: agentSecretsClient}
-	if input.Store != nil {
-		outliving.Pool = input.Store.Pool
-	}
-	var signInIssuer string
-	if issuer := strings.TrimSpace(input.SignInIssuer); issuer != "" {
-		signInIssuer = oidc.CanonicalIssuer(issuer)
-	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
 		heartbeat = defaultStreamHeartbeat
 	}
 	return Deps{
-		Store:                   input.Store,
-		Identity:                input.Identity,
-		AgentTokens:             input.AgentTokens,
-		NewIssueLabel:           newIssue.Label,
-		NewIssueSession:         newIssue.Session,
-		Origins:                 origins,
-		Docs:                    input.Docs,
-		Embedder:                input.Embedder,
-		Answerer:                input.Answerer,
-		Envoy:                   envoyClient,
-		Events:                  input.Events,
-		GitHub:                  github,
-		Architecture:            architecture.NewImporter(input.Store, github, input.Events),
-		Renames:                 input.Renames,
-		Attributor:              delivery.NewAttributor(input.Renames),
-		OIDC:                    input.OIDC,
-		OIDCAccounts:            input.OIDCAccounts,
-		AccessAccounts:          input.AccessAccounts,
-		RestrictedAdmission:     input.RestrictedAdmission,
-		Standing:                input.Standing,
-		PrivateProjects:         input.PrivateProjects,
-		PrivateBeforeFullSwitch: input.PrivateBeforeFullSwitch,
-		BusProjects:             input.BusProjects,
-		BrokerTokens:            input.BrokerTokens,
-		AgentStream:             input.AgentStream,
-		AgentPublisher:          input.AgentPublisher,
-		AgentSecrets:            agentSecretsClient,
-		Outliving:               outliving,
-		SignInIssuer:            signInIssuer,
-		Passkeys:                input.Passkeys,
-		PasskeyAccounts:         passkeyAccounts,
-		Files:                   input.Files,
-		TestHooksEnabled:        input.TestHooksEnabled,
-		StreamHeartbeat:         heartbeat,
-		RouteRosterTTL:          input.RouteRosterTTL,
-		ListenerTakeoverWindow:  input.ListenerTakeoverWindow,
-		HorizonStallAfter:       input.HorizonStallAfter,
-		HorizonWarnEvery:        input.HorizonWarnEvery,
-		TestHookTimeout:         input.TestHookTimeout,
-		ListenerRosterUncached:  input.ListenerRosterUncached,
-		OutboxPublishes:         input.OutboxPublishes,
-		Metrics:                 input.Metrics,
-		AnswersLatency:          input.AnswersLatency,
-		DashboardEntry:          input.DashboardEntry,
-		BuildCommit:             input.BuildCommit,
-		// The process's count of revocations the broker answered superseded.
-		BrokerRevocationsSuperseded: input.BrokerRevocationsSuperseded,
+		Store:                  input.Store,
+		Identity:               input.Identity,
+		AgentTokens:            input.AgentTokens,
+		NewIssueLabel:          newIssue.Label,
+		NewIssueSession:        newIssue.Session,
+		Origins:                origins,
+		Docs:                   input.Docs,
+		Embedder:               input.Embedder,
+		Answerer:               input.Answerer,
+		Envoy:                  envoyClient,
+		Events:                 input.Events,
+		GitHub:                 github,
+		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                input.Renames,
+		Attributor:             delivery.NewAttributor(input.Renames),
+		OIDC:                   input.OIDC,
+		BrokerTokens:           input.BrokerTokens,
+		AgentStream:            input.AgentStream,
+		AgentPublisher:         input.AgentPublisher,
+		AgentSecrets:           agentSecretsClient,
+		LegionStatusScope:      input.LegionStatusScope,
+		Files:                  input.Files,
+		TestHooksEnabled:       input.TestHooksEnabled,
+		StreamHeartbeat:        heartbeat,
+		RouteRosterTTL:         input.RouteRosterTTL,
+		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
+		TestHookTimeout:        input.TestHookTimeout,
+		ListenerRosterUncached: input.ListenerRosterUncached,
+		OutboxPublishes:        input.OutboxPublishes,
+		Metrics:                input.Metrics,
+		AnswersLatency:         input.AnswersLatency,
+		DashboardEntry:         input.DashboardEntry,
+		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
+		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
 
@@ -617,14 +505,6 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
-	// beforeRevocationStoreCall runs before each store call of the broker revocation loop whose
-	// failure the loop logs naming the person (revocationStoreCall: the account-binding catch-up, a
-	// claimed revocation's SettleHeld, Sendable and Settle, the address's session generation, and a
-	// machine-login revocation's Settle), with the call's name, and its error stands in for that
-	// call failing; nil, which every server the deployment builds leaves it, runs nothing. Only a
-	// test sets it: it is how a case makes one of those calls fail, with an error that quotes the
-	// address as the store's own do, while every other call runs as it runs in production.
-	beforeRevocationStoreCall func(call string) error
 	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
 	// every event it appended are written and before its transaction commits, with those events;
 	// its error stands in for the commit failing, so the route answers it and rolls the write
@@ -638,12 +518,6 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
-	// betweenOwnersPasskeyReads runs on the owner's access read once it has read the passkeys of
-	// the people the list names and before it reads the project's open links (withOwnersPasskeys);
-	// nil, which every server the deployment builds leaves it, runs nothing. Only a test sets it:
-	// it is how a case commits an enrollment between the two reads, to read that both answer one
-	// snapshot.
-	betweenOwnersPasskeyReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -721,10 +595,6 @@ type server struct {
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
-	// sessionTies is each (session, person) pair a broker-issued token proved that this process
-	// has recorded in session_owners (tieBrokerSession), so a session's every request does not
-	// write it again.
-	sessionTies tiedSessions
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
 	// which shares nothing with another process and runs a hook on itself.
@@ -861,8 +731,19 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
-// Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
-// same table answers GET /api/v1.
+// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
+// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
+// reads every route the router mounts from the mounting itself rather than from a list kept beside
+// it, and finds a write mounted beside the table, which runs outside keyedWrites. A test's RouteMux
+// that is also a readclass.Recorder keeps the read classes readclass.Handle mounts each pattern
+// with (readclass's TestEveryMountedPatternHasAReadClass, routes' TestEveryGETRouteHasAReadClass).
+type RouteMux interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+// Register mounts every native-workspace route on mux. Each route is declared in a file of its
+// own (routeDecl, routes_table.go); the same table answers GET /api/v1.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -877,7 +758,7 @@ type queryer interface {
 // or DELETE - that names its presser in Dispatch-Login runs only as that person
 // (refuseChangedLogin).
 //
-// Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
+// Every route outside the read class (routeDecl.Read), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
 // answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
 //
@@ -899,9 +780,10 @@ type queryer interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
+func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeBrokerDebts, EventHead: s.personEventHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		PostSystemMessage: s.postSystemMessage}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -913,19 +795,9 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// RevokeBrokerCredentials is one pass of the broker revocation loop (revokeBrokerDebts): the
-	// secrets broker is told of each Google account another account took an address from, and ends
-	// every credential that account holds there (revokeOwedBrokerCredentials), and of each
-	// restricted member a removal took off an access list, whose machine logins it revokes
-	// (revokeOwedMachineLogins); each revocation is settled once the broker confirms it. It answers
-	// when the loop next needs a pass with no wake, the zero time for never. RunBrokerRevocations
-	// runs it.
-	RevokeBrokerCredentials func(context.Context) time.Time
-	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
-	// carries (personEventHead): an id at or below which every event is already final, which a page
-	// resumes its first events subscription from, read as the highest id of an event that person
-	// can see (viewerEventHead), resolved from the request's own credential.
-	EventHead func(r *http.Request) (int64, error)
+	// EventHead is the event_head GET /auth/whoami answers (eventFeedHead): an id at or below which
+	// every event is already final, which a page resumes its first events subscription from.
+	EventHead func(context.Context) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
 	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
@@ -1018,7 +890,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
+func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -1046,30 +918,19 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// than mounted (project_scope.go).
 		panic("api.Register: the route table holds a mutating row nothing decides: " + strings.Join(undecidable, "; "))
 	}
-	if undecided := undecidedReads(routes, readClasses); len(undecided) > 0 {
-		// A GET row with no read class is a read nothing decided who may see, and a class for a
-		// row nothing serves is a row renamed or deleted and its entry left behind; the table is
-		// refused rather than mounted (read_classes.go).
+	if undecided := undecidedReads(routes, readSources); len(undecided) > 0 {
+		// A GET row with no entry of readSources is a read nothing decided who may see, and an
+		// entry for a row nothing serves is a row renamed or deleted and its entry left behind; the
+		// table is refused rather than mounted (read_sources.go). readClassRefusals below holds the
+		// same rows to what they write.
 		panic("api.Register: the route table holds a GET row the read check cannot decide: " + strings.Join(undecided, "; "))
 	}
-	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
-		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
-		// deleted and its entry left behind — so the table is refused rather than mounted
-		// (routeScopes).
-		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
-	}
-	if refused := readClassRefusals(); len(refused) > 0 {
-		// A GET row with no class is a row nobody has read for what it writes, and an entry that
-		// names no GET row reads as though it classed a route that is not there, so the table is
-		// refused rather than mounted with a read-only token served or refused by nothing anyone
-		// decided (readClasses).
-		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
-	}
-	if refused := routesNotMounted(slices.Values(approveScopeRoutes)); len(refused) > 0 {
-		// An approve list naming a route nothing serves opens nothing while it reads as though it
-		// did - a row renamed or deleted and its entry left behind - so the table is refused
-		// rather than mounted (approveScopeRoutes).
-		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
+	if refused := readClassRefusals(routes); len(refused) > 0 {
+		// A GET route stating no class is one nobody has read for what it writes, and a route
+		// that is not a GET stating one would open a write to a token minted only to read, so the
+		// table is refused rather than mounted with a read-only token served or refused by
+		// nothing anyone decided (routeDecl.Read).
+		panic("api.Register: the route table's read class does not class every GET route exactly once: " + strings.Join(refused, "; "))
 	}
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
@@ -1084,12 +945,6 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// one definition of the API would stop being one; the table is refused rather than
 		// mounted (routes_shapes.go).
 		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
-	}
-	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
-		// A shape for a route nothing serves is a shape the document would describe and no
-		// caller could reach — a row renamed or deleted and its entry left behind — so the
-		// table is refused rather than mounted (routeShapes).
-		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
 	keyed := s.keyedReplays()
@@ -1106,45 +961,25 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
-			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(s.signInStillResolves, false,
-				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
-		// An access change made by SQL alone announces nothing the document service hears, so it
-		// re-checks its sockets' access on their heartbeat too, as the live socket and the
-		// Delivery views re-check their readers (accessRecheckEvery), until lifetime ends.
-		if recheck, ok := deps.Docs.(interface {
-			RunAccessRecheck(context.Context, time.Duration)
-		}); ok {
-			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
-		}
-		// A session's documents follow the session content rule, which reads the stored listener
-		// answer only while it is fresh, so the document service refreshes it before each read of
-		// a socket's rule, as the live agent view does (refreshRosterForContent).
-		if refresh, ok := deps.Docs.(interface {
-			SetRosterRefresh(func(context.Context))
-		}); ok {
-			refresh.SetRosterRefresh(s.refreshRosterForContent)
-		}
+			accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))
-	return s
-}
-
-// refuseUnlistedServiceAccount holds the document socket, which admits a person by the cookie
-// alone (docs.requestActor), to DISPATCH_OIDC_ACCOUNTS as optionalActor holds every route and the
-// live socket: a request presenting a verified token of an account the list does not name is
-// refused before the socket reads anything, whatever cookie it carries beside it. A deployment that
-// names no account, and a request that presents no service-account token, are served as they were.
-func (s *server) refuseUnlistedServiceAccount(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if token, present := auth.BearerToken(r); present && len(s.deps.OIDCAccounts) > 0 && s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
-			if _, _, err := s.serviceTokenActor(r, token); err != nil {
-				s.writeAuthenticationError(w, err)
-				return
-			}
-		}
-		handler(w, r)
+	// An access change made by SQL alone appends no event and announces nothing the document
+	// service hears, so it re-checks its sockets' access on their heartbeat too, until lifetime
+	// ends (docs.Service.RunAccessRecheck). The refresh of the stored listener answer it makes
+	// before each read of a person's rooms (docs.Service.SetRosterRefresh) is set from S3c-issues
+	// on, the slice that brings that refresh (refreshRosterForContent); until then nothing sets it,
+	// and the session content rule reads the stored answer as it stands.
+	if recheck, ok := deps.Docs.(interface {
+		RunAccessRecheck(context.Context, time.Duration)
+	}); ok {
+		// It runs until lifetime ends and waitBackground does not wait for it: shutdown may wait
+		// with lifetime still running, and a pass reads only for the sockets this process holds.
+		go recheck.RunAccessRecheck(lifetime, cmp.Or(deps.StreamHeartbeat, defaultStreamHeartbeat))
 	}
+	return s
 }
 
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
@@ -1272,15 +1107,17 @@ const liveSocketPattern = "/ws/live"
 // reach (read_only_token_test.go): one place for the order, as routeHandler is for a row.
 //
 // The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
-// the upgrade: no read list names the socket, since a socket delivers whatever its views carry,
-// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
-// socket is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued
-// token or a sign-in cookie - so its heartbeat resolves that same credential again
-// (callerStillResolves), and compares the grant it holds now with the one it opened under
-// (sameCredentialGrant).
+// the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
+// its views carry, so the gate takes the zero entry, which classes nothing, and a read-only token
+// of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
+// approve-only gate sits beside it, and the socket is no route that states ApproveOnly, so an
+// approve-only token is answered 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by
+// whichever credential optionalActor resolves - a bearer, a broker-issued token or a sign-in
+// cookie - so its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, true, s.decideBrokerToken(
-		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
+			refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1290,40 +1127,18 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while the
-// credential it was admitted with resolves as the caller it was admitted as: on every
-// StreamHeartbeat it asks resolves of the request again, and once that refuses (a logout, a
-// membership the sign-in issuer no longer confirms, a revoked token), or, where compareGrants
-// holds, its credential now lists other projects or holds other scopes than when the connection
-// opened (sameCredentialGrant), or the person it acts for is now restricted where they were not,
-// or no longer restricted where they were (memberKindPerson, personRestricted: a Workspace
-// member's Google sign-in took back an address a restricted member held, or the people store wrote
-// restricted over a full member's row, which no sign-in rule does now), it cancels the
-// connection's context, on which the document server and the live socket close the socket (1008).
-// The page opens a new one under what the credential holds now, so a
-// token narrowed to fewer projects, or a person restricted to the projects that name them, reads
-// nothing more of the ones it lost: the live socket's subscriptions read their reader again only
-// at an event that can move what it sees (movesSight) or an access announcement (the delivery
-// hub), and a change of member kind appends no event. That costs one read of people by its key per
-// heartbeat for a cookie's or a personal token's person (access.MemberKind), and one as the
-// connection opens, and nothing more for a broker-issued token's, whose own resolution reads it; a
-// kind that cannot be read, or an open whose resolution failed, closes the connection, as a caller
-// that cannot be resolved does.
-//
-// resolves is the mount's own admission asked again, never a wider one: the live socket's is
-// callerStillResolves, which resolves whichever credential admitted it and answers true when that
-// answer names no grant to compare (a broker-issued token's), and the document socket's is
-// signInStillResolves, the browser credential alone (a sign-in cookie, or an Identity-Aware Proxy
-// assertion), since that is all the document service admits it by. A check that resolved
-// anything the request carries would let a credential that admitted nothing keep the socket open
-// once the one that did had ended. Only the live socket compares grants: the document socket
-// admits a person by the browser credential alone, whose grant no list of projects or scopes
-// narrows, so it reads nothing at open beyond its own admission
-// (TestASocketOpenReadsTheIssueAndTheCallerOnce); a change of its person's member kind closes it
-// through the access announcement instead (docs.Service.recheckAccess). The check runs beside the
-// handler, which holds pooled connections of its own while it admits the socket, so it marks a
+// credential it was admitted with resolves: on every StreamHeartbeat it asks stillResolves of the
+// request again, and once that refuses (a logout, a membership the sign-in issuer no longer
+// confirms, a revoked token) it cancels the connection's context, on which the document server and
+// the live socket close the socket. stillResolves is the mount's own admission asked again, never
+// a wider one: the live socket's is callerStillResolves, which resolves whichever credential
+// admitted it, and the document socket's is signInStillResolves, the browser credential alone
+// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
+// admits it by. A check that resolved anything the request carries would let a credential that
+// admitted nothing keep the socket open once the one that did had ended. The check runs beside
+// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
 // context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
-// from the access-log line, which names the caller the socket was admitted as
-// (accesslog.Detached).
+// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
 //
 // A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
 // assertion, which lives about ten minutes while IAP signs a fresh one for every request it
@@ -1334,59 +1149,27 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
 // its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
 // any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
-//
-// With compareGrants, a caller that is not a broker-issued token is resolved once as the
-// connection opens, on the request, and kept in its context (withCallerResolved), so the handler
-// admits the caller the heartbeat compares against and verifies the credential no second time
-// (TestTheLiveSocketResolvesItsCallerOnceAtOpen). A broker-issued token's proof is spent by the
-// handler's own decision (decideBrokerToken), so its open asks resolves, which reads the broker's
-// answer and the person's admission, the restricted answer the heartbeat compares with.
-func (s *server) whileCallerResolves(resolves func(*http.Request) (model.Actor, bool, error), compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
+func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
-		served := r.WithContext(ctx)
-		// What the credential holds as the connection opens, before the handler admits it, so a
-		// change made while it is admitted is a change the first heartbeat sees. A caller that
-		// does not resolve is the handler's to refuse; a resolution that fails here while the
-		// handler's succeeds (a pool with no connection free, a broker that did not answer) leaves
-		// nothing to hold the connection to, so it closes at the first heartbeat (openFailed) and
-		// the page opens a new one, rather than outliving a change of its person's member kind.
-		var admitted model.Actor
-		var person string
-		var admittedRestricted bool
-		var openFailed error
-		if compareGrants {
-			if _, presented := ciphertoken.Presented(r); presented {
-				admitted, _, openFailed = resolves(check)
-			} else {
-				served = s.withCallerResolved(served)
-				admitted, _, openFailed = s.optionalActor(served)
-			}
-			if openFailed == nil {
-				person = memberKindPerson(admitted)
-				if person != "" {
-					admittedRestricted, openFailed = s.personRestricted(check.Context(), admitted, person)
-				}
-			}
-		}
 		go func() {
-			heartbeat := time.NewTicker(s.accessRecheckEvery())
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock().NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
-					if openFailed != nil {
-						closeConnection(nil)
-						return
-					}
-					// The check resolves the credential the request was admitted with, from a
-					// detached copy of that request, as the socket's open resolved it (resolves).
-					caller, noGrant, err := resolves(check)
-					if err != nil || (compareGrants && !noGrant && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
+					// The check resolves the admission's credential from a detached copy of
+					// the request, which for a broker-issued token on the live socket asks the
+					// broker's answer alone rather than the proof the upgrade already spent
+					// (callerStillResolves).
+					if err := stillResolves(check); err != nil {
 						if errors.Is(err, identity.ErrCredentialExpired) {
 							closeConnection(errCredentialExpired)
 						} else {
@@ -1394,57 +1177,11 @@ func (s *server) whileCallerResolves(resolves func(*http.Request) (model.Actor, 
 						}
 						return
 					}
-					if person != "" {
-						restricted, err := s.personRestricted(check.Context(), caller, person)
-						if err != nil || restricted != admittedRestricted {
-							closeConnection(nil)
-							return
-						}
-					}
 				}
 			}
 		}()
-		handler(w, served)
+		handler(w, r.WithContext(ctx))
 	}
-}
-
-// personRestricted is whether person, whom caller acts for (memberKindPerson), is a restricted
-// member, as the heartbeat of a connection that compares grants holds it: what caller's own
-// resolution read, when it read the member kind (a broker-issued token's, callerStillResolves,
-// whose admission reads it in its one statement), else one read of people by its key. Only
-// restricted is compared, never the stored kind, so a person no row holds (who acts as a full
-// member) and their first row, which records them full, are the same answer, and the connection
-// stays open across that row's insert.
-func (s *server) personRestricted(ctx context.Context, caller model.Actor, person string) (bool, error) {
-	if caller.Viewer != nil && caller.Viewer.Person == person {
-		return caller.Viewer.Restricted, nil
-	}
-	kind, err := access.MemberKind(ctx, s.deps.Store.Pool, person)
-	return kind == model.MemberRestricted, err
-}
-
-// memberKindPerson is the person whose member kind decides what caller sees, as the heartbeat of a
-// connection that compares grants reads it: a browser's person, a personal token's owner, or the
-// person a broker-issued token names (callerStillResolves answers it as the owner). It is "" for a
-// credential that acts for nobody: the deployment's shared token, a service account's token, and a
-// broker-issued token naming a service.
-func memberKindPerson(caller model.Actor) string {
-	switch {
-	case caller.Kind == "user":
-		return caller.ID
-	case caller.Owner != nil:
-		return *caller.Owner
-	}
-	return ""
-}
-
-// sameCredentialGrant reports whether two resolutions of one connection's credential grant the
-// same: the same list of projects and the same scopes, each compared as a set.
-func sameCredentialGrant(admitted, now *model.Credential) bool {
-	if admitted == nil || now == nil {
-		return admitted == now
-	}
-	return sameSet(admitted.Projects, now.Projects) && sameSet(admitted.Scopes, now.Scopes)
 }
 
 // errCredentialExpired is the cause whileCallerResolves cancels a socket's context with once the
@@ -1469,23 +1206,20 @@ func (credentialExpired) CloseCode() (int, string) {
 
 // signInStillResolves answers whether the browser credential a document socket was admitted with
 // still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
-// is what whileCallerResolves asks on that socket's every heartbeat, and the person it resolved
-// (model.BrowserActor), broker false. The document service admits a socket by that credential and
-// nothing else (docs.Service.requestActor, Identity.Login), and this asks the API's Identity the
-// same question; cmd/dispatch hands the API and the document service one Identity, so the two read
-// one credential the same way. It reads no Authorization header. A bearer or a broker-issued token
-// sent beside the cookie admitted nothing, so it keeps nothing open either: resolved here, it would
-// hold the socket open for the token's whole life after the cookie ended, a read-only token's
-// included, which the read list lets read no document at all (readScopeRoutes).
-func (s *server) signInStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
+// is what whileCallerResolves asks on that socket's every heartbeat. The document service admits a
+// socket by that credential and nothing else (docs.Service.requestActor, Identity.Login), and this
+// asks the API's Identity the same question; cmd/dispatch hands the API and the document service
+// one Identity, so the two read one credential the same way. It reads no Authorization header. A
+// bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
+// either: resolved here, it would hold the socket open for the token's whole life after the cookie
+// ended, a read-only token's included, which may read a document through the API's reads and
+// never through this socket.
+func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
-	login, err := s.deps.Identity.Login(r)
-	if err != nil {
-		return model.Actor{}, false, err
-	}
-	return model.BrowserActor(login), false, nil
+	_, err := s.deps.Identity.Login(r)
+	return err
 }
 
 type apiError struct {
@@ -1495,8 +1229,10 @@ type apiError struct {
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
 	// brokerTokenActor's 429, its 503 for a broker token past its deadline (errBrokerTokenLapsed),
-	// the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's 502 for a linked
-	// repository's read GitHub rate-limited with a wait. writeHandlerError writes the header.
+	// the results write's 409 CHECK_CONTENDED, both deletes' 409 DELETE_CONTENDED,
+	// linkedReadRefusal's 502 for a linked repository's read GitHub rate-limited with a wait, and the
+	// keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight, writeKeyFreed). writeHandlerError writes the
+	// header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1652,6 +1388,53 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	return actor, true, nil
 }
 
+// credentialKind is the credential a request presents, as credentialOf names it.
+type credentialKind int
+
+const (
+	// credentialSignIn is a request with no Authorization header, or a blank one, whose caller is
+	// whoever the deployment's sign-in (Deps.Identity) reads it as, or nobody.
+	credentialSignIn credentialKind = iota
+	// credentialBrokerToken is an access token the secrets broker issued, under the DPoP scheme.
+	credentialBrokerToken
+	// credentialNoBearer is an Authorization header Dispatch reads no token from: a scheme other
+	// than Bearer and DPoP, or either with no token. No credential matches it.
+	credentialNoBearer
+	// credentialSharedToken is the deployment's shared agent token (DISPATCH_AGENT_TOKEN).
+	credentialSharedToken
+	// credentialServiceToken is a bearer shaped as a JWT, where Dispatch verifies service-account
+	// tokens (Deps.OIDC).
+	credentialServiceToken
+	// credentialPersonalToken is every other bearer, which only a personal token can be
+	// (personalTokenActor).
+	credentialPersonalToken
+)
+
+// credentialOf names the credential r presents, with the bearer token it carries where
+// optionalActor reads one, in the order optionalActor resolves them. It is the one place that
+// order is written: optionalActor resolves a request by it, and the read-only gate resolves a
+// personal token before the route does by it too (resolvePersonalToken), so the two cannot
+// disagree about which request presents one. It reads r's Authorization header and compares its
+// bearer with the shared token's values (auth.MatchesSharedAgentToken, which logs a value on its
+// way out), and asks no store, no sign-in and no verifier.
+func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
+	if _, presented := ciphertoken.Presented(r); presented {
+		return credentialBrokerToken, ""
+	}
+	token, present := auth.BearerToken(r)
+	switch {
+	case !present:
+		return credentialSignIn, ""
+	case token == "":
+		return credentialNoBearer, ""
+	case auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens):
+		return credentialSharedToken, ""
+	case s.deps.OIDC != nil && oidc.LooksLikeJWT(token):
+		return credentialServiceToken, token
+	}
+	return credentialPersonalToken, token
+}
+
 // scopelessCredential is the credential the deployment's shared token and a service-account token
 // share: a fact of the deployment rather than of one request, which holds no scope, so allocating
 // it per request would be waste. Nothing writes it. The cookie's own is model.BrowserActor's.
@@ -1663,11 +1446,7 @@ var scopelessCredential = &model.Credential{}
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
 // is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused. A verified token of an account the deployment does not
-// name (Deps.OIDCAccounts) is 401 SERVICE_ACCOUNT_NOT_ADMITTED: optionalActor is the
-// one caller resolution of every route, both sockets and every write, so the refusal
-// comes before any handler reads or writes a row. A deployment that names no account
-// admits every verified one, as it did before the list existed.
+// reads its token as refused.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
@@ -1684,12 +1463,7 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
 			"service-account token rejected (%s)", reason)
 	}
-	// The subject is verified, so the access-log line names it whether or not it is admitted.
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
-	if len(s.deps.OIDCAccounts) > 0 && !slices.Contains(s.deps.OIDCAccounts, claims.Subject) {
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "SERVICE_ACCOUNT_NOT_ADMITTED",
-			"the service account %s is not one this deployment admits (DISPATCH_OIDC_ACCOUNTS)", claims.Subject)
-	}
 	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
 	// workload and no person, so it acts as nobody.
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
@@ -1865,7 +1639,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs. What each credential holds is said once, above routeScopes.
+// needs. What each credential holds is said once, on routeDecl.OAuthScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1893,11 +1667,12 @@ func missingScopeError(scope, message string) *apiError {
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
-// that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. What each credential holds is said once,
-// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
-// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
-// through writeAuthenticationError, as every gate on this server does.
+// that declares any (routeDecl.OAuthScopes) in it, ahead of the keyed, project and session
+// layers, so the declaration is what decides and a handler restates nothing. What each
+// credential holds is said once, on routeDecl.OAuthScopes. The first scope the credential lacks,
+// in the order the row declares them, is 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller
+// that does not resolve at all answers through writeAuthenticationError, as every gate on this
+// server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
 // same bearer twice or presents the same DPoP proof twice.
@@ -1908,9 +1683,12 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 			s.writeAuthenticationError(w, err)
 			return
 		}
-		if refused := scopeReadRefusal(scopes, actor.Credential.Holds); refused != nil {
-			refuseMissingScope(w, refused.scope, refused.message)
-			return
+		for _, scope := range scopes {
+			if !actor.Credential.Holds(scope) {
+				refuseMissingScope(w, scope, fmt.Sprintf(
+					"this request's credential does not hold the %s scope, which this route requires", scope))
+				return
+			}
 		}
 		handler(w, r.WithContext(context.WithValue(
 			r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
@@ -1918,9 +1696,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 }
 
 // refuseReadOnlyToken is the one place a read-only credential (model.Credential.ReadOnly) is held
-// to the read class: register wraps every row of the table in it, name being the row's
-// "<method> <pattern>" and entry its read class (apiRoute.Read), and GET /ws/live with the zero
-// entry, which classes nothing. It reads every credential that can be read-only:
+// to the read class: register wraps every route of the table in it, name being the route's
+// "<method> <pattern>" and entry the read class its declaration states (apiRoute.Read), and
+// GET /ws/live with the zero entry, which classes nothing. It reads every credential that can be read-only:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1975,12 +1753,12 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 	}
 }
 
-// refuseApproveOnlyToken is the one place an approve-only token is held to the approve list:
-// register wraps every row of the table in it, listed being the row's apiRoute.ApproveOnly, and
-// GET /ws/live with listed false. On a route the list does not name (approveScopeRoutes), a caller
-// decideBrokerToken resolved to an approve-only credential (model.Credential.ApproveOnly) is
+// refuseApproveOnlyToken is the one place an approve-only token is held to the routes that state
+// ApproveOnly: register wraps every row of the table in it, listed being the row's
+// routeDecl.ApproveOnly, and GET /ws/live with listed false. On a route that does not state it, a
+// caller decideBrokerToken resolved to an approve-only credential (model.Credential.ApproveOnly) is
 // answered 403 APPROVE_ONLY_TOKEN and next does not run; every other request runs next as it always
-// did. A row the list names is handed back as it is. It reads the decision decideBrokerToken
+// did. A row that states it is handed back as it is. It reads the decision decideBrokerToken
 // carried and resolves nothing of its own, for the reason refuseReadOnlyToken gives, and carries no
 // WWW-Authenticate challenge, since no scope makes such a route the token's to call.
 func refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
@@ -1989,7 +1767,7 @@ func refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if approveOnlyRequest(r) {
-			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
+			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal())
 			return
 		}
 		next(w, r)
@@ -2007,12 +1785,27 @@ func approveOnlyRequest(r *http.Request) bool {
 }
 
 // approveOnlyRefusal is the message of every 403 APPROVE_ONLY_TOKEN refuseApproveOnlyToken answers:
-// the approve list (approveScopeRoutes) in words. It is built from the list itself, so it names
-// every route the list names on the day the list changes, and each of them is a route a running
-// Dispatch serves, since register refuses to mount a table whose list names any other
-// (routesNotMounted).
-var approveOnlyRefusal = "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
-	strings.Join(approveScopeRoutes, ", ") + "): nothing ran"
+// the routes that state ApproveOnly, in words, in the order routes() mounts them (by pattern and
+// then method). It is built once, at the first refusal, from the declarations themselves, which
+// are all in routeRegistry before any request: so it names every such route a running Dispatch
+// declares, and no other.
+var approveOnlyRefusal = sync.OnceValue(func() string {
+	var listed []routeDecl
+	for _, route := range routeRegistry {
+		if route.ApproveOnly {
+			listed = append(listed, route)
+		}
+	}
+	slices.SortFunc(listed, func(left, right routeDecl) int {
+		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
+	})
+	names := make([]string, len(listed))
+	for index, route := range listed {
+		names[index] = route.Method + " " + route.Pattern
+	}
+	return "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
+		strings.Join(names, ", ") + "): nothing ran"
+})
 
 // readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseReadOnlyToken answers: one
 // text that names no route, since the read class is the table's own and a refusal that listed it
@@ -2256,9 +2049,9 @@ func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
 
 // idPathProblem is how a route refuses a path id that names nothing, worded once so every route
 // that reads one says the same thing. An ask's, a comment's and a message's id is resolved from
-// a prefix before a handler sees it (idRoutes), so their rule is a whole uuid or a prefix of one
-// long enough to name a single item. A handoff's and a thread's is not, so theirs is the whole
-// uuid it has always been.
+// a prefix before a handler sees it (routeDecl.ID), so their rule is a whole uuid or a prefix of
+// one long enough to name a single item. A handoff's and a thread's is not, so theirs is the
+// whole uuid it has always been.
 func idPathProblem(kind string) string {
 	switch kind {
 	case "ask", "comment", "message":

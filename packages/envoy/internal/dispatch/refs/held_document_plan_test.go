@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -52,7 +51,7 @@ func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
 	tuples := make([]graphstore.Tuple, 0, 2*heldDocumentPlanBlocks)
 	for index := range heldDocumentPlanBlocks {
 		address := blockNodeAddress(refKey, fmt.Sprintf("b%05d", index))
-		node := blockNode(address, IndexedVersion{RefKey: refKey, Writer: who, Project: "PLAN"}, at, graphstore.StateLive)
+		node := blockNode(address, IndexedVersion{RefKey: refKey, Writer: who}, at, graphstore.StateLive)
 		node.SourceEvent = cause
 		nodes = append(nodes, node)
 		tuples = append(tuples,

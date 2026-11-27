@@ -141,7 +141,10 @@ func ExtractAt(body string, origins Origins) []Located {
 // only which references text indexes, so a node whatever the length of its name, and a block
 // whatever the length of its id, is read by its own reference (a block no index keys is simply
 // no node). value names a reference when it starts with one and holds no other, as Extract would
-// find it in text; an external URL or a dashboard URL that names no page is none.
+// find it in text; an external URL or a dashboard URL that names no page is none. It answers a
+// Ref and never the code fact: a request parameter is no markdown, and the one reference it
+// names starts at its first byte, which every code context would have taken for a fence, an
+// indent or a backtick.
 func ParseRef(value string, origins Origins) (Ref, bool) {
 	located := extractAt(value, origins, false)
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind == "url" {
@@ -153,42 +156,24 @@ func ParseRef(value string, origins Origins) (Ref, bool) {
 // extractAt is ExtractAt, holding what each reference names to the bounds the index keys when
 // bounded (Extract's reading of text, inBound) and not when not (ParseRef's of a request).
 func extractAt(body string, origins Origins, bounded bool) []Located {
-	return extractSpans(body, origins, referencePattern.FindAllStringIndex(body, -1), bounded)
+	located, _ := extractSpans(body, origins, referencePattern.FindAllStringIndex(body, -1), bounded)
+	return located
 }
 
 // extractSpans is extractAt over spans, body's reference spans (referencePattern) already found,
 // so a reader that walks the gaps between them as well - Mentions, reading what a text writes
-// bare - scans body for them once.
-func extractSpans(body string, origins Origins, spans [][]int, bounded bool) []Located {
+// bare - scans body for them once. It reads body's code contexts once here too (codeRanges),
+// marking each reference that sits in one, and hands them back for that same reader to mark what
+// it finds in the gaps: no consumer reads them a second time.
+func extractSpans(body string, origins Origins, spans [][]int, bounded bool) ([]Located, []codeRange) {
 	refs := []Located{}
-	for _, span := range spans {
-		raw := trimReference(body[span[0]:span[1]])
-		if raw == "" {
-			continue
-		}
-		if strings.HasPrefix(raw, "dispatch://") {
-			if ref, ok := parseDispatch(strings.TrimPrefix(raw, "dispatch://")); ok && (!bounded || inBound(ref)) {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
-			}
-			continue
-		}
-		if ref, ok := parseServer(raw, origins); ok {
-			if bounded {
-				ref, ok = pageInBound(ref)
-			}
-			if ok {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
-				continue
-			}
-		}
-		refs = append(refs, Located{Ref: Ref{Kind: "url", ID: raw}, Offset: span[0]})
-	}
+	code := codeRanges(body)
 	for _, span := range spans {
 		raw := spanReference(body, span[0], span[1])
 		if raw == "" {
 			continue
 		}
-		if ref, ok := locateSpan(raw, baseOf, bounded); ok {
+		if ref, ok := locateSpan(raw, origins, bounded); ok {
 			refs = append(refs, Located{Ref: ref, Offset: span[0], InCode: inCode(code, span[0])})
 		}
 	}
@@ -201,12 +186,12 @@ func extractSpans(body string, origins Origins, spans [][]int, bounded bool) []L
 // when bounded (pageInBound); and any other URL as itself, Kind "url", so a post never loses an
 // ordinary link. base is called only for a span that needs it, so a text of addresses alone parses
 // no server URL.
-func locateSpan(raw string, base func() *url.URL, bounded bool) (Ref, bool) {
+func locateSpan(raw string, origins Origins, bounded bool) (Ref, bool) {
 	if rest, dispatch := strings.CutPrefix(raw, "dispatch://"); dispatch {
 		ref, ok := parseDispatch(rest)
 		return ref, ok && (!bounded || inBound(ref))
 	}
-	if ref, ok := parseServer(raw, base()); ok {
+	if ref, ok := parseServer(raw, origins); ok {
 		if bounded {
 			ref, ok = pageInBound(ref)
 		}

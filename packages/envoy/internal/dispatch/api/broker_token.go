@@ -580,9 +580,9 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 // account and writes nothing, as every read-only token does. The broker narrows no job's token.
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
 // (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route
-// outside the read class (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in
-// check, an account entry's write as its account and everything else the route does. While no
-// build answers a read at a past time, it answers one that carries a cut 403
+// outside the read class (routeDecl.Read) and on GET /ws/live, ahead of the scope gate, the
+// sign-in check, an account entry's write as its account and everything else the route does.
+// While no build answers a read at a past time, it answers one that carries a cut 403
 // AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
 // session it names, reading as that session does.
 //
@@ -693,9 +693,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
 	// pod's key and spends through its proxy without ever releasing it. That token holds person
 	// and approve (brokerApproveOnlyScopes), never p0, and is marked approve-only, so
-	// refuseApproveOnlyToken holds it to the approve list (approveScopeRoutes) before any route
-	// runs. That list lets it reach the scope gate of a credential request's approve and deny
-	// too, but their handler refuses it (approverStanding, refuseUnboundCredential), as it
+	// refuseApproveOnlyToken holds it to the routes that state ApproveOnly (routeDecl.ApproveOnly)
+	// before any route runs. Those let it reach the scope gate of a credential request's approve
+	// and deny too, but their handler refuses it (approverStanding, refuseUnboundCredential), as it
 	// refuses every broker-issued token, since nothing there reads a broker token's account again
 	// once the body has arrived. A token scoped to a project gets no person scope, because the
 	// deployment mapped that token to a project and not to the person: it proves a session, not
@@ -757,7 +757,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// and the list are carried as the broker answered them, the scope as its base word
 		// (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson reads of a
 		// caller naming a service and no person: a job's token and an account entry's token naming
-		// no person write, and a machine's nobody signed in on does not.
+		// no person write, and a machine's nobody signed in on does not. The principal is the one the
+		// listener records a registration on this token as, which a successor's reply is held to.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,
@@ -766,6 +767,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 			Cut:          caller.Cut,
 			ProjectScope: caller.ProjectScope,
 			Projects:     caller.Projects,
+			Principal:    caller.Principal(),
 		},
 		Proven: true,
 	}

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -190,6 +189,7 @@ func TestStoredTextReadRendersAVersionOfAnotherRendererVersion(t *testing.T) {
 // viewer, which sees no project and no conversation - is refused as pgx.ErrNoRows, the answer a
 // document no row holds is to every caller of the route, and the server's own reader reads it.
 func TestATextReadRefusesADocumentItsReaderMayNotRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "Private text.\n")
 	closed := model.Actor{Viewer: &model.Viewer{Sees: []string{}, AnyPrivate: true}}
@@ -208,6 +208,7 @@ func TestATextReadRefusesADocumentItsReaderMayNotRead(t *testing.T) {
 // that cost a few index probes whatever the document's history holds; the execution time a run
 // measures is logged beside the plan.
 func TestTheStoredVersionReadIsKeyed(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedSettledDocument(t, service, artifactID, "Keyed text.\n")
 	database := &store.Store{Pool: service.store.Pool}
@@ -244,6 +245,7 @@ var coldTextReadStatements = struct{ fold, cached int }{fold: 3, cached: 1}
 // every document pays one statement more on each read, the rule of the document's own row, which
 // refuses a document it may not read cold as it does warm (pgx.ErrNoRows).
 func TestAColdTextReadCostsTheStatementsTheBaseMade(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	tracer := &statementTracer{}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -394,10 +393,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
 // the other reads rule 1's cursors, horizons and marks as its own rightly.
 var markingStatementDigests = map[int]string{
-	1: "127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea",
-	// Rule 2: every node's scope - the project or the parties the comment write and the backfill's
-	// block and comment reads carry, and the node write that states them.
-	2: "52743f9e06e54d437dfc5631bd5c3ce1c53a5386516f0ece2e23d624c30428bb",
+	1: "c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

@@ -15,10 +15,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestEveryMutatingRouteIsClassed: every mutating row of the table declares what its write
-// belongs to, and every class names a row that is served. The sub-tests are the negative
-// control: the same walk over a fixture holding an unclassed mutating row, and over one classed
-// as a project's write whose address names no object, fails on each.
+// TestEveryMutatingRouteIsClassed: every mutating route declares what its write belongs to, and
+// no GET route declares a class, which would be a class no write is judged by. The sub-tests are
+// the negative control: the same walk over a fixture holding an unclassed mutating row, and over
+// one classed as a project's write whose address names no object, fails on each.
 func TestEveryMutatingRouteIsClassed(t *testing.T) {
 	t.Parallel()
 	served := &server{deps: Deps{TestHooksEnabled: true}}
@@ -26,20 +26,16 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 	if undecidable := served.undecidableWrites(routes); len(undecidable) > 0 {
 		t.Fatalf("%d mutating row(s) the project check cannot decide:\n%s", len(undecidable), strings.Join(undecidable, "\n"))
 	}
-	mounted := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		mounted[route.Method+" "+route.Pattern] = true
-	}
-	for name := range writeClasses {
-		if !mounted[name] {
-			t.Errorf("writeClasses names %q, which the table does not serve", name)
+		if route.Method == http.MethodGet && route.WriteClass != "" {
+			t.Errorf("%s %s is a GET route and declares the write class %q", route.Method, route.Pattern, route.WriteClass)
 		}
 	}
 
 	t.Run("a mutating row with no class fails this walk", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny}},
-			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets", Auth: authAny}},
+			{routeDecl: routeDecl{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny}},
+			{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/widgets", Auth: authAny}},
 		})
 		if len(undecidable) != 1 || !strings.HasPrefix(undecidable[0], "POST /api/v1/widgets:") {
 			t.Fatalf("the walk answered %q, want the unclassed POST named and the GET left alone", undecidable)
@@ -48,7 +44,7 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 
 	t.Run("a project row whose address names no object fails it too", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny}, Scope: scopeProject},
+			{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny, WriteClass: scopeProject}},
 		})
 		if len(undecidable) != 1 || !strings.Contains(undecidable[0], "names no object") {
 			t.Fatalf("the walk answered %q, want the unresolvable project row named", undecidable)
@@ -244,7 +240,7 @@ func addressedWrites() []addressedWrite {
 func unexercisedProjectAddresses(routes []apiRoute, writes []addressedWrite) []string {
 	var unexercised []string
 	for _, route := range routes {
-		if route.Method == http.MethodGet || route.Scope != scopeProject {
+		if route.Method == http.MethodGet || route.WriteClass != scopeProject {
 			continue
 		}
 		if !slices.ContainsFunc(writes, func(write addressedWrite) bool {

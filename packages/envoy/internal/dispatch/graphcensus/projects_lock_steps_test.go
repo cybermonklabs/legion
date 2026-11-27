@@ -27,8 +27,8 @@ const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 // writer deletes rows of (objectKind.owners). The batch first takes the owner lock of each of its
 // documents (lockObjectOwners), each once and in ascending owner key (events.LockOwnerRows), and
 // reads under them which rows still stand and the nodes the store holds of them. It then writes
-// its nodes in runs of consecutive nodes of one cause, each run queued through
-// graphstore.QueueNodes, which takes the run's node rows in ascending (kind, id), and
+// its nodes in runs of consecutive nodes of one cause, each run through graphstore.PlanUncaused
+// and graphstore.QueueNodes, which takes the run's node rows in ascending (kind, id), and
 // graphstore.Caused, which appends the run's tuples under that cause. It writes no projection row
 // and appends no event.
 //
@@ -103,8 +103,8 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 		`select 1 from projects where key = $1 for update`, "CORE")
 
 	report := followTheBackfill(t, database, "writeObjectBatch", []*lockstep.Hold{
-		issueOwner("ACME-1"), zedOwner, issueOwner("CORE-1"),
-		nodeHold(acme, "ACME"), state, nodeHold(core, "CORE"), nodeHold(zed, "ZED"), project,
+		issueOwner("CORE-1"), issueOwner("ACME-1"), zedOwner,
+		nodeHold(zed, "ZED"), nodeHold(core, "CORE"), nodeHold(acme, "ACME"), state, project,
 	})
 
 	for _, want := range []struct {
