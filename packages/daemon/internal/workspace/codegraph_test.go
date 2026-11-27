@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/daemon/internal/prompts/roles/**/*.md TestTheRolePromptsCheckTheLeaseTheWarmUpHolds reads the four role parts that tell a role to check the warm-up's lease
+
 import (
 	"bytes"
 	"context"
@@ -1361,5 +1363,34 @@ func TestNextCodegraphStep(t *testing.T) {
 				t.Fatalf("nextCodegraphStep(%v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheRolePromptsCheckTheLeaseTheWarmUpHolds: a role's `status` during the warm-up's build makes
+// that build fail, so each prompt has the role check this lease, by its name and its age, before it
+// calls CodeGraph. A renamed lease or a changed stale age would leave the prompts checking the
+// wrong thing.
+func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+	check := ".codegraph/" + warmLeaseName + " -mmin -1"
+	for _, part := range []string{
+		filepath.Join("..", "prompts", "roles", "core", "common.md"),
+		filepath.Join("..", "prompts", "roles", "merger.md"),
+		filepath.Join("..", "prompts", "roles", "architect.md"),
+		filepath.Join("..", "prompts", "roles", "architect-root.md"),
+	} {
+		body, err := os.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		text := strings.Join(strings.Fields(string(body)), " ")
+		if n := strings.Count(text, check); n != 1 {
+			t.Errorf("%s holds %q %d times, want once: the prompt must check the lease the warm-up holds", part, check, n)
+		}
+	}
+	if warmLeaseStale != time.Minute {
+		t.Errorf("warmLeaseStale is %s: `find -mmin -1` reads a file as fresh for under one minute, so the prompts' check and the lease's staleness must agree", warmLeaseStale)
+	}
+	if warmLeaseHeartbeat >= warmLeaseStale {
+		t.Errorf("warmLeaseHeartbeat is %s and warmLeaseStale is %s: a holder must refresh its lease before another process reads it as stale", warmLeaseHeartbeat, warmLeaseStale)
 	}
 }

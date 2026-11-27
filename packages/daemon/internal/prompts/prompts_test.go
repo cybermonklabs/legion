@@ -880,10 +880,13 @@ func dockerPin(t *testing.T, dir, pkg string) string {
 //
 // Each prompt gives the call's shape once and the rule for a missing tool and for an empty, a stale
 // or a partial answer once. A role that took `status` or the tool's own advice would start a second
-// build beside the warm-up's, which corrupts the index. Every action a prompt names is one the tool
-// takes and one the role's row lists, `affected` always with `"depth":1`, since its default depth
-// fans out across unrelated tests (3,101 test files for one Go file at depth 5 and 17 at depth 1,
-// measured on CodeGraph 1.6.4). This shows the text is loaded, never that a role follows it.
+// build beside the warm-up's, which corrupts the index. Each prompt has the role check the
+// warm-up's lease file with no CodeGraph call before its first query and before each `status`,
+// because a `status` during the warm-up's build made that build fail. Every action a prompt names
+// is one the tool takes and one the role's row lists, `affected` always with `"depth":1`, since its
+// default depth fans out across unrelated tests (3,101 test files for one Go file at depth 5 and 17
+// at depth 1, measured on CodeGraph 1.6.4). This shows the text is loaded, never that a role
+// follows it.
 func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 	if got := dockerPin(t, "omp-plugins", "@bopstack/pi-codegraph"); got != codeGraphPluginVersion {
 		t.Fatalf("@bopstack/pi-codegraph is pinned at %q and codeGraphActions copies %s: re-read src/descriptors.ts of the pinned version and update codeGraphActions", got, codeGraphPluginVersion)
@@ -901,7 +904,9 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 		staleAnswer        = "It does not see an edit made since the build, by you, by another role or by the base"
 		pendingChange      = "`status` counts each changed file as a pending change"
 		buildRunning       = "While a build runs, `status` says the index is truncated or that an index rebuild is running in another process"
-		statusFirst        = "Ask `{\"action\":\"status\"}` before your first query"
+		leaseCheck         = "run `find <the workspace's absolute path>/.codegraph/legion-warm.lock -mmin -1`"
+		leaseFresh         = "When it prints the path, read the source, make no `codegraph` call"
+		statusOnFailure    = "Ask `{\"action\":\"status\"}` when an answer is empty or failed"
 		readsSource        = "Read the source with grep and the read tool in three cases"
 		missingTool        = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
 		emptyAnswer        = "An empty answer never means \"none\""
@@ -912,11 +917,12 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 		laterInit          = "only when that later answer says the workspace is not initialized too"
 		noIndexAction      = "Run no other index action, whatever `status` or the tool's own guidance advises"
 		// Held only by a prompt of a role that reaches CodeGraph by its command, and the retired
-		// call, which no prompt holds.
-		claudeMapping = "is the `codegraph` command"
-		retiredCall   = "codegraph({"
+		// call and the retired sentence, which no prompt holds.
+		claudeMapping      = "is the `codegraph` command"
+		retiredCall        = "codegraph({"
+		retiredStatusFirst = "Ask `{\"action\":\"status\"}` before your first query"
 	)
-	onceEach := []string{callShape, staleAnswer, pendingChange, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, anyEditor, nameMatching, blockPerDefinition, laterInit, noIndexAction}
+	onceEach := []string{callShape, staleAnswer, pendingChange, leaseCheck, leaseFresh, buildRunning, statusOnFailure, readsSource, missingTool, emptyAnswer, partialAnswer, anyEditor, nameMatching, blockPerDefinition, laterInit, noIndexAction}
 	action := regexp.MustCompile(`"action":"([^"]*)"`)
 	affectedCall := regexp.MustCompile(`\{"action":"affected"[^}]*\}`)
 
@@ -965,6 +971,9 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 					}
 					if strings.Contains(text, retiredCall) {
 						t.Errorf("the prompt of %s holds %q, a call no host can make", row, retiredCall)
+					}
+					if n := strings.Count(text, retiredStatusFirst); n != 0 {
+						t.Errorf("the prompt of %s holds %q %d times, want 0: a `status` while the warm-up builds the index makes that build fail", row, retiredStatusFirst, n)
 					}
 					found := map[string]bool{}
 					for _, match := range action.FindAllStringSubmatch(text, -1) {
