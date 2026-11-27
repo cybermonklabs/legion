@@ -209,7 +209,12 @@ stack_ports() {
 # How many times lock_root tries a busy root's lock before it refuses, a tenth of a second apart:
 # 3 s in all, which is the pause a run that starts while another is ending waits out.
 # LOADTEST_LOCK_WAIT_TRIES overrides it, as common.test.sh does, where a case has a holder hold
-# the lock for a window and the caller's whole wait has to fit inside it.
+# the lock for a window and the caller's whole wait has to fit inside it. lock_root refuses a
+# value that is not a whole number of tries from 1 to 36000 (an hour at a tenth of a second
+# each), because every other value makes the loop run no times at all: 0 and a word are 0 in
+# shell arithmetic, a negative is below the first index, and a number above a signed 64-bit
+# integer wraps negative. A caller that never tried the lock would then refuse a free root,
+# naming a holder that does not exist.
 LOCK_WAIT_TRIES=${LOADTEST_LOCK_WAIT_TRIES:-30}
 
 # lock_field NAME RECORD: the value of NAME= in a lock record.
@@ -275,6 +280,9 @@ lock_root() {
   local root=$1
   local file=$root/.run.lock
   command -v flock >/dev/null || die "flock (util-linux) is required"
+  # Before anything of the root is read or made, so a bad value refuses and leaves no trace.
+  [[ $LOCK_WAIT_TRIES =~ ^[1-9][0-9]{0,4}$ ]] && ((LOCK_WAIT_TRIES <= 36000)) ||
+    die "LOADTEST_LOCK_WAIT_TRIES must be a whole number of tries from 1 to 36000 (a tenth of a second each), not '$LOCK_WAIT_TRIES'"
   mkdir -p -- "$root"
   LOCK_INHERITED=false
   # A holder's own child keeps the descriptor 9 that it inherited, which holds the lock: opening the

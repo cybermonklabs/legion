@@ -31,8 +31,10 @@
 # default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
 # room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set;
 # (k) LOADTEST_LOCK_WAIT_TRIES sets how many times a caller tries a busy root's lock, so a case
-# whose holder holds it for a window reads the same refusal in a fraction of the wait, and a caller
-# that sets nothing still waits the whole 3 s out.
+# whose holder holds it for a window reads the same refusal in a fraction of the wait, a caller
+# that sets nothing still waits the whole 3 s out, and a value outside 1 to 36000 is refused by
+# name before the root is read or made, since every such value makes the loop try the lock no
+# times at all and report a free root as held by a process this PID namespace cannot see.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -566,12 +568,40 @@ case_ports_below_ephemeral_range() {
 # the default wait reaches. Nothing in a run sets it, so a run that starts while another is
 # ending still waits its 3 s out.
 #
-# The two waits below are measured against each other rather than against a span of wall clock:
-# three tries sleep twice and thirty sleep 29 times, so the long one is about ten times the short
-# one however loaded the machine is, and a caller that never read the variable makes them equal.
+# A value that is not a whole number of tries from 1 to 36000 is refused by name, before the
+# root is read or made. Each of them makes the loop run no times in shell arithmetic -- 0 and a
+# word are 0, a negative is below the first index, and a number past a signed 64-bit integer
+# wraps negative -- so without the refusal a caller that never tried the lock reports a free
+# root as held by a process this PID namespace cannot see, and tells the operator not to remove
+# the lock file. The control for those four refusals is the same root, never created by any of
+# them, taking a caller that sets 3.
+#
+# The two waits at the end are measured against each other rather than against a span of wall
+# clock: three tries sleep twice and thirty sleep 29 times, so the long one is about ten times
+# the short one however loaded the machine is, and a caller that never read the variable makes
+# them equal.
 case_lock_wait_tries() {
   out=""
-  local root="${temporary_dir}/root-k" dead started short full
+  local root="${temporary_dir}/root-k" free="${temporary_dir}/root-k-free" dead started short full bad
+  for bad in 0 -1 abc 9223372036854775808; do
+    try_lock "$free" LOADTEST_LOCK_WAIT_TRIES="$bad"
+    if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
+      fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad was admitted, having tried the lock no times"
+      return
+    fi
+    [[ $out == *LOADTEST_LOCK_WAIT_TRIES* && $out == *"$bad"* ]] ||
+      { fail "(k) the refusal of LOADTEST_LOCK_WAIT_TRIES=$bad names neither the variable nor the value"; return; }
+    [[ $out != *"not visible"* && $out != *"Do not remove"* ]] ||
+      { fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad reported a free root as held by a process this PID namespace cannot see"; return; }
+    [[ ! -e "$free" ]] ||
+      { fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad made $free before it refused"; return; }
+  done
+  try_lock "$free" LOADTEST_LOCK_WAIT_TRIES=3
+  if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
+    fail "(k) the root the four refusals above were read on is not free: a caller setting 3 was refused"
+    return
+  fi
+
   mkdir -p "$root"
   dead="$(dead_pid)"
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-k" 300 "$foreign_pidns" >/dev/null 2>&1 &
@@ -603,7 +633,7 @@ case_lock_wait_tries() {
   kill -TERM "$holder"
   wait "$holder" 2>/dev/null || true
   out=""
-  printf 'PASS: LOADTEST_LOCK_WAIT_TRIES sets how many times a caller tries a busy root'"'"'s lock, and its default is still the 3 s wait\n'
+  printf 'PASS: LOADTEST_LOCK_WAIT_TRIES sets how many times a caller tries a busy root'"'"'s lock, a value outside 1 to 36000 is refused by name, and the default is still the 3 s wait\n'
 }
 
 failed=0
