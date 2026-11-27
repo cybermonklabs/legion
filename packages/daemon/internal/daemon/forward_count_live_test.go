@@ -558,9 +558,13 @@ func (l *forwardCountLive) writeTranscript(issue, session string, number int) {
 		answered("c1", "envoy_publish", "published", at.Add(2*time.Second))
 		call("c2", "bash", map[string]any{"command": "echo '" + conflicting + "'"}, at.Add(3*time.Second))
 		answered("c2", "bash", conflicting, at.Add(4*time.Second))
+		// The payload goes in a block scalar, so it stands in the delivery's text as GitHub wrote
+		// it. Escaping its quotes would put a payload no reader of a payload can parse, and then a
+		// classifier that wrongly counted a delivery would read no answer either: the control of
+		// that fault could not fail.
 		add(map[string]any{"type": "custom_message", "customType": "envoy-message", "timestamp": at.Add(5 * time.Minute).UTC().Format(time.RFC3339),
-			"content": []any{map[string]any{"type": "text", "text": "envoy:\n  to: you (" + session + ")\n  from: the architect\n  message: \"" +
-				"GitHub answers " + strings.ReplaceAll(conflicting, `"`, `\"`) + "\""}}})
+			"content": []any{map[string]any{"type": "text", "text": "envoy:\n  to: you (" + session + ")\n  from: the architect\n  message: |\n    " +
+				"GitHub answers " + conflicting}}})
 	}
 	path := filepath.Join(l.transcripts, strings.ToLower(issue)+".jsonl")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
