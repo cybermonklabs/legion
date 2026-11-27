@@ -265,7 +265,8 @@ func TestACloseOfTheAwaitedQuestionAnswersTheWaitWithItsCloser(t *testing.T) {
 
 // A person's review of the root's spec answers a root waiting on its architect's question: they
 // have decided what the work depends on, and the resume task says how the spec stands. A review
-// Dispatch recorded before the wait began answers nothing.
+// Dispatch recorded before the wait began answers nothing. The answer records the version the
+// review was of (record.AnsweredDocument.Version), which the resume asks the person's word at.
 func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -293,8 +294,9 @@ func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
 				}
 				return
 			}
-			if awaiting == nil || awaiting.AnsweredAt == nil || awaiting.AnsweredBy != tc.answer {
-				t.Fatalf("awaiting = %+v, want it answered by %s", awaiting, tc.answer)
+			if awaiting == nil || awaiting.AnsweredAt == nil || awaiting.AnsweredBy != tc.answer || awaiting.AnsweredDocument == nil ||
+				awaiting.AnsweredDocument.Version != 2 {
+				t.Fatalf("awaiting = %+v, want it answered by %s, of version 2", awaiting, tc.answer)
 			}
 		})
 	}
@@ -419,6 +421,55 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 	for _, payload := range noticeRows(t, pool) {
 		if notice, ok := payload.(record.Notice); ok && notice.Kind == "design-changes-requested" {
 			t.Fatalf("notice %+v, want the review told by the resume task alone", notice)
+		}
+	}
+}
+
+// The resume task asks the one rule (SupersedingApproval) about the changes request that answered the
+// wait at the version the answer recorded with it, not at a version read back out of the detail's
+// words: the detail is display text, and a rewording of it, or a row that holds it in another
+// shape, must not turn a review the person's approval followed back into a request to revise.
+// The wait is answered through the engine and read back from the record, so the version is the
+// one the answer's own write stored. The control is the same pair of details with no approval
+// after the review, where both name it.
+//
+// The last case needs that stored version: the gate holds an approval of version 1, an older
+// version than the one reviewed, delivered after the wait began. It answers nothing of a review of
+// version 2, which is named; a review asked at no version would be asked at the approved version 1
+// instead, read as superseded by that approval, and dropped.
+func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *testing.T) {
+	t.Parallel()
+	pool, apply := askRig(t)
+	seedIssue(t, pool, awaitingRoot(3))
+	seedQuestion(t, pool, "ask-q", 3)
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
+	apply("changes", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactChangesRequested,
+		Version: 2, Reason: "say more", Mark: record.EventMark{Seq: 8, At: time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)}})
+	answered := recordedRoot(t, pool).Awaiting
+	if answered == nil || answered.AnsweredBy != record.AnsweredByChanges {
+		t.Fatalf("awaiting after the changes request = %+v, want it answered by the request", answered)
+	}
+	reworded := *answered
+	reworded.AnsweredDetail = "the review of the second version, which says \"say more\""
+	approvedVersion := 2
+	approved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &approvedVersion,
+		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
+	closed := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
+	olderVersion := 1
+	olderApproved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &olderVersion,
+		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
+	for _, waiting := range []record.Awaiting{*answered, reworded} {
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(approved), nil, true); !strings.Contains(task, "asks for no revision now") ||
+			strings.Contains(task, "revise the primary document as they ask") {
+			t.Errorf("resume task with the detail %q = %q, want the review the approval followed to ask for no revision", waiting.AnsweredDetail, task)
+		}
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(closed), nil, true); !strings.Contains(task, "revise the primary document as they ask") {
+			t.Errorf("control: resume task with the detail %q and no approval = %q, want the review named", waiting.AnsweredDetail, task)
+		}
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(olderApproved), nil, true); !strings.Contains(task, "revise the primary document as they ask") ||
+			strings.Contains(task, "asks for no revision now") {
+			t.Errorf("resume task with the detail %q and an approval of version 1 after it = %q, want the review of version 2 named: "+
+				"an approval of an older version answers nothing of it", waiting.AnsweredDetail, task)
 		}
 	}
 }
@@ -671,7 +722,7 @@ func TestAGateWaitIsDecidedOnceTheGateIsSwitchedOff(t *testing.T) {
 				t.Fatalf("wait = %#v, want it answered", got.Awaiting)
 			}
 			task := resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec,
-				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, nil, false)
+				specGates(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}), nil, false)
 			for _, want := range []string{"no approval of your primary document version 3 is asked for", "closed at version 3", "register it at its current version, which opens the gate"} {
 				if !strings.Contains(task, want) {
 					t.Errorf("resume task = %q, want it to name %q", task, want)
@@ -719,7 +770,7 @@ func TestAGateWaitTheGateOffAnsweredClaimsNoApprovalOnceTheGateIsOnAgain(t *test
 	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval {
 		t.Fatalf("wait = %#v, want it answered, as approved on the wire", got.Awaiting)
 	}
-	task := resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, nil, true)
+	task := resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec, specGates(gate), nil, true)
 	for _, want := range []string{"design gate on LEGION-208 was off", "no person approved your primary document version 3 then;",
 		"Your primary document is not approved at version 3", "register that version with register_gate"} {
 		if !strings.Contains(task, want) {
@@ -766,7 +817,8 @@ func TestAQuestionWaitUnderGateOffIsLeftAsItIs(t *testing.T) {
 }
 
 // A wait on the gate under gates.design: off whose gate stands open is answered by the open gate in
-// the pass that finds it, not moved first to a question of the tree still with the person.
+// the pass that finds it, not moved first to a question of the tree still with the person, and the
+// answer records the version the gate holds approved (record.AnsweredDocument.Version).
 func TestAnOpenGateAnswersAGateWaitUnderGateOffBeforeAnyQuestionMovesIt(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -780,7 +832,8 @@ func TestAnOpenGateAnswersAGateWaitUnderGateOffBeforeAnyQuestionMovesIt(t *testi
 		t.Errorf("the pass reported no change, want it to report the wait it answered")
 	}
 	got := recordedRoot(t, pool)
-	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval || got.Awaiting.GateVersion != 3 {
+	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval || got.Awaiting.GateVersion != 3 ||
+		got.Awaiting.AnsweredDocument == nil || got.Awaiting.AnsweredDocument.Version != 3 {
 		t.Fatalf("wait = %#v, want it answered by the open gate at version 3", got.Awaiting)
 	}
 }

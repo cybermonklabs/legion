@@ -462,3 +462,42 @@ func TestAResumeByOhMyPisOwnLookupThatDoesNotRegisterIsForgottenAtTheNextTry(t *
 		r.wantLost(SessionLossNotResumedByID)
 	})
 }
+
+// An end the policy charges nothing is no end of the controller's session (SessionRun,
+// dispatch://INFRA-2045 R1). At the roll edge the controller's running process, which an earlier
+// release spawned, registers on that release's older plugin as another session; the fence refuses
+// it, and the end of that process is charged nothing (endOutcome), whether it is reported gone or
+// its registration deadline passes. The next launch resumes the same session, and its run counts
+// neither end, since died and registrationDeadline count an end only where the one policy charges
+// it (Charges): counted, two such ends in a row would replace a session that did nothing wrong.
+// The control: count the end at either site without asking the policy, and its row fails.
+func TestAnEndThePolicyChargesNothingIsNoEndOfTheControllersSession(t *testing.T) {
+	for _, end := range []struct {
+		name string
+		end  func(r *byIDRig)
+	}{
+		{"its process is reported gone", func(r *byIDRig) { r.observe(runtime.Gone) }},
+		{"its registration deadline passes", func(r *byIDRig) { r.advance(deadline) }},
+	} {
+		t.Run(end.name, func(t *testing.T) {
+			c := byIDClaim(StateLaunching, 3)
+			c.Token, c.Tree, c.Issue, c.Role = controllerClaim().Token, "", "", claim.RoleController
+			c.Locator.Claim = c.Token
+			r := newByIDRig(t, c, nil)
+			r.connect()
+			if err := r.registerAs(otherSession, otherSessionFile, r.olderContract()); !errors.Is(err, claim.SameAgentRefusal) {
+				t.Fatalf("the registration as %s on the earlier release's contract = %v; want the same-agent refusal, 409", otherSession, err)
+			}
+			from := len(r.rt.Calls())
+
+			end.end(r)
+
+			r.wantBudgets(Budgets{})
+			r.wantFirstStartResumesByID(from)
+			if s := r.claim().Session; s != idSession {
+				t.Fatalf("the claim records session %q after the uncharged end; want %s resumed", s, idSession)
+			}
+			r.wantEnds(0)
+		})
+	}
+}

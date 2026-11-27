@@ -303,12 +303,14 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
-// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
-// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
-// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
-// and every other key as a caller at shapedAnswersContract is served it, since no other
-// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// (withoutGateBasis, gateBasisContract's row), no issue's `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
+// repositoryCorrectionContract's row), the three other rows of stateNarrowings above the contract
+// it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no claim
+// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
+// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
+// other key as a caller at shapedAnswersContract is served it, since no other row of
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
 // shapedAnswersContract's row stands at or below the contract it is served at, which is why the
 // golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
 // holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,

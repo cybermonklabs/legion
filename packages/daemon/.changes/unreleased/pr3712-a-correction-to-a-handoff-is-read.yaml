@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A phase worker's task now names, beside the handoff version the daemon accepted, the command that
+  reads that record's newest version, and says that a newer version is a correction its writer
+  recorded after the acceptance. A reader given only the accepted version's command never read such
+  a correction. The head and the verdict the task names are still the accepted version's, and the
+  task says so where it names a head.

@@ -47,10 +47,10 @@ const (
 // launch failure (registrationDeadline); and a controller turn the daemon ended because it stayed
 // open past its bound (endTurnPastBound), which charges no budget. Not counted: an operator's
 // suspension, a held suspension, the stale-plugin relaunch, a process found at a stale address or
-// displaced, a death the roll edge or a resume by Oh My Pi's own lookup leaves uncharged
-// (endUncharged), and a start the runtime refused, which is retried inside its own launch
-// (launchTries) and says nothing of the session — a pod the cluster cannot place is not the
-// session's fault.
+// displaced, a death or a deadline the roll edge or a resume by Oh My Pi's own lookup leaves
+// uncharged (endOutcome, Charges), and a start the runtime refused, which is retried inside its
+// own launch (launchTries) and says nothing of the session — a pod the cluster cannot place is
+// not the session's fault.
 //
 // A finished turn starts the run again (turnEnded), and ready alone does not: a session killed
 // seconds after its agent came up would never reach two ends if its ready reset them. A forgotten

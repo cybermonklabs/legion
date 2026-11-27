@@ -202,7 +202,7 @@ func restoredUnsentNews(t *testing.T, answer *designNewsAnswer, prompted bool) *
 	}
 	h.conns.Register(testToken, h.conn)
 	h.conn.SetStreaming(true)
-	h.conn.RefusePrompt(busyAnswer)
+	h.conn.FailPrompt(busyRefusal())
 	h.start(restored)
 	return h
 }
@@ -362,7 +362,7 @@ func TestATaskCarryingNewsABusyAnswerHoldsIsSentOnceMoreAtTheTurnsEnd(t *testing
 			h := newsHarness(t, answer)
 			h.reach(StateReady)
 			h.conn.SetStreaming(true)
-			h.conn.RefusePrompt(busyAnswer)
+			h.conn.FailPrompt(busyRefusal())
 
 			h.must(tc.start)
 			h.wantPrompts(1)
@@ -420,7 +420,7 @@ func TestATaskCarryingNewsIsConfirmedByTheLateTurnOfItsFirstPrompt(t *testing.T)
 			if len(answer.asked) != 2 {
 				t.Fatalf("DesignNews was asked %d times, want twice: once at each send", len(answer.asked))
 			}
-			h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer})
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 			h.wantState(StateWorking)
 			task := h.pending().ID
 
@@ -464,7 +464,7 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 		h := newsHarness(t, answer)
 		h.reach(StateIdle)
 		h.observe(runtime.Gone)
-		h.conn.RefusePrompt(busyAnswer)
+		h.conn.FailPrompt(busyRefusal())
 		h.relaunched()
 		h.conn.FailPrompt(nil)
 		if p := h.pending(); !relaunchTask(p.ID) || len(h.outstanding()) != 0 {

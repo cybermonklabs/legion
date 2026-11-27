@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -79,10 +80,11 @@ func promptRetryDelay(attempt int) time.Duration {
 
 // providerErrored is a turn that ran and ended in a provider error. The task is kept whatever the
 // decision: it goes back unconfirmed under a new id, keeping its read mark, because the turn ran
-// and the agent read it. No prompt budget is charged — chargePrompt retires and then fails a
-// claim past Limits.PromptFailures, which would fail every claim at once in a provider outage,
-// and R2 forbids an attempt limit — so the claim counts its own run of such turns instead, and a
-// turn that ends with no error puts that run back to zero (promptResulted).
+// and the agent read it. No prompt budget is charged — the policy waives OutcomeProviderError
+// (Charges), since chargePrompt retires and then fails a claim past Limits.PromptFailures, which
+// would fail every claim at once in a provider outage, and R2 forbids an attempt limit — so the
+// claim counts its own run of such turns instead, and a turn that ends with no error puts that run
+// back to zero (promptResulted).
 //
 // What that turn's confirmation told goes back to untold with it (takeBackPending, moveTelling),
 // so the re-sent task carries the abandoned session's sentence, the record of the last let-go, or
@@ -165,9 +167,11 @@ type providerErrorTurn struct {
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the error
 // classified once from the status and the class alone (classifyProviderError), one more turn in
 // the run, the warning line, the notice at providerErrorRunTold (tellOfProviderErrors), then
-// t.before, and, for an error that cannot clear, the claim's failure under the word that
-// classification gives, which holds the issue for its architect. It answers the cause, and whether
-// it failed the claim; what a turn whose error can clear does next is its caller's.
+// t.before, then the charge of runtime.OutcomeProviderError, which the one policy waives for both
+// kinds (chargePrompt, Charges), and, for an error that cannot clear, the claim's failure under
+// the word that classification gives, which holds the issue for its architect. It answers the
+// cause, and whether it failed the claim; what a turn whose error can clear does next is its
+// caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	class := classifyProviderError(t.status, t.code)
 	m.claim.ProviderErrorRun++
@@ -177,6 +181,12 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 		if err := t.before(ctx); err != nil {
 			return class.cause, false, err
 		}
+	}
+	// The site names the outcome and the policy charges it nothing (Charges): what bounds a run
+	// of these turns, a prompt's and one that ran no prompt of the daemon's alike, is the claim's
+	// own count above, never the prompt budget.
+	if err := m.chargePrompt(ctx, runtime.OutcomeProviderError); err != nil {
+		return class.cause, false, err
 	}
 	if class.fails == "" {
 		return class.cause, false, nil
@@ -288,7 +298,8 @@ type providerErrorClass struct {
 //
 // The error fails the claim for a cyber-policy refusal (codeCyberPolicy), whatever its status,
 // under CauseCyberPolicy, and for a client error, 400 to 499, that is neither a credential (401
-// or 403) nor an outage (httpoutage.Is), under CauseProviderError. A malformed request is the
+// or 403) nor an outage (httpoutage.Is), under the cause derived from
+// runtime.OutcomeProviderError (failureCause: CauseProviderError). A malformed request is the
 // case the second exists for. Every other error sends the task again:
 //
 //   - an outage (httpoutage.Is), is the provider saying "not now", which the ladder waits out;
@@ -311,11 +322,14 @@ type providerErrorClass struct {
 // A cyber-policy refusal is the one class that decides alone. Sending it again on the ladder is
 // what Oh My Pi's hold exists to stop, and the ladder cannot stop it itself: each send is a prompt
 // from outside the session, which ends that hold, and the session's content goes to OpenAI again.
-// So the claim fails under a word of its own (CauseCyberPolicy), and no retry of the daemon's own
-// launches its agent again (Claim.HeldForCyberPolicy): the architect gets the issue, and the retry
-// it or a person decides starts the agent in a new session (freshSession), which holds none of the
-// refused content. What this decides is the turn whose record arrived: the one send a report of a
-// turn with no prompt can race past is codeCyberPolicy's to state.
+// So the claim fails under a word of its own (CauseCyberPolicy), the one cause taken from Oh My
+// Pi's class rather than derived from an outcome (failureCause): the turn's outcome is
+// runtime.OutcomeProviderError all the same, which the policy charges nothing
+// (providerErrorTurnEnded). No retry of the daemon's own launches its agent again
+// (Claim.HeldForCyberPolicy): the architect gets the issue, and the retry it or a person decides
+// starts the agent in a new session (freshSession), which holds none of the refused content. What
+// this decides is the turn whose record arrived: the one send a report of a turn with no prompt
+// can race past is codeCyberPolicy's to state.
 func classifyProviderError(status int, code string) providerErrorClass {
 	withStatus := func(what string) string {
 		if status == 0 {
@@ -338,7 +352,7 @@ func classifyProviderError(status int, code string) providerErrorClass {
 		return class
 	}
 	if status >= 400 && status <= 499 {
-		class.fails = CauseProviderError
+		class.fails = failureCause(runtime.OutcomeProviderError)
 	}
 	return class
 }
