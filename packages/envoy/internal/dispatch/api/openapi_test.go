@@ -171,8 +171,10 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
-	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	// The hooks are read off the table, not pinned: a hook count is a number two branches that each
+	// add a hook cannot both be right about. They are the rows a server with its test hooks mounts
+	// and one without does not, rather than off the declarations' TestHook, which is what the
+	// emitter marks by.
 	served := map[string]bool{}
 	for _, route := range (&server{}).routes() {
 		served[route.Method+" "+route.Pattern] = true
@@ -183,8 +185,8 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			hooks[name] = true
 		}
 	}
-	if len(hooks) != 15 {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
+	if len(hooks) == 0 {
+		t.Fatal("the table mounts no test hook with Deps.TestHooksEnabled")
 	}
 	for name := range hooks {
 		if !marked[name] {

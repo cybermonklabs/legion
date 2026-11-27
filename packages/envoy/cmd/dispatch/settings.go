@@ -18,10 +18,12 @@ import (
 // list. The libraries Dispatch links read a few variables for themselves, outside the table:
 // `HOME` (os.UserHomeDir), libpq's `PG*` (pgx), `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
 // (net/http), `SSL_CERT_FILE` and `SSL_CERT_DIR` (crypto/x509), the AWS SDK's `AWS_*` and its
-// shared config files (the file store's region and credentials), and the Go runtime's `GO*` and
-// `TZ`. `envoy-dispatch settings` prints the table, and the docs site's configuration reference is
-// generated from that output. A new setting is a new row here, never an os.Getenv;
-// TestNoReaderBypassesTheSettingsTable holds cmd/dispatch and internal/dispatch to that.
+// shared config files (the file store's region and credentials), automemlimit's `AUTOMEMLIMIT` and
+// `GOMEMLIMIT` (setGoMemoryLimit), and the Go runtime's `GO*` and `TZ`, `GOGC` among them, which
+// Dispatch neither reads nor sets. `envoy-dispatch settings` prints the table, and the docs site's
+// configuration reference is generated from that output. A new setting is a new row here, never
+// an os.Getenv; TestNoReaderBypassesTheSettingsTable holds cmd/dispatch and internal/dispatch to
+// that.
 type setting struct {
 	// Name is the environment variable.
 	Name string
@@ -42,7 +44,7 @@ type setting struct {
 // listener, projects, the issues the search bar files and the rule between a parent's status and
 // its children's, the GitHub App, cookies, service-account tokens, the secrets broker and the
 // Legion status scope it grants, meaning search's model service, the model the server generates
-// text with, the dashboard, and local and test runs.
+// text with, the dashboard, the memory trace, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written."},
@@ -190,6 +192,8 @@ var settings = []setting{
 		Description: "The model each request names."},
 	{Name: "DISPATCH_WEB_DIST", Default: "the `packages/dispatch/web/dist` directory found from the binary's location", Required: "no",
 		Description: "Directory of the built dashboard the server serves."},
+	{Name: "DISPATCH_MEMORY_TRACE", Required: "no",
+		Description: "Path of a file to write one line of the Go runtime's memory classes, the process's resident memory and the container's `memory.current` to every 50 ms, for telling a pod near its memory limit from one the runtime is holding inside it; unset writes none."},
 	{Name: "DISPATCH_DEV_SIGNIN", Required: "no",
 		Description: "Set to `1` on a loopback-only local server to sign anyone in by email at `/auth/_dev/signin` without the sign-in issuer; refused alongside any `DISPATCH_SIGNIN_*` setting, `DISPATCH_SIGNIN_DOMAIN` included."},
 	{Name: "DISPATCH_DEV_SIGNIN_SHARED_KEY", Default: "a key generated for each process", Required: "no",

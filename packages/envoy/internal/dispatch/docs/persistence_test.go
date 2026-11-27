@@ -41,10 +41,21 @@ const docsTestParallelism = 6
 // still alive. The fix such a run asks for is a testcleanup.Add on the test the report names,
 // shutting down the service that test built (testcleanup.Add rather than t.Cleanup: testing keeps
 // a finished parallel test's cleanups, and the service each captured, until the run ends).
+//
+// The package's tests run in one process, and many of them drive a room's load from inside a
+// write's fork read, through a hook of the service's (afterForkRead) or a store that loads the
+// room inside the read it answers (insideFirstLoadStore): a nesting no pod makes, where a
+// browser's load is a goroutine of its own that simply waits for the write's fork to be dropped.
+// A write holds a grant of the pod's load concurrency for its fork's whole life (loadSlots),
+// and at the calibration the pod's whole pool is one slot (MemoryBounds.LoadSlots), which such
+// a nesting of two heavy documents would deadlock. So the binary runs with the production pod's
+// ten; what the pool itself bounds is weighed by MemoryBounds' own arithmetic and by the
+// tests that swap in a concurrency of their own (useLoadSlots).
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(docsTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
+	podLoadSlots.Store(newLoadSlots(BoundsForLimit(productionGoMemoryLimitBytes).LoadSlots))
 	code := storetest.Main(m)
 	if reportLeakedServices() && code == 0 {
 		code = 1

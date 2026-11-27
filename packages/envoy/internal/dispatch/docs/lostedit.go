@@ -141,8 +141,10 @@ func recordInsertedText(
 // never holds, and while the write holds the document's advisory lock - from its fork read to its
 // end - that change cannot reach the store: its append waits for the lock. So every other process
 // is asked to share what its room holds that the store does not (a share query, room_query.go; the
-// member takes no lock to answer, so it cannot wait on this one), and the loss is judged again on
-// a scratch copy with those updates merged in. The copy serves the judgement alone, never the
+// member takes no lock to answer, and the one wait an answer can make, a heavy share's for the
+// grant its merge takes, ends at the latest answerWait after the query reached the member, by when
+// this write has stopped waiting for the answer: unstoredShare), and the loss is judged again on a
+// scratch copy with those updates merged in. The copy serves the judgement alone, never the
 // version or the commit: those updates are not durable, and their credits live on the process that
 // holds them. A member's unstored updates depend only on stored rows and its own earlier updates,
 // and the write's fork stands at the stored head (readFork), so the copy is a state the document

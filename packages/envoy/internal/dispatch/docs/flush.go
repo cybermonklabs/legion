@@ -20,7 +20,7 @@ import (
 // under the document's advisory lock and before an append of its own, every update of the
 // instance through the position it read the room at that no writer has stored yet (flushThrough).
 // The room's own persistence is one such writer, through the position its batch takes, its own
-// update's at least (roomBatchThrough, StoreUpdateContext), so the order ygo hands it updates in
+// update's at least (roomBatchThrough, StoreUpdateStored), so the order ygo hands it updates in
 // never decides the stored order.
 
 // roomPoint is an exact position in one room instance's commits: cursor names the instance (its
@@ -107,18 +107,43 @@ func (s *Service) readPoint(room string, live *crdt.Doc) ([]byte, roomPoint, rep
 // A replica holding no state is started from the copy that read takes from the room, and the
 // fork is then cloned from it like any other. A room whose load listed no replica has no
 // document to clone, nor has a copy the replica could not start from: that copy is decoded here,
-// holding no lock (buildFork). Either way the caller is handed the document that decode builds.
+// holding no lock and under a grant of the copy-heap bound weighed by that copy (buildForkHeld),
+// as every other full-state decode is, which the write's grant takes past its cover only at once,
+// refusing the write busy otherwise. Either way the caller is handed the document that decode
+// builds.
+//
+// The clone takes no grant of its own: it decodes nothing, so it holds none of the heap a decode
+// holds above the copy it leaves - no encoded state, no decoder - and it runs under the
+// replica's mu, which the room's update observer waits for before ygo broadcasts each keystroke
+// (renderedReplica.lockForUpdate), so a wait for the pod's bound there would stall every browser
+// in the room behind it. What the clone leaves is the write's fork, as the decode's product is,
+// covered by the grant the write's cover took (liveWrite.coverFork), which weighed the room
+// (copyOfRoom) before it waited for the pool: what the room committed during that wait is in the
+// replica the clone copies. So where ctx carries a grant holding bytes (heldGrant), the room is
+// weighed again at the clone, under the replica's mu, and the grant takes what that weight is
+// past it only where the pool gives it at once (loadSlot.take), which waits for nothing; where the
+// pool does not, the write clones nothing and is refused busy, errWriteBusy wrapping
+// errGrantShort, the 503 its caller retries, as a decode weighing past its cover is
+// (buildForkHeld).
 //
 // at, when it is not nil, is the point the room must still stand at (rebuildFork): a read that
 // drains the room to another point clones nothing and answers errForkReleased, so the replica's
 // lock is held for no clone its caller throws away. The caller holds no state lock and is not
 // inside a Yjs transaction on live.
-func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, at *roomPoint) (*crdt.Doc, roomPoint, replicaRead, error) {
+func (s *Service) forkPoint(ctx context.Context, room string, live *crdt.Doc, client crdt.ClientID, at *roomPoint) (*crdt.Doc, roomPoint, replicaRead, error) {
 	var fork *crdt.Doc
+	var short error
+	grant := heldGrant(ctx)
 	copied, point, read, settles, err := s.atPoint(room, live, func(point roomPoint, doc *crdt.Doc) {
-		if at == nil || *at == point {
-			fork = doc.Clone(forkOptions(client)...)
+		if at != nil && *at != point {
+			return
 		}
+		if grant != nil {
+			if short = grant.take(ctx, s.copyOfRoom(live)); short != nil {
+				return
+			}
+		}
+		fork = doc.Clone(forkOptions(client)...)
 	})
 	if settles {
 		s.scheduleSettle(room)
@@ -128,10 +153,12 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 		return nil, roomPoint{}, replicaRead{}, err
 	case at != nil && *at != point:
 		return nil, roomPoint{}, replicaRead{}, errForkReleased
+	case short != nil:
+		return nil, roomPoint{}, replicaRead{}, fmt.Errorf("%w: %w", errWriteBusy, short)
 	case fork != nil:
 		return fork, point, read, nil
 	}
-	fork, err = buildFork(client, copied)
+	fork, err = buildForkHeld(ctx, client, copied, storedCopyWeight(copied))
 	if err != nil {
 		return nil, roomPoint{}, replicaRead{}, fmt.Errorf("fork live document: %w", err)
 	}
@@ -143,9 +170,11 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 // through pmdoc.ReadUnshared (treeOfUnshared), with the position it was read at (atPoint). Only a
 // holder of the replica's mu reads or writes the replica (renderedReplica), which is what
 // ReadUnshared's lock-free walk of each text asks for, and the tree it hands back is the caller's
-// own (ownedValue), as pmdoc.Read's is. A replica holding no state is started from the copy the
-// read takes from the room, and its tree is then walked. A room whose load listed no replica has
-// no tree to walk, nor has a copy the replica could not start from: that copy is decoded and
+// own (ownedValue), as pmdoc.Read's is. A room that keeps a replica is never decoded a second
+// time to be read, and a document past the decode cap - which no copy of it could be decoded
+// from - is read as the replica holds it. A replica holding no state is started from the copy
+// the read takes from the room, and its tree is then walked. A room whose load listed no replica
+// has no tree to walk, nor has a copy the replica could not start from: that copy is decoded and
 // read here, holding no lock (stateTree).
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a

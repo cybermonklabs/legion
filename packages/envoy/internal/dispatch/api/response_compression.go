@@ -59,10 +59,10 @@ func compressAnswers(handler http.HandlerFunc) http.HandlerFunc {
 			// whatever net/http sniffs from the answer's first bytes, which for a body opening
 			// with an HTML tag (`<html`, `<script`, `<!--`) is text/html, and nosniff holds a
 			// browser to a type the server set rather than to none at all.
-			handler(&typedWriter{ResponseWriter: w}, r)
+			handler(&typedWriter{ResponseWriter: w, answersCall: answersCall{r.Context()}}, r)
 			return
 		}
-		answer := &compressingWriter{ResponseWriter: w}
+		answer := &compressingWriter{ResponseWriter: w, answersCall: answersCall{r.Context()}}
 		handler(answer, r)
 		// Only a handler that returned has an answer to end: one that panics (an artifact
 		// download whose store fails mid-stream aborts with http.ErrAbortHandler) leaves its
@@ -169,6 +169,8 @@ func releaseGzip(writer *gzip.Writer) {
 // waits - the status and every header the handler set are written the moment the choice is made.
 type compressingWriter struct {
 	http.ResponseWriter
+	// answersCall names the call this is the answer to, for writeHandlerError (callOf).
+	answersCall
 	// status is the status the handler gave, and 0 until it gives one.
 	status int
 	// held is the answer's first bytes, kept until they reach compressibleMinimum or the answer
@@ -262,6 +264,8 @@ func answerNamesNoType(header http.Header, status int) bool {
 // gzip is written the bytes it was written before this layer existed.
 type typedWriter struct {
 	http.ResponseWriter
+	// answersCall names the call this is the answer to, for writeHandlerError (callOf).
+	answersCall
 	// wrote is true once a status has gone out, after which the headers are no longer this
 	// writer's to change.
 	wrote bool

@@ -104,24 +104,29 @@ type liveOperation struct {
 // (ErrServiceUnavailable) and a context Join did not return (errUnjoined), then takes the
 // transaction's write to the document (joinLiveWrite) and brings that write's fork up to date with
 // the room (forkLive). The caller defers the operation's abandon once it is open.
-func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liveOperation, error) {
+//
+// It answers the context the rest of the operation runs under: ctx carrying the write's load
+// slot (liveWrite.carriedBy), so every decode and copy the operation makes - the decode-cap copy
+// of the room its fork was read from, above all (structsAfter) - covers that one slot rather
+// than take a second inside it. The fork's build took it already, for the fork's whole life.
+func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liveOperation, context.Context, error) {
 	if s.shuttingDown(artifactID) {
-		return liveOperation{}, ErrServiceUnavailable
+		return liveOperation{}, ctx, ErrServiceUnavailable
 	}
 	tx, joined := txFromContext(ctx)
 	if !joined {
-		return liveOperation{}, errUnjoined
+		return liveOperation{}, ctx, errUnjoined
 	}
 	ledger := ledgerFrom(ctx)
 	write, err := s.joinLiveWrite(ctx, ledger, artifactID)
 	if err != nil {
-		return liveOperation{}, err
+		return liveOperation{}, ctx, err
 	}
 	fork, err := s.forkLive(ctx, write)
 	if err != nil {
-		return liveOperation{}, err
+		return liveOperation{}, ctx, err
 	}
-	return liveOperation{tx: tx, write: write, fork: fork, read: write.forkRead}, nil
+	return liveOperation{tx: tx, write: write, fork: fork, read: write.forkRead}, write.carriedBy(ctx), nil
 }
 
 // abandon, deferred once the operation is open, undoes what an operation that changed the fork but
@@ -181,11 +186,15 @@ func (op *liveOperation) change(mutate func() error) (*marginWatch, error) {
 // read cold; marginRoom is the room a margin write's fork was warm-built from, which its publish
 // tags the update against, and the zero pointer for every other write.
 func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, actor model.Actor, rendered renderedTree, contentChanged bool, rendering publishedRendering, marginRoom weak.Pointer[crdt.Doc]) error {
-	// Every write is refused when the live state it leaves could not be decoded, the one check
-	// that decodes a whole second copy of the document. The caller has let go of whatever tree it
-	// held from before the change, so the decode runs beside the fork and the tree the change left,
-	// not a third tree (LEGION-504).
-	if err := refuseUndecodable(op.fork); err != nil {
+	// Every write is refused when the live state its transaction would leave the room is past the
+	// decode cap, the one check that copies a whole document once the room's own struct total and
+	// what the transaction added to its fork pass the cap: the room's, or the fork's where no
+	// room is behind it (refuseUndecodable). The caller has let go of whatever tree it held from
+	// before the change, so the copy runs beside the fork and the tree the change left, not a
+	// third tree (LEGION-504). Only a room the total leaves within what the transaction adds of
+	// the cap is copied at all, for the one count, as the three server writes copy it
+	// (structsAfter).
+	if err := s.refuseUndecodable(ctx, op.write, op.fork, op.updates); err != nil {
 		return err
 	}
 	update, err := mergeUpdates(op.updates)
@@ -297,7 +306,7 @@ func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.
 // another tree in the fork - an upload that marked its replacement with the anchors it carried
 // over - renders the fork here, as every other write does. written is nil for applyLive itself.
 func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
-	op, err := s.openLiveOperation(ctx, artifactID)
+	op, ctx, err := s.openLiveOperation(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -422,7 +431,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
-	// decode check (LEGION-504).
+	// decode-cap check (LEGION-504).
 	before, weighedFrom = pmdoc.ValidDocument{}, nil
 	// What the room's update observer can take in place of rendering the room after this update
 	// (publishedRendering): this operation's rendering and its layout, when its fork was read warm.
@@ -520,7 +529,7 @@ func writtenRendering(written *renderedTree, warm bool, tree pmdoc.ValidDocument
 // A marks-map Set always adds an item, so the write always changes the fork: unlike applyLive it
 // never answers websocket.ErrNoChanges. A panic in it is its error (recoverMutation), as there.
 func (s *Service) applyMargin(ctx context.Context, artifactID string, actor model.Actor, markID string, record map[string]any) error {
-	op, err := s.openLiveOperation(ctx, artifactID)
+	op, ctx, err := s.openLiveOperation(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -873,93 +882,13 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			unchanged = true
 			return nil
 		}
-		type reanchor struct {
-			mark   anchoredMark
-			range_ pmdoc.Range
-			attrs  pmdoc.Attrs
-		}
-		reanchors := make([]reanchor, 0, len(anchors))
+		var reanchors []reanchor
 		if !repairing {
-			// One walk reads every row's mark, where one per row would make an upload cost the
-			// document once per open anchor.
-			keys := make([]pmdoc.MarkRef, len(anchors))
-			for index, mark := range anchors {
-				keys[index] = mark.markRef()
-			}
-			marks := pmdoc.FindMarks(current, keys)
-			for index, mark := range anchors {
-				found, ok := marks[keys[index]]
-				if !ok {
-					continue
-				}
-				reanchors = append(reanchors, reanchor{mark: mark, range_: found.Range, attrs: found.Attrs})
-			}
+			reanchors = heldReanchors(current, anchors)
 		}
-		// An upload over open anchors writes the room the target with its anchors already on it,
-		// built first in a scratch document no one else sees: the target written there, each open
-		// anchor marked again where its quote now stands, and the tree read back. Writing the
-		// target to the room without its anchors and marking them again re-formats every anchored
-		// run twice, stripping each anchor and adding it back: a tombstone per anchor per upload
-		// that the room keeps for the document's life, even where the upload left the anchored text
-		// unchanged. pmdoc.Update leaves the text it finds unchanged as it is, so writing the tree
-		// with its anchors leaves the anchored text the upload did not touch alone.
-		write := target
-		if len(reanchors) > 0 {
-			scratch := newDocumentCopy()
-			scratchFragment := scratch.GetXmlFragment(fragmentName)
-			if err := scratch.TransactE(func(txn *crdt.Transaction) error {
-				if err := pmdoc.Update(txn, scratchFragment, target); err != nil {
-					return err
-				}
-				// One finder over target and one writer over the scratch fragment serve every row, so
-				// the upload flattens target and reads the fragment's text ranges once, not once a row.
-				// Both read nothing until the first row needs them. A row whose quote no longer
-				// resolves keeps no mark, so its miss is never described. Each row is marked at the
-				// occurrence of its quote nearest where it stood, and where that occurrence stands
-				// somewhere the schema allows no mark of its type (pmdoc.ErrMarkNotAllowed: an ask's
-				// quote in a code block, any anchor's in the front matter), at the next nearest that
-				// allows it: an upload that copies anchored text into a code block or the front matter
-				// and keeps the original leaves the anchor on the original. Only when no occurrence
-				// allows the mark is the upload refused, as its markdown's to fix (reanchorError).
-				finder := pmdoc.NewQuoteFinder(target)
-				writer := pmdoc.NewMarkWriter(scratchFragment)
-			reanchors:
-				for _, reanchor := range reanchors {
-					occurrences, err := finder.NearestFirst(reanchor.mark.anchor.Quote, reanchor.range_.From)
-					if errors.Is(err, pmdoc.ErrTargetNotFound) {
-						continue
-					}
-					if err != nil {
-						return reanchorError(reanchor.mark, err)
-					}
-					mark := MarkSpec{
-						Kind:  MarkKind(reanchor.mark.markType),
-						ID:    reanchor.mark.anchor.MarkID,
-						Attrs: reanchor.attrs,
-					}.pmMark()
-					// Every occurrence the schema refuses the mark on is kept, so a quote with
-					// nowhere left to stand names each place it stands, and how many places of each
-					// kind, rather than the last place tried, and one fix of the markdown resolves
-					// the upload.
-					var notAllowed []error
-					for _, occurrence := range occurrences {
-						refused := writer.Mark(txn, occurrence, mark)
-						if refused == nil || errors.Is(refused, pmdoc.ErrTargetNotFound) {
-							continue reanchors
-						}
-						if !errors.Is(refused, pmdoc.ErrMarkNotAllowed) {
-							return reanchorError(reanchor.mark, refused)
-						}
-						notAllowed = append(notAllowed, refused)
-					}
-					return reanchorError(reanchor.mark, notAllowed...)
-				}
-				var err error
-				write, err = pmdoc.ReadInTransaction(txn, scratchFragment)
-				return err
-			}); err != nil {
-				return err
-			}
+		write, err := reanchored(target, reanchors, false)
+		if err != nil {
+			return err
 		}
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
@@ -990,6 +919,110 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// one of it (Ledger.ReadBackOf).
 	ledgerFrom(ctx).wroteReadBack(artifactID, read)
 	return canonical, nil
+}
+
+// reanchor is one open anchor a write marks again in the text it writes: the row's mark, where
+// the mark stood in the text the write replaces (range_; for a row whose text no tree holds, where
+// its block now stands), and the attributes it carries.
+type reanchor struct {
+	mark   anchoredMark
+	range_ pmdoc.Range
+	attrs  pmdoc.Attrs
+}
+
+// heldReanchors is each of anchors whose mark current holds, with where it stands and the
+// attributes it carries there. One walk reads every row's mark, where one per row would make an
+// upload cost the document once per open anchor.
+func heldReanchors(current *pmdoc.Node, anchors []anchoredMark) []reanchor {
+	keys := make([]pmdoc.MarkRef, len(anchors))
+	for index, mark := range anchors {
+		keys[index] = mark.markRef()
+	}
+	marks := pmdoc.FindMarks(current, keys)
+	reanchors := make([]reanchor, 0, len(anchors))
+	for index, mark := range anchors {
+		found, ok := marks[keys[index]]
+		if !ok {
+			continue
+		}
+		reanchors = append(reanchors, reanchor{mark: mark, range_: found.Range, attrs: found.Attrs})
+	}
+	return reanchors
+}
+
+// reanchored is target with each of reanchors marked again where its quote now stands, built in a
+// scratch document no one else sees: the target written there, each anchor marked, and the tree
+// read back; target itself where there is none to mark. A write over open anchors writes its
+// document that tree, with its anchors already on it. Writing the target without its anchors and
+// marking them again re-formats every anchored run twice, stripping each anchor and adding it back:
+// a tombstone per anchor per upload that the room keeps for the document's life, even where the
+// upload left the anchored text unchanged. pmdoc.Update leaves the text it finds unchanged as it
+// is, so writing the tree with its anchors leaves the anchored text the upload did not touch alone.
+//
+// One finder over target and one writer over the scratch fragment serve every row, so the write
+// flattens target and reads the fragment's text ranges once, not once a row. Both read nothing
+// until the first row needs them. A row whose quote no longer resolves keeps no mark, so its miss is
+// never described. Each row is marked at the occurrence of its quote nearest where it stood, and
+// where that occurrence stands somewhere the schema allows no mark of its type
+// (pmdoc.ErrMarkNotAllowed: an ask's quote in a code block, any anchor's in the front matter), at
+// the next nearest that allows it: an upload that copies anchored text into a code block or the
+// front matter and keeps the original leaves the anchor on the original. Where no occurrence
+// allows the mark, a caller's markdown is refused, its to fix (reanchorError); with skipRefused -
+// a rebuild restoring a document's anchors from their rows, which has no markdown of a caller's
+// to send back - that row keeps no mark instead, as one whose quote is gone keeps none.
+func reanchored(target *pmdoc.Node, reanchors []reanchor, skipRefused bool) (*pmdoc.Node, error) {
+	if len(reanchors) == 0 {
+		return target, nil
+	}
+	write := target
+	scratch := newDocumentCopy()
+	scratchFragment := scratch.GetXmlFragment(fragmentName)
+	if err := scratch.TransactE(func(txn *crdt.Transaction) error {
+		if err := pmdoc.Update(txn, scratchFragment, target); err != nil {
+			return err
+		}
+		finder := pmdoc.NewQuoteFinder(target)
+		writer := pmdoc.NewMarkWriter(scratchFragment)
+	reanchors:
+		for _, reanchor := range reanchors {
+			occurrences, err := finder.NearestFirst(reanchor.mark.anchor.Quote, reanchor.range_.From)
+			if errors.Is(err, pmdoc.ErrTargetNotFound) {
+				continue
+			}
+			if err != nil {
+				return reanchorError(reanchor.mark, err)
+			}
+			mark := MarkSpec{
+				Kind:  MarkKind(reanchor.mark.markType),
+				ID:    reanchor.mark.anchor.MarkID,
+				Attrs: reanchor.attrs,
+			}.pmMark()
+			// Every occurrence the schema refuses the mark on is kept, so a quote with nowhere
+			// left to stand names each place it stands, and how many places of each kind, rather
+			// than the last place tried, and one fix of the markdown resolves the upload.
+			var notAllowed []error
+			for _, occurrence := range occurrences {
+				refused := writer.Mark(txn, occurrence, mark)
+				if refused == nil || errors.Is(refused, pmdoc.ErrTargetNotFound) {
+					continue reanchors
+				}
+				if !errors.Is(refused, pmdoc.ErrMarkNotAllowed) {
+					return reanchorError(reanchor.mark, refused)
+				}
+				notAllowed = append(notAllowed, refused)
+			}
+			if skipRefused {
+				continue
+			}
+			return reanchorError(reanchor.mark, notAllowed...)
+		}
+		var err error
+		write, err = pmdoc.ReadInTransaction(txn, scratchFragment)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return write, nil
 }
 
 // anchorKinds names, for a person, each mark type an open anchor carries (openAnchoredMarks).
@@ -1246,7 +1279,9 @@ func (s *Service) readDocument(ctx context.Context, artifactID string) (*documen
 
 // heldTree is the tree of the document where this server holds it, once a failed room's recovery
 // is done: the calling transaction's fork's when it has one (joinRead), else the resident room's,
-// as of one moment (liveTree). held is false where neither holds it. It is older than neither the
+// as of one moment (liveTree). held is false where neither holds it. A caller that may not wait
+// for that recovery - a transaction, or a read whose grant holds bytes of the pool, a socket
+// admission's - is refused the failed room instead (awaitRoomRecovery). It is older than neither the
 // stored head, read after joinRead and before the room (readStoredHead), nor the room: a resident
 // room behind that head - another process stored an update its catch-up has not applied yet - is
 // read as the stored document merged with the updates only that room holds (storedWithUpdates),
@@ -1270,51 +1305,101 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 	if live == nil {
 		return nil, false, nil
 	}
-	head, err := s.readStoredHead(ctx, artifactID)
-	if err != nil {
-		return nil, false, err
-	}
-	if !s.roomHoldsHead(live, head) {
-		unstored, err := s.unstoredShare(artifactID, live)
-		if err != nil {
-			return nil, false, err
-		}
-		tree, err := s.storedWithUpdates(ctx, artifactID, unstored)
-		return tree, true, err
-	}
-	tree, err = s.liveTree(artifactID, live)
+	tree, err = s.residentTree(ctx, artifactID, live)
 	return tree, true, err
 }
 
+// residentTree is the tree of live, the room resident for artifactID, older than neither the
+// stored head nor the room (heldTree): the room's own as of one moment (liveTree), or, where the
+// room stands behind that head, the stored document merged with the updates only the room holds
+// (storedWithUpdates, unstoredParts). It loads nothing, which is why a transaction holding its
+// grant reads a resident room through it (docTree, transactionHolds).
+func (s *Service) residentTree(ctx context.Context, artifactID string, live *crdt.Doc) (*pmdoc.Node, error) {
+	head, err := s.readStoredHead(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if !s.roomHoldsHead(live, head) {
+		return s.storedWithUpdates(ctx, artifactID, s.unstoredParts(artifactID, live))
+	}
+	return s.liveTree(artifactID, live)
+}
+
 // loadTree is the tree of the document a socket's admission check reads (heldTree, else the stored
-// document decoded), with the durable state it decoded the document from, nil when this server
-// holds the document. A durable history that does not decode is ErrDocumentUnloadable and fails
-// the room, as ygo's own load of it would.
-func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, error) {
+// document decoded), with the durable state it read (loadDecodedHistory) and the structs that
+// state decoded to, which the room's load takes in place of reading the store again
+// (offerPreload, takePreload) and which the budget weighs the admission by (ServeHTTP,
+// roomWeight). The state is nil when this server holds the document, and the structs are then
+// nothing: a room the budget already charges is joined rather than weighed.
+//
+// The structs are this decode's own reading, taken as an apply reports them (heldStructs): the
+// structs its store holds and those parked in its pending queue, each once. The copy decoded
+// here holds what the room's own load will hold - both decode the same bytes under the same
+// pending cap, and the encoded state carries what the room parks - so a reading of the store
+// alone (crdt.Doc.StructCount) would under-charge a room whose pending queue is heavy by
+// everything in it (the class of review 5856254176's second High, found again here).
+//
+// A durable history that does not decode is ErrDocumentUnloadable and fails the room, as ygo's
+// own load of it would, and so is one whose runs do not apply in order (unappliedHistory), which
+// the store answers with no bytes to decode, and one whose decode parks past a room's cap
+// (parkedPastRoomCaps), which the room's own decode refuses: such a socket is answered 503 before
+// ygo loads a room the history cannot make.
+//
+// The read's fold, when the history holds several updates, and the decode run under one grant of
+// the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
+// that ends first answers ctx's error and holds nothing of the pool. The copy this decode made
+// is the admission's own: it answers the schema check and is dropped here, and the room's load
+// decodes the same state once more for its replica and its scan total (LoadDocContext,
+// decodeStoredCopy). The grant is given back before the room fails, whose eviction can wait.
+func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, int64, error) {
 	tree, held, err := s.heldTree(ctx, artifactID)
 	if err != nil || held {
-		return tree, nil, err
+		return tree, nil, 0, err
 	}
-	loaded, err := s.persistence.Load(ctx, artifactID)
+	history, err := loadDecodedHistory(ctx, s.persistence, artifactID, s.maxPendingItems, nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		s.failRoom(artifactID, err)
-		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		var unapplied *unappliedHistory
+		if errors.As(err, &unapplied) {
+			return nil, nil, 0, err
+		}
+		return nil, nil, 0, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
-	if len(loaded.Update) == 0 {
-		return nil, &loaded, nil
-	}
-	doc := newDocumentCopy()
-	if err := decodeStoredState(doc, loaded.Update); err != nil {
+	if history.refused != nil {
 		// The room carries the decode failure as its cause, which a reader that meets the
 		// failed room answers as DOC_SERVICE_UNAVAILABLE; this read met the history itself.
-		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", err))
-		return nil, nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
+		return nil, nil, 0, s.failUnloadable(artifactID, history.refused)
 	}
-	tree, err = treeOf(doc)
-	return tree, &loaded, err
+	if parked := s.parkedPastRoomCaps(history.decoded.doc); parked != nil {
+		return nil, nil, 0, s.failUnloadable(artifactID, parked)
+	}
+	if len(history.loaded.Update) == 0 {
+		return nil, &history.loaded, 0, nil
+	}
+	tree, err = treeOf(history.decoded.doc)
+	return tree, &history.loaded, int64(heldStructs(history.decoded.doc)), err
+}
+
+// failUnloadable fails room for cause, why a room's load of its stored history would fail: the
+// history does not decode, or its decode parks past a room's cap (parkedPastRoomCaps). It returns
+// what a read that met the history itself answers, ErrDocumentUnloadable wrapping cause, as
+// loadTree and coldFork do. cause is never nil: a caller holding a *parkedPastCap passes it only
+// once it has checked it for nil, since a nil one in an error is no nil error.
+func (s *Service) failUnloadable(room string, cause error) error {
+	s.failRoom(room, fmt.Errorf("decode live document: %w", cause))
+	return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, cause)
+}
+
+// refuseParkedRead is what a read answers for artifactID's stored history that parks past a
+// room's cap (parkedPastRoomCaps): it logs the cap and what the history parks
+// (parkedPastCapReadLine) and returns ErrDocumentUnloadable wrapping parked, as foldDocument and
+// storedWithUpdates do. Unlike failUnloadable it fails no room. parked is never nil.
+func refuseParkedRead(artifactID string, parked *parkedPastCap) error {
+	slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
+	return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
 }
 
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {
@@ -2325,8 +2410,33 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if _, err := s.joinRead(ctx, room); err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
-	if err := s.warmLiveDocument(ctx, room); err != nil {
-		return renderedTree{}, authorCapture{}, err
+	// The warm-up loads the room where none holds the document, and does so only while the room
+	// budget has an opening for it (roomBudget.openServerRoom): a burst of whole-text writes -
+	// an upload apiece to a document apiece - would otherwise load a room for each of them at
+	// once, each charged to a budget that refuses the server's own work nothing (roomBudget).
+	// Without an opening the version is taken from the stored document instead, which is the
+	// path a room behind the head already takes below (behind): the store holds every update,
+	// and a document no room holds has no in-flight credit of its own to list
+	// (withoutInflight). The opening is taken without waiting for one, since this runs inside
+	// the caller's write transaction and holds one of the shared pool's connections.
+	// A transaction whose grant holds bytes loads no room (transactionHolds, allowApply): it reads
+	// the room where one is resident here, and the stored document otherwise, on its own grant.
+	holding := transactionHolds(ctx)
+	fromStore := false
+	switch {
+	case holding:
+		fromStore = s.srv.GetDoc(room) == nil
+	case !s.roomHeld(room):
+		if s.budget.openServerRoom(room) {
+			defer s.budget.closeServerRoom()
+		} else {
+			fromStore = true
+		}
+	}
+	if !fromStore && !holding {
+		if err := s.warmLiveDocument(ctx, room); err != nil {
+			return renderedTree{}, authorCapture{}, err
+		}
 	}
 	// The warmed-read hook deliberately evicts a loaded room in tests. It runs before this
 	// transaction takes the document lock: CloseRoom flushes a room's persistence, which may
@@ -2349,11 +2459,13 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if s.afterCaptureAuthorsTake != nil {
 		s.afterCaptureAuthorsTake(room)
 	}
-	// fromStore is a version taken from the stored document, storing none of the room's updates:
-	// a comment's anchor on a closed issue (closedIssueCommentAnchor), decided before the room is
-	// read at all, since such a version reads none of it, and a room standing behind the durable
-	// head, which only that read can tell.
-	fromStore, err := s.closedIssueCommentAnchor(ctx, tx, room)
+	// A version taken from the stored document stores none of the room's updates. Three things
+	// ask for one: the room budget having no opening for a document no room holds (above), a
+	// comment's anchor on a closed issue (closedIssueCommentAnchor), decided before the room is
+	// read at all since such a version reads none of it, and a room standing behind the durable
+	// head, which only the read below can tell.
+	closedIssue, err := s.closedIssueCommentAnchor(ctx, tx, room)
+	fromStore = fromStore || closedIssue
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
@@ -2460,16 +2572,18 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 }
 
 // storedTree is the tree of artifactID's stored document at its head, for a version whose room
-// stands behind that head (captureLiveTextAndAuthors, prevalidationTree with no room resident).
+// stands behind that head (captureLiveTextAndAuthors, prevalidationTree with no room resident),
+// and for a read no room holds where the room budget has no opening (docTree). Under a
+// transaction it takes on the transaction's grant, as storedWithUpdates says.
 func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Node, error) {
 	return s.storedWithUpdates(ctx, artifactID, nil)
 }
 
 // storedWithUpdates is the tree of artifactID's stored document at its head with unstored merged
 // into it: the updates a resident room behind that head holds that the store may not
-// (unstoredShare), which a read of such a room takes (heldTree, docTree) so that it is older than
+// (unstoredParts), which a read of such a room takes (heldTree, docTree) so that it is older than
 // neither the store nor the room - the store holds what another process committed, and the merge
-// holds the keystroke whose append is still in flight. The caller reads that share before this
+// holds the keystroke whose append is still in flight. The caller reads those updates before this
 // load, so an append landing between the two only repeats here what the store already took. With
 // no such update this is the stored document itself, which is a version's (storedTree).
 //
@@ -2482,24 +2596,95 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // the room, where coldFork's does: coldFork reads the store in place of a room, so its failure is
 // the document's, while here the room is sound and only behind, and its catch-up brings it to the
 // head (roomCatchUps). The caller answers ErrServiceUnavailable instead, and its caller retries.
-func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored []byte) (*pmdoc.Node, error) {
-	loaded, err := s.persistence.LoadDocument(ctx, artifactID)
-	if err != nil {
-		if errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+// A history that parks past a room's caps is one no room loads, so it is answered
+// ErrDocumentUnloadable here as the cold read answers it (parkedPastRoomCaps), whether or not the
+// room budget had an opening for the caller's room: a read that loads a room meets the room's own
+// refusal of it.
+//
+// The load, the merge, its apply and the tree share one grant of the pod's load concurrency
+// (withLoadSlot): the grant ctx carries, a socket admission's for one (loadTree); the grant of the
+// transaction the caller is joined to (Join, transactionGrant), given back once the tree is built
+// where no fork of the transaction holds it; or one of its own, given back once the tree is built.
+// The load takes it on the rows it folds and the state it decodes and leaves it held
+// (LoadDocument), so the document it hands back is counted while unstored is merged and applied
+// to it and its tree is built (treeOf). The merge decodes every struct of every update it merges
+// (crdt.MergeUpdatesV1), so where any of them is heavy the grant
+// first takes what their decodes cost, summed (mergeWeight), on top of what the load left it
+// holding; the apply then decodes what the merge made, and where that is heavy
+// (heavyUpdateWeight) - many light updates can merge into one that is not - the grant takes what
+// that decode costs on top of the load's instead, where it is the more, as the room's persistence
+// worker's read-back of a heavy update takes. Lighter updates take nothing at either, as a
+// keystroke's apply takes nothing.
+//
+// The load's document is held while the grant takes more, so neither take waits for it
+// (loadSlot.take): where the pool does not give it at once, the read drops the document, gives
+// the grant back, takes the total whole and reads again under it (redoWhole), where every take up
+// to that total takes nothing. The totals are counted from what the first load left the grant
+// holding, so a history that grew past it before a later pass is refused rather than counted
+// short: its load's own take on the held grant answers errGrantShort, the 503 the caller retries.
+// A later pass's load holds that total as it begins, so it waits for no slot of the buffered folds:
+// it takes one only where one is free at once, and where none is streams its rows on one whole
+// slot the pool gives it at once or is refused busy (loadStoredOnce, errFoldSlotsBusy), since a
+// holder of a fold slot can be waiting for the bytes this read holds.
+// A grant that already held bytes as this began - a transaction's, whose fork stands under it -
+// is never given back here, and a take past it is refused the same way: a read under a
+// transaction holding a fork takes what it weighs past the fork's grant only where the pool gives
+// it at once, never a grant of its own beside it, which it would wait for holding the fork's
+// (loadSlots). A wait ctx ends is ctx's error. The wait holds nothing of the pool and nothing the
+// load took: by then the load has ended its read transaction and given back its buffered fold's
+// slot (foldRead), and what the caller holds - the connection and the owner's lock of the
+// transaction it is joined to (joinRead), docTree's opening of the room budget, and a
+// socket admission's count on its room's state (holdForAdmission), which nothing waits for - it
+// held across the load's first take as well. docTree takes unstored inside the room's Apply and
+// calls this only once that Apply has returned, so no wait here holds the room. A version's
+// caller, which holds the document's advisory lock, merges nothing and so never takes more.
+func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored [][]byte) (*pmdoc.Node, error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
+	var tree *pmdoc.Node
+	loadWeight := int64(-1)
+	merge := mergeWeight(unstored)
+	err := slot.redoWhole(ctx, func(take func(total int64) error) error {
+		loaded, err := s.persistence.LoadDocument(ctx, artifactID)
+		if err != nil {
+			if errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
-	}
-	doc := loaded.Doc
-	if doc == nil {
-		doc = newDocumentCopy()
-	}
-	if len(unstored) > 0 {
-		if err := crdt.ApplyUpdateV1(doc, unstored, nil); err != nil {
-			return nil, fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
+		if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
+			return refuseParkedRead(artifactID, parked)
 		}
-	}
-	return treeOf(doc)
+		doc := loaded.Doc
+		if doc == nil {
+			doc = newDocumentCopy()
+		}
+		if loadWeight < 0 {
+			loadWeight = slot.bytes
+		}
+		if len(unstored) > 0 {
+			if merge > 0 {
+				if err := take(min(loadWeight+merge, loadSlotBytes)); err != nil {
+					return err
+				}
+			}
+			merged, err := mergeUpdates(unstored)
+			if err != nil {
+				return err
+			}
+			if apply, heavy := heavyUpdateWeight(merged); heavy && apply > merge {
+				if err := take(min(loadWeight+apply, loadSlotBytes)); err != nil {
+					return err
+				}
+			}
+			if err := crdt.ApplyUpdateV1(doc, merged, nil); err != nil {
+				return fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
+			}
+		}
+		tree, err = treeOf(doc)
+		return err
+	})
+	return tree, err
 }
 
 // latestVersionRow is a document's latest version as a write reads it to decide whether to write

@@ -11547,7 +11547,9 @@ describe("executeDispatchTool", () => {
       unchanged_ops: [],
       lost_ops: null,
     });
-    expect(undetermined.text).toContain("could not confirm this edit survived");
+    expect(undetermined.text).toContain(
+      "; could not confirm this edit survived, because the live document is being reloaded, could not be read back in time, or holds a tree too deep to read — re-read it"
+    );
     expect(undetermined.text).not.toContain("no longer has");
     expect(undetermined.details).toMatchObject({ lost_ops: null });
   });

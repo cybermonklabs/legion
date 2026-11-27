@@ -679,10 +679,9 @@ type settlementRowFacts struct {
 //     it wrote a version (clearSettlementPending);
 //   - marked_at catches every append that leaves the document owing a settlement, which stamps
 //     it now() as it marks the document owed (updateOwedStatement, appendUpdateTxClass), so a row
-//     deleted and written again carries an age no reading of the row before it holds. An append
-//     that leaves nothing owed - parked bytes alone - writes no row, and nor does a prune: each
-//     moves the document's stored history and leaves standing the very row this write would put
-//     the source on;
+//     deleted and written again carries an age no reading of the row before it holds. A prune
+//     writes no row: it moves the document's stored history and leaves standing the very row this
+//     write would put the source on;
 //   - last_actor catches a write that names a newer edit source without moving that age: a
 //     committed write, a seed or a rebuild (recordLatestEditSource).
 func (facts settlementRowFacts) unchangedSince(snapshot settlementRowFacts) bool {

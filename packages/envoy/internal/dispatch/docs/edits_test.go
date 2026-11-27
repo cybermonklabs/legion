@@ -443,7 +443,7 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 			close(entered)
 			<-release
 		}
-		return service.allowInject(ctx, info)
+		return service.allowApply(ctx, info)
 	}
 
 	result := make(chan error, 1)

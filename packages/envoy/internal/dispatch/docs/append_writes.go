@@ -115,7 +115,7 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	// path leaves them (appendRoomTx). A flush left short this way is failed by its caller, which
 	// rolls this prefix back with it (Service.flushThrough).
 	updates = updates[:admitted]
-	plan, err := p.appendWrites(ctx, tx, room, head, updates, true)
+	plan, err := p.appendWrites(ctx, tx, room, head, updates)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -241,17 +241,12 @@ func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
 // queues each with writeStatement.queueWrite) or queues them itself into the batch its own
 // connection commits with (writeStatement.queue, appendRoomTx in room_appends.go).
 //
-// owes is whether the document owes a settlement from these updates. It is false for a room's
-// parked bytes alone (AppendParkedUpdate), which change nothing a settlement reads and credit
-// nobody: they write no owed row and no pending authors, and the commit that later integrates
-// them marks the document owed itself.
-//
 // Each update's credit is taken here (UpdateCredit.take), so the caller holds the document's
 // advisory lock from before the gate until the transaction ends. The owed row is taken with the
 // write, so a route that goes on to append an event (an upload, issue creation) holds it before
 // its event, as an answer marking this document a copy owed does (owedCopiesOf);
 // Ledger.Commit's later recordLatestEditSource then waits on nothing.
-func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, head int64, updates []BrowserUpdate, owes bool) (appendPlan, error) {
+func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, head int64, updates []BrowserUpdate) (appendPlan, error) {
 	if len(updates) == 0 {
 		return appendPlan{}, errors.New("append document updates: no update to append")
 	}
@@ -305,9 +300,6 @@ func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, 
 		ledger.deferAnnouncement(room, persistence.Version(last))
 	}
 	plan := appendPlan{statements: []writeStatement{insert}, last: persistence.Version(last)}
-	if !owes {
-		return plan, nil
-	}
 	owedStatement, err := updateOwedStatement(room, owed)
 	if err != nil {
 		return appendPlan{}, err

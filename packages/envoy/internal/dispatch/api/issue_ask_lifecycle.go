@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -246,13 +247,42 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // runs (RunIssueAskRepair).
 //
 // ctx must not end when the client goes away (outlivingTheClient), and no transaction is open.
+//
+// The sweep's transaction ends no later than docs.WriteRequestBound after it begins
+// (sweepClosedIssueAsksTx), whatever ctx allows. Its first document's fork takes the grant of the
+// pod's load concurrency for every document it writes (docs.WriteIssueAskStates), and from its
+// second document on it waits for each document's writer slot and advisory lock holding that
+// grant, though never for more of the pool; a room's persistence worker can hold that lock while
+// its gate's fold waits for the pool, so the two wait on each other (docs' loadSlots). On an
+// unkeyed close ctx is the request's context with its cancellation taken off, which has no Done,
+// so Join alone would put no bound on it (docs' boundCallerWrite) and nothing would end that
+// wait. ctx keeps its request's mark (docs.WithCallerRequest), so with the deadline's Done the
+// document service holds the sweep to a caller's bounds, measured from the request's start: its
+// document work to docs.WriteRequestBound and its waits at the write limiter and at its first
+// fork's take of the pool to docs.WriteWaitBound, as a keyed close's sweep, on the keyed run's
+// context, already was. A sweep that docs.WriteRequestBound ends rolls back and is logged so,
+// naming the issue; one that the write limiter or the pool refuses - its first fork at
+// docs.WriteWaitBound, and a later document's fork, or the cold read that builds it, at once
+// where the pool lacks what it weighs past that grant, as the pool refuses every take of a
+// transaction holding a fork that it cannot give at once (docs' loadSlots) - is logged with that
+// refusal, also naming the issue: at Warn where it is the document service's busy refusal - the
+// pool's, of the first fork or of a later one (docs.RefusedBusy) - which the ask repair's next
+// pass retries, and at Error otherwise (docs.LogDutyFailure). Either way, the ask repair's pass
+// sweeps the issue while one of its documents owes a settlement, as each document a browser wrote
+// after the close's fork does (above).
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
-		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("a write bound ended the sweep's transaction, which rolled back, and the ask repair sweeps the issue: %w", err)
+		}
+		docs.LogDutyFailure("dispatch: sweep the ask blocks of a closed issue", "the ask repair's next pass sweeps the issue", err, "issue", issueKey)
 	}
 }
 
 func (s *server) sweepClosedIssueAsksTx(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) error {
+	// The deadline from the transaction's begin (sweepClosedIssueAsks says why).
+	ctx, cancel := context.WithTimeout(ctx, docs.WriteRequestBound)
+	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err

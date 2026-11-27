@@ -18,9 +18,9 @@ body: |-
   reserves its room and connection slots before it loads, so sockets opening together stay within
   the caps and a socket over a cap is refused with 503.
   `DISPATCH_MAX_LIVE_ROOMS` and `DISPATCH_MAX_DOC_CONNECTIONS` (1,000 each) set those caps, the
-  cold reads' cache takes a sixteenth of the Go memory limit (at least 64 MiB, at most 1 GiB, and
-  256 MiB with none), and the profiler port (`DISPATCH_PPROF_PORT`) serves `/debug/vars`, the
-  rooms' figures among them as `dispatch_rooms` (`cmd/dispatch/README.md`, "Profiling").
+  cold reads' cache holds a fixed 256 MiB, and the profiler port (`DISPATCH_PPROF_PORT`) serves
+  `/debug/vars`, the rooms' figures among them as `dispatch_rooms` (`cmd/dispatch/README.md`,
+  "Profiling").
 time: 2026-10-28T15:00:00Z
 custom:
     Issue: pr2445

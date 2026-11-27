@@ -35,28 +35,30 @@ import (
 //	         "updates": base64 of a Yjs update, "too_large": bool, "part": n, "last": bool}
 //
 // Every member but the asker answers every query (roomSyncMembers): a member holding no room of
-// the document answers {"holds": false} at once. A "flush" asks the member's room for its pending
-// appends at once, so a batch of its keystrokes lingering for more of them goes rather than
-// waiting its linger out (askRoomAppends), and is answered only once every update the member's
-// room applied before the query arrived has left its room's unstored updates - appended, or
-// dropped with a room that failed, whose browsers send it again (roomInstance.unstored) - so
-// the asker reads the store knowing it holds them. A "share" is answered at once, appending
-// nothing, with "updates": the merge of the member's unstored updates, the one whose append is
-// under way included, since an update stays listed until its append has returned
-// (StoreUpdateContext). One over roomShareLimit answers "too_large" and no updates. A share's
-// answer carries "actors" as well, the distinct actors connected to the member's room, which is
-// what names a lost write's participants (lostedit.go); a holds or a flush answer carries none,
-// since no asker of those reads them. An answer whose notification would pass
-// roomSyncPayloadLimit is split into parts numbered from 0, actors and then the base64 of the
-// updates spread across them in order, the last part flagged "last"; the asker puts them back
-// together before it reads the answer.
+// the document answers {"holds": false} at once. A "flush" is answered only once every update the
+// member's room applied before the query arrived has left its room's unstored updates - appended,
+// or dropped with a room that failed, whose browsers send it again (roomInstance.unstored) - so
+// the asker reads the store knowing it holds them. A "share" is answered appending nothing, with
+// "updates": the merge of the member's unstored updates, the one whose append is under way
+// included, since an update stays listed until its append has returned (StoreUpdateStored). It is
+// answered at once unless it merges two updates or more and one of them is heavy (mergeWeight):
+// the merge then waits for a grant of the pod's load concurrency, for at most roomQueryWait, on a
+// goroutine of its own as a flush waits, and a share that has none by then is left unanswered
+// (unstoredShare). One over roomShareLimit answers "too_large" and no updates. A share's answer
+// carries "actors" as well, the distinct actors connected to the member's room, which is what
+// names a lost write's participants (lostedit.go); a holds or a flush answer carries none, since
+// no asker of those reads them. An answer whose notification would pass roomSyncPayloadLimit is
+// split into parts numbered from 0, actors and then the base64 of the updates spread across them
+// in order, the last part flagged "last"; the asker puts them back together before it reads the
+// answer.
 //
 // The asker waits for every member's whole answer for at most roomQueryWait, then goes on with
 // what it has and logs a WARN naming the members that did not answer: a member on an older build,
-// one that just died, or one whose flush could not finish in time. Nothing an asker decides needs
-// every answer to be safe: a flush that was not answered leaves the asker reading the store as it
-// stands, which every process's catch-up and the append gate keep correct (plan D3), and a share
-// that was not answered judges a write's loss without that member's in-flight updates.
+// one that just died, or one whose flush could not finish in time or whose share's merge could
+// not take its grant in time. Nothing an asker decides needs every answer to be safe: a flush that
+// was not answered leaves the asker reading the store as it stands, which every process's catch-up
+// and the append gate keep correct (plan D3), and a share that was not answered judges a write's
+// loss without that member's in-flight updates.
 
 // The kinds of room query (see above).
 const (
@@ -320,8 +322,24 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 }
 
 // query is documentQueryChannel's handler, on room sync's query lane. This process's own queries
-// are dropped. A holds or share query is answered here; a flush waits for the room's appends on a
-// goroutine of its own, bounded by answerWait, so a slow flush never holds up the next query.
+// are dropped. A holds query is answered here, and so is a share whose merge takes no grant
+// (mergeWeight). Every other answer waits on a goroutine of its own, bounded by answerWait, so a
+// slow one never holds up the next query, for this room or any other: a flush waits for the
+// room's appends, and a share whose merge takes a grant waits for that grant (roomQueries.share).
+//
+// A flush and a share each take what they answer with - the updates a flush waits for and those a
+// share merges - from a drain of the room's update log (unstoredSnapshot), which takes the room
+// replica's lock. The lane takes it only where that lock is free at once (unstoredSnapshotAtOnce),
+// so the answer is of the room as the query found it. Where it is not - the replica's holder is
+// walking or rendering it, or cloning it for a fork, CPU work that grows with the document - the
+// snapshot waits for the lock on the query's own goroutine, as its merge and its flush already
+// wait, and the lane goes on to the next query, whose asker has its own window. Such an answer is
+// of the room a moment after the query arrived, which the asker cannot tell from one of the room
+// as the query found it: it cannot order its own query against the room's commits, which this
+// process's browsers make while the query is in flight, since the query names no point of the
+// room and reaches the lane after a delivery delay of its own. The same answer is what a query
+// that arrived that moment later would have had. A flush that snapshots later waits for the later
+// updates too, and a share hands them over, each as true for the asker as the earlier snapshot.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -340,25 +358,26 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 	answer := roomAnswerPart{Holds: true}
 	switch query.Kind {
 	case roomQueryShare:
-		updates, err := s.unstoredShare(query.Room, live)
-		if err != nil {
-			slog.Warn("dispatch: merge a document room's not-yet-stored updates to share with another process; sharing none",
-				"room", query.Room, "error", err)
-			updates = nil
+		classes, taken := s.unstoredSnapshotAtOnce(query.Room, live)
+		if !taken {
+			go func() {
+				parts := s.unstoredParts(query.Room, live)
+				r.share(ctx, query, answer, parts, mergeWeight(parts))
+			}()
+			return
 		}
-		if len(updates) > roomShareLimit {
-			answer.TooLarge, updates = true, nil
+		parts := updatesOf(classes)
+		if weight := mergeWeight(parts); weight > 0 {
+			go r.share(ctx, query, answer, parts, weight)
+			return
 		}
-		r.send(ctx, query, answer, s.connectedActors(query.Room), updates)
+		r.share(ctx, query, answer, parts, 0)
 	case roomQueryFlush:
-		classes := s.unstoredSnapshot(query.Room, live)
-		// The room's pending appends are asked for before the wait begins and left asked for
-		// until it ends: a batch of this room's keystrokes lingering for more of them
-		// (roomAppendLinger) goes at once, so the asker is answered a linger sooner and no
-		// update recorded since lingers while the answer waits.
-		done := s.askRoomAppends(query.Room)
+		classes, taken := s.unstoredSnapshotAtOnce(query.Room, live)
 		go func() {
-			defer done()
+			if !taken {
+				classes = s.unstoredSnapshot(query.Room, live)
+			}
 			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
@@ -371,6 +390,32 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 	default:
 		r.send(ctx, query, answer, nil, nil)
 	}
+}
+
+// share answers query, a share, with parts, the updates the room holds that the store may not as
+// the query found them (unstoredParts), merged on a grant of weight, what their merge decodes
+// (mergeWeight, unstoredShare), and with the actors connected to the room once the merge is made.
+// The asker stops waiting for this answer within answerWait of sending the query, so the merge's
+// grant is waited for no longer than that: a share that has not taken it by then is left
+// unanswered, as a member's that never answers is, since nobody would read it.
+func (r *roomQueries) share(ctx context.Context, query roomQuery, answer roomAnswerPart, parts [][]byte, weight int64) {
+	shared, cancel := context.WithTimeout(ctx, r.answerWait())
+	updates, err := unstoredShare(shared, parts, weight)
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		slog.Warn("dispatch: a document room's not-yet-stored updates did not take the grant their merge needs before another process stopped waiting for them; the share is left unanswered",
+			"room", query.Room, "asker", query.Sender, "error", err)
+		return
+	}
+	if err != nil {
+		slog.Warn("dispatch: merge a document room's not-yet-stored updates to share with another process; sharing none",
+			"room", query.Room, "error", err)
+		updates = nil
+	}
+	if len(updates) > roomShareLimit {
+		answer.TooLarge, updates = true, nil
+	}
+	r.send(ctx, query, answer, r.service.connectedActors(query.Room), updates)
 }
 
 // send sends answer, to query, with actors and updates, in as many parts as their size takes
@@ -484,9 +529,26 @@ func (s *Service) connectedActors(room string) []model.Actor {
 
 // unstoredSnapshot is every update live, room's resident instance, applied that has not left its
 // unstored updates yet (roomInstance.unstored), after draining the room's update log
-// (observeRoomDoc) so every update committed to the room by now is classified, and listed.
+// (observeRoomDoc) so every update committed to the room by now is classified, and listed. The
+// drain waits for the room replica's lock.
 func (s *Service) unstoredSnapshot(room string, live *crdt.Doc) []*queuedClass {
 	s.observeRoomDoc(room, live)
+	return s.unstoredListed(live)
+}
+
+// unstoredSnapshotAtOnce is unstoredSnapshot where the room replica's lock is free at once, and
+// reports whether it was, having waited for nothing and listed nothing where it was not
+// (tryObserveRoomDoc): what the room-query lane takes (roomQueries.query).
+func (s *Service) unstoredSnapshotAtOnce(room string, live *crdt.Doc) ([]*queuedClass, bool) {
+	if !s.tryObserveRoomDoc(room, live) {
+		return nil, false
+	}
+	return s.unstoredListed(live), true
+}
+
+// unstoredListed is every update live's resident instance lists as not yet stored, as a drain of
+// its update log left them (unstoredSnapshot), nil where live has no instance.
+func (s *Service) unstoredListed(live *crdt.Doc) []*queuedClass {
 	instance := s.instanceOf(live)
 	if instance == nil {
 		return nil
@@ -494,22 +556,54 @@ func (s *Service) unstoredSnapshot(room string, live *crdt.Doc) []*queuedClass {
 	return instance.unstoredUpdates()
 }
 
-// unstoredShare is what a share answers: the merge of every update live, room's resident instance,
-// holds that the store may not (unstoredSnapshot), nil for none.
-func (s *Service) unstoredShare(room string, live *crdt.Doc) ([]byte, error) {
-	classes := s.unstoredSnapshot(room, live)
+// unstoredParts is every update live, room's resident instance, holds that the store may not
+// (unstoredSnapshot), each as the room committed it and in that order, nil for none. It decodes
+// nothing, so it is taken inside the room's Apply where a caller reads the room there (docTree),
+// and as a share's query arrives (roomQueries.query): what merges the updates - a share
+// (unstoredShare) or a read of a room behind the stored head (storedWithUpdates) - does so once it
+// holds nothing of the room, under a grant of what the merge decodes (mergeWeight).
+func (s *Service) unstoredParts(room string, live *crdt.Doc) [][]byte {
+	return updatesOf(s.unstoredSnapshot(room, live))
+}
+
+// updatesOf is the update of each of classes, in their order, nil for none.
+func updatesOf(classes []*queuedClass) [][]byte {
 	if len(classes) == 0 {
-		return nil, nil
+		return nil
 	}
 	updates := make([][]byte, 0, len(classes))
 	for _, class := range classes {
 		updates = append(updates, class.update)
 	}
-	return mergeUpdates(updates)
+	return updates
+}
+
+// unstoredShare is what a share answers: the merge of parts, every update a room's resident
+// instance holds that the store may not (unstoredParts), nil for none. The merge decodes every
+// struct of every update it merges (crdt.MergeUpdatesV1), so it runs under a grant of the pod's
+// load concurrency of weight, what that decode costs (mergeWeight of parts), of its own: the
+// goroutine that answers a share carries none. A share of lighter updates, or of one update,
+// weighs nothing and takes nothing. The wait for the grant ends with ctx, whose error it answers,
+// merging nothing; it holds nothing else of this process while it waits - no connection, no lock,
+// no room - and nothing that holds the pool waits for it, since this process's own askers hear
+// their answers on the answer lane, and it waits on a goroutine of its own, never the query lane
+// (roomQueries.query).
+func unstoredShare(ctx context.Context, parts [][]byte, weight int64) ([]byte, error) {
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	if weight > 0 {
+		release, err := holdLoad(ctx, weight)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
+	return mergeUpdates(parts)
 }
 
 // awaitStored returns once none of classes is among instance's unstored updates any more: each
-// was appended, or dropped with a room that failed (StoreUpdateContext). It looks every
+// was appended, or dropped with a room that failed (StoreUpdateStored). It looks every
 // roomFlushPoll until ctx ends.
 func awaitStored(ctx context.Context, instance *roomInstance, classes []*queuedClass) error {
 	if instance == nil || len(classes) == 0 {

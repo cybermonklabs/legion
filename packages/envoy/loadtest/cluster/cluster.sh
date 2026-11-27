@@ -25,13 +25,14 @@
 #       Refuses with exit 2 while the lock ConfigMap
 #       dispatch-loadtest-lock exists. Then takes the lock, mints the copy's own token issuer
 #       (Dispatch's identity at the copy's listener, below), installs the copy (Postgres 16 CPU /
-#       60Gi on a --pg-volume data volume, default 100Gi, Dispatch 16 / 32Gi, listener 500m /
-#       512Mi, the token issuer 50m / 64Mi, NATS 3 × 2 / 4Gi, runner 8 / 16Gi), checks that the
-#       listener admits Dispatch's token and takes a send's role mark from it, copies the
-#       loadgen and (with --browsertype-commit) the static browsertype of that commit for browser
-#       typing (below) that it built before the lock into the runner, starts the heartbeat and
-#       the sampler, and prints each copy container's requests and limits and the size of the
-#       Postgres data volume.
+#       60Gi on a --pg-volume data volume, default 100Gi, Dispatch 16 CPU / 32Gi, production's
+#       size until 2026-11-05 (production has run 20Gi since: the deployment repository's
+#       dispatch/Pulumi.prod.yaml), listener 500m / 512Mi, the token issuer 50m / 64Mi, NATS 3 ×
+#       2 / 4Gi, runner 8 / 16Gi), checks that the listener admits Dispatch's token and takes a
+#       send's role mark from it, copies the loadgen and (with --browsertype-commit) the static
+#       browsertype of that commit for browser typing (below) that it built before the lock into
+#       the runner, starts the heartbeat and the sampler, and prints each copy container's
+#       requests and limits and the size of the Postgres data volume.
 #   cluster.sh seed --namespace NS            loadgen seed, seed-refs and seed-finish, then the template
 #                                             database dispatch_seed.
 #   cluster.sh step --namespace NS NAME FACTOR [--duration 10m] [--reads-only] [--typing

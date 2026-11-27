@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"time"
 
@@ -34,10 +35,11 @@ import (
 //     (judgeRespelledVersions).
 //  3. Pending. No update is stored ahead of one it depends on: a row that adds parked structs or
 //     deletions is a mismatch unless a later row carries what it parked again, which the commit
-//     that integrates a peer's stored parked edit does (storeParked, judgeParkedRows). A row
-//     still parked when the history ends is counted as awaiting its predecessor, not reported:
-//     the store cannot tell an edit whose predecessor has not arrived from one whose dependency
-//     was never stored.
+//     that integrates a peer's stored parked edit does (judgeParkedRows). A room stores nothing
+//     it parks (leaveParkedOut), so only rows an earlier build stored of what parked, and a
+//     published write whose update waits on an item, are such rows. A row still parked when the
+//     history ends is counted as awaiting its predecessor, not reported: the store cannot tell an
+//     edit whose predecessor has not arrived from one whose dependency was never stored.
 //
 // The fold starts from the document's oldest retained update, its base. Compaction folds older
 // history into that row (Compact) and a rebuild replaces the whole history with one row there
@@ -47,10 +49,12 @@ import (
 // the sweep folds every document due that rule once an hour. So a version created inside the
 // checked window can record an update already folded into the base, and the check compares
 // nothing of it: it counts those versions (VersionsCompacted) rather than passing over them, and
-// a document they leave with no version compared is unchecked. A history rewritten after the
-// base - a prune's checkpoint standing, or a prune that finished and was appended past
-// (PruneAfter, recoverPruneTx) - is refused: the versions recorded against it name updates the
-// store no longer holds.
+// a document they leave with no version compared is unchecked. Compaction does leave as stored
+// the rows of a fold whose document parks something while a version recorded at one of them
+// breaks rule 2 (disagreeingVersion), so such a version keeps the rows its text can be rebuilt
+// from. A history rewritten after the base - a prune's checkpoint standing, or a prune
+// that finished and was appended past (PruneAfter, recoverPruneTx) - is refused: the versions
+// recorded against it name updates the store no longer holds.
 
 // StoredOrderDB is what the check reads a document through: a pool it opens one read-only
 // transaction on (*store.Pool, *pgxpool.Pool).
@@ -132,8 +136,8 @@ type StoredOrderReport struct {
 	// which a compaction folded into it: nothing of those was compared either.
 	VersionsChecked, VersionsSkipped, VersionsCompacted int
 	// UpdatesAwaitingPredecessor counts the updates after which the fold parks structs no later
-	// row resolves: a peer's edit the room stored ahead of an edit it builds on that has not
-	// arrived (storeParked), or a row whose dependency was never stored, which the store alone
+	// row resolves: a peer's edit an earlier build's room stored ahead of an edit it builds on
+	// that has not arrived, or a row whose dependency was never stored, which the store alone
 	// cannot tell apart. A dependency the room held and the store lost also leaves every version
 	// recorded after it rendering text the fold lacks, which the version rule reports.
 	UpdatesAwaitingPredecessor int
@@ -206,7 +210,7 @@ func checkStoredOrderTx(ctx context.Context, tx pgx.Tx, artifactID string, since
 		return fmt.Errorf("read the document's stored updates: %w", err)
 	}
 	report.Base = first
-	versions, err := readStoredVersions(ctx, tx, artifactID)
+	versions, err := readStoredVersions(ctx, tx, artifactID, 0, math.MaxInt64)
 	if err != nil {
 		return err
 	}
@@ -237,15 +241,15 @@ func checkStoredOrderTx(ctx context.Context, tx pgx.Tx, artifactID string, since
 	return foldStoredOrder(ctx, tx, artifactID, since, at, report)
 }
 
-// readStoredVersions reads the document's versions in number order, each markdown as Postgres
-// hashes and measures it, so no document text leaves the database here: the markdown of a version
-// another renderer version wrote is read after the fold, and only where it differs from the fold's
-// render (judgeRespelledVersions).
-func readStoredVersions(ctx context.Context, tx pgx.Tx, artifactID string) ([]storedVersion, error) {
+// readStoredVersions reads the document's versions recording an update from from through through,
+// in number order, each markdown as Postgres hashes and measures it, so no document text leaves
+// the database here: the markdown of a version another renderer version wrote is read after the
+// fold, and only where it differs from the fold's render (judgeRespelledVersions).
+func readStoredVersions(ctx context.Context, tx pgx.Tx, artifactID string, from, through int64) ([]storedVersion, error) {
 	rows, err := tx.Query(ctx, `
 		select number, doc_update_version, created_at, md5(coalesce(markdown, '')), octet_length(coalesce(markdown, '')), renderer_version
-		from artifact_versions where artifact_id = $1 order by number
-	`, artifactID)
+		from artifact_versions where artifact_id = $1 and doc_update_version between $2 and $3 order by number
+	`, artifactID, from, through)
 	if err != nil {
 		return nil, fmt.Errorf("read the document's versions: %w", err)
 	}

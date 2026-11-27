@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    `dispatch_doc_edit` given `lost_ops: null` also names a document Dispatch could not read back
+    in time, where it said only that the live document was being reloaded or held a tree too deep
+    to read: a check that cannot read the document within its 10 s bound, its wait for the
+    server's load capacity included, reaches no verdict either. Its advice, to re-read the
+    document, is unchanged.
+time: 2026-11-21T18:50:54.000000000Z
+custom:
+    Issue: pr2544

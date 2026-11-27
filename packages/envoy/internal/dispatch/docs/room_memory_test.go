@@ -2,7 +2,6 @@ package docs
 
 import (
 	"bytes"
-	"math"
 	"runtime"
 	"sync"
 	"testing"
@@ -194,26 +193,4 @@ func losingPreload(t *testing.T, service *Service, room string, offered []weak.P
 	}
 	t.Fatal("the preload held for the room's load is neither socket's history")
 	return weak.Pointer[byte]{}
-}
-
-// The cold reads' cache holds rendered documents up to a budget. A fixed 256 MiB is a sixteenth of
-// one task size and an eighth of another, and the container's size is configurable, so the budget
-// follows the Go memory limit the process runs under: a sixteenth of it, at least 64 MiB and at
-// most 1 GiB, and 256 MiB when no limit is set (debug.SetMemoryLimit reports math.MaxInt64).
-func TestTheReadBudgetFollowsTheGoMemoryLimit(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		limit int64
-		want  int64
-	}{
-		{"no limit", math.MaxInt64, 256 << 20},
-		{"4 GiB", 4 << 30, 256 << 20},
-		{"32 GiB", 32 << 30, 1 << 30},
-		{"512 MiB", 512 << 20, 64 << 20},
-	} {
-		if got := readBudgetFor(test.limit); got != test.want {
-			t.Errorf("the read budget under %s = %d MiB, want %d MiB", test.name, got>>20, test.want>>20)
-		}
-	}
 }

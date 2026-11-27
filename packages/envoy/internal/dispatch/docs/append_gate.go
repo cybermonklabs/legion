@@ -38,7 +38,7 @@ var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durabl
 type appendKind int
 
 const (
-	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateContext): a Yjs
+	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateStored): a Yjs
 	// update commutes with whatever landed since, so it is admitted from a room that is behind
 	// with its history intact, at the head, and its room's cursor folds it in once catch-up fills
 	// the gap. A replaced history refuses it unless that history still holds every item it builds
@@ -260,6 +260,25 @@ func updateAge(observed time.Time) time.Duration {
 // and reloaded at the head (Service.closeRoomOnReplacedHistory), rather than taking every later
 // update of its browsers down this path, a decode of the whole stored document under the
 // document's lock each.
+//
+// The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
+// (storedHistoryHolds), which waits for its bytes on the room's persistence worker
+// (StoreUpdateStored). In a transaction's flush of a room (AppendRoomUpdatesTx) the grant is the
+// transaction's own (withLoadSlot), so while a fork of the transaction stands under it the check
+// takes more of it only where the pool gives it at once and is refused busy otherwise (loadSlots).
+// The worker holds the document's lock and a connection of the room-appends pool while it waits.
+// One holder of the pool waits for that lock: a transaction that holds the grant its first
+// document's fork took and waits for its later document's advisory lock (joinLiveWrite,
+// readFork), though never for more of the pool, so the worker can wait for bytes that transaction
+// holds while the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
+// WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
+// gives its grant back, the transaction's own deadline ends it at the latest for the close's sweep
+// and the ask repair, which roll back, and the worker then takes its bytes (loadSlots,
+// TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No other holder waits
+// for the lock or the connection: a heavy apply gives its grant back before its commit reaches the
+// room's queue of updates to store, which this worker alone reads (weighPeerUpdate). The fold
+// takes no slot of the buffered folds (foldSlots), so the pool is what bounds how many such folds a
+// process holds at once.
 func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int, margin time.Duration) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")
@@ -306,24 +325,73 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // folds, so it holds what a room's update was made on; a rebuild's seed is a document of other
 // items, which a room's update parks on. A history that already parks something answers false, as
 // does a run it cannot apply: the run is admitted whole or not at all.
+//
+// Its decodes share one grant of the pod's load concurrency (withLoadSlot): the grant ctx carries,
+// or one of its own given back as it returns, so the document is counted for its whole life here.
+// The grant is taken on the history's rows before the fold decodes any of them: one pass over
+// them first adds up their bytes and the structs their headers declare and decodes nothing
+// (weighUpdates), and the grant takes what they weigh (copyWeight, declaredStructs), what
+// foldRead takes for the same rows read into memory, so the fold's own document is counted from
+// its first row and the fold takes nothing more as it reads them. The rows are summed by that
+// pass, not by the gate's statement, which every append runs and which would then fetch every row
+// of the history rather than read its index (appendGateStatement); the document's lock keeps them
+// the rows every later pass reads. The fold's read-back, or the decode of the history's runs
+// where it does not fold (fold, runsDocument), takes more where its document weighs more, holding
+// nothing it built as it does, so on a grant this check holds alone it gives the grant back and
+// takes that weight whole where the pool does not give the difference at once (ownedBy,
+// holdUnbuiltLoad). The run is then decoded onto that document, a whole decode of each of its
+// updates, and the grant takes what the run's copy costs on top of what the document holds - its
+// bytes and the structs their headers declare, as storedCopyWeight weighs one update, read before
+// anything of the run is decoded - so it covers the document and the run together until the run
+// is judged. The document is held as it takes that, so it does not wait for it (loadSlot.take):
+// where the pool does not give it at once, the check drops the document, gives the grant back,
+// takes the total whole and decodes the history again under it (redoWhole). The first take waits
+// for its bytes, as foldRead's does, on the room's persistence worker as in a transaction's flush
+// of the room, and a wait ctx ends is the error.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
+	ctx = slot.ownedBy(ctx)
 	version := persistence.Version(head)
-	doc, err := documentThrough(room, version, storedUpdates(ctx, q, room, version), maxPending)
-	if err != nil || doc == nil {
+	stored := storedUpdates(ctx, q, room, version)
+	rows, err := weighUpdates(stored)
+	if err != nil {
 		return false, err
 	}
-	if parks(doc) {
-		return false, nil
-	}
+	var runBytes, runStructs int64
 	for _, update := range updates {
-		if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
-			return false, nil
-		}
-		if parks(doc) {
-			return false, nil
-		}
+		runBytes += int64(len(update.Update))
+		runStructs += int64(declaredStructs(update.Update))
 	}
-	return true, nil
+	run := copyWeight(runBytes, runStructs)
+	var holds bool
+	documentWeight := int64(-1)
+	err = slot.redoWhole(ctx, func(take func(total int64) error) error {
+		if err := take(rows); err != nil {
+			return err
+		}
+		doc, err := documentThrough(ctx, room, version, stored, maxPending)
+		if err != nil || doc == nil || parks(doc) {
+			return err
+		}
+		if documentWeight < 0 {
+			documentWeight = slot.bytes
+		}
+		if err := take(min(documentWeight+run, loadSlotBytes)); err != nil {
+			return err
+		}
+		for _, update := range updates {
+			if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
+				return nil
+			}
+			if parks(doc) {
+				return nil
+			}
+		}
+		holds = true
+		return nil
+	})
+	return holds, err
 }
 
 // historyReplaced is whether the stored history under a room instance holding every version
@@ -345,7 +413,7 @@ type roomCursorContextKey struct{}
 // room outside any live write mark their own context, since no ledger of theirs names the document
 // they were made on: settlement's repairs (settleRoomWithin), the block-id backfill's stamp
 // (backfillBlockIDs) and the room's own append of an update its observer recorded no class for
-// (servicePersistenceAdapter.StoreUpdateContext). A room's own batch of browser updates is gated
+// (servicePersistenceAdapter.StoreUpdateStored). A room's own batch of browser updates is gated
 // on the flush it stores instead (RoomFlush, appendRoomTx).
 func withRoomCursor(ctx context.Context, cursor *roomCursor) context.Context {
 	if cursor == nil {

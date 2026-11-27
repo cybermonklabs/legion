@@ -22,6 +22,13 @@ type RefreshTokenRevoker interface {
 // PgPeopleStore records the people who have signed in to Dispatch and each sign-in's membership
 // (migration 0068), its refresh token sealed (refreshTokenSeal), with the Google account that last
 // signed in to the address for a Workspace domain (migration 0112).
+//
+// The steps a request's identity runs (Record, Membership, Confirm, ConfirmSubject, End and
+// EndSubject) answer errors that name the step and never the person: the identity hands such an
+// error on as its own, and the API logs one it cannot name whole (writeHandlerError), so an email
+// in it would put the caller's identity header in the operator's log (CodeQL
+// go/clear-text-logging). The sign-in's own steps and the boot's sweep still name the person,
+// whom their callers' lines name beside the error.
 type PgPeopleStore struct {
 	pool    *Pool
 	seal    refreshTokenSeal
@@ -40,7 +47,7 @@ func NewPgPeopleStore(pool *Pool, keys auth.SigningKeys, revoker RefreshTokenRev
 // Record notes that email has signed in, keeping any membership it already holds.
 func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email); err != nil {
-		return fmt.Errorf("record person %q: %w", email, err)
+		return fmt.Errorf("record the person: %w", err)
 	}
 	return nil
 }
@@ -153,7 +160,7 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 		return auth.PersonMembership{}, false, nil
 	}
 	if err != nil {
-		return auth.PersonMembership{}, false, fmt.Errorf("read membership of %q: %w", email, err)
+		return auth.PersonMembership{}, false, fmt.Errorf("read the person's membership: %w", err)
 	}
 	// people's check pairs the two: a row holds both or neither.
 	if sealed == nil {
@@ -172,7 +179,7 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 // now(), with the refresh token to use next (auth.PeopleStore.Confirm).
 func (s *PgPeopleStore) Confirm(ctx context.Context, email, refreshToken string) error {
 	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1`, email, s.seal.seal(email, refreshToken)); err != nil {
-		return fmt.Errorf("confirm membership of %q: %w", email, err)
+		return fmt.Errorf("confirm the person's membership: %w", err)
 	}
 	return nil
 }
@@ -185,7 +192,7 @@ func (s *PgPeopleStore) Confirm(ctx context.Context, email, refreshToken string)
 // generation, so that browser's next request fails the check.
 func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refreshToken string) error {
 	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1 and sub is not distinct from $3`, email, s.seal.seal(email, refreshToken), subject); err != nil {
-		return fmt.Errorf("confirm membership of %q: %w", email, err)
+		return fmt.Errorf("confirm the person's membership: %w", err)
 	}
 	return nil
 }
@@ -193,7 +200,7 @@ func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refr
 // End forgets email's refresh token and confirmation, keeping the person.
 func (s *PgPeopleStore) End(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
-		return fmt.Errorf("end membership of %q: %w", email, err)
+		return fmt.Errorf("end the person's membership: %w", err)
 	}
 	return nil
 }
@@ -267,7 +274,7 @@ var _ auth.PeopleStore = (*PgPeopleStore)(nil)
 func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("end the sign-in of %q: %w", email, err)
+		return false, fmt.Errorf("end the person's sign-in: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	var stored string
@@ -276,19 +283,19 @@ func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject string) (
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the subject the end of %q expects: %w", email, err)
+		return false, fmt.Errorf("read the subject the end of the person's sign-in expects: %w", err)
 	}
 	if stored != subject {
 		return false, nil
 	}
 	if _, err := tx.Exec(ctx, revokeSessionsSQL, email); err != nil {
-		return false, fmt.Errorf("end the sessions of %q: %w", email, err)
+		return false, fmt.Errorf("end the person's sessions: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
-		return false, fmt.Errorf("end membership of %q: %w", email, err)
+		return false, fmt.Errorf("end the person's membership: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("end the sign-in of %q: %w", email, err)
+		return false, fmt.Errorf("end the person's sign-in: %w", err)
 	}
 	return true, nil
 }

@@ -263,7 +263,9 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		first.let()
 		second.let()
 	})
-	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
+	// A page of this build, given its own client id, so no keystroke of it is a claim (claimable),
+	// as a page of the earlier build's first keystroke is.
+	editor := openPage(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}

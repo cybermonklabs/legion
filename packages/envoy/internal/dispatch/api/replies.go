@@ -850,7 +850,9 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// project, the cycle markInboxReadThreads rules out.
 	owner := store.OwnerOf(issueKey, artifactID)
 	if owner == nil {
-		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		// The caller's login stays out of the error, which writeHandlerError logs whole: it is the
+		// person's email (CodeQL go/clear-text-logging).
+		s.writeHandlerError(w, fmt.Errorf("the caller's user_threads row of thread %s names no issue and no document", threadID))
 		return
 	}
 	// Whether the mark moves at all, read under that lock in the statement after it

@@ -1,6 +1,11 @@
 // Package asks holds the ask_followers relation shared by every path that writes an
 // ask: the API handlers, document ask blocks, and the outbox that routes to followers.
 // It sits below api and docs (docs cannot import api) so no insert site can miss it.
+//
+// Its errors name the ask and never the session. A session's id can be the one a caller's
+// broker-issued token proved, read from the request's Authorization header, and the API logs an
+// error it cannot name whole (writeHandlerError), so the id there would be a header's value in the
+// operator's log (CodeQL go/clear-text-logging).
 package asks
 
 import (
@@ -104,12 +109,12 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 		arms, params, err = graphstore.WriteArms(3, nodes, nil, nil)
 	}
 	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
+		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q: %w", askID, err)
 	}
 	if arms != "" {
 		arms = ",\n" + arms
 	}
-	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, sessionID), `
+	b.Queue(fmt.Sprintf("follow ask %q", askID), `
 		with followed as (
 			insert into ask_followers (ask_id, session_id)
 			values ($1, $2)
@@ -148,12 +153,12 @@ func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor, at
 func Follows(ctx context.Context, db Queryer, askID, sessionID string) (bool, error) {
 	rows, err := db.Query(ctx, `select 1 from ask_followers where ask_id = $1 and session_id = $2`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether the session follows ask %q: %w", askID, err)
 	}
 	defer rows.Close()
 	follows := rows.Next()
 	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether the session follows ask %q: %w", askID, err)
 	}
 	return follows, nil
 }
@@ -164,7 +169,7 @@ func Unfollow(ctx context.Context, db Execer, askID, sessionID string) (bool, er
 		delete from ask_followers where ask_id = $1 and session_id = $2
 	`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("unfollow ask %q as %q: %w", askID, sessionID, err)
+		return false, fmt.Errorf("unfollow ask %q: %w", askID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

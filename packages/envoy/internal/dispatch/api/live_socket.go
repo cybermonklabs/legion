@@ -426,6 +426,11 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
+		// A request whose own context ended while its credential was read is answered 500 here,
+		// where a row of the table is answered 503 (endedWithACancelledContext): the socket's
+		// chain carries no writer that names its call, so only the server's lifetime is read. That
+		// edge stays: a request whose context ended is one whose client has gone, which reads
+		// nothing of the answer.
 		s.writeAuthenticationError(w, err)
 		return
 	}

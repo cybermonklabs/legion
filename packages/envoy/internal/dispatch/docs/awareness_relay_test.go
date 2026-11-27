@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // Awareness - readers' cursors and presence - crosses processes through the awareness relay
@@ -303,6 +305,229 @@ func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testin
 	waitForAwarenessState(t, handledB, pair.artifactID, "alice's next state reaching task B, which holds a room with no reader")
 	if roomHoldsClient(pair.taskB, pair.artifactID, aliceClient) {
 		t.Fatal("alice's awareness reached task B's room, which no reader of task B is in: relayed heartbeats would keep it resident")
+	}
+}
+
+// daveClient is the awareness client of a reader of a second document in the test below.
+const daveClient uint64 = 4004
+
+// Another process's awareness for a room still loading here is not relayed into it: ygo has not
+// published the room, and an Inject into it would wait on its load on the awareness lane, which
+// serves every room's relayed awareness (holdsRoomForReaders). Here task B loads a second document
+// for a reader opening it cold, and the load waits for the pod's load concurrency, which the test
+// holds whole; dave, reading that document on task A, moves, and then alice moves in the first
+// document, and bob sees her move on task B within relayWait. Before, task B's awareness lane
+// injected dave's move into the loading room and waited on its load, whose wait for the pool has
+// no deadline, and alice's move waited behind it for as long as the load did.
+func TestAColdOpenWhoseLoadWaitsDoesNotStallAnotherRoomsRelayedAwareness(t *testing.T) {
+	const relayWait = 10 * time.Second
+	pair := newProcessPair(t)
+	other := createIssueDocument(t, pair.database, 2, "Other.")
+	seedServiceText(t, pair.taskA, other, "Other document.\n")
+	pool, waits := poolWaits(t)
+	runAwareness(t, pair.taskA)
+	handledB := runAwareness(t, pair.taskB)
+	alice := pair.openReader(t, pair.serverA, "alice")
+	bob := pair.openReader(t, pair.serverB, "bob")
+	dave := connectPeer(t, pair.serverA.URL, other, "dave")
+	if err := dave.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, other), roomWait(t)); err != nil {
+		t.Fatalf("dave's reader never received the other document: %v", err)
+	}
+	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
+	requireAwareness(t, bob, holdsAwareness(aliceClient, cursorOf("alice", 1)), "alice's cursor on task A reaching bob on task B")
+
+	// Task B's load of the other document, for a reader opening it cold, waits for the full pool,
+	// its room a placeholder ygo has not published.
+	filler := fillPoolBut(t, pool, 0)
+	for len(waits) > 0 {
+		<-waits
+	}
+	pair.taskB.addConnection(other, 9001, model.Actor{Kind: "user", ID: "carol"})
+	loaded := make(chan error, 1)
+	go func() { loaded <- pair.taskB.warmLiveDocument(context.Background(), other) }()
+	select {
+	case <-waits:
+	case err := <-loaded:
+		t.Fatalf("task B's load of the other document finished (%v) while the pool was full, want it waiting for its grant", err)
+	case <-time.After(relayWait):
+		t.Fatalf("task B's load of the other document never came to wait for the pool within %s", relayWait)
+	}
+	if pair.taskB.srv.GetDoc(other) != nil {
+		t.Fatal("ygo published task B's room of the other document while its load waits, so nothing here is tested")
+	}
+	setAwareness(t, dave, daveClient, cursorOf("dave", 1))
+	waitFor(t, relayWait, "task B's awareness lane to take dave's state, dropping it or waiting on the load", func() bool {
+		for {
+			select {
+			case message := <-handledB:
+				if message.Room == other && !message.Query {
+					return true
+				}
+			default:
+				return roomLoadWaiters() > 0
+			}
+		}
+	})
+	setAwareness(t, alice, aliceClient, cursorOf("alice", 2))
+	if err := bob.WaitForAwareness(relayWait, holdsAwareness(aliceClient, cursorOf("alice", 2))); err != nil {
+		t.Fatalf("alice's move on task A did not reach bob on task B within %s while task B loaded another document a reader opened cold: %v", relayWait, err)
+	}
+	filler.release()
+	select {
+	case err := <-loaded:
+		if err != nil {
+			t.Fatalf("task B's load of the other document, once the pool had room: %v", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("task B's load of the other document did not finish once the pool had room")
+	}
+}
+
+// relayedState is a notification another process's relay sends of client's state at clock 1
+// (awarenessNotifications), for room.
+func relayedState(t *testing.T, room string, client uint64, state any) string {
+	t.Helper()
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode client %d's state: %v", client, err)
+	}
+	update := awarenessStates(client, 1, 1, string(encoded))
+	payload, err := json.Marshal(awarenessMessage{Sender: "another process", Room: room, Data: base64.StdEncoding.EncodeToString(update)})
+	if err != nil {
+		t.Fatalf("encode the notification of client %d's state: %v", client, err)
+	}
+	return string(payload)
+}
+
+// Another process's awareness for a room that goes between the relay's look at it
+// (holdsRoomForReaders) and its Inject - here a close the service makes (Evict) - loads nothing on
+// the awareness lane, which serves every room's relayed awareness, and holds the lane no longer
+// than the Inject's own bound (awarenessInjectBound): the Inject is marked as a caller that may
+// load no room (withNoRoomLoad), so the load ygo begins for the room it no longer finds is refused
+// before it reads anything and the frame is dropped at once, and where another caller's load of
+// the room began in that moment the Inject's wait on it ends at its bound and drops the frame the
+// same way. The pool is held whole from the close on, so a load on the lane would wait for it with
+// no deadline. Before, the Inject loaded the room on the lane, its load waiting for the full pool,
+// or waited on the other caller's load, for as long as the test held the pool.
+func TestRelayedAwarenessWhoseRoomGoesBeforeItsInjectLoadsNothingOnTheLane(t *testing.T) {
+	// dropBound bounds the relay's handling of the update once its room has gone: a refused load
+	// reads nothing, and a wait on another caller's load ends at the Inject's own bound.
+	const dropBound = awarenessInjectBound + 10*time.Second
+	for _, route := range []struct {
+		name string
+		// alsoLoading begins another caller's load of the room in the gap, once it has closed.
+		alsoLoading bool
+	}{
+		{"the close leaves no room, which the Inject would load", false},
+		{"another caller's load of the room begins in the gap, which the Inject would wait on", true},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			service, document := newTestService(t)
+			service.settle = time.Hour
+			pool, waits := poolWaits(t)
+			if err := loadRoomOf(service, document); err != nil {
+				t.Fatalf("load the document's room: %v", err)
+			}
+			service.addConnection(document, 9001, model.Actor{Kind: "user", ID: "carol"})
+			if !service.holdsRoomForReaders(document) {
+				t.Fatal("the document's room is not one relayed awareness is applied to, so nothing here is tested")
+			}
+			filler := newLoadSlot()
+			t.Cleanup(filler.release)
+			loaded := make(chan error, 1)
+			gone := make(chan error, 1)
+			service.beforeAwarenessInject = func(room string) {
+				if room != document {
+					return
+				}
+				if err := service.Evict(context.Background(), room); err != nil {
+					gone <- fmt.Errorf("close the document's room: %w", err)
+					return
+				}
+				if service.srv.GetDoc(room) != nil {
+					gone <- errors.New("the document's room is still resident once it was closed")
+					return
+				}
+				for len(waits) > 0 {
+					<-waits
+				}
+				if !filler.tryTake(pool.poolBytes() - pool.held.Load()) {
+					gone <- errors.New("the pool refused the bytes its holders do not hold")
+					return
+				}
+				if route.alsoLoading {
+					go func() { loaded <- loadRoomOf(service, room) }()
+					select {
+					case <-waits:
+					case err := <-loaded:
+						gone <- fmt.Errorf("the other caller's load of the room finished (%v) while the pool was full, want it waiting for its grant", err)
+						return
+					case <-time.After(holdAndWaitBound):
+						gone <- fmt.Errorf("the other caller's load of the room never came to wait for the pool within %s", holdAndWaitBound)
+						return
+					}
+				}
+				gone <- nil
+			}
+			payload := relayedState(t, document, daveClient, cursorOf("dave", 1))
+			handled := make(chan struct{})
+			go func() {
+				defer close(handled)
+				service.awarenessRelay.received(context.Background(), payload)
+			}()
+			// letGo gives the pool back and waits for the relay's handling of the update, once, and
+			// runs as the test ends in any case, so nothing of it runs past the test's end.
+			letGo := sync.OnceFunc(func() {
+				filler.release()
+				select {
+				case <-handled:
+				case <-time.After(holdAndWaitBound):
+					t.Errorf("the relay's handling of the update did not end within %s once the pool was free", holdAndWaitBound)
+				}
+			})
+			t.Cleanup(letGo)
+			select {
+			case err := <-gone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-handled:
+				t.Fatal("the relay handled the update without reaching its Inject, so nothing here is tested")
+			case <-time.After(holdAndWaitBound):
+				t.Fatalf("the relay did not reach its Inject within %s", holdAndWaitBound)
+			}
+			closed := time.Now()
+			select {
+			case <-handled:
+			case <-time.After(dropBound):
+				t.Fatalf("the relay's handling of the update had not ended %s after its room went: its Inject loaded the room, or waited on another caller's load of it, on the awareness lane with no deadline", dropBound)
+			}
+			dropped := time.Since(closed)
+			t.Logf("the relay dropped the update %s after its room went", dropped.Round(time.Millisecond))
+			if !route.alsoLoading {
+				if dropped >= awarenessInjectBound {
+					t.Fatalf("the relay dropped the update %s after its room went, at or past the Inject's own bound %s: its Inject did not refuse the load of the room it no longer found", dropped, awarenessInjectBound)
+				}
+				if service.srv.GetDoc(document) != nil || slices.Contains(service.srv.Rooms(), document) {
+					t.Fatal("a room of the document loaded on the awareness lane once the close took it out")
+				}
+				if failure := service.roomFailure(document); failure != nil {
+					t.Fatalf("the document's room is failed once the relay's load of it was refused: %v", failure)
+				}
+			}
+			letGo()
+			if !route.alsoLoading {
+				return
+			}
+			select {
+			case err := <-loaded:
+				if err != nil {
+					t.Fatalf("the other caller's load of the room, once the pool had room: %v", err)
+				}
+			case <-time.After(roomWait(t)):
+				t.Fatal("the other caller's load of the room did not finish once the pool had room")
+			}
+		})
 	}
 }
 

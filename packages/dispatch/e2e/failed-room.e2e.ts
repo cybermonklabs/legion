@@ -134,23 +134,22 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   await expect(editor).toBeVisible();
   await expect(editor).toContainText("Ship the migration.");
 
-  // The browser's own edit, so the room holds a live paragraph the recovery has to bring back -
-  // and so the room's durable writer has something to append.
-  await editor.click();
-  await page.keyboard.press("End");
-  await page.keyboard.type(" The browser typed this.");
-  await expect(editor).toContainText("The browser typed this.");
-
-  // The room's own durable writer is what has to fail, and it is the browser's append: ygo
-  // persists the keystrokes about twelve seconds later, on the connection that holds the room's
-  // advisory lock. The trigger goes in before that flush, so the append sleeps inside its insert
-  // where a cancel can reach it; an anchored comment then queues behind the room, a second one
-  // behind that, and only then is the sleeping append cancelled. The room fails with both
-  // writers already inside the docs layer, waiting for what its recovery needs.
+  // The room's own durable writer is what has to fail, and it is the browser's append: the room
+  // stores each update the browser sends before it answers that frame (AnswerOnceStored), on the
+  // connection that holds the room's advisory lock. So the trigger goes in before the browser
+  // types, and the append of its keystrokes sleeps inside its insert where a cancel can reach it;
+  // an anchored comment then queues behind the room, a second one behind that, and only then is
+  // the sleeping append cancelled. The room fails with both writers already inside the docs layer,
+  // waiting for what its recovery needs. The browser's edit is the live paragraph the recovery has
+  // to bring back: its frame was never answered as stored, so the browser sends it again.
   let holding: Promise<Attempt>;
   let queued: Promise<Attempt>;
   await holdTheRoomFor(20);
   try {
+    await editor.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" The browser typed this.");
+    await expect(editor).toContainText("The browser typed this.");
     const pid = await heldAppendPid();
     holding = anchoredComment(issue.key, "the writer that arrives after the failure", "migration");
     await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -195,10 +194,21 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   );
   expect(recovered.status).toBe(201);
 
-  const text = await getArtifactText(issue.primary_artifact_id);
-  console.log(`FAILED-ROOM document text=${JSON.stringify(text.markdown)}`);
-  // The room reloaded from its durable copy with the browser's own paragraph in it, which is the
-  // half of the recovery no status code shows.
-  expect(text.markdown).toContain("The browser typed this.");
+  // The browser's own paragraph is in the document the server serves, which is the half of the
+  // recovery no status code shows. Its append was the one cancelled, so the room never answered
+  // its frame as stored: the browser holds the edit and sends it again once it reconnects to the
+  // reloaded room, a reconnect its provider makes after a backoff of its own. So the text is read
+  // until it holds the paragraph, for at most 30 s.
+  let text = "";
+  await expect
+    .poll(
+      async () => {
+        text = (await getArtifactText(issue.primary_artifact_id)).markdown;
+        return text;
+      },
+      { timeout: 30_000 }
+    )
+    .toContain("The browser typed this.");
+  console.log(`FAILED-ROOM document text=${JSON.stringify(text)}`);
   await alice.close();
 });

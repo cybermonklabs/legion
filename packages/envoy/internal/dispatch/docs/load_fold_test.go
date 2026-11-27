@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -123,9 +126,9 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 }
 
 // Buffered folds are bounded across the process (foldSlots): with one slot, a second load whose
-// rows it reads into memory waits for the slot, holding its read transaction, while the first is
-// inside its fold, and folds once the first gives the slot back; a waiter whose context ends
-// returns that context's error without folding.
+// rows it reads into memory waits for the slot, holding no transaction - it takes the slot before
+// its rooms connection (loadStored) - while the first is inside its fold, and folds once the first
+// gives the slot back; a waiter whose context ends returns that context's error without folding.
 func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -177,11 +180,15 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		_, err := versioned.Load(cancelled, waiting)
 		third <- err
 	}()
-	// The holder committed its read before its fold, so the two transactions left open are the
-	// waiters', each past its read of the stored log and waiting for the slot.
-	waitFor(t, 30*time.Second, "both later loads to wait for the slot inside their read transactions", func() bool {
-		return idleInTransaction(t, database) == 2
+	// Both waiters reach their wait for the slot, and since each takes the slot before it begins
+	// its read transaction, and the holder committed its read before its fold, no transaction is
+	// open while they wait.
+	waitFor(t, 30*time.Second, "both later loads to wait for the slot", func() bool {
+		return foldSlotWaiters() == 2
 	})
+	if open := idleInTransaction(t, database); open != 0 {
+		t.Fatalf("%d sessions hold a transaction open while both later loads wait for the slot, want none: each takes the slot before its read transaction (loadStored)", open)
+	}
 	select {
 	case read := <-second:
 		t.Fatalf("the second load returned (%v) while the only slot was held", read.err)
@@ -247,6 +254,32 @@ func idleInTransaction(t *testing.T, database *store.Store) int {
 	return sessions
 }
 
+// parkedIn is how many goroutines the goroutine dump (goroutinetest) shows parked in one of states,
+// the state a goroutine's header names, at one of frames. The dump leaves the runtime's own frames
+// out, so the frame under a parked goroutine's header is the one parked.
+func parkedIn(states []string, frames ...string) int {
+	parked := 0
+	for _, goroutine := range goroutinetest.Traces() {
+		lines := strings.SplitN(goroutine, "\n", 3)
+		if len(lines) < 2 || !slices.ContainsFunc(states, func(state string) bool { return strings.Contains(lines[0], state) }) {
+			continue
+		}
+		if slices.ContainsFunc(frames, func(frame string) bool { return strings.Contains(lines[1], frame) }) {
+			parked++
+		}
+	}
+	return parked
+}
+
+// foldSlotWaiters is how many goroutines wait for a slot of the buffered folds, read off the
+// goroutine dump (parkedIn), since nothing reports that a load has reached that wait: parked on the
+// slots' channel in the take a document load makes before its read transaction (takeFoldSlot), or
+// in the one foldRead made inside that transaction in the order before it, which a run of this
+// test on that order counts too.
+func foldSlotWaiters() int {
+	return parkedIn([]string{"[select", "[chan send"}, "(*PgVersioned).takeFoldSlot(", "(*PgVersioned).foldRead(")
+}
+
 // A fold of rows read into memory ends with its context, as a fold that streams them does: a load
 // or a cold read whose context ends once its read transaction has committed, before its fold
 // starts, returns the context's error and no state, and a fold whose context ends between two
@@ -287,7 +320,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 		defer cancel()
 		replay := memoryUpdates(ctx, rows)
 		applied := 0
-		state, err := stateThrough(artifactID, 3, func(use func([]byte) error) error {
+		state, err := stateThrough(ctx, artifactID, 3, func(use func([]byte) error) error {
 			return replay(func(update []byte) error {
 				applied++
 				if applied == 2 {
@@ -383,8 +416,10 @@ func TestARoomLoadDecodesItsStoredStateOnceInTheRoom(t *testing.T) {
 			if handed, err := adapter.LoadDoc(artifactID); err != nil || len(handed) != 0 {
 				t.Fatalf("LoadDoc handed ygo %d bytes (%v), want none", len(handed), err)
 			}
-			if kept := service.takeLoadedState(artifactID); !bytes.Equal(kept, stored.Update) {
-				t.Fatalf("LoadDoc kept %d bytes for the room's load hook, want the %d-byte stored state", len(kept), len(stored.Update))
+			taken, _ := service.takeLoadedState(artifactID)
+			taken.slot.release()
+			if !bytes.Equal(taken.state, stored.Update) {
+				t.Fatalf("LoadDoc kept %d bytes for the room's load hook, want the %d-byte stored state", len(taken.state), len(stored.Update))
 			}
 
 			if err := service.warmLiveDocument(ctx, artifactID); err != nil {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -59,21 +58,13 @@ func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentSta
 	return stamp, nil
 }
 
-// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
-// process that runs with no Go memory limit, where nothing says how much memory it has: 256 MiB.
-// An entry heavier than an eighth of the budget is never stored.
+// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds: 256 MiB
+// in every process, whatever its Go memory limit (MemoryBounds.DocumentReadCache, which does not
+// scale), and what boot logs as read_budget_bytes. It is also the figure this package's memory
+// arithmetic is calibrated at: the task those figures were measured on has 4,096 MiB, and one
+// request may raise the cache by at most 256 MiB (cmd/dispatch/memory_test.go). An entry heavier
+// than an eighth of the budget is never stored.
 const documentReadBudget = 256 << 20
-
-// readBudgetFor is the cold reads' cache budget for a process whose Go memory limit is memoryLimit
-// (debug.SetMemoryLimit(-1), math.MaxInt64 when none is set): a sixteenth of the limit, so the
-// cache follows the memory the process is given, at least 64 MiB, so the cache still stores a
-// document of 8 MiB, and at most 1 GiB; documentReadBudget with no limit.
-func readBudgetFor(memoryLimit int64) int64 {
-	if memoryLimit == math.MaxInt64 {
-		return documentReadBudget
-	}
-	return min(max(memoryLimit/16, 64<<20), 1<<30)
-}
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
 // the document rather than to the request that started it, so no request's end cancels it.
@@ -94,7 +85,11 @@ type documentRead struct {
 	token      string
 	blocks     []model.ArtifactBlock
 	paths      map[string]pmdoc.BlockPath
-	weight     int64
+	// nearDecodeCap is why the stored state stands near the decode cap, as the rebuild route's
+	// own test reads it (nearTheDecodeCap), or "": answered from the document the fold decoded,
+	// which no read has once the fold is done (NearDecodeCap).
+	nearDecodeCap string
+	weight        int64
 }
 
 // documentReads holds a documentRead for each document a cold read rendered, the most recently
@@ -186,7 +181,7 @@ const (
 // is counted once however many share it (tablePositionsWeight), and so is a table block's rows
 // (blockTableWeight).
 func (read *documentRead) measure() int64 {
-	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token))
+	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token)+len(read.nearDecodeCap))
 	weight += int64(cap(read.blocks)) * int64(unsafe.Sizeof(model.ArtifactBlock{}))
 	tables := make(map[*model.BlockTable]struct{})
 	for _, block := range read.blocks {
@@ -306,9 +301,23 @@ type coldFold struct {
 //
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
-// the fold to the others. Only the read's own context decides that it ended. A fold that fails
-// fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
-// unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
+// the fold to the others. Only the read's own context decides that it ended. The fold holds one
+// grant of the pod's load concurrency from its load until its rendering is done (foldDocument). A
+// fold that fails fails the room, as a failed room load does, and reaches each read as
+// ErrServiceUnavailable, unless the history does not decode or parks past a room's cap
+// (parkedPastRoomCaps), which is ErrDocumentUnloadable, the state a rebuild repairs.
+//
+// A read whose context carries a grant its caller holds - a transaction's, which the context Join
+// returned carries, or a write's - folds on its own goroutine under that grant instead, sharing
+// no fold (carriesLoadGrant): a grant serves its holder's goroutine alone, and a fold shared with
+// other reads would take it on another goroutine, and, while the transaction holds a fork, for
+// those reads too. It waits for its fold whatever its context does, within the cache's timeout.
+// A fold refused busy fails no room, since the document is sound: one the pool refused - a
+// transaction holding a fork takes more of its grant only where the pool gives it at once
+// (loadSlots) - and one the cache's timeout ended before its fold had begun reading the rows, or
+// while it waited for the pool holding no grant, having waited that long for the pool, a fold slot
+// or a rooms connection (foldDocument). Each is ErrServiceUnavailable, the 503 its caller retries,
+// and the room keeps its settlement.
 func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
 	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
 	if err != nil {
@@ -324,33 +333,59 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	if read := s.reads.get(artifactID, stamp); read != nil {
 		return read, nil, nil
 	}
-	key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
-	flight := s.reads.flights.DoChan(key, func() (any, error) {
-		fold, err := s.foldDocument(ctx, artifactID)
-		if err != nil {
+	fold := func() (any, error) {
+		cold, err := s.foldDocument(ctx, artifactID)
+		if err != nil && !RefusedBusy(err) {
 			s.failRoom(artifactID, err)
 		}
-		return fold, err
-	})
-	select {
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	case result := <-flight:
-		if result.Err != nil {
-			if errors.Is(result.Err, ErrDocumentUnloadable) {
-				return nil, nil, result.Err
-			}
-			return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
-		}
-		fold := result.Val.(coldFold)
-		return fold.read, fold.tree, fold.treeErr
+		return cold, err
 	}
+	var result singleflight.Result
+	if carriesLoadGrant(ctx) {
+		result.Val, result.Err = fold()
+	} else {
+		key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case result = <-s.reads.flights.DoChan(key, fold):
+		}
+	}
+	if result.Err != nil {
+		if errors.Is(result.Err, ErrDocumentUnloadable) {
+			return nil, nil, result.Err
+		}
+		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
+	}
+	folded := result.Val.(coldFold)
+	return folded.read, folded.tree, folded.treeErr
 }
 
 // foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
 // renders it (foldLoaded), storing the rendering under the stamp the load read in its own
 // transaction, never the one read before the miss, so a write between the two cannot store old
-// content under a new stamp.
+// content under a new stamp. A history whose decode parks past a room's cap is no document a room
+// can load, so it is ErrDocumentUnloadable here as a history ygo refuses the bytes of is, and
+// logged (parkedPastCapReadLine): read under the service's cap alone, every read served it while
+// every socket that opened it met its room's failed load.
+// The load, the read of its tree, the rendering and the walk of it share one grant of the pod's
+// load concurrency (withLoadSlot), held until the fold returns: the load takes it on the rows it
+// folds and the state it decodes and leaves it held (LoadDocument), so the document it hands back
+// is counted while foldLoaded reads, renders and walks it, and cold reads of different documents
+// fold side by side only as far as the pool holds their documents. The load's waits - for a slot
+// of the buffered folds, for its grant, for its rooms connection - are bounded by coldReadTimeout;
+// what runs after the load holds the grant waiting for nothing, takes no connection and nothing
+// more of the pool, and takes the cache's lock only to store the rendering. A load the timeout
+// ends before its fold has begun reading the rows, or while its grant holds nothing, was waiting
+// for what it takes - the pool, a slot of the buffered folds, a rooms connection - which a burst of
+// cold reads holds, no fault of the document: it is refused busy, errGrantShort, which fails no
+// room (coldRead, RefusedBusy). That holds for a load that already holds its grant too: a log
+// past the fold buffer streams on one whole slot taken before its rooms connection (loadStored),
+// and a read under a transaction's grant holds bytes from the start (carriesLoadGrant), and each
+// can wait for one of the rooms pool's connections, every one of them held by another streamed
+// load. Which side of that moment the timeout met is read off a flag the fold sets as it begins
+// to read the rows (watchRowsRead, noteRowsRead); a timeout past it, while the fold reads and
+// decodes holding its grant, is the fold's own, and fails the room as any error of the fold does.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
@@ -363,12 +398,21 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
+	foldCtx, rowsRead := watchRowsRead(foldCtx)
+	foldCtx, slot, done := withLoadSlot(foldCtx)
+	defer done()
 	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
+			if !slot.held || !rowsRead.Load() {
+				return coldFold{}, fmt.Errorf("%w: a cold document read waited %s for its turn to load the document", errGrantShort, coldReadTimeout)
+			}
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)
 		}
 		return coldFold{}, err
+	}
+	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
+		return coldFold{}, refuseParkedRead(artifactID, parked)
 	}
 	// A rendering refused leaves the fold its tree, from which each read computes its own answer
 	// and refusal, as it would without the cache.
@@ -379,12 +423,16 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	return fold, nil
 }
 
-// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone: its
-// tree read once and validated once (pmdoc.ReadUnshared) and rendered without validating it again
-// (buildDocumentRead). A tree the read refuses is the fold's treeErr, the read's error through
-// documentSchemaError as treeOf gives it; a tree the rendering refuses is the fold's tree without
-// a read, and renderErr is the rendering's refusal. A loaded state without a document is the
-// empty fold.
+// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone, still
+// under the grant its load took (foldDocument): its tree read once and validated once
+// (pmdoc.ReadUnshared) and rendered without validating it again (buildDocumentRead). A tree the
+// read refuses is the fold's treeErr, the read's error through documentSchemaError as treeOf gives
+// it; a tree the rendering refuses is the fold's tree without a read, and renderErr is the
+// rendering's refusal. A loaded state without a document is the empty fold. A rendered fold also
+// answers whether the state stands near the decode cap (documentRead.nearDecodeCap), from the
+// decoded document's struct total and a floor under its whole-text count, a walk of the tree it
+// rendered (wholeTextWriteFloor), which only the fold holds; it writes nothing and encodes nothing
+// (NearDecodeCap).
 func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, renderErr error) {
 	if loaded.Doc == nil {
 		return coldFold{}, nil
@@ -397,5 +445,7 @@ func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, render
 	if err != nil {
 		return coldFold{tree: valid.Node()}, err
 	}
+	read.nearDecodeCap, _ = nearTheDecodeCap(structCeiling(loaded.Doc), func() (uint64, bool) { return wholeTextWriteFloor(valid.Node()), true })
+	read.weight += int64(len(read.nearDecodeCap))
 	return coldFold{read: read, tree: valid.Node()}, nil
 }

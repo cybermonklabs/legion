@@ -564,6 +564,9 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// writes is how many of this server's transactions may be open at once, held from before
+	// each one takes a connection (apiWriteLimit, begin).
+	writes writeLimiter
 	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
 	// each answers with, so a warm read of either writes bytes instead of making them again
 	// (list_answers.go). Every server register mounts has one; a server a test builds directly
@@ -621,10 +624,12 @@ type server struct {
 	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
 	// limit is the test's choice rather than minutes of wall clock.
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
-	// drainReadLimit replaces how long a drain waits for the rest of a request's body
-	// (bodyDrainLimit, a minute); zero, which every server the deployment builds leaves it, keeps
-	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
-	// wall clock.
+	// drainReadLimit replaces both of the server's waits on a body that has stopped arriving: how
+	// long a drain waits for the rest of a request's body (drainBound; bodyDrainLimit, a minute)
+	// and how long a handler's read waits for the body's next bytes (idleBound; bodyIdleLimit,
+	// 20 s). It leaves the ceiling on a handler's read (bodyDrainLimit) as it is. Zero, which every
+	// server the deployment builds leaves it, keeps those. Only a test sets it, so a body that
+	// stalls is the test's choice rather than seconds of wall clock.
 	drainReadLimit time.Duration
 	// resultsClock replaces the clock GET /api/v1/issues/{key}/results reads each moment from
 	// (resultsNow); nil, which every server the deployment builds leaves it, means time.Now. Only a
@@ -1015,6 +1020,13 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
 	handler = varyOnDisplayTrees(handler)
 	if route.Method != http.MethodGet {
+		// The write limit, outside everything the handler does: a write the pod has no room
+		// for is refused before it reads its body, resolves its artifact or opens anything
+		// (holdWriteLimit). It is inside the drain below, so a client waiting to continue is
+		// answered as it is for every other early answer.
+		handler = s.holdWriteLimit(handler)
+	}
+	if route.Method != http.MethodGet {
 		// Every layer above may answer before the body is read; the answer waits for the body.
 		//
 		// A client that asked to be told to continue before it sends its body (Expect:
@@ -1045,11 +1057,14 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, with nothing between them but the answers
-	// read's timing below, so every one of those answers is compressed for a caller that takes
-	// gzip and the line counts the bytes that went on the wire. The two websockets register
-	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
-	// frames after it are the socket's (compressAnswers).
-	served := compressAnswers(handler)
+	// read's timing below and the mark of a live caller's request (markCallerRequest), neither of
+	// which writes a byte, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. It sits inside the mark so that
+	// its writer names the call as every layer inside it runs it (answersCall, which
+	// writeHandlerError reads). The two websockets register mounts beside the table carry no
+	// compressed answer: the upgrade is not a body, and the frames after it are the socket's
+	// (compressAnswers).
+	served := markCallerRequest(compressAnswers(handler))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included. The
@@ -1081,11 +1096,27 @@ func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 			refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
+// markCallerRequest marks the request's context as a live caller's request beginning now
+// (docs.WithCallerRequest), which is what bounds the time a write of this request may spend
+// waiting at the pod's memory bounds before it is refused 503 (docs.WriteWaitBound). Every row of
+// the route table passes through it (routeHandler), which is why the mark is put there rather
+// than in each write's handler, and the websockets take it with their transaction tracking
+// (trackTransactions). A request whose work a handler detaches to outlive it keeps the mark and
+// loses its cancellation, and is the server's own work from then on (docs.BoundWriteWait), until
+// it takes a deadline of its own again, as the close's sweep does (sweepClosedIssueAsksTx).
+func markCallerRequest(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r.WithContext(docs.WithCallerRequest(r.Context())))
+	}
+}
+
 // trackTransactions marks the request's context for the pool's nested-acquire check
-// (store.WithTransactionTracking), for a mount beside the route table: the websockets.
+// (store.WithTransactionTracking) and as a live caller's request beginning now
+// (docs.WithCallerRequest, as markCallerRequest marks a row's), for a mount beside the route
+// table: the websockets.
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+		handler(w, r.WithContext(docs.WithCallerRequest(store.WithTransactionTracking(r.Context()))))
 	}
 }
 
@@ -2229,15 +2260,27 @@ func (s *server) clock() clock.Clock {
 	return clock.Real()
 }
 
+// begin opens one of the API's transactions on a slot of the API's write limit, which the
+// transaction holds until it ends (limitedTx) - a request that opens two in turn holds one at a
+// time. The slot is taken before any connection and before any lock, so a caller the pool has no
+// room for waits holding nothing and the connections the limit leaves stay free for the callers
+// that take one without a transaction - the room workers' durable appends among them
+// (apiWriteLimit). A request's entry only probed the limit, holding nothing of it, so a request
+// whose body is still arriving holds no slot (holdWriteLimit).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
+	release, err := s.writes.take(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return tx, nil
+	return &limitedTx{Tx: tx, release: release}, nil
 }
 
 // readyPool is the pool a route reads through before it opens its transaction, with the

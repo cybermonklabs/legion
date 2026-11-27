@@ -170,9 +170,10 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 // locks (store.LockOwner, "OWNR"), the owner lock gate (store.OwnerLockGateNamespace, "OWNG"),
 // duty's leases (duty.leaseNamespace, "LOOP"), a conditional edit's admission
 // (conditionalEditQueueLockNamespace), the test hooks (the api package's testHookLockNamespace,
-// "HOOK", taken only under DISPATCH_TEST_HOOKS) and the boot's repository rename pass
-// (store.repoRenameLockNamespace, "RNAM"), and with the hashtext of a name by the
-// issue-dependency locks (api's lockProjectIssueDependencies and the deployment's own,
+// "HOOK", taken only under DISPATCH_TEST_HOOKS), the boot's repository rename pass
+// (store.repoRenameLockNamespace, "RNAM") and a person's claims of client ids in one document
+// (clientClaimsLockNamespace, "CLMS"), and with the hashtext of a name by the issue-dependency
+// locks (api's lockProjectIssueDependencies and the deployment's own,
 // lockDeploymentIssueDependencies); no two of those first keys are equal.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
@@ -204,9 +205,10 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // (conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')), the one dependency lock
 // that is no project's, which every dependency write takes last (api's
-// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), and the
-// boot's repository rename pass's (store.repoRenameLockNamespace), so a copy lock cannot collide
-// with any of those. hashtext is 32 bits wide, so two projects can still share the second key.
+// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), the
+// boot's repository rename pass's (store.repoRenameLockNamespace) and a person's claims of client
+// ids in one document (clientClaimsLockNamespace, "CLMS"), so a copy lock cannot collide with any
+// of those. hashtext is 32 bits wide, so two projects can still share the second key.
 // They then take turns on their copy bookkeeping and on nothing else, and
 // cannot deadlock: a holder takes the copy lock before any doc_settlements_pending row and before
 // any event append (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append takes only its

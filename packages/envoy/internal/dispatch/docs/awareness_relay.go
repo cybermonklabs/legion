@@ -78,6 +78,14 @@ const (
 	// on its home process too; the y-protocols client then sees its own state removed and
 	// announces itself again, which is how it comes back everywhere.
 	awarenessExpiry = 30 * time.Second
+	// awarenessInjectBound bounds the relay's Inject (received) on the awareness lane, which every
+	// room's relayed awareness waits behind: the wait ygo has it make on another caller's load of a
+	// room that went between the relay's look and the Inject, a load whose wait for the pod's load
+	// concurrency has no deadline. The comment at the Inject's call in received explains it whole.
+	// A frame dropped at the bound costs one reader's cursor until that browser's next
+	// heartbeat, 15 s in y-protocols, which sends the same state again; a wait of more than a few
+	// seconds holds every other room's relayed awareness for longer than that cursor is worth.
+	awarenessInjectBound = 3 * time.Second
 	// maxAwarenessClientsPerRoom is the last-resort cap on the client entries a room of this
 	// process holds - the ones present and the tombstones of the ones that left - which ygo
 	// enforces on every room's awareness (Server.MaxAwarenessClientsPerRoom in docs/service.go,
@@ -226,8 +234,8 @@ type awarenessHost interface {
 
 // awarenessWindows are the moments of the relay's own paths a test runs its work in, each one a
 // moment another goroutine runs in production: the two within a change's own path, the one
-// between the read an answer stands on and the record of it, and the two a flush is split at.
-// Each is nil outside tests.
+// between the read an answer stands on and the record of it, the two a flush is split at, and the
+// one between a relayed update's look at its room and its Inject. Each is nil outside tests.
 type awarenessWindows struct {
 	// beforeWatch is given a room's awareness before the relay registers its own observer on it
 	// (watchRoomAwareness). Tests use it to put an observer of their own ahead of the relay's,
@@ -252,6 +260,10 @@ type awarenessWindows struct {
 	// beforeRaise runs within that read, after the states are read and before the list is raised
 	// to them under mu (resolve): the window the room's own paths move the list in.
 	beforeRaise func(room string, batch map[uint64]awarenessEntry)
+	// beforeInject is given the room of another process's awareness update once the relay has
+	// found that room published and read by a reader here (holdsRoomForReaders) and before it
+	// injects the update (received): the window a close of the room lands in.
+	beforeInject func(room string)
 }
 
 // awarenessRelay is the service's cluster.Relay (see the top of this file). It is per process:
@@ -890,10 +902,16 @@ func (r *awarenessRelay) localRemoval(room string, aw *awareness.Awareness) []by
 
 // received is documentAwarenessChannel's handler, on room sync's awareness lane. This process's own
 // notifications are dropped. A query is answered (answer). A state update is applied to this
-// process's room of the document only while that room is resident or loading and a reader of
-// this process is connected to it (Service.holdsRoomForReaders): ygo's Inject loads an absent room
-// and restamps the idle clock of a room no peer is in, so applying every relayed heartbeat would
-// load the document on every process and keep a room nobody here reads resident for good.
+// process's room of the document only while ygo has published that room - its load has finished -
+// and a reader of this process is connected to it (Service.holdsRoomForReaders): ygo's Inject
+// loads an absent room and restamps the idle clock of a room no peer is in, so applying every
+// relayed heartbeat would load the document on every process and keep a room nobody here reads
+// resident for good; and Inject into a room still loading waits on that load, whose wait for the
+// pod's load concurrency has no deadline, holding this lane, which serves every room's relayed
+// awareness. An update dropped while the room loads is not lost: the load's end queries the other
+// processes for their readers' states (RoomActivated), and their browsers send their states again
+// on the provider's heartbeat in any case. The Inject itself loads no room and waits at most
+// awarenessInjectBound, for the room that goes between that look and the Inject (below).
 //
 // What a notification carries is injected as it stands: the inbound side counts no clients of
 // its own. What the other processes together cost a room here is their own sockets' bound, since
@@ -934,11 +952,23 @@ func (r *awarenessRelay) received(ctx context.Context, payload string) {
 	}
 	defer r.mark(message.Room, entries, -1)
 	r.mark(message.Room, entries, 1)
-	// The room can retire between that check and Inject - its last reader left and the idle sweep
-	// took it, or a close - and then Inject loads it again for this one update. That room has no
-	// peer, so it idles out after roomIdleTimeout like any room a write loads; the window is the
-	// few microseconds between the two calls, against a sweep that waits a minute.
-	err = r.host.injectAwareness(ctx, message.Room, update)
+	if ahead := r.host.awarenessWindows().beforeInject; ahead != nil {
+		ahead(message.Room)
+	}
+	// The room can go between that check and Inject - its last reader left and ygo's idle sweep
+	// took it, or a close the service makes (an issue's close, a replaced history, Evict, a failed
+	// room's eviction) - and Inject would then load it again on this lane, and that load's wait for
+	// the pod's load concurrency has no deadline. So the Inject is marked as a caller that may
+	// load no room (withNoRoomLoad): its load is refused before it records or reads anything, as a
+	// load under a transaction's held grant is (servicePersistenceAdapter.LoadDocContext), and the
+	// frame is dropped. Nothing is lost by it: the browser sends its awareness again on its
+	// heartbeat, and a reader opening the room again has the room's load query the other processes
+	// for their readers' states (RoomActivated). Where another caller's load of the room began in
+	// that moment, ygo has the Inject wait on that load instead, and the Inject's own bound
+	// (awarenessInjectBound) ends that wait and drops the frame the same way.
+	injectCtx, cancel := context.WithTimeout(withNoRoomLoad(ctx), awarenessInjectBound)
+	err = r.host.injectAwareness(injectCtx, message.Room, update)
+	cancel()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		slog.Debug("dispatch: apply another process's awareness to a document room", "room", message.Room, "error", err)
 	}
@@ -1176,13 +1206,14 @@ func (s *Service) hasLocalConnection(room string) bool {
 	return len(state.connected) > 0
 }
 
-// holdsRoomForReaders reports whether room is resident here, or loading, with a reader of this
-// process connected to it or being admitted: the rooms another process's awareness is applied to
-// (awarenessRelay.received). A loading room counts, because a reader opening a document cold is
-// what loads it, and that load's query (RoomActivated) is answered while the load can still be
-// finishing.
+// holdsRoomForReaders reports whether ygo has published room here - its load has finished, so a
+// lookup of it waits on nothing (GetDoc) - with a reader of this process connected to it or being
+// admitted: the rooms another process's awareness is applied to (awarenessRelay.received). A room
+// still loading does not count, though a reader opening a document cold is what loads it: Inject
+// into it would wait on its load on the awareness lane, and that load's own query, sent once ygo
+// publishes the room (RoomActivated), fetches the other processes' readers' states then.
 func (s *Service) holdsRoomForReaders(room string) bool {
-	return s.hasLocalConnection(room) && s.roomHeld(room)
+	return s.hasLocalConnection(room) && s.srv.GetDoc(room) != nil
 }
 
 // The service is the relay's host in production (awarenessHost): the rooms the relay watches are
@@ -1231,6 +1262,7 @@ func (s *Service) awarenessWindows() awarenessWindows {
 		beforeRecord:       s.beforeAwarenessRecord,
 		beforeAnswerRecord: s.beforeAwarenessAnswerRecord,
 		beforeResolve:      s.beforeAwarenessResolve,
+		beforeInject:       s.beforeAwarenessInject,
 	}
 }
 

@@ -475,7 +475,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
-		answer := &keyedAnswer{w: w}
+		answer := &keyedAnswer{w: w, answersCall: answersCall{detached}}
 		// running bounds the commit step to the handler: a delivery the handler detached (a
 		// broadcast's recipients) commits after the answer, and is not the request's write.
 		var running atomic.Bool
@@ -1162,7 +1162,9 @@ func (s *server) answerHeldKey(
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
 //
-// The body is read for at most drainTime (readFor): one that stops arriving is answered 409
+// The body is read under a deadline: the write limit's own where that layer put one on the body
+// (deadlinedBody, which each read that brings bytes sets again), and otherwise the drain's
+// (readFor, drainBound from the read's start). One that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
 // two answers reads the key again to judge the repeat; each names the recovery point the key holds
 // when it is answered (writeUnjudgedKeyInFlight). A body past the route's limit is answered the
@@ -1710,7 +1712,10 @@ func replayRecovered[T recoveryPoint](
 // would hand its client an answer the key had not kept, so http.ResponseController refuses it
 // (ErrNotSupported) and every byte waits for the key.
 type keyedAnswer struct {
-	w      http.ResponseWriter
+	w http.ResponseWriter
+	// answersCall names the run's own context (detached, which keyedRunLimit bounds): the call
+	// the handler answers, which no Unwrap reaches through this writer.
+	answersCall
 	header http.Header
 	status int
 	body   bytes.Buffer

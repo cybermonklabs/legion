@@ -707,8 +707,8 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 			slog.Warn("dispatch: reference excerpt reconciliation cannot read the document; its mentions keep the document's name",
 				"artifact", document.FromID, "error", err)
 		case err != nil:
-			slog.Error("dispatch: reference excerpt reconciliation deferred a document it could not read",
-				"artifact", document.FromID, "error", err)
+			LogDutyFailure("dispatch: reference excerpt reconciliation deferred a document it could not read",
+				"a later batch reads it again", err, "artifact", document.FromID)
 			deferDocument(document)
 			continue
 		default:

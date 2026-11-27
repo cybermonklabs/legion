@@ -10,7 +10,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
-// PgSessionStore records the generation used to revoke signed browser sessions.
+// PgSessionStore records the generation used to revoke signed browser sessions. The errors of
+// CurrentSessionGeneration and RevokeSessions, which a request's cookie identity runs, name the
+// step and never the login, as PgPeopleStore's of those steps do.
 type PgSessionStore struct {
 	pool *Pool
 }
@@ -59,7 +61,7 @@ func (s *PgSessionStore) CurrentSessionGeneration(ctx context.Context, login str
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("read session generation for %q: %w", login, err)
+		return 0, false, fmt.Errorf("read the person's session generation: %w", err)
 	}
 	return generation, true, nil
 }
@@ -80,7 +82,7 @@ func (s *PgSessionStore) RevokeSessions(ctx context.Context, login string) error
 		return errors.New("revoke sessions: Postgres pool required")
 	}
 	if _, err := s.pool.Exec(ctx, revokeSessionsSQL, login); err != nil {
-		return fmt.Errorf("revoke sessions for %q: %w", login, err)
+		return fmt.Errorf("revoke the person's sessions: %w", err)
 	}
 	return nil
 }

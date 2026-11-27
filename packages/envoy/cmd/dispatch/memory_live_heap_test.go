@@ -95,7 +95,7 @@ func (p *memoryServer) liveHeapAboveIdle(t *testing.T, during func()) int64 {
 	idle, opened := p.collect(t)
 	during()
 	last, _ := p.collect(t)
-	window := p.outputFrom(opened)
+	window := p.output.from(opened)
 	requireNoBlockIndexPass(t, window)
 	held := max(idle.live, last.live)
 	next := idle.number + 1

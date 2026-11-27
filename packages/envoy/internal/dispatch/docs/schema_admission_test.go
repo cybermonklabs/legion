@@ -138,22 +138,46 @@ func mustDialPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 	return connection
 }
 
-// sendProbe sends an update the room does not hold: a key of its own in a map no document uses.
-// The room answers it with a SyncStatus, 1 when it applied it and 0 when the socket is read-only.
+// sendProbe sends an update the room does not hold: a key of its own in the document's margin map,
+// which no margin record names, since the margin and the fragment are the only roots a browser's
+// update may name (peerAllowedRoots). The room answers it with a SyncStatus, 1 when it applied it
+// and 0 when the socket is read-only.
 func sendProbe(t *testing.T, connection *gws.Conn, artifactID string) {
 	t.Helper()
 	doc := crdt.New()
 	var update []byte
 	doc.OnUpdate(func(u []byte, _ any) { update = append([]byte(nil), u...) })
-	probe := doc.GetMap("admission-probe")
-	doc.Transact(func(txn *crdt.Transaction) { probe.Set(txn, "probe", "value") })
+	probe := doc.GetMap(marksMapName)
+	doc.Transact(func(txn *crdt.Transaction) { probe.Set(txn, "admission-probe", "value") })
+	sendUpdate(t, connection, artifactID, update)
+}
+
+// sendUpdate sends update to the room in a Hocuspocus sync Update message, as a page's provider
+// sends an edit.
+func sendUpdate(t *testing.T, connection *gws.Conn, artifactID string, update []byte) {
+	t.Helper()
 	frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarString(artifactID)
 		encoder.WriteVarUint(0) // Hocuspocus sync message.
 	})
 	if err := connection.WriteMessage(gws.BinaryMessage, append(frame, ygsync.EncodeUpdate(update)...)); err != nil {
-		t.Fatalf("send the probe update: %v", err)
+		t.Fatalf("send the update: %v", err)
 	}
+}
+
+// syncMessageKind reads the head of message, one the room sent a page, and reports the kind of
+// sync message it is (ygsync.MsgSyncStep1, MsgSyncStep2 or MsgUpdate), or false where it is no
+// Hocuspocus sync message. Only the head is read, so a message cut short still answers.
+func syncMessageKind(message []byte) (uint64, bool) {
+	decoder := encoding.NewDecoder(message)
+	if _, err := decoder.ReadVarString(); err != nil {
+		return 0, false
+	}
+	if hocuspocus, err := decoder.ReadVarUint(); err != nil || hocuspocus != 0 {
+		return 0, false
+	}
+	kind, err := decoder.ReadVarUint()
+	return kind, err == nil
 }
 
 // sendToken sends token in a Hocuspocus authentication message, as the provider does once its
@@ -524,23 +548,23 @@ func paragraphMarkdown(paragraphs int) string {
 func bigDocumentMarkdown() string { return paragraphMarkdown(4_000) }
 
 // syncMessageBytesPerParagraph is how many bytes one of paragraphMarkdown's paragraphs adds to the
-// sync message a room sends a page that asks for the whole document: its 161 characters and the
-// block the document's tree holds them in. Measured at 257 on documents of 200 to 1,600
-// paragraphs, whose messages ran from 51 KB to 407 KB, and used only to size a document to a
-// socket's send buffer; the test below logs the message the server really wrote, so a build that
-// encodes a paragraph differently shows it there.
+// sync messages, in all, that a room sends a page that asks for the whole document: its 161
+// characters and the block the document's tree holds them in. Measured at 257 on documents of 200
+// to 1,600 paragraphs, whose messages ran from 51 KB to 407 KB, and used only to size a document to
+// a socket's send buffer; the test below logs the document messages the server really wrote, so a
+// build that encodes a paragraph differently shows it there.
 const syncMessageBytesPerParagraph = 257
 
-// slowPageMarkdown is a document whose sync message is about size bytes. The slow page below is
-// owed a message its socket's send buffer holds whole, so the document is cut to that buffer
-// rather than made as big as a test can write.
+// slowPageMarkdown is a document whose sync messages are about size bytes in all. The slow page
+// below is owed messages its socket's send buffer holds whole, so the document is cut to that
+// buffer rather than made as big as a test can write.
 func slowPageMarkdown(size int) string {
 	return paragraphMarkdown(max(size/syncMessageBytesPerParagraph, 1))
 }
 
 // dialSlowPage is dialPage on a connection whose receive buffer holds far less than the document's
-// sync message, so the server's write of that message is still part way through it while the page
-// reads nothing. The socket must be accepted, and closes when the test ends.
+// sync messages, so the server's writes of those messages are still part way through them while
+// the page reads nothing. The socket must be accepted, and closes when the test ends.
 func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
 	dialer := gws.Dialer{NetDial: func(network, address string) (net.Conn, error) {
@@ -577,9 +601,11 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 
 // A revoke ends the socket with a close frame of ygo's own, which gorilla's WriteControl puts on
 // the connection between two of ygo's messages: it waits up to a second for a message already
-// going out and never cuts into one. Here the document's sync message is far past 64 KB and the
-// page reads nothing until the re-check has revoked its socket, so that message is part way out
-// when the revoke arrives. The page then reads every message whole and the close with the
+// going out and never cuts into one. Here the document is far past 64 KB, which the room sends a
+// page as sync Update messages of at most 64 KiB each and a SyncStep2 last (cybermonklabs/ygo
+// v1.55.1-legion.1, carrying sjawhar/ygo v1.55.1-sami.3's bounded answer), and the page reads
+// nothing until the re-check has revoked its socket, so the document is part way out when the
+// revoke arrives. The page then reads every message whole and the close with the
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
 // the bare 1006 of a connection closed without a frame.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
@@ -606,7 +632,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	testcleanup.Add(t, server.Close)
 
 	// A page one version older represents everything this fleet creates, so its socket is
-	// admitted writable; it reads nothing, so the sync message stays part way out.
+	// admitted writable; it reads nothing, so the document stays part way out.
 	reader := dialSlowPage(t, server.URL, artifactID, page(version-1, creatable))
 	serverConn := accepted.find(reader.LocalAddr().String())
 	if serverConn == nil {
@@ -621,7 +647,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
 
-	biggest := 0
+	document := 0
 	// The page reads until the revoke's close, however long a loaded runner takes to deliver the
 	// messages queued before it: until rowDeadline, the one hang guard.
 	_ = reader.SetReadDeadline(rowDeadline(t))
@@ -635,18 +661,36 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 			}
 			break
 		}
-		biggest = max(biggest, len(message))
+		if kind, ok := syncMessageKind(message); ok && (kind == ygsync.MsgUpdate || kind == ygsync.MsgSyncStep2) {
+			document += len(message)
+		}
 	}
-	if biggest <= 64*1024 {
-		t.Fatalf("the biggest message the page read whole is %d bytes; this test needs the revoke to arrive inside one past 64 KB", biggest)
+	if document <= 64*1024 {
+		t.Fatalf("the page read %d bytes of document messages whole before the close; this test needs a page owed a document past 64 KB, so the revoke arrives while it is part way out", document)
 	}
 }
 
 // ygoCloseFrameTimeout is how long ygo waits for a revoked socket's close frame to go out before
-// it closes the connection without it (sjawhar/ygo provider/websocket/server.go,
-// closeFrameTimeout, the deadline on ServeHTTP's WriteControl). The slow page below reads
-// nothing, so that wait runs out in full and the close follows it.
+// it closes the connection without it (cybermonklabs/ygo provider/websocket/server.go,
+// closeFrameTimeout, the deadline on ServeHTTP's WriteControl). The slow page below does not
+// reach it: the server's send buffer holds the whole document with as much again free
+// (slowPageMessageSize), so the close frame goes out at once.
 const ygoCloseFrameTimeout = time.Second
+
+// ygoCloseHandshakeTimeout is how long ygo waits, once a revoked socket's close frame is out, for
+// the page's own close frame in reply before it closes the connection anyway (cybermonklabs/ygo
+// v1.55.1-legion.1 provider/websocket/peer.go, closeHandshakeTimeout, which closeForCause waits
+// out). The wait is the closing handshake of RFC 6455: a connection closed right after its close
+// frame, with the page's input unread, is reset, and the reset discarded the close frame with
+// whatever else the page had not yet received - at the pin before it, a refusal's code was lost
+// that way in 61 of 80 trials. The slow page below reads nothing, so it never replies and the
+// wait runs out in full; the read loop drops everything the page sends meanwhile (inputClosed).
+const ygoCloseHandshakeTimeout = 5 * time.Second
+
+// revokedPageMarker is the word the revoked page itself types once the revoke's close frame is
+// out, while ygo's closing handshake keeps its socket open: it must reach neither the room, the
+// stored history nor any reader's document.
+const revokedPageMarker = "revokedpagetyped"
 
 // postRevokeMarker is the word the edit made straight after the revoke writes into every
 // paragraph, so that edit is told apart from the seeded text in both places it matters: the bytes
@@ -660,16 +704,19 @@ const postRevokeMarker = "afterrevoke"
 // a page owed a document far bigger than its buffers, on real sockets, and nothing else. The
 // server accepts every socket with the send buffer serverSendBufferRequest asks for, and the
 // document is seeded at the size that grant holds whole (slowPageMessageSize): past 64 KB, and
-// hundreds of times what the slow page's 4096-byte receive buffer takes. That page connects and
-// never reads a byte, so when the re-check revokes its socket the whole document is queued on the
-// wire to a page that has taken none of it, and the server's write of it has returned, so every
-// byte of it is in the record this test reads. Of the revoke alone, this requires:
+// hundreds of times what the slow page's 4096-byte receive buffer takes. The room sends it as
+// sync Update messages of at most 64 KiB each and a SyncStep2 last (cybermonklabs/ygo
+// v1.55.1-legion.1). That page connects and never reads a byte, so when the re-check revokes its
+// socket the whole document is queued on the wire to a page that has taken none of it, and the
+// server's writes of it have returned, so every byte of it is in the record this test reads. Of
+// the revoke alone, this requires:
 //
 //   - the re-check returns that page's admission and no other;
 //   - the server's side of that socket ends on the revoke's own close: a write of the
 //     admission-revoked close frame begins after the revoke (ygo's context watcher sends it on
 //     errSchemaRevoked), whether or not the page's buffers take its bytes, and its ServeHTTP
-//     returns; a socket that ends with no such write ended for another reason;
+//     returns, once ygo's closing handshake, which the page never answers, has run out; a socket
+//     that ends with no such write ended for another reason;
 //   - no document byte reaches that socket after the revoke: one more edit goes into the room
 //     straight after it, and no write that began after the revoke carries a byte that is not the
 //     admission-revoked close frame, nor does any write carry a byte once the socket is closed. A
@@ -678,8 +725,11 @@ const postRevokeMarker = "afterrevoke"
 //   - the bytes the server wrote to that socket are whole websocket frames throughout, and end
 //     either on that close frame or at a cut the page reads as 1006 - never a frame cut in half
 //     and resumed, never another close code, and never a byte after a close;
-//   - that stream holds a document message past 64 KB, so this is a page that really was owed
-//     more than its buffers could take;
+//   - that stream holds document messages past 64 KB in all, so this is a page that really was
+//     owed more than its buffers could take;
+//   - nothing the revoked page sends once the close frame is out reaches the document: it types
+//     an edit while the closing handshake holds its socket open, and that edit is in neither the
+//     room, the stored history nor the document a reader is served;
 //   - the page's reconnect syncs the server's whole document, the edit made after the revoke
 //     included.
 //
@@ -695,12 +745,12 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
 	// (pmdoc.UseStagedBlockForTest).
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
-	// is seeded: the server's one write of it has to return with every byte queued, since a write
+	// is seeded: the server's writes of it have to return with every byte queued, since a write
 	// that blocked would have put nothing in the record below.
 	grant := sendBufferGrant(t)
 	message := slowPageMessageSize(t, grant)
 	markdown := slowPageMarkdown(message)
-	t.Logf("the kernel grants a send buffer of %d bytes, so the slow page is owed a document message of about %d bytes", grant, message)
+	t.Logf("the kernel grants a send buffer of %d bytes, so the slow page is owed document messages of about %d bytes in all", grant, message)
 	// The process stages one element it reads and cannot create, so it reads version and creates
 	// up to creatable, less than it reads, and the slow page, one version older, is admitted
 	// writable (newAdmissionServer).
@@ -729,9 +779,10 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	writer := connectBrowser(t, server.URL, artifactID, "bob")
 
 	// The slow page connects last and reads nothing, so the whole document the room holds is owed
-	// to it. ygo queues that document to a new peer at once (its sync step 2), and the
-	// revoke is taken once that document is on the wire and unread, not after a fixed wait: a run
-	// that revoked before it would be revoking a socket the page was owed nothing on.
+	// to it. ygo queues that document to a new peer at once (its Update messages and the SyncStep2
+	// after them), and the revoke is taken once that document is on the wire and unread, not after
+	// a fixed wait: a run that revoked before it would be revoking a socket the page was owed
+	// nothing on.
 	dialed := time.Now()
 	reader := dialSlowPage(t, server.URL, artifactID, slowQuery)
 	serverConn := accepted.find(reader.LocalAddr().String())
@@ -764,6 +815,12 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	editAsBrowser(t, service, artifactID, writer,
 		strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
 
+	// The revoked page types once the revoke's close frame is out, as a page with queued typing
+	// does: ygo's closing handshake holds its socket open for ygoCloseHandshakeTimeout after that
+	// frame, and nothing the page sends in that window may reach the document.
+	waitForTheRevokedClose(t, serverConn, revokedAt)
+	sendUpdate(t, reader, artifactID, typedParagraph(t, revokedPageMarker))
+
 	// The revoke's own work, and all of it: the server has closed that socket and its ServeHTTP
 	// has returned, and the end is the revoke's own close (requireTheRevokesCloseFrame), however
 	// long the runner took to get there.
@@ -781,18 +838,33 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the bytes the server wrote to the revoked page are not an end its provider reconnects on: %v", err)
 	}
-	if read.biggestMessage <= 64*1024 {
-		t.Fatalf("the biggest document message the server wrote to the revoked page is %d bytes; this test needs a page owed more than its buffers can take", read.biggestMessage)
+	if read.documentBytes <= 64*1024 {
+		t.Fatalf("the document messages the server wrote to the revoked page hold %d bytes in all; this test needs a page owed more than its buffers can take", read.documentBytes)
 	}
-	t.Logf("the server had the document on the wire %v after the dial; the revoked page's socket ends %s, after a document message of %d bytes in a send buffer of %d",
-		onTheWire, read.end, read.biggestMessage, grant)
+	t.Logf("the server had the document on the wire %v after the dial; the revoked page's socket ends %s, after document messages of %d bytes in all in a send buffer of %d",
+		onTheWire, read.end, read.documentBytes, grant)
 
+	// Every room goes to the store, so the stored history holds every update any room took: the
+	// edit made after the revoke, which is the proof this reading would see a taken edit, and the
+	// revoked page's own, had the room taken it.
+	if err := service.Quiesce(context.Background()); err != nil {
+		t.Fatalf("flush the document's room to the store: %v", err)
+	}
+	if !storedUpdatesCarry(t, service, artifactID, postRevokeMarker) {
+		t.Fatalf("the stored history does not hold the edit made after the revoke (%q), so its silence about the revoked page's edit would prove nothing", postRevokeMarker)
+	}
+	if storedUpdatesCarry(t, service, artifactID, revokedPageMarker) {
+		t.Fatalf("the stored history holds the edit the revoked page sent during the closing handshake (%q): a page whose write access was revoked wrote the document", revokedPageMarker)
+	}
 	want, err := service.Text(context.Background(), artifactID)
 	if err != nil {
 		t.Fatalf("read the server's document: %v", err)
 	}
 	if !strings.Contains(want, postRevokeMarker) {
 		t.Fatalf("the server's document does not hold the edit made after the revoke (%q), so the reconnect below would prove nothing about it", postRevokeMarker)
+	}
+	if strings.Contains(want, revokedPageMarker) {
+		t.Fatalf("the document a reader is served holds the edit the revoked page sent during the closing handshake (%q)", revokedPageMarker)
 	}
 	// The reconnect is that page on a new socket of the same room, read-only now: the fleet that
 	// revoked it admits it no other way. What it syncs must be the whole document.
@@ -804,8 +876,9 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 }
 
 // waitForTheMessageInFlight waits, until rowDeadline, for the server to have begun writing past
-// 64 KB to socket: the writes begun so far ask to send more than that, so the document's sync
-// message, the one message of a handshake that size, is on its way to a page that reads nothing.
+// 64 KB to socket: the writes begun so far ask to send more than that, so the document, which the
+// room sends a page as sync Update messages of at most 64 KiB each and a SyncStep2 last, is on its
+// way to a page that reads nothing.
 func waitForTheMessageInFlight(t *testing.T, socket *serverSocket) {
 	t.Helper()
 	deadline := rowDeadline(t)
@@ -826,26 +899,80 @@ func waitForTheMessageInFlight(t *testing.T, socket *serverSocket) {
 }
 
 // waitForTheDocumentOnTheWire waits, until rowDeadline, until ygo's handshake to a slow page is
-// out: the document is in a message past 64 KB on the wire, whole, with the awareness frame ygo
-// queues behind it written too, and the page has read none of it. It returns how long after the
-// dial that took. Revoking before this point would revoke a socket the page was owed nothing on;
-// revoking before the handshake's last frame is out would leave the server a frame still to write
-// that is not the close.
+// out: the document is on the wire in document messages past 64 KB in all, whole up to the
+// SyncStep2 that ends it, with a frame ygo queues behind it written too, and the page has read
+// none of it. It returns how long after the dial that took. Revoking before this point would
+// revoke a socket the page was owed nothing on; revoking before the handshake's last frame is out
+// would leave the server a frame still to write that is not the close.
 func waitForTheDocumentOnTheWire(t *testing.T, socket *serverSocket, dialed time.Time) time.Duration {
 	t.Helper()
 	deadline := rowDeadline(t)
 	for {
 		writes, _ := socket.record()
 		read, err := readServerStream(streamOf(writes))
-		if err == nil && read.biggestMessage > 64*1024 && read.framesAfter > 0 {
+		if err == nil && read.documentWhole && read.documentBytes > 64*1024 && read.framesAfterDocument > 0 {
 			return time.Since(dialed)
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			t.Fatalf("by the row's deadline the server had not finished writing the slow page the document: %d writes, the last of them returned=%t, the biggest message %d bytes with %d whole frames after it, reading the stream gave %v",
-				len(writes), len(writes) > 0 && writes[len(writes)-1].returned, read.biggestMessage, read.framesAfter, err)
+			t.Fatalf("by the row's deadline the server had not finished writing the slow page the document: %d writes, the last of them returned=%t, document messages of %d bytes in all, the SyncStep2 out whole %t with %d whole frames after it, reading the stream gave %v",
+				len(writes), len(writes) > 0 && writes[len(writes)-1].returned, read.documentBytes, read.documentWhole, read.framesAfterDocument, err)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// waitForTheRevokedClose waits, until rowDeadline, until the server has written the
+// admission-revoked close frame to socket, in a write begun after revokedAt.
+func waitForTheRevokedClose(t *testing.T, socket *serverSocket, revokedAt time.Time) {
+	t.Helper()
+	deadline := rowDeadline(t)
+	for {
+		writes, _ := socket.record()
+		for _, write := range writes {
+			if code, ok := closeFrameCode(write.bytes); ok && !write.startedAt.Before(revokedAt) && code == contracts.DocumentAdmissionRevokedCloseCode {
+				return
+			}
+		}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			t.Fatalf("by the row's deadline the server had written no admission-revoked close frame to the revoked page (%d writes)", len(writes))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// typedParagraph is the update a page holding none of the room's state makes when it types text
+// as a paragraph of its own: an insert into the document's fragment, which a room that took it
+// would hold beside the document's own blocks.
+func typedParagraph(t *testing.T, text string) []byte {
+	t.Helper()
+	tree, err := pmdoc.Parse(text + "\n")
+	if err != nil {
+		t.Fatalf("parse the typed paragraph: %v", err)
+	}
+	doc := crdt.New()
+	fragment := doc.GetXmlFragment(fragmentName)
+	var update []byte
+	doc.OnUpdate(func(u []byte, _ any) { update = append([]byte(nil), u...) })
+	if err := doc.TransactE(func(txn *crdt.Transaction) error {
+		return pmdoc.Update(txn, fragment, tree)
+	}); err != nil {
+		t.Fatalf("type the paragraph: %v", err)
+	}
+	return update
+}
+
+// storedUpdatesCarry reports whether any stored update of artifactID carries text: ygo keeps a
+// string an update inserts as its UTF-8 bytes, so an edit the room took and stored is found in
+// the rows it was stored in, whatever later rows or a compaction made of them.
+func storedUpdatesCarry(t *testing.T, service *Service, artifactID, text string) bool {
+	t.Helper()
+	var rows int
+	if err := service.store.Pool.QueryRow(context.Background(), `
+		select count(*) from doc_updates where artifact_id = $1 and position($2::bytea in update) > 0
+	`, artifactID, []byte(text)).Scan(&rows); err != nil {
+		t.Fatalf("search the stored history for %q: %v", text, err)
+	}
+	return rows > 0
 }
 
 // requireTheRevokesCloseFrame fails unless the socket's end is the revoke's own close
@@ -920,8 +1047,8 @@ func requireRevokedSocketEnded(t *testing.T, admissions *schemaAdmissions, admis
 			return
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			t.Fatalf("the revoked page's socket was still open on the server at the row's deadline: the revoke cancels that socket's request context, on which ygo waits at most %v for the close frame to go out, closes the connection and returns from ServeHTTP",
-				ygoCloseFrameTimeout)
+			t.Fatalf("the revoked page's socket was still open on the server at the row's deadline: the revoke cancels that socket's request context, on which ygo waits at most %v for the close frame to go out and then at most %v for the page's close in reply, closes the connection and returns from ServeHTTP",
+				ygoCloseFrameTimeout, ygoCloseHandshakeTimeout)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -1136,12 +1263,12 @@ func sendBufferGrant(t *testing.T) int {
 // buffer.
 const slowPageLeastMessage = 96 << 10
 
-// slowPageMessageSize is how big that test makes the document's sync message on a socket whose
-// send buffer the kernel granted grant bytes: a quarter of the buffer, and never under
-// slowPageLeastMessage. The server's one write of the document then returns with every byte of it
+// slowPageMessageSize is how big that test makes the document's sync messages, in all, on a socket
+// whose send buffer the kernel granted grant bytes: a quarter of the buffer, and never under
+// slowPageLeastMessage. The server's writes of the document then return with every byte of it
 // queued while the page reads none, and the buffer still has room for the edit the test makes
 // after the revoke, which a revoke that has not ended the socket sends down it. A grant too small
-// to hold such a message with as much again free is reported rather than worked around.
+// to hold such a document with as much again free is reported rather than worked around.
 func slowPageMessageSize(t *testing.T, grant int) int {
 	t.Helper()
 	size := max(grant/4, slowPageLeastMessage)
@@ -1351,14 +1478,17 @@ const (
 	endsAtACut serverStreamEnd = "at a cut, which the page reads as 1006"
 )
 
-// serverStream is what the bytes a server wrote to one socket amount to: how they end, the
-// payload the biggest data message in them declares, and how many whole frames follow that
-// message. A page owed a document reads the document in the biggest message, and the frames after
-// it say the server has moved on from writing it.
+// serverStream is what the bytes a server wrote to one socket amount to: how they end, how many
+// bytes of document the room sent in them - the sync Update messages and the SyncStep2 that ends
+// its answer, which the room sends in messages of at most 64 KiB each (cybermonklabs/ygo
+// v1.55.1-legion.1) - counting what each declares, whole or part way out, whether that SyncStep2
+// went out whole, and how many whole frames follow it. A page owed a document reads it in those
+// messages, and the frames after the SyncStep2 say the server has moved on from writing it.
 type serverStream struct {
-	end            serverStreamEnd
-	biggestMessage int
-	framesAfter    int
+	end                 serverStreamEnd
+	documentBytes       int
+	documentWhole       bool
+	framesAfterDocument int
 }
 
 // readServerStream reads the bytes a server wrote to one document socket - its HTTP 101 response
@@ -1370,7 +1500,7 @@ func readServerStream(stream []byte) (serverStream, error) {
 	if head < 0 {
 		return serverStream{}, fmt.Errorf("the %d bytes the server wrote hold no whole HTTP response head, so the socket never became a websocket", len(stream))
 	}
-	read, message := serverStream{end: endsAtACut}, 0
+	read, inDocument := serverStream{end: endsAtACut}, false
 	for rest := stream[head+4:]; len(rest) > 0; {
 		offset := len(stream) - len(rest)
 		frame, after, err := nextServerFrame(rest)
@@ -1379,9 +1509,20 @@ func readServerStream(stream []byte) (serverStream, error) {
 		}
 		switch frame.opcode {
 		case opcodeText, opcodeBinary:
-			message = frame.length
+			kind, isSync := syncMessageKind(frame.payload)
+			inDocument = isSync && (kind == ygsync.MsgUpdate || kind == ygsync.MsgSyncStep2)
+			if inDocument {
+				read.documentBytes += frame.length
+			}
+			if isSync && kind == ygsync.MsgSyncStep2 && frame.whole {
+				read.documentWhole, read.framesAfterDocument = true, 0
+				rest = after
+				continue
+			}
 		case opcodeContinuation:
-			message += frame.length
+			if inDocument {
+				read.documentBytes += frame.length
+			}
 		case opcodeClose:
 			if !frame.whole {
 				return read, nil
@@ -1398,13 +1539,11 @@ func readServerStream(stream []byte) (serverStream, error) {
 			read.end = endsOnTheRevokedClose
 			return read, nil
 		}
-		if message > read.biggestMessage {
-			read.biggestMessage, read.framesAfter = message, 0
-		} else if frame.whole {
-			read.framesAfter++
-		}
 		if !frame.whole {
 			return read, nil
+		}
+		if read.documentWhole {
+			read.framesAfterDocument++
 		}
 		rest = after
 	}
@@ -1428,19 +1567,32 @@ func serverFrame(opcode byte, payload []byte) []byte {
 
 // readServerStream is what TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole reads a
 // revoked socket's end off, so these are the streams it has to tell apart: the two ends the
-// provider reconnects on, and three a revoked page could read as neither. The document message
-// in each is what that test requires to be past 64 KB, and the frames after it are how it knows
-// the server has finished writing that document.
+// provider reconnects on, and three a revoked page could read as neither. The document in each is
+// sent as the room sends one, in Update messages under 64 KiB and a SyncStep2 last, which that
+// test requires to total past 64 KB, and the frames after the SyncStep2 are how it knows the
+// server has finished writing that document.
 func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
 	t.Parallel()
 	const head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
-	const documentPayload = 70 * 1024
-	document := serverFrame(opcodeBinary, bytes.Repeat([]byte("d"), documentPayload))
+	syncMessage := func(kind uint64, body []byte) []byte {
+		return encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+			encoder.WriteVarString("room")
+			encoder.WriteVarUint(0) // Hocuspocus sync message.
+			encoder.WriteVarUint(kind)
+			encoder.WriteVarBytes(body)
+		})
+	}
+	updateMessage := syncMessage(ygsync.MsgUpdate, bytes.Repeat([]byte("d"), 40*1024))
+	step2Message := syncMessage(ygsync.MsgSyncStep2, []byte{0, 0})
+	update := serverFrame(opcodeBinary, updateMessage)
+	step2 := serverFrame(opcodeBinary, step2Message)
+	documentBytes := 2*len(updateMessage) + len(step2Message)
 	awareness := serverFrame(opcodeBinary, []byte("awareness"))
 	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
 	stream := func(parts ...[]byte) []byte {
 		return bytes.Join(append([][]byte{[]byte(head)}, parts...), nil)
 	}
+	document := bytes.Join([][]byte{update, update, step2}, nil)
 	for _, c := range []struct {
 		name    string
 		stream  []byte
@@ -1450,12 +1602,12 @@ func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
 		{
 			name:   "whole frames ended by the admission-revoked close",
 			stream: stream(document, awareness, revokedClose),
-			want:   serverStream{end: endsOnTheRevokedClose, biggestMessage: documentPayload, framesAfter: 1},
+			want:   serverStream{end: endsOnTheRevokedClose, documentBytes: documentBytes, documentWhole: true, framesAfterDocument: 1},
 		},
 		{
-			name:   "a stream cut inside the document's frame, which the page reads as 1006",
-			stream: stream(document[:len(document)-1000]),
-			want:   serverStream{end: endsAtACut, biggestMessage: documentPayload},
+			name:   "a stream cut inside the document's second frame, which the page reads as 1006",
+			stream: stream(update, update[:len(update)-1000]),
+			want:   serverStream{end: endsAtACut, documentBytes: 2 * len(updateMessage)},
 		},
 		{
 			name:    "a close frame carrying another code",

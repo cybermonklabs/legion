@@ -8,6 +8,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.3.0
 	cloud.google.com/go/iam v1.12.0
 	cloud.google.com/go/secretmanager v1.22.0
+	github.com/KimMachineGun/automemlimit v1.0.1
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/config v1.33.10
@@ -129,6 +130,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pb33f/go-yaml v0.1.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.2 // indirect
+	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pganalyze/pg_query_go/v6 v6.2.5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
@@ -163,6 +165,199 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-// The fork keeps the upstream module path; consume its published tag through a remote
-// versioned replacement. RELEASE_NOTES.md in the tagged fork lists its upstream fixes.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.2
+// The fork of ygo keeps the upstream module path; consume its published tag through a remote
+// versioned replacement. This change's releases are cut on cybermonklabs/ygo with knives (its
+// registry entry is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork,
+// releases on cybermonklabs/ygo), and none of them is cut on a personal account. The releases
+// named below by a commit were cut on another organization's fork of reearth/ygo before
+// v1.55.1-legion.1, and cybermonklabs/ygo holds each of those commits too, since the forks of one
+// network share their commits. The fork is upstream ygo v1.55.0,
+// through upstream main
+// 510c2cf5, plus fixes, each carried until upstream ships it; RELEASE_NOTES.md in the tagged
+// fork lists every member with its upstream pull request. Thirteen wait in open upstream pull
+// requests: pre-integration refusals change nothing,
+// and a partly applied update relays the bytes the room integrated and parked (#340, which
+// replaces #334, #341, #344, #345, #352, #356 and #357); when a non-local transaction advances a
+// document's own client clock, the document takes a new client ID at commit, so every write fork
+// reads that ID after decoding its history (#340, breaking);
+// peer memory is bounded and dead peers close - a per-peer write queue byte budget
+// (Server.PeerWriteQueueBytes, which the document service sets to peerWriteQueueBytes), a failed
+// write or a server close ends the peer and drops its unread input, a joining peer gets the
+// room's state once, and a room an Apply, a relay Inject or a join is inside is not closed under
+// it, so CloseRoom answers ErrRoomInUse and a caller closes the room from inside its own Apply
+// with CloseRoomWithin (#342, which replaces #339, #343, #358 and #366); OnUpdate fires only for
+// a transaction that changes the document, after its GC, and carries only that transaction's
+// deletions (#350); garbage
+// collection and type encoding match Yjs (#347); undo and redo restore what Yjs restores (#359);
+// CloseRoom closes a browser that joins while it runs (#331); a document logs each commit's
+// update, and what the commit parked, in commit order under its own lock (UpdateLog,
+// LoggedUpdate.Parked, #332), against which the room's update observer measures each update; a
+// remote update's scans can be bounded (#333); a map-valued text format no longer panics with the
+// lock held (#335); a transaction names the shared types it changed and every shared type its
+// container (ChangedTypes and Parent, #336), so the room's update observer renders only the
+// top-level blocks an update touched; awareness reaches its sending peer and a read-only peer gets
+// a bounded empty awareness response, so an idle provider stays connected (#338);
+// Server.OnTokenAuthContext, OnTokenAuth with the connection's request context, which Dispatch
+// does not set (#351); and WithFormatCleanup and Doc.SetFormatCleanup, which turn off the format
+// cleanup a remote apply runs, so a copy that replays the room's commit log (newDocumentCopy) and
+// a room loading its stored history (bootstrapLoadedState) make no commit the room never made
+// (#369). Two await upstream pull requests: a per-apply scan budget stacked on #333, which
+// Dispatch sets on every room's documents (roomScans.budget), and Doc.Clone, retained from
+// v1.54.1-sami.4, which copies a document without encoding or decoding it: a write's fork of its
+// room is that room's replica cloned (warmFork, forkPoint). Server.OnPeerUpdate, upstream ygo
+// #304, is in upstream v1.55.0; the document service sets it to weigh each browser's update
+// (weighPeerUpdate).
+// v1.55.1-sami.7 added what this branch's memory work is built on: Doc.StructCount, the per-apply
+// ApplyBudget (Decoded, Structs, Bytes) with its rollback, WithAllowedRoots as a containment rule
+// over everything an apply adds or deletes, RefusedUpdateError's counts, ParseUpdateMeta and
+// ErrPendingCap, which together replaced 899 lines of update decoder in this package
+// (dispatch://INFRA-179), and the linear state handover split this branch's write path needs. It
+// also brings sami.2's and sami.3's breaking changes with it: Content.Len answers uint64 and
+// Content.Splice takes one.
+// v1.55.1-sami.8 closes six holes in that work a browser's update went through, each of which
+// this package now uses. ApplyBudget gains Split, the structs an apply makes by splitting items
+// the room already holds, which Structs never counted: a 17-byte delete inside a word took a
+// room at the decode cap past it and its stored state then answered `crdt: invalid update`, so
+// every allowance the hook builds names Split (peerApplyAllowance). A struct that parks and the
+// bytes it carries are charged to the apply that parked them, so the room's own rules reach
+// content waiting behind a gap: an update parked 17,825,840 bytes under an allowance of
+// Structs: 0, Bytes: 0 before, and a 45-byte gap filler landed it all. Bytes counts a map key, a
+// deleted range and a root name, so an 8 MiB map key no longer passes the room's state cap.
+// WithRefusedContent and SetRefusedContent name the content kinds a remote apply may not carry,
+// which every room sets to the embed and the binary the Proof editor never sends, since one
+// crafted embed puts every browser of a document into the repair state (newRoomApplies).
+// Server.OnStateAnswer runs before a SyncStep1 is answered and its release after, so the service
+// can weigh the whole-state decode that answer costs - 360,954,408 bytes of peak heap on a
+// document of 1,048,576 structs - against the pod's copy heap (weighStateAnswer). And a drain's
+// splits are charged to the apply that lands them, with the drain refused and taken back while
+// the gap filler's own apply stands, so a room could hold a backlog that never drained; the room
+// now discards such a drain instead (crdt.Doc.SetDiscardRefusedDrain, leaveParkedOut). It also
+// carries the allowed-roots check to where a struct parks and travels the list with it, so a
+// sender can no longer write under a root it may not name by parking behind a clock it never
+// sends, which needed nothing here. Breaking: ApplyBudget's zero value for Split allows no
+// split, so a budget literal that leaves it unset refuses every delete that cuts an item.
+// v1.55.1-sami.9 takes one charge of sami.8's back out, because this package's own drive showed
+// it was never a cost: a deleted range was charged its claimed clock span as content bytes, in
+// the tombstone's integration and again where a merge grows a parked one, so a 17-byte frame
+// claiming 2^40 clocks of a client the room has never seen read as a terabyte of content and
+// every bound refused it, where it deletes nothing and costs the room two integers
+// (TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes). A delete now costs no Bytes at all and is
+// bounded as it was before sami.8: its ranges by Decoded, the splits its edges make by Split,
+// its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
+// about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
+// of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
+// The fork's release at 76dc89ed adds the apply check this package's bound on a browser's
+// rendering stands on (v1.55.1-sami.17): Doc.SetApplyCheck runs a caller's check after a remote
+// apply integrates and before its transaction commits, through a read-only view that takes no
+// lock, and an error rolls the apply back byte for byte; a drain the check refuses is taken back
+// alone and the update stands, which the providers answer as applied. An update's bytes do not
+// show what it does to the rendering - a 35-byte frame setting a list's start number grew one
+// document by 800,024 bytes, and a 7-byte delete of an inline-code mark's format items grew
+// another by 2,799,998 - so only a check of the result can hold the bound (render_check.go).
+// The fork's release at 2945f8a5 adds what this package's room keeps parked content out of
+// the document with, every behaviour change an option off by default and the rest additive:
+// PeerUpdateInfo.Context, the connection's request context, which the client id rule reads
+// its socket from (judgeClients); ApplyUpdateV1Outcome and Server.RelayIntegratedOnly and
+// AnswerParkedNotApplied, so a frame that parks is neither relayed nor answered applied;
+// Server.AnswerOnceStored and PersistenceAdapterStored, so a frame's answer waits for its
+// commit's store (StoreUpdateStored); Doc.SetParkedOutOfState, so nothing parked is encoded,
+// answered or stored, and Doc.SetDiscardRefusedDrain with DrainDiscardedError, so a drain the
+// room cannot take is discarded and its senders named (leaveParkedOut, closeDiscardedSenders);
+// Server.ClosePeer and ResyncPeer, which close or resync a browser from any goroutine after
+// the answers it is owed (closeDiscardedSenders, resyncLanded); and HeldStructsDifferV1, which
+// compares an update's structs with what the document holds at the same clocks (refusedDuplicate).
+// The fork's release at 0f7aeee2 makes an apply check cost each apply what it touched: whether the
+// apply changed the document is read from its delete set and the clocks of the clients it added
+// structs for, and a drain is checked only where the pending queue holds anything, so a keystroke
+// into a document of 40,000 clients no longer walks every client for the room's render check
+// (BenchmarkATangledRoomTakesAKeystroke; the fork's BenchmarkApplyUpdateV1_ApplyCheckManyClients,
+// 87.65 ms to 63.86 ms).
+// The fork's release at 382ed018 closes what review 8 found the room could not bound or answer
+// truthfully. ApplyBudget.MayParkDeletes judges each client a delete range would park under,
+// and an apply it answers false for is refused whole (ErrParkedDeleteRefused), so a range parks
+// only under a client the sender's socket holds (parkJudge); Server.MaxPendingDeleteRanges caps
+// a room's parked delete ranges apart from its parked structs (maxParkedDeleteRanges), and the
+// record of who parked them keeps only what each frame newly parked; PendingStats.ContentBytes
+// is what the queue holds of content now (noteQueued); DocContainsUpdateV1Limit and
+// HeldStructsDifferV1Limit stop a decode outside an apply at the apply's value limit (roomHolds,
+// refusedDuplicate); Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2
+// past unslottedApplyBytes without a decode, and Server.ReadOnlySyncStep2MaxValues stops the decode
+// of one at or under it past what an unslotted apply's structs may hold (unslottedApplyStructs);
+// under AnswerOnceStored a frame that commits nothing waits for the stores in flight, and a
+// room instance one commit of which was not stored answers nothing applied again; and under
+// RelayIntegratedOnly a frame whose drain landed anything is relayed to its own sender too
+// (ApplyOutcome.Drained).
+// The fork's release at f80e73e7 closes findings 2 and 3 of review 9. The record of who parked
+// each delete range keeps one set per sender, compacted as the pending deletes are and cut to
+// what they still hold, so frames that grow or bridge the ranges parked no longer grow it past
+// twice the parked ranges plus 16 (bytesOfHeapAParkedRange); and PendingStats.ContentBytes
+// counts the map key a parked struct holds (noteQueued).
+// The fork's release at ee46210f says which run an apply check judges and lets a room forget
+// an origin, and adds no option. ApplyView.Drained is false on the update's run and true
+// on the drain's, so the one run of an apply whose update changed nothing - the room held
+// all of it, or its structs only parked - is judged as the drain's (renderCheck.check); and
+// Doc.ForgetParkedOrigin drops an origin from the record a document that discards refused
+// drains keeps of who parked what, which the room calls after each server write's apply
+// (applyServerWrite), and the WebSocket server for each peer that leaves its room. Its commit
+// is the head of the cut release/v1.55.1/2026-11-20.2.
+// The fork's release at 4b19472d makes each removal from a list a document, a type, a persistence
+// or a client keeps clear the slot it vacates (slices.Delete), so an unsubscribed callback,
+// and what its closure captured, no longer stays reachable from the backing array: before it,
+// the closure each server write subscribes (applyRemoteBatch, applyCaptured) kept the write's
+// update reachable from the room until a later subscription took the slot. Its commit is the
+// head of the cut release/v1.55.1/2026-11-20.3.
+// The fork's release at d18319dc, which this branch never pinned alone, keeps the record of who
+// parked each struct to what the pending queue holds, dropping a struct as a merge drops it, a
+// drain lands it or a refused drain discards it (closeDiscardedSenders); gives a parked string a
+// merge cuts at its front bytes of its own, so it keeps only the part PendingStats.ContentBytes
+// counts (noteQueued); and drops a SyncReply that carries a SyncStep1, which was answered
+// outside Server.OnStateAnswer's bound and relayed to every other peer (weighStateAnswer).
+// v1.55.1-legion.1 adds ApplyBudget.Integrated, a callback the apply-budget callback can return
+// with an apply's budget, which the document calls once that apply has integrated and passed its
+// apply check, right after the commit releases the document's lock and before the commit's first
+// observer, and never for an apply that is refused or rolled back. Dispatch sets no Integrated: a
+// heavy browser apply gives its grant of the pod's load concurrency back as the room's own update
+// observer for the commit ends (weighPeerUpdate, roomApplies.releaseGrant), once the room's
+// replica has decoded the commit and before ygo's persistence observer, so no grant is held while
+// that observer waits on the room's queue of updates to store or on its worker's exit. The tag is
+// on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
+// v1.55.1-legion.2 adds PersistenceAdapterLoadContext: where the adapter implements it, ygo loads
+// a room through LoadDocContext, with the context of the call that created the room - a browser's
+// request, an Apply's or a relay Inject's - in place of LoadDoc. Dispatch's adapter implements it
+// (servicePersistenceAdapter.LoadDocContext) and refuses busy, before it reads anything, a load
+// whose context carries a transaction whose grant holds bytes: such a transaction applies only to
+// a room it found resident (allowApply), and where ygo's idle sweep or a close the service makes
+// took that room out before ygo looked it up, its Apply is answered the 503 its caller retries
+// rather than loading the room on its goroutine under a grant of the load's own - unless another
+// caller's load of that room is already under way by then, which the Apply waits on holding its
+// grant, a stated risk allowApply's doc describes (internal/dispatch/docs/websocket.go). The
+// adapter refuses the same way, before it reads anything, a load whose context the awareness
+// relay's Inject of another process's update marks (withNoRoomLoad): the relay injects only into a
+// room ygo has published (holdsRoomForReaders), so its Inject creates a room only where ygo's idle
+// sweep or a close the service makes took that room out in between, and the frame is dropped
+// rather than its load waiting for the pool on the awareness lane, which every room's relayed
+// awareness waits behind; its wait on another caller's load of that room ends at its bound of 3 s
+// (awarenessInjectBound), and drops the frame too. It is cut with knives on cybermonklabs/ygo as the
+// member rel/v1.55.1-load-context; the tag is on 4004ab70, the head of release/v1.55.1/2026-11-22.
+// v1.55.1-legion.4 adds no option. It keeps no container of what a document has parked at the
+// room of its largest size: the record of who parked each struct and each delete range, each
+// recorded set's range list, the store's pending deletes (each client's range list and the map of
+// clients), the map of clients given a struct since the last retry, and the pending queue's list
+// of structs are each copied into one made at their size once they fall under a quarter of what
+// they hold room for (a map: under a quarter of its peak, or empty). Before it, a room whose queue
+// reached the 4,096-struct cap and then fell to one struct kept about 218 KB for the record of
+// parked structs and 238 KB for the range lists, which no room charge counts. Each copy is checked
+// in constant time and runs under the document's lock. legion.3 (1ceb0fd5), which shrank the two
+// parking records alone, is never pinned. The tag is on 3a34db68, the head of
+// release/v1.55.1/2026-11-23.2, cut with knives on cybermonklabs/ygo as the member
+// rel/v1.55.1-parked-record-peak.
+// v1.55.1-legion.5 adds no option of its own. It holds legion.4's members on the series base as it
+// stands now, rc/v1.55.1-sami.10 at 1398b7a7, a base commit from other work on the fork
+// (sjawhar/ygo#3, which cybermonklabs/legion#4445 pins on its own): Server.CloseFrameTimeout, the
+// deadline on the close frame ServeHTTP sends for a cancel cause that names a close code, 1 s when
+// it is unset, as before. Dispatch sets no CloseFrameTimeout. The closing handshake of such a
+// cancel (closeForCause, of the member rel/v1.55.1-close-handshake) now takes that deadline too,
+// since the base made it a server field, and rel/v1.55.1-answer-once-stored carries one more test
+// commit, a2ac272f, which reads the relay until it arrives. The tag is on af5157ea, the head of
+// release/v1.55.1/2026-11-27, cut with knives on cybermonklabs/ygo.
+replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.5

@@ -57,6 +57,10 @@ import (
 type Ledger struct {
 	service *Service
 	tx      pgx.Tx
+	// releaseBound releases the timer of the server's bound on a caller's write, which Join put
+	// on the context its operations run with (boundWriteRequest). Discard runs it; it is never
+	// nil, and running it twice releases once.
+	releaseBound func()
 	// writer is the transaction whose writes this ledger queues: the joined transaction, a
 	// writer's own transaction, or a background pass's (queueFor).
 	writer pgx.Tx
@@ -98,6 +102,12 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
+	// forks is this transaction's grant of the pod's load concurrency, shared by every live
+	// write it opens and every read made under its context, and taken on the first of them
+	// (forkSlot, transactionGrant, liveWrite.coverFork): one grant for all its forks and reads, so
+	// a transaction writing two documents never waits for bytes a fork of its own holds, nor for a
+	// second grant beside its own (loadSlots).
+	forks *forkSlot
 	// queue is the transaction's write phase (WriteStep): every write its operations and its
 	// caller made, in the order they made them, which Commit sends as one batch before it commits.
 	// sealed is set once the write phase has begun or the ledger was discarded, after which
@@ -924,9 +934,23 @@ var errUnjoined = errors.New("docs: the operation needs a transaction joined wit
 
 // Join joins the document operations run with the returned context to tx, recording what they
 // produce in the returned ledger and queueing their writes for its Commit.
+//
+// The context it returns carries the server's bound on a caller's whole document write
+// (WriteRequestBound), which is why the operations take it rather than the request's own: it is
+// the one door every write of a request comes through, so one deadline here bounds the waits and
+// the work alike. The ledger holds what releases that deadline's timer, and Discard, which every
+// caller defers, releases it.
+//
+// The context carries the transaction's one grant of the pod's load concurrency too, through the
+// ledger (forkSlot, transactionGrant): every fork the operations make takes on it, and so does
+// every decode a read under the context makes (withLoadSlot), so the transaction never waits for
+// a second grant while it holds one, and every take after its first that the pool cannot give at
+// once while a fork stands is refused busy (loadSlots).
 func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx, writer: tx}
-	return withLedger(ctx, ledger), ledger
+	bounded, release := boundWriteRequest(ctx)
+	ledger.releaseBound = release
+	return withLedger(bounded, ledger), ledger
 }
 
 // inTransaction reports whether the operations recording into l run inside an open database
@@ -1251,7 +1275,21 @@ func flushCapture(flush *RoomFlush) roomCapture {
 // the commit returns, with its error and the states still locked; a capture with no state locks
 // nothing. A commit that fails marks nothing: the room's persistence stores the flushed updates
 // later.
+//
+// A commit whose caller has already gone is not made at all. The caller's context ends when its
+// client closes the connection, and `dispatch` closes at the deadline it gives every call
+// (packages/envoy-client/src/dispatch-http.ts, requestSignal): a write committed after that is
+// an edit the person was told had not landed and may send again, and the second send applies it
+// twice. pgx ends a commit whose context is already done, but the window it leaves is the whole
+// of the transaction's work before it, which under a loaded pod is where the time goes: measured
+// on a burst of 320 concurrent writes, the slowest applied write took 1 m 6.362 s against its
+// caller's 1 m deadline, and that caller read an error while the server answered 200
+// (INFRA-179). So the context is read here, once, immediately before the commit, where
+// everything the transaction waited for is behind it.
 func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roomCapture, ended func(error)) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("the caller ended before its write committed: %w", err)
+	}
 	sorted := slices.Clone(captures)
 	slices.SortStableFunc(sorted, func(a, b roomCapture) int { return strings.Compare(a.room, b.room) })
 	locked := make([]roomCapture, 0, len(sorted))
@@ -1304,6 +1342,9 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 // authors stay where they were. After Commit only the read-backs and the queued versions (latest)
 // are left to drop. Every caller defers it, so it is where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
+	if l.releaseBound != nil {
+		l.releaseBound()
+	}
 	l.sealed = true
 	l.queue = nil
 	l.afterWrites = nil
@@ -1331,8 +1372,12 @@ func (l *Ledger) holdRebuild(artifactID string) {
 	l.rebuilds = append(l.rebuilds, artifactID)
 }
 
+// endRebuilds lifts the holds of the rebuilds this transaction made, once it has ended. Each
+// marks the load of its room under way first (markRoomLoadRebuilt): a load that read the history
+// before the commit and has not yet reached its load hook would otherwise find no hold there.
 func (l *Ledger) endRebuilds() {
 	for _, artifactID := range l.rebuilds {
+		l.service.markRoomLoadRebuilt(artifactID)
 		l.service.rebuilding.Delete(artifactID)
 	}
 	l.rebuilds = nil
@@ -1396,7 +1441,8 @@ func (l *Ledger) liveWriteFor(artifactID string) *liveWrite {
 // LostOps reports which operations of this transaction's write to artifactID the live document
 // no longer held once the write was published, which the caller reads after Commit. The second
 // return is false when no verdict was reached - the transaction wrote nothing to that document,
-// its publish failed and the room is reloading, or the room holds a tree past the schema's depth
+// its publish failed and the room is reloading, the judgement could not read the document within
+// publishedLossTimeout (recordPublishedLoss), or the room holds a tree past the schema's depth
 // bound, which no read can serve - which the caller reports as undetermined rather than as
 // survival (LEGION-269).
 func (l *Ledger) LostOps(artifactID string) ([]int, bool) {
@@ -1608,12 +1654,54 @@ func (l *Ledger) ReadBackOf(artifactID, markdown string) *pmdoc.Node {
 // publish applies the committed transaction's live writes to their rooms and broadcasts them.
 // Each update is already durable, so the room's own persistence of it is suppressed. A room that
 // cannot take its update is failed, and reloads the durable document on its next access.
+//
+// Every fork goes first, and with the last of them the transaction's grant of the copy-heap
+// bound (liveWrite.releaseFork). The transaction has committed, so its forks have served every
+// operation they will, and the publish reads only the updates and the renderings recorded beside
+// them. Holding them through the publish would hold a heavy document's fork and tree beside the
+// room the publish loads, which is what LEGION-504 cut; and holding the grant through it would
+// leave a holder of the bound waiting for a room load's own grant (onLoadDocument), a part of
+// the bound its own grant can keep from ever being free.
 func (l *Ledger) publish() {
+	for _, artifactID := range l.order {
+		l.live[artifactID].releaseFork()
+	}
 	for _, artifactID := range l.order {
 		if write := l.live[artifactID]; !write.finished {
 			l.service.publishLiveWrite(write)
 		}
 	}
+}
+
+// forkSlot is this transaction's grant of the pod's load concurrency (forks), made on its first
+// live write or on the first read under the context Join returned (transactionGrant). A caller
+// already holding one hands it over in ctx, and the transaction's forks take that one rather than
+// a second: a document socket's admission holds a whole slot from before the budget weighs it
+// until its room has loaded (ServeHTTP), and reads the document inside it, so a fork made under
+// that read would wait for bytes its own holder will not give back until the read returns - at
+// the calibration, whose pool is that one slot, for ever.
+func (l *Ledger) forkSlot(ctx context.Context) *forkSlot {
+	if l.forks == nil {
+		held, carried := ctx.Value(loadSlotKey{}).(*loadSlot)
+		if !carried {
+			held = newLoadSlot()
+		}
+		l.forks = &forkSlot{slot: held, carried: carried}
+	}
+	return l.forks
+}
+
+// transactionGrant is the grant of the transaction Join joined ctx to (forkSlot), and nil for a
+// context Join did not return: a settlement's or the block-id backfill's own transaction, whose
+// one document's write takes its grant at its fork (openLiveWrite), and every context outside a
+// transaction. withLoadSlot hands it to each read made under the transaction, so the transaction
+// holds one grant for its forks and its reads alike.
+func transactionGrant(ctx context.Context) *forkSlot {
+	ledger := ledgerFrom(ctx)
+	if ledger == nil || ledger.tx == nil {
+		return nil
+	}
+	return ledger.forkSlot(ctx)
 }
 
 // fail fails the rooms a transaction wrote when its commit returned an error. The commit may

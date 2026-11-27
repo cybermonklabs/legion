@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -566,6 +567,14 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// useColdReadTimeout makes timeout a cold read's bound for the rest of t (coldReadTimeout).
+func useColdReadTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	old := coldReadTimeout
+	coldReadTimeout = timeout
+	testcleanup.Add(t, func() { coldReadTimeout = old })
+}
+
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	// Not parallel: it writes the package variable coldReadTimeout, 20 ms here, which bounds every
 	// cold read in the process.
@@ -574,9 +583,7 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, persistence)
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 20 * time.Millisecond
-	testcleanup.Add(t, func() { coldReadTimeout = oldTimeout })
+	useColdReadTimeout(t, 20*time.Millisecond)
 
 	ctx := context.Background()
 	_, err := service.Text(ctx, artifactID)
@@ -590,6 +597,96 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	case <-persistence.started:
 	default:
 		t.Fatal("the timed cold fold never reached LoadDocument")
+	}
+}
+
+// A cold read whose load waits for the pod's load concurrency past the cold read's bound is no
+// fault of the document: the pool is full, here held whole by the test. The read is refused busy
+// (errGrantShort, ErrServiceUnavailable, the 503 its caller retries), the room is not failed, and
+// the read finds the document once the pool has room. Before, the fold's timeout failed the room
+// (failRoom), which counts a failure and drops its settlement, as a history that does not load
+// does.
+func TestAColdReadWhoseWaitForThePoolPassesItsBoundIsRefusedBusyAndFailsNoRoom(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service := newReadCacheService(t, database, NewPgVersioned(database))
+	seedServiceText(t, service, artifactID, "before\n")
+	useColdReadTimeout(t, 200*time.Millisecond)
+	pool, waited := poolOfOneSlot(t, nil)
+	filler := fillPoolBut(t, pool, 0)
+
+	_, err := service.Text(context.Background(), artifactID)
+	if !waited.Load() {
+		t.Fatalf("the cold read answered %v without waiting for the full pool, so nothing here is tested", err)
+	}
+	if !errors.Is(err, errGrantShort) || !errors.Is(err, ErrServiceUnavailable) || !RefusedBusy(err) {
+		t.Fatalf("the cold read whose wait for the full pool passed its bound was answered %v, want it refused busy: %v", err, errGrantShort)
+	}
+	if service.roomFailed(artifactID) {
+		t.Fatal("the cold read's wait for the full pool failed the room, whose document is sound")
+	}
+	filler.release()
+	waitForDocumentText(t, service, artifactID, "before\n")
+}
+
+// A cold read whose load already holds its grant and then waits past the cold read's bound for a
+// connection of the rooms pool is no fault of the document either, since its fold has not begun
+// reading the rows (foldDocument): here the document's log streams (foldBufferLimit), so its load's
+// second pass holds one whole slot, taken before its rooms connection (loadStored), and every rooms
+// connection is held from the moment that slot is taken, as streamed loads of other documents can
+// hold them for their whole streams. The read is refused busy (errGrantShort, the 503 its caller
+// retries), the room is not failed, and the read finds the document once the connections are
+// free. Before, the fold's timeout failed the room (failRoom) because its grant held bytes.
+func TestAColdReadWhoseLoadHoldsItsGrantAndWaitsPastItsBoundForARoomsConnectionIsRefusedBusy(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	document, _ := twoRowDocument(t, service, 82, 16<<10)
+	_, rooms := streamEveryFold(t, service)
+	useColdReadTimeout(t, 500*time.Millisecond)
+	pool, _ := poolOfOneSlot(t, nil)
+	// The load's whole slot is the pool's first take: its first pass learns that the rows stream
+	// and takes nothing, and the slot is the whole of this one-slot pool.
+	var whole atomic.Bool
+	var held []*pgxpool.Conn
+	var holdErr error
+	pool.taken = func(int64) {
+		if !whole.CompareAndSwap(false, true) {
+			return
+		}
+		for range store.RoomsPoolSize {
+			conn, err := rooms.Acquire(ctx)
+			if err != nil {
+				holdErr = err
+				return
+			}
+			held = append(held, conn)
+		}
+	}
+	releaseRooms := func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+		held = nil
+	}
+	t.Cleanup(releaseRooms)
+
+	_, err := service.Text(ctx, document)
+	switch {
+	case !whole.Load():
+		t.Fatalf("the cold read answered %v without its load taking a whole slot, so nothing here is tested", err)
+	case holdErr != nil:
+		t.Fatalf("hold the rooms pool's connections: %v", holdErr)
+	}
+	if !errors.Is(err, errGrantShort) || !errors.Is(err, ErrServiceUnavailable) || !RefusedBusy(err) {
+		t.Fatalf("the cold read whose load held its grant and waited past its bound for a rooms connection was answered %v, want it refused busy: %v", err, errGrantShort)
+	}
+	if service.roomFailed(document) {
+		t.Fatal("the cold read's wait for a rooms connection failed the room, whose document is sound")
+	}
+	releaseRooms()
+	if _, err := service.Text(ctx, document); err != nil {
+		t.Fatalf("the cold read once the rooms pool's connections were free: %v", err)
 	}
 }
 

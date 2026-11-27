@@ -155,60 +155,6 @@ func TestAShareReturnsTheOtherProcessesInFlightAppend(t *testing.T) {
 	}
 }
 
-// deliverRoomQuery hands service's query lane one kind query about room from sender, as room
-// sync does when the notification of it arrives (roomQueries.query), so a test of what answering
-// it does waits on no notification.
-func deliverRoomQuery(t *testing.T, service *Service, sender, room, kind string) {
-	t.Helper()
-	payload, err := json.Marshal(roomQuery{ID: uuid.NewString(), Sender: sender, Room: room, Kind: kind})
-	if err != nil {
-		t.Fatalf("encode the %s query: %v", kind, err)
-	}
-	service.roomQueries.query(context.Background(), string(payload))
-}
-
-// A room's browser appends linger for the room's next keystrokes before they go (roomAppendLinger),
-// and a flush has roomQueryWait to answer in, spent by an asker holding whatever it asked the
-// flush for. So a query of another process asks the room's appends to go before it waits for
-// them, as a wait for the room's own appends does (waitForRoomIdle): every linger already
-// waiting is woken, no update the room recorded before the query lingers any more, and none
-// lingers while the answer waits (askRoomAppends).
-func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
-	t.Parallel()
-	pair := newQueryProcesses(t)
-	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
-	defer pair.gateB.release()
-	state := pair.taskB.lockExistingState(pair.artifactID)
-	if len(state.updateClasses) == 0 {
-		pair.taskB.unlockState(pair.artifactID, state)
-		t.Fatal("task B's room queued no class for bob's edit, so no batch of it can linger")
-	}
-	class := state.updateClasses[len(state.updateClasses)-1]
-	lingering := state.appendLinger.wait()
-	pair.taskB.unlockState(pair.artifactID, state)
-	asked := time.Now()
-
-	deliverRoomQuery(t, pair.taskB, pair.taskA.ProcessID(), pair.artifactID, roomQueryFlush)
-
-	select {
-	case <-lingering:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the query woke none of task B's lingering appends: a batch of its keystrokes holds the answer up for a linger")
-	}
-	state = pair.taskB.lockExistingState(pair.artifactID)
-	flushed, waiters := state.appendsFlushed, state.appendWaiters
-	pair.taskB.unlockState(pair.artifactID, state)
-	if flushed.Before(asked) {
-		t.Fatalf("task B recorded its appends asked for at %v, before the query at %v: an update recorded in between lingers all the same", flushed, asked)
-	}
-	if waiters == 0 {
-		t.Fatal("task B counts no waiter on its appends while it answers the flush, so a keystroke its room takes meanwhile lingers while the answer waits")
-	}
-	if _, wake, wait := pair.taskB.roomBatchThrough(pair.artifactID, class, true); wake != nil {
-		t.Fatalf("the batch of an update task B's room recorded before the query lingers another %v", wait)
-	}
-}
-
 // Every update of a pending batch stays listed as its room instance's unstored work until its own
 // append has returned, so a share answers a query that arrives while the batch is still to go with
 // all of them: here the update whose append waits at the gate and the keystroke queued behind it,
@@ -271,6 +217,128 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 	if warned := logs.Lines("more not-yet-stored updates than one query shares"); !strings.Contains(warned, pair.taskB.ProcessID()) {
 		t.Fatalf("task A logged no WARN naming task B for its too-large share; logged:\n%s", logs.String())
 	}
+}
+
+// A share whose merge waits for its grant of the pod's load concurrency waits on a goroutine of
+// its own, as a flush waits for its room's appends, so the query lane goes on to the queries
+// behind it: here task B's room holds a light update and a heavy run of keystrokes that the store
+// does not, and the pool is full, so task B's merge of them waits for its grant, for up to task
+// B's own wait, which this test makes four times task A's. Task A's holds query, sent while the
+// share waits, is answered within task A's wait all the same. Before, the share waited on the
+// lane itself, and every query behind it, for this room or any other, waited with it past its
+// asker's window.
+func TestAHoldsQueryBehindAShareWaitingForItsMergesGrantIsAnsweredWithinItsWait(t *testing.T) {
+	const window = 5 * time.Second
+	pair := newSeededProcessPair(t, lostEditDocument)
+	pair.taskA.roomQueries.wait, pair.taskB.roomQueries.wait = window, 4*window
+	pair.runRoomSync(t)
+	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
+		t.Fatalf("load task B's room: %v", err)
+	}
+	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, "Bob's paragraph.\n"))
+	live := pair.taskB.srv.GetDoc(pair.artifactID)
+	if live == nil {
+		t.Fatal("task B's room is not resident")
+	}
+	// Each keystroke of the run is typed one after the paragraph's first character, before the
+	// one typed just ahead of it, so none merges with its neighbour and the update the room lists
+	// holds every one as a struct: a heavy one (heavyUpdateWeight).
+	writer := copyOf(t, crdt.EncodeStateAsUpdateV1(live, nil))
+	before := writer.StateVector()
+	text := paragraphTexts(writer)[0]
+	writer.Transact(func(txn *crdt.Transaction) {
+		for range unslottedApplyStructs + 100 {
+			text.Insert(txn, 1, "x", nil)
+		}
+	})
+	if err := crdt.ApplyUpdateV1(live, crdt.EncodeStateAsUpdateV1(writer, before), "peer"); err != nil {
+		t.Fatalf("commit the run to task B's room: %v", err)
+	}
+	parts := pair.taskB.unstoredParts(pair.artifactID, live)
+	if weight := mergeWeight(parts); len(parts) < 2 || weight == 0 {
+		t.Fatalf("task B's room lists %d updates not yet stored whose merge weighs %d bytes, want a merge that takes a grant, or nothing here is tested", len(parts), weight)
+	}
+	pool, waits := poolWaits(t)
+	filler := fillPoolBut(t, pool, 0)
+	shared := make(chan error, 1)
+	go func() {
+		_, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+		shared <- err
+	}()
+	select {
+	case <-waits:
+	case <-time.After(window):
+		t.Fatalf("task B's merge of its room's updates did not come to wait for the full pool within %s", window)
+	}
+	started := time.Now()
+	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryHolds)
+	waited := time.Since(started)
+	if err != nil || !asked {
+		t.Fatalf("task A's holds query = asked %t, %v; want task B asked", asked, err)
+	}
+	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || !answers[0].holds {
+		t.Fatalf("task A's holds query, sent while task B's share waited for its merge's grant, was answered %+v within its %s wait (%v): want task B's answer that it holds the room, which task B's query lane held behind the share",
+			answers, window, waited.Round(time.Millisecond))
+	}
+	filler.release()
+	if err := <-shared; err != nil {
+		t.Fatalf("task A's share: %v", err)
+	}
+	pair.gateB.release()
+	waitForLandedAppends(t, pair.taskB, pair.artifactID)
+	t.Logf("task A's holds query was answered %v after it was sent, while task B's share waited for its merge's grant", waited.Round(time.Millisecond))
+}
+
+// A share or a flush takes its snapshot of the room's updates on the query lane only where the
+// room replica's lock is free at once, and otherwise on a goroutine of its own, so the lane goes on
+// to the queries behind it: here the test holds task B's room replica's lock, as a long walk or
+// render of a large document holds it, so task B's snapshot for task A's share waits for it, and
+// task A's holds query for another document, sent while it waits, is answered within task A's
+// wait all the same. Before, the snapshot waited for the lock on the lane itself, and every query
+// behind it, for this room or any other, waited with it past its asker's window.
+func TestAHoldsQueryBehindAShareWhoseRoomsReplicaLockIsHeldIsAnsweredWithinItsWait(t *testing.T) {
+	const window = 5 * time.Second
+	pair := newSeededProcessPair(t, lostEditDocument)
+	pair.taskA.roomQueries.wait, pair.taskB.roomQueries.wait = window, window
+	pair.runRoomSync(t)
+	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
+		t.Fatalf("load task B's room: %v", err)
+	}
+	live := pair.taskB.srv.GetDoc(pair.artifactID)
+	if live == nil {
+		t.Fatal("task B's room is not resident")
+	}
+	replica := pair.taskB.replicaOf(live)
+	if replica == nil {
+		t.Fatal("task B's room lists no replica, so no snapshot of it waits for a lock")
+	}
+	other := createIssueDocument(t, pair.database, 2, "Another document.")
+	replica.mu.Lock()
+	release := sync.OnceFunc(replica.mu.Unlock)
+	t.Cleanup(release)
+	shared := make(chan error, 1)
+	go func() {
+		_, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+		shared <- err
+	}()
+	waitFor(t, window, "task B's snapshot of its room for task A's share to wait for the room replica's lock", func() bool {
+		return replica.waiting.Load() > 0
+	})
+	started := time.Now()
+	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, other, roomQueryHolds)
+	waited := time.Since(started)
+	if err != nil || !asked {
+		t.Fatalf("task A's holds query = asked %t, %v; want task B asked", asked, err)
+	}
+	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || answers[0].holds {
+		t.Fatalf("task A's holds query for another document, sent while task B's snapshot for a share waited for its room replica's lock, was answered %+v within its %s wait (%v): want task B's answer that it holds no room of that document, which task B's query lane held behind the share",
+			answers, window, waited.Round(time.Millisecond))
+	}
+	release()
+	if err := <-shared; err != nil {
+		t.Fatalf("task A's share: %v", err)
+	}
+	t.Logf("task A's holds query was answered %v after it was sent, while task B's snapshot for a share waited for its room replica's lock", waited.Round(time.Millisecond))
 }
 
 // A member that never answers - an older build, or a process that has just died - costs a query

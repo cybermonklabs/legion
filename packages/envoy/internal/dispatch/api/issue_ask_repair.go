@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -80,9 +81,10 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 // is invented. Every record is dated when the pass writes it. Each issue is repaired in a
 // transaction of its own that holds the issue's owner lock and reads its state and asks again
 // under it, so two passes running at once serialise on that lock and the second finds nothing
-// left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
-// logged and the pass goes on to the next; the returned error names how many failed. It reads
-// deps.Store, deps.Docs and deps.Events.
+// left; a pass that finds nothing writes nothing and appends no event. Each issue's transaction
+// ends docs.WriteRequestBound after it begins (repairIssueAsksOf). One issue's failure, an end at
+// that bound among them, is logged and the pass goes on to the next; the returned error names how
+// many failed. It reads deps.Store, deps.Docs and deps.Events.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
@@ -122,11 +124,11 @@ func RunIssueAskRepair(ctx context.Context, deps Deps, leases duty.Leases) {
 }
 
 // repairIssueAsksOnTick is one interval pass of RunIssueAskRepair, bounded by
-// issueAskRepairTimeout, logging what it changed and why it failed. It sweeps the documents marked
-// owing after markedSince (all, when it is nil) and the closed issues of retry, and answers the
-// next pass's bound and retry: one interval before the pass began, by the database's clock, and
-// the issues it did not repair; or markedSince and retry as they were, when it could not list its
-// candidates.
+// issueAskRepairTimeout, logging what it changed and why it failed (LogIssueAskRepairFailure). It
+// sweeps the documents marked owing after markedSince (all, when it is nil) and the closed issues
+// of retry, and answers the next pass's bound and retry: one interval before the pass began, by
+// the database's clock, and the issues it did not repair; or markedSince and retry as they were,
+// when it could not list its candidates.
 func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Time, retry []string) (*time.Time, []string) {
 	passCtx, cancel := context.WithTimeout(ctx, issueAskRepairTimeout)
 	defer cancel()
@@ -135,13 +137,42 @@ func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Ti
 		slog.Info("dispatch: repaired the asks of closed and reopened issues", repair.LogArgs()...)
 	}
 	if err != nil && ctx.Err() == nil {
-		slog.Error("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "error", err)...)
+		LogIssueAskRepairFailure(repair, err)
 	}
 	if began.IsZero() {
 		return markedSince, retry
 	}
 	since := began.Add(-IssueAskRepairInterval)
 	return &since, unrepaired
+}
+
+// LogIssueAskRepairFailure logs err, a RepairIssueAsks pass's failure, with the counts of repair,
+// what the pass repaired: at Warn, naming the next pass that retries it, where every issue the
+// pass failed met a busy refusal of the document service (refusedBusyOnly), and at Error
+// otherwise. The interval pass (repairIssueAsksOnTick) and the boot's pass (cmd/dispatch) log
+// their failures through it.
+func LogIssueAskRepairFailure(repair IssueAskRepair, err error) {
+	if refusedBusyOnly(err) {
+		slog.Warn("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "retry", "the next pass repairs the issues", "error", err)...)
+		return
+	}
+	slog.Error("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "error", err)...)
+}
+
+// refusedBusyOnly reports whether err, a pass's failure to repair some of its issues
+// (repairIssueAsks), joins only busy refusals of the document service (docs.RefusedBusy): every
+// issue it failed met one, and it neither failed to list its candidates nor ran out of time.
+func refusedBusyOnly(err error) bool {
+	joined, ok := errors.Unwrap(err).(interface{ Unwrap() []error })
+	if !ok {
+		return false
+	}
+	for _, failure := range joined.Unwrap() {
+		if !docs.RefusedBusy(failure) {
+			return false
+		}
+	}
+	return true
 }
 
 // issueAskRepairCandidates lists the issues a repair may have work on, read without locks: each
@@ -203,7 +234,10 @@ func (s *server) repairIssueAsks(ctx context.Context, markedSince *time.Time, re
 		}
 		repair, err := s.repairIssueAsksOf(ctx, issueKey)
 		if err != nil {
-			slog.Error("dispatch: repair the asks of an issue", "issue", issueKey, "error", err)
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				err = fmt.Errorf("the issue's write bound of %s ended its transaction, which rolled back, and the next pass repairs the issue: %w", docs.WriteRequestBound, err)
+			}
+			docs.LogDutyFailure("dispatch: repair the asks of an issue", "the next pass repairs the issue", err, "issue", issueKey)
 			failures = append(failures, fmt.Errorf("%s: %w", issueKey, err))
 			unrepaired = append(unrepaired, issueKey)
 			continue
@@ -218,8 +252,19 @@ func (s *server) repairIssueAsks(ctx context.Context, markedSince *time.Time, re
 
 // repairIssueAsksOf repairs issueKey's asks (RepairIssueAsks) in a transaction of its own, which
 // it commits through the document ledger before publishing the events it appended.
+//
+// The transaction ends docs.WriteRequestBound after it begins, inside the pass's own bound. It
+// writes the issue's documents in turn, so it can wait for a second document's lock whose holder
+// waits for the grant it holds (sweepClosedIssueAsks, docs' loadSlots). The pass is the server's
+// own work, which carries no caller's mark, so Join puts no bound on it (docs' boundCallerWrite),
+// and the pass's bound alone would let one such issue spend every issue's time after it. A
+// transaction the bound ends rolls back, and the next pass repairs the issue (repairIssueAsks).
+// The publish after the commit runs under the pass's context.
 func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueAskRepair, error) {
 	var repair IssueAskRepair
+	pass := ctx
+	ctx, cancel := context.WithTimeout(ctx, docs.WriteRequestBound)
+	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return repair, err
@@ -313,7 +358,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 	if err := ledger.Commit(ctx); err != nil {
 		return IssueAskRepair{}, err
 	}
-	s.publish(ctx, appendedEvents(events...)...)
+	s.publish(pass, appendedEvents(events...)...)
 	if repair.Changed() {
 		slog.Info("dispatch: repaired the asks of an issue", append([]any{"issue", issueKey}, repair.LogArgs()...)...)
 	}

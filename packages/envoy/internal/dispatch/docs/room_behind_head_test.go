@@ -1965,8 +1965,8 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	closeDocumentRoom(t, service, artifactID)
 
-	// The load is held where the window is: ygo's LoadDoc has read the store and the head it
-	// stands at, and the hook that starts the room's instance has not run.
+	// The load is held where the window is: ygo's LoadDocContext has read the store and the head
+	// it stands at, and the hook that starts the room's instance has not run.
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	load := service.srv.OnLoadDocument
@@ -2203,17 +2203,7 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	head := storedHead(t, database, artifactID)
 	room := service.srv.GetDoc(artifactID)
 
-	holder, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds the document's lock: %v", err)
-	}
-	defer holder.Rollback(ctx)
-	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
-		t.Fatalf("hold the document's lock: %v", err)
-	}
-	typeOver(t, alice, "before", "first keystroke")
-	storetest.WaitForLockWaiters(t, holder, 1)
-	foldHistoryPastRoom(t, holder, artifactID, head)
+	holder := foldPastAHeldKeystroke(t, database, alice, artifactID, head)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the document's lock: %v", err)
 	}

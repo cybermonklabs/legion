@@ -633,11 +633,11 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 }
 
 // A cold socket that offers its read while the room's load is running - after the load has looked
-// for a preload (LoadDoc's takePreload) and before it records the room as loaded here
+// for a preload (LoadDocContext's takePreload) and before it records the room as loaded here
 // (onLoadDocument) - offers to a load that will never read it. The load takes that offer out as it
 // records itself, so the socket keeps neither the history nor its hold on the document's
 // head-tracker entry while it stays open. The load is held inside its own read of the store
-// (insideFirstLoadStore), which LoadDoc makes once takePreload has found nothing.
+// (insideFirstLoadStore), which LoadDocContext makes once takePreload has found nothing.
 func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -647,7 +647,8 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	letLoad := func() { releaseOnce.Do(func() { close(release) }) }
 	testcleanup.Add(t, letLoad)
 	// The load holds inside its own read of the store, once that read has returned and before
-	// Load hands it back, which is where LoadDoc makes it: after takePreload has found nothing.
+	// Load hands it back, which is where LoadDocContext makes it: after takePreload has found
+	// nothing.
 	store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID, during: func() {
 		close(reading)
 		<-release

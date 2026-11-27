@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -41,8 +42,9 @@ const (
 // decode - and that error says nothing of this request: the caller retries once the room is
 // evicted, and its retry meets the document itself.
 //
-// A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree holding an element this build does not know is DOC_NEWER_CONTENT: a
+// A stored history this request itself could not decode, or one whose decode parks more than a
+// room's document may, which no room loads, is DOCUMENT_UNLOADABLE, the state a rebuild repairs. A
+// tree holding an element this build does not know is DOC_NEWER_CONTENT: a
 // newer build wrote it while two builds serve one database, so the caller tries again later,
 // perhaps on that build, and no repair applies. A tree outside the schema is DOC_SCHEMA, which both
 // take only after the branches that name the caller's own input or a block the document does not
@@ -308,8 +310,77 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
+	// A call whose error is its own context's end is the service unable to serve it in time, not
+	// a fault: the same 503 DOC_SERVICE_UNAVAILABLE, with the same reason and the same retry
+	// contract, as the document service's own busy refusal (docs.ErrServiceUnavailable, and docs'
+	// errWriteBusy for a write whose wait for the copy-heap pool ended with its request). A burst
+	// of concurrent API writes meets this wherever a request's context ends outside that one
+	// wait: opening a transaction while every pooled connection is held, taking the owner's row,
+	// reading the stored history. Each of those was answered 500, which names a fault of the
+	// server's and tells the caller not to repeat a write the server never made
+	// (dispatch://INFRA-179). The check comes after the document codes, so a failed room or an
+	// unloadable history keeps the answer its own state earns, whatever cancelled this request.
+	if s.endedWithACancelledContext(w, err) {
+		writeError(w, codeDocServiceUnavailable, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
+		return
+	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
 	slog.Error("dispatch: API handler failed", "error", err)
+}
+
+// endedWithACancelledContext reports whether err is the end of the call w answers rather than a
+// fault of the server's: err carries a context's end (context.Canceled or
+// context.DeadlineExceeded) and one of the call's own contexts has ended. Those are the context
+// the call runs on (callOf: the request's, which its client or net/http ends, or inside a keyed
+// run the run's own, which keyedRunLimit bounds), the bound Join puts on the call's whole document
+// write from its request's start (docs.WriteRequestBoundPassed), and the server's lifetime, which
+// ends at a shutdown. Each says the same thing to the caller - the server could not serve this
+// call in time, and the call may be made again - so each is refused alike. A cold read's bound
+// (docs' coldReadTimeout) is not read here: the document service answers it
+// docs.ErrServiceUnavailable, which documentErrorCode has answered before this runs.
+//
+// The end of any other context is a failure like any other and stays a 500: a statement whose own
+// context a pool or a tracer ended while the call's was live
+// (TestAReplyWhoseRouteReadFailsIsNotRefused), or a bound a handler put on one of its waits. A
+// writer that names no call - a recorder a test hands writeHandlerError, a socket's upgrade -
+// leaves only the server's lifetime to read.
+func (s *server) endedWithACancelledContext(w http.ResponseWriter, err error) bool {
+	deadline := errors.Is(err, context.DeadlineExceeded)
+	if !deadline && !errors.Is(err, context.Canceled) {
+		return false
+	}
+	if s.lifetime != nil && s.lifetime.Err() != nil {
+		return true
+	}
+	call := callOf(w)
+	// A call past WriteRequestBound has every DeadlineExceeded answered 503, a bound a handler put
+	// on one of its own waits included, since the error names no deadline. That edge stays: by
+	// then the call's own bound has passed too, and the answer turns what would be a 500 into the
+	// retryable 503 the call would be owed for that bound.
+	return call != nil && (call.Err() != nil || (deadline && docs.WriteRequestBoundPassed(call)))
+}
+
+// answersCall is embedded in a writer that knows the call it answers, naming the context that call
+// runs on: compressAnswers' two writers, which every row of the table answers through, name the
+// request's context as markCallerRequest marked it, and the keyed run's writer (keyedAnswer),
+// which hides every writer beneath it, names the run's.
+type answersCall struct{ call context.Context }
+
+func (a answersCall) callContext() context.Context { return a.call }
+
+// callOf is the context the first writer of w's chain that names a call (answersCall) names,
+// unwrapping each writer before it, and nil when none does.
+func callOf(w http.ResponseWriter) context.Context {
+	for {
+		if named, ok := w.(interface{ callContext() context.Context }); ok {
+			return named.callContext()
+		}
+		inner, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = inner.Unwrap()
+	}
 }
 
 // errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:

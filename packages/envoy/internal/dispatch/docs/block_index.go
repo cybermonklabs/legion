@@ -199,7 +199,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		return BlockIndexReconcileInterval, cursors
 	}
 	if err != nil {
-		slog.Error("dispatch: block index reconciliation", "error", err)
+		LogDutyFailure("dispatch: block index reconciliation", "the next tick does the work again", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
@@ -343,8 +343,8 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			slog.Warn("dispatch: block index skipped a document holding an element this build cannot read",
 				"artifact", document.id, "error", err)
 		case err != nil:
-			slog.Error("dispatch: block index skipped a document it could not index",
-				"artifact", document.id, "error", err)
+			LogDutyFailure("dispatch: block index skipped a document it could not index",
+				"it stays owed, and a later tick indexes it", err, "artifact", document.id)
 		case ahead:
 			tick.LiveAhead++
 			if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.id) == nil {

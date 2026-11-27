@@ -25,8 +25,8 @@ func (s *server) commentProjectionKind(ctx context.Context, comment model.Commen
 
 // projectThreadMark writes the document margin mark a change to comment's body leaves behind:
 // its own, when the comment carries an anchor, and otherwise the mark of the comment it
-// replies to, which holds the text of each reply (commentMarkRecord) and so goes stale when a
-// reply's body moves. A thread anchored nowhere projects nothing. ctx is the handler's
+// replies to, which holds the text of each reply (docs.CommentMarkRecord) and so goes stale when
+// a reply's body moves. A thread anchored nowhere projects nothing. ctx is the handler's
 // document context (Docs.Join), which is the request's context with the transaction joined to
 // it, so the reads below run inside that transaction as commentProjectionKind does.
 //
@@ -70,7 +70,7 @@ func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, ledger *docs.
 		projectionKind = kind
 	}
 	return s.deps.Docs.ProjectMark(ctx, marked.Anchor.ArtifactID, marked.Anchor.MarkID,
-		commentMarkRecord(marked, replies, projectionKind), actor)
+		docs.CommentMarkRecord(marked, replies, projectionKind), actor)
 }
 
 // withWrittenReply is replies, a chain loadReplyChain read, with written in place of the row of
@@ -85,37 +85,6 @@ func withWrittenReply(replies []model.Comment, written model.Comment) []model.Co
 		}
 	}
 	return replies
-}
-
-func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestionKind string) docs.MarkRecord {
-	record := docs.MarkRecord{
-		Kind:      "comment",
-		By:        docs.ActorRef(comment.Author),
-		CreatedAt: timestampValue(comment.CreatedAt),
-		Text:      comment.Body,
-		Resolved:  comment.Resolved,
-		Replies:   make([]docs.MarkReply, 0, len(replies)),
-	}
-	for _, reply := range replies {
-		record.Replies = append(record.Replies, docs.MarkReply{
-			By:   docs.ActorRef(reply.Author),
-			Text: reply.Body,
-			At:   timestampValue(reply.CreatedAt),
-		})
-	}
-	if comment.Suggestion != nil {
-		record.Kind = suggestionKind
-		record.Content = comment.Suggestion.ReplaceWith
-		record.Status = "pending"
-		if comment.Suggestion.Accepted != nil {
-			if *comment.Suggestion.Accepted {
-				record.Status = "accepted"
-			} else {
-				record.Status = "rejected"
-			}
-		}
-	}
-	return record
 }
 
 // commentEventThread is what a comment payload says about the thread the comment joined:

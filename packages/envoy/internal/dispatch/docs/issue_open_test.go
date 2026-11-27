@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
-	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -366,43 +365,33 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 	}
 }
 
-// foldHistoryPastRoom writes artifactID as another process would, in holder, which holds the
-// document's lock, past head, the cursor of the room a test holds, and then folds the history as
-// Compact does with a keep of one: one row, the head, holding the state of every row through it. No
-// row at or below head remains, and the fold keeps every item of the history, so the room's
-// browser updates still build on it (storedHistoryHolds).
+// foldHistoryPastRoom is FoldHistoryPastRoomForTest, failing t where it fails.
 func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head int64) {
 	t.Helper()
+	if err := FoldHistoryPastRoomForTest(context.Background(), holder, artifactID, head); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// foldPastAHeldKeystroke begins a transaction that holds artifactID's document lock, has alice type
+// "first keystroke" over "before", so that her append waits on the lock, and folds the history past
+// head, her room's cursor, in that transaction (foldHistoryPastRoom). It answers the transaction,
+// still holding the lock, for the test to commit; one the test leaves open rolls back as it ends.
+func foldPastAHeldKeystroke(t *testing.T, database *store.Store, alice *docstest.Peer, artifactID string, head int64) pgx.Tx {
+	t.Helper()
 	ctx := context.Background()
-	through := persistence.Version(head)
-	stored, err := documentThrough(artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
+	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("read the stored document: %v", err)
+		t.Fatalf("begin the transaction that holds the document's lock: %v", err)
 	}
-	before := stored.StateVector()
-	written := stored.GetMap("written-by-task-b")
-	stored.Transact(func(txn *crdt.Transaction) {
-		written.Set(txn, "key", "value")
-	})
-	writtenAt := head + 1
-	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
-		artifactID, writtenAt, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
-		t.Fatalf("write the document as task B: %v", err)
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
+		t.Fatalf("hold the document's lock: %v", err)
 	}
-	folding := persistence.Version(writtenAt)
-	state, _, misread, err := fold(storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
-	if err != nil {
-		t.Fatalf("fold the document's history: %v", err)
-	}
-	if misread != nil {
-		t.Fatalf("the folded history does not read back as the rows it folds, so a compaction would leave them: %v", misread)
-	}
-	if _, err := holder.Exec(ctx, `update doc_updates set update = $3 where artifact_id = $1 and version = $2`, artifactID, writtenAt, state); err != nil {
-		t.Fatalf("fold the document's history into task B's write: %v", err)
-	}
-	if _, err := holder.Exec(ctx, `delete from doc_updates where artifact_id = $1 and version < $2`, artifactID, writtenAt); err != nil {
-		t.Fatalf("delete the folded rows: %v", err)
-	}
+	typeOver(t, alice, "before", "first keystroke")
+	storetest.WaitForLockWaiters(t, holder, 1)
+	foldHistoryPastRoom(t, holder, artifactID, head)
+	return holder
 }
 
 // The notification may not reach a process in time: one wait between its listener's redials can
@@ -484,7 +473,7 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	queued := queueAKeystrokeEachSideOfTheClose(t, database, service, alice, artifactID, "before", 3*closeMargin)
 	// The batch of the first keystroke runs through the second: without that this would be two
 	// appends of one update each, not one run the close cuts.
-	if through, _, _ := service.roomBatchThrough(artifactID, queued[0], false); through != queued[1].seq {
+	if through := service.roomBatchThrough(artifactID, queued[0]); through != queued[1].seq {
 		t.Fatalf("the batch of the first keystroke runs through position %d, not the second keystroke's %d: the two are not one run", through, queued[1].seq)
 	}
 

@@ -18,10 +18,11 @@ import (
 // (docs.copiedAsksLockNamespace, "COPY"), the duty leases' (duty.leaseNamespace, "LOOP"), a
 // conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the API's test
 // hooks' (api.testHookLockNamespace, "HOOK"), the boot's repository rename pass's
-// (repoRenameLockNamespace, "RNAM") and the hashtext of a name (the dependency locks), none of
-// which is this value, so an owner lock never waits on one of those whatever its owner hashes to.
-// It is exported, with LockKey, so a test reads an owner's lock out of pg_locks by the keys this
-// file takes it with rather than by spelling them again (api/files_test.go).
+// (repoRenameLockNamespace, "RNAM"), a person's claims of client ids in one document
+// (docs.clientClaimsLockNamespace, "CLMS") and the hashtext of a name (the dependency locks), none
+// of which is this value, so an owner lock never waits on one of those whatever its owner hashes
+// to. It is exported, with LockKey, so a test reads an owner's lock out of pg_locks by the keys
+// this file takes it with rather than by spelling them again (api/files_test.go).
 const OwnerLockNamespace int32 = 0x4F574E52
 
 // OwnerLockGateNamespace and OwnerLockGateKey are the two keys of the owner lock gate ("OWNG", 0),
