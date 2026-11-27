@@ -3389,7 +3389,7 @@ func (s *Service) failRoom(room string, cause error) {
 }
 
 // failRoomLocked fails room: it drops the room's settlement and starts the room's eviction
-// (evictFailed below), which closes the room's sockets. It logs the failure and its cause once,
+// (evictFailed), which closes the room's sockets. It logs the failure and its cause once,
 // whichever of its callers made it; some of them log a cause of their own first, as livewrite.go
 // and the settlement retry above do.
 func (s *Service) failRoomLocked(room string, state *roomState, cause error) {

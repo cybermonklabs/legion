@@ -344,8 +344,8 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 	}
 }
 
-// A room's failure is logged once, as it happens, with the room and the cause, whichever path
-// failed it: a failure no later write met otherwise left no line naming it (failRoomLocked).
+// failRoom logs a room's failure once, as it happens, with the room and the cause: a failure no
+// later write met otherwise left no line naming it (failRoomLocked).
 func TestARoomFailureIsLoggedWithItsCause(t *testing.T) {
 	// Not parallel: it swaps the process's default logger (captureWarnings).
 	logs := captureWarnings(t)
