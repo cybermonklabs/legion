@@ -170,6 +170,13 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleRepositoryDrifted is whether the issue's pod was built from a repository its record no
+	// longer holds (supervision.podRepositoryDrifted), the idle rule's repository hold. It is a
+	// function and not the runtime for the reason plan.recordedRepository is one: the
+	// answer is a reading of the runtime against the workflow's own record, and the pass wants
+	// the reading. Nil where release is off and in a test that builds the runtime by hand, which
+	// reads as no drift.
+	idleRepositoryDrifted func(ctx context.Context, issue string) bool
 	// release is the daemon's project release mark, set by attach: while it holds, the idle and
 	// unowned ticks decide no pod (idlePass) and the wakes fire nothing (wakePass). Nil, in a test
 	// that builds the runtime by hand, holds nothing.
@@ -178,13 +185,6 @@ type workflowRuntime struct {
 	// hold their roles yet, the set attach also gives the outbox: a claim's turn or failure takes
 	// it out (claimDurableState). Nil, in a test that builds the runtime by hand, holds no claim.
 	releaseStopped *releaseStoppedClaims
-	// idleRepositoryDrifted is whether the issue's pod was built from a repository its record no
-	// longer holds (supervision.podRepositoryDrifted), the idle rule's repository hold. It is a
-	// function and not the runtime for the reason plan.recordedRepository is one: the
-	// answer is a reading of the runtime against the workflow's own record, and the pass wants
-	// the reading. Nil where release is off and in a test that builds the runtime by hand, which
-	// reads as no drift.
-	idleRepositoryDrifted func(ctx context.Context, issue string) bool
 	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
 	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
 	// idle, wake and stuck passes read their now from, so a test clock moves all of them
