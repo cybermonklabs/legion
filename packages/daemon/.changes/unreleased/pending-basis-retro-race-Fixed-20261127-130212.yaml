@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    A person's move of an ancestor to retro or done on Dispatch's board ends every step that waits
+    on that ancestor's approval request, in the move's own transaction, whatever the outbox runs
+    first. Before, the end waited for the step's pending-basis seed to read Dispatch, and when the
+    daemon's own status write had put the ancestor back first (a parent's move to awaiting its
+    children, the status repair, or the boot's release of a held parent), the seed read the
+    ancestor's old status and ended nothing: the step waited with no line logged, as a CI run did
+    for 29 minutes. The daemon still writes the ancestor's phase status back over the person's
+    move, as before. A seed whose read finds nothing new now logs one line saying so.
+time: 2026-11-27T13:02:12Z
+custom:
+    Issue: pending-basis-retro-race

@@ -20,39 +20,44 @@ import (
 // (dispatch://INFRA-3904, the 29-minute silence of CI job 140311446907 at f1db1daf). P stands at
 // accepting with its open child R, whose spec step waits on P's approval request; P's sign-off is
 // refused while R waits; the person moves P to retro on Dispatch's board. The settle of that move
-// queues two outbox rows in one transaction, and the outbox runs them in no fixed order:
+// can queue two outbox rows in one transaction, and the outbox runs them in no fixed order:
 //
 //   - R's pending-basis seed, which reads P on Dispatch and ends R's wait when P shows retro
-//     (outbox.go:4590, seedPendingBasis, at 1341b5f8);
+//     (seedPendingBasis, outbox.go:4590 at 1341b5f8);
 //   - P's status write: admission moves P from accepting to awaiting_children, since it holds its
 //     open child, and writes that phase's status, in_progress, to Dispatch, carrying as its
-//     observed status the person's own retro (awaiting_children.go:143-144 and effects.go:273, at
-//     1341b5f8), so the outbox's check that Dispatch still shows what the row observed
-//     (statusMoved, outbox.go:1317, called at :1136, at 1341b5f8) lets it through.
+//     observed status the person's own retro (awaitChildren, awaiting_children.go:143-144, through
+//     Engine.status, effects.go:273, at 1341b5f8), so the outbox's check that Dispatch still shows
+//     what the row observed (statusMoved, outbox.go:1317, called at :1136, at 1341b5f8) lets it
+//     through.
 //
-// A seed that runs first reads retro and ends the wait. A seed that runs after the status write
-// reads in_progress, which is what the registration's own seed read, so its fact is a duplicate
-// (the seed's fact id is built from what its read found, outbox.go:4601 at 1341b5f8) and nothing
-// further cues R: R waits on P's request, P waits on its open child R, and P's sign-off is refused
-// while R waits. Each proof holds one of the two rows through the rig's own outbox hold
-// (overrides.holdOutbox), so each order runs on purpose rather than as the machine's load falls:
+// At 1341b5f8 a seed that ran after the status write read in_progress, which is what the
+// registration's own seed read, so its fact was a duplicate (the seed's fact id is built from what
+// its read found, outbox.go:4601 at 1341b5f8) and nothing further cued R: R waited on P's request,
+// P waited on its open child R, and P's sign-off was refused while R waited. Now the person's move
+// ends R's wait in its own transaction, while the copy of Dispatch shows P retro
+// (endPendingOnLeave), so the order no longer decides it. The workflow still writes P's phase
+// status back over the person's move, as it did.
 //
-//   - TestAPersonsRetroEndsTheWaitWhenTheSeedRunsAfterPsStatusWrite holds the seed until P's
-//     status rows are done;
+// Each proof holds rows through the rig's own outbox hold (overrides.holdOutbox), so each order
+// runs on purpose rather than as the machine's load falls:
+//
+//   - TestAPersonsRetroEndsTheWaitWhenTheSeedRunsAfterPsStatusWrite holds R's seeds until P's
+//     status rows are done; it fails at 1341b5f8;
 //   - TestAPersonsRetroEndsTheWaitWhenTheSeedRunsBeforePsStatusWrite holds P's status write until
-//     the wait ended;
+//     the wait ended, and asserts the write was there to hold;
 //   - TestAPersonsRetroWhileTheDaemonIsDownEndsTheWaitAfterTheBoot moves P to retro while no daemon
-//     runs, and holds the seed through the boot until P's status rows are done. The boot queues
-//     every waiting step's pending-basis seed as its runtime is built (queueRecordedGatesPublish,
-//     workflow.go:947 at 1341b5f8), runs its listing's admission pass before it serves
-//     (daemon.go:758 at 1341b5f8) and the status repair in its boot fact (resume.go:77 at
-//     1341b5f8). At 1341b5f8 none of the three writes P's status over the person's retro, so this
-//     proof passes there; it keeps the boot's order of those rows from growing the live race.
+//     runs and holds R's seeds through the boot until P's hold has cleared and P's status rows are
+//     done. The boot has the same race: admission holds P's newer listing entry until the
+//     consumer applies the person's retro (admit.go:1345-1346 and :2265 at 1341b5f8), and the
+//     release of that hold, polled every 2 s (workflow.go:2485 and :2577-2597 at 1341b5f8), moves P
+//     to awaiting_children and queues in_progress over the retro (admit.go:2298 at 1341b5f8); the
+//     status repair in the boot fact can queue needs_review over it too (status_repair.go:77 and
+//     :92, resume.go:77, at 1341b5f8). It fails at 1341b5f8 once it waits for the release.
 //
-// Each proof's verdict is read once the held row has run, not by a wait on the state: the seed's
-// fact and the wait it ends are one transaction, so once the outbox holds none of R's seeds the
-// outcome is decided, and a wait that did not end is said at once rather than at the test's
-// deadline.
+// Each verdict is read once the held seeds have run, not by a wait on the state: a seed's fact
+// and the wait it ends are one transaction, so once the outbox holds none of R's seeds the outcome
+// is decided, and a wait that did not end is said at once rather than at the test's deadline.
 
 // refuseSignOff writes P into accepting by hand and has its architect's sign-off refused while R
 // waits on P's approval request (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), so P stands at accepting with
@@ -128,18 +133,25 @@ func (r *personHandoverRig) seedRanAfterStatusWrite(held *outboxHold, run pendin
 	r.pendingEnded(run.basisRun, run.ask, retroAccepted(run), true, phase.Admitted)
 }
 
-// waitEndedAfterTheSeed reads the state once, after R's seeds have run, and fails naming the order
-// if R still waits: the seed's fact and the end of the wait are one transaction, so nothing later
-// would end it.
+// waitEndedAfterTheSeed reads the state once, after R's seeds have run, and fails if R still
+// waits, saying what it read: what Dispatch showed for P when the seeds were released, the step's
+// status, and how many of the outbox's duplicate-read lines name R's seeds. A seed's fact and the
+// end of the wait are one transaction, so nothing later would end it.
 func (r *personHandoverRig) waitEndedAfterTheSeed(run pendingRun, shown string) {
 	t := r.t
 	t.Helper()
 	state, body := settled(t, r.d, "answer its state", func(_ api.State) bool { return true })
 	if step := stepOf(state, run.root.Key); step.Status == api.GatedStepPendingOnBasis || step.Status == api.GatedStepUnregistered {
-		t.Fatalf("the pending-basis seed of %s ran after the status rows of %s, which left Dispatch showing %s %s, and %s still waits on %s (step %s): "+
-			"the person moved %s to retro, and the daemon's own status write put it back before the seed read it, so the seed read what the registration's seed "+
-			"had read, its fact was a duplicate, and nothing will cue %s again (dispatch://INFRA-3904)\nstate %s",
-			run.root.Key, run.parent.Key, run.parent.Key, shown, run.root.Key, run.ask, step.Status, run.parent.Key, run.root.Key, body)
+		const duplicate = "outbox pending-basis seed read what an earlier read of the same wait found, so its fact is a duplicate and changes nothing"
+		duplicates := 0
+		for _, line := range loggedLines(t, r.logs.String(), duplicate) {
+			if line["msg"] == duplicate && line["issue"] == run.root.Key {
+				duplicates++
+			}
+		}
+		t.Fatalf("%s still waits on %s (step %s) after its held pending-basis seeds ran; Dispatch showed %s %s when they were released, "+
+			"and the daemon logged %d duplicate reads of %s's seeds (dispatch://INFRA-3904)\nstate %s",
+			run.root.Key, run.ask, step.Status, run.parent.Key, shown, duplicates, run.root.Key, body)
 	}
 }
 
@@ -152,11 +164,9 @@ func TestAPersonsRetroEndsTheWaitWhenTheSeedRunsAfterPsStatusWrite(t *testing.T)
 	r, run := retroWorld(t, held, []string{"Compost bay thermometer", "Allotment soil stewardship"})
 	held.hold(run.root.Key, record.OutboxKindPendingBasisSeed)
 	r.setStatus(run.parent.Key, "retro")
-	// The settle of the person's move queues the seed and P's status write in one transaction, so
-	// the seed held in the outbox says the status write, if any, is queued too.
-	testwait.Eventually(t, "the person's move of "+run.parent.Key+" to queue the pending-basis seed of "+run.root.Key, func() bool {
-		return r.outboxCount(run.root.Key, record.OutboxKindPendingBasisSeed) > 0
-	})
+	// The settle of the person's move queues P's status write, and at 1341b5f8 R's seed beside it,
+	// in the transaction that applies the move's event; once the event is applied, both are queued.
+	r.applied(r.newestEvent(run.parent.Key, "issue.updated", func(e scratchEvent) bool { return e.status() == "retro" }))
 	r.seedRanAfterStatusWrite(held, run)
 	t.Logf("the person's retro of %s ended the wait of %s with the seed run after %s's status rows", run.parent.Key, run.root.Key, run.parent.Key)
 }
@@ -171,6 +181,11 @@ func TestAPersonsRetroEndsTheWaitWhenTheSeedRunsBeforePsStatusWrite(t *testing.T
 	held.hold(run.parent.Key, record.OutboxKindDispatchStatus)
 	r.setStatus(run.parent.Key, "retro")
 	r.pendingEnded(run.basisRun, run.ask, retroAccepted(run), true, phase.Admitted)
+	// The status write is queued in the move's settle and cannot run while held, so a row here says
+	// the wait ended while P's status write waited behind it.
+	if rows := r.outboxCount(run.parent.Key, record.OutboxKindDispatchStatus); rows == 0 {
+		t.Fatalf("the outbox holds no status row of %s after the wait of %s ended: there was no status write to hold, so this run proves no order", run.parent.Key, run.root.Key)
+	}
 	held.release(run.parent.Key)
 	r.dispatchRowsDone(run.parent.Key)
 	t.Logf("the person's retro of %s ended the wait of %s with %s's status write held; Dispatch shows %s %s once it ran",
@@ -189,8 +204,7 @@ func (r *personHandoverRig) bootFacts() int {
 }
 
 // A person's retro given while no daemon runs ends the wait after the boot, with R's pending-basis
-// seed held through the boot until P's status rows are done: at 1341b5f8 nothing of the boot
-// writes P's status over the person's retro.
+// seeds held through the boot until P's hold has cleared and P's status rows are done.
 func TestAPersonsRetroWhileTheDaemonIsDownEndsTheWaitAfterTheBoot(t *testing.T) {
 	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	held := &outboxHold{}
@@ -202,11 +216,15 @@ func TestAPersonsRetroWhileTheDaemonIsDownEndsTheWaitAfterTheBoot(t *testing.T) 
 	rebindHeldPorts(t, &r.cfg)
 	r.boot()
 	// The daemon serves only once its listing's admission pass committed, and its boot fact, which
-	// runs the status repair, runs beside the API: both have queued what they queue once the boot
-	// fact is recorded.
+	// runs the status repair, runs beside the API. Admission holds P's newer listing entry until the
+	// consumer applies the person's retro, and the release of that hold moves P to awaiting_children
+	// and queues its status write: P recorded there says the release has queued what it queues.
 	testwait.Eventually(t, "the daemon to apply its boot fact", func() bool { return r.bootFacts() == booted+1 })
 	testwait.Eventually(t, "the boot to queue the pending-basis seed of "+run.root.Key, func() bool {
 		return r.outboxCount(run.root.Key, record.OutboxKindPendingBasisSeed) > 0
+	})
+	testwait.Eventually(t, "the release of "+run.parent.Key+"'s hold to move it to awaiting_children", func() bool {
+		return r.record(run.parent.Key).Phase == phase.AwaitingChildren
 	})
 	r.seedRanAfterStatusWrite(held, run)
 	t.Logf("the person's retro of %s, given while no daemon ran, ended the wait of %s after the boot", run.parent.Key, run.root.Key)
