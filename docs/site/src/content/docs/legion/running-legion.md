@@ -1446,9 +1446,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    the new image before it serves.
 
    **After the first upgrade to a release that counts the moves back by kind,** every issue starts
-   at no counts: the migration fills none in from the past. An issue already in flight therefore
-   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
-   first move back after the upgrade.
+   at no counts: the migration fills none in from the past. An issue's counts add up to no more
+   than its `pass`, which counts every move back, while its `rounds` counts review rounds alone,
+   a conflict round included. They add up to less where a move was made at a conflicting head,
+   which raises `pass` and no pair, or where the issue was already in flight at the upgrade. A
+   hook of `hooks:` counts from the first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
