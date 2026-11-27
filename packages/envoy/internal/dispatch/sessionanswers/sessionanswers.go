@@ -36,6 +36,20 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is true
 	       or exists (select 1 from ask_followers f where f.ask_id = a.id and f.session_id = $1))`
 
+// destinationColumns are the columns that the destination arm of query and of cutQuery reads of
+// each event: its type, the id its payload names, and the resolution an ask.resolved carries.
+const destinationColumns = `select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution`
+
+// destinationPredicate holds that arm to the events of query's S1: a person's events of the types
+// that carry a person's words to a session, created since $2, whose published_destinations hold
+// the session's topic $3.
+const destinationPredicate = `
+		from events e
+		where e.actor->>'kind' = 'user'
+		  and e.type in ` + model.PersonWordsEventTypesSQL + `
+		  and e.created_at >= $2
+		  and e.published_destinations @> array[$3::text]`
+
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
 //
@@ -107,24 +121,18 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
-const destinationColumns = `select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution`
-
-const destinationPredicate = `
-		from events e
-		where e.actor->>'kind' = 'user'
-		  and e.type in ` + model.PersonWordsEventTypesSQL + `
-		  and e.created_at >= $2
-		  and e.published_destinations @> array[$3::text]`
-
 const query = `
 	with reached_by_destination as (
 		` + destinationColumns + destinationPredicate + `
 	), ` + itemSources + itemRows + itemOrder
 
-// The events shadow supplies the upper created_at bound. The outbox stops changing destinations
-// once it sets published_at, but nothing dates a particular destination before settlement.
-// Read that evidence and the item list in one snapshot. The materialized destination branch
-// holds only matching events, not the window's events for other sessions.
+// cutQuery is query at the cut $4. The events shadow supplies the upper created_at bound. The
+// outbox stops changing destinations once it sets published_at, but nothing dates a particular
+// destination before settlement, so an event of the destination arm counts only where its
+// published_at is at or before the cut; where one's is not, the read answers a single
+// publication_unknown row (ErrPublicationAtCutUnknown) in place of the items. Read that evidence
+// and the item list in one snapshot. The materialized destination branch holds only matching
+// events, not the window's events for other sessions.
 const cutQuery = `
 	with destination_events as materialized (
 		` + destinationColumns + `, e.published_at` + destinationPredicate + `

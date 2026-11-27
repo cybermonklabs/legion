@@ -76,13 +76,13 @@ var AsksChangedAfterStatement = `select x.id, x.wording_unknown from (
 where x.later is not null or x.wording_unknown`
 
 // AskPartsAtTheCutStatement reads the part state that the newest state event of each ask at a cut
-// stored. Of the asks whose ids $1 holds (text[]), it answers the id of each ask with an event of
-// its state (AskStateTypes) at or before the cut $2 (timestamptz), and beside it what the newest
-// of those events holds as public.events stores it: its revision (revision), its options
-// (options) and its answer (answer), each a JSON value, null where the payload holds none. The
-// follower events carry no ask and are no state event (AskFollowerTypes), so it reads none.
-// The part ids it answers are the ones the event's write stored, never the ones a read adds to the
-// payload from the present tables (api's attachAskEventFields).
+// stored. Of the asks whose ids $1 holds (text[]), it answers the id of each ask whose newest event
+// of its state (AskStateTypes) at or before the cut $2 (timestamptz) stores a JSON number as its
+// revision, and beside it what that event holds as public.events stores it: its revision
+// (revision), its options (options) and its answer (answer), each a JSON value, null where the
+// payload holds none. The follower events carry no ask and are no state event (AskFollowerTypes),
+// so it reads none. The part ids it answers are the ones the event's write stored, never the ones a
+// read adds to the payload from the present tables (api's attachAskEventFields).
 //
 // A past-time answer gives an ask's revision and its part ids from the present tables only where
 // that payload holds the same positive revision as the block index holds now, and the same part
@@ -94,6 +94,9 @@ where x.later is not null or x.wording_unknown`
 // writer of this build stores a revision or a part id, so today the answer leaves out the parts of
 // every ask.
 //
+// The revision is tested on the newest event alone, after the lateral read picks it: an older
+// event's revision would stand for a part state that a newer event may have changed.
+//
 // It names public.events by its schema, so that the store's binding at a cut does not read a
 // shadow in its place (Bind). The partial index events_ask_state serves the read of each ask's
 // events, as it serves AsksChangedAfterStatement's.
@@ -104,7 +107,8 @@ var AskPartsAtTheCutStatement = `select a.id, s.payload->'revision' as revision,
 		where e.payload->>'id' = a.id and e.type in ` + askStateList + `
 			and e.created_at <= $2::timestamptz
 		order by e.id desc limit 1
-	) s`
+	) s
+	where jsonb_typeof(s.payload->'revision') = 'number'`
 
 // askWording is the wording of an ask as four SQL expressions: its question, its options (a JSON
 // array), whether it takes several options, and its urgency.

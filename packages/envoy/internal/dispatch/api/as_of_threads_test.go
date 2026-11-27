@@ -1102,8 +1102,9 @@ func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
 // text's tree. No writer stores an ask's part state in its events yet, so the test stores it as
 // such a writer would (storeAskParts): an event that stores none, the revision alone, another id
 // of an option, or no id of the answer gives nothing, and neither does an ask whose revision a
-// re-index raised after the cut. A re-index after the cut that changes nothing keeps the parts
-// given. No write changed a wording with no event, so each ask's read gives its wording.
+// re-index raised after the cut, nor one whose newest event at the cut stores none though an older
+// event stored the parts the index holds now. A re-index after the cut that changes nothing keeps
+// the parts given. No write changed a wording with no event, so each ask's read gives its wording.
 func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOK")
 	handler, database := world.handler, world.served.deps.Store
@@ -1129,7 +1130,8 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 	questionOnly := open("Do we ship this week?")
 	answered := open("Which day do we review?", "Monday", "Tuesday")
 	answerUnnamed := open("Which day do we close?", "Monday", "Tuesday")
-	all := []string{stored, unstored, revisionOnly, otherID, reindexed, questionOnly, answered, answerUnnamed}
+	handedOn := open("Which day do we launch?", "Monday", "Tuesday")
+	all := []string{stored, unstored, revisionOnly, otherID, reindexed, questionOnly, answered, answerUnnamed, handedOn}
 	given := map[string]bool{stored: true, questionOnly: true, answered: true}
 	// A reply to a part of each ask: its first option, b2, or the question, b1, of the ask that has
 	// no option.
@@ -1147,7 +1149,8 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 	world.settle(t)
 
 	// What the newest event of each ask at the cut stores of its parts: all of them, nothing, the
-	// revision alone, another id of an option, or no id of the answer.
+	// revision alone, another id of an option, or no id of the answer. The handed-on ask's event
+	// that stores them is not its newest at the cut: the hand-on below follows it.
 	before := map[string]shownAskParts{}
 	for _, id := range all {
 		before[id] = askPartsNow(t, handler, id)
@@ -1164,8 +1167,19 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 		questionOnly:  {revision: before[questionOnly].revision},
 		answered:      before[answered],
 		answerUnnamed: unnamed,
+		handedOn:      before[handedOn],
 	} {
 		storeAskParts(t, database, id, stores)
+	}
+	// A hand-on appends a state event that stores no part state and changes no part.
+	asOfWrite(t, handler, http.MethodPut, "/api/v1/asks/"+handedOn+"/asked-of", map[string]any{"asked_of": "alice"}, "alice")
+	var handOnNewest bool
+	if err := database.Pool.QueryRow(ctx, `
+		select e.type = 'ask.asked_of' and not (e.payload ? 'revision') from public.events e
+		where e.payload->>'id' = $1 and e.type = any($2::text[])
+		order by e.id desc limit 1
+	`, handedOn, asof.AskStateTypes()).Scan(&handOnNewest); err != nil || !handOnNewest {
+		t.Fatalf("the newest state event of ask %s is its hand-on, with no revision = %t (%v), want true", handedOn, handOnNewest, err)
 	}
 	cut := takeCut()
 	time.Sleep(5 * time.Millisecond)
@@ -1195,6 +1209,11 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 	if present[reindexed].revision <= before[reindexed].revision || !slices.Equal(present[reindexed].options, before[reindexed].options) {
 		t.Fatalf("the re-index of parts an older build summed moved the parts of ask %s from %+v to %+v, want a later revision and the same part ids",
 			reindexed, before[reindexed], present[reindexed])
+	}
+	// The older event's parts would confirm the ask's parts now, so only the newest event's
+	// storing none leaves them out.
+	if !present[handedOn].same(before[handedOn]) {
+		t.Fatalf("the hand-on moved the parts of ask %s from %+v to %+v", handedOn, before[handedOn], present[handedOn])
 	}
 
 	// requireParts holds object, the ask id at place in an answer at the cut whose

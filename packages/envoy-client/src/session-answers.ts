@@ -390,6 +390,11 @@ interface SessionEntry {
   /** Whether a read already gave the session the notice that the URL has no answers route, since
    *  the last read of it that answered with a list. */
   noRouteReported: boolean;
+  /** Whether a read of that URL was answered with the list left out at a cut
+   *  (`sessionAnswersWereLeftOut`) since the last read of it that answered with a list: the next
+   *  read asks at a cut, as it does where the list kept one. Memory only: `answers.json` keeps
+   *  lists. */
+  omittedAtCut: boolean;
 }
 
 interface SessionAnswersState {
@@ -578,13 +583,15 @@ async function settleWithin<T>(
  * prints it as left out by Dispatch. Dispatch answers such a token at its cut whatever the read
  * sends, so a read under it counts the 72 hours back from the cut, not from this host's clock:
  * every render of its list, its `words` and its `since`. Where the list read before kept a cut,
- * the read sends no `since`, and Dispatch answers the 72 hours before the cut it reads at, the
- * token's, whatever cut the list kept. When the answer's having a cut differs from the list's
- * (the list kept none, as on a token's first read, or the session's token now reads the present),
- * the read asks once more, at once, as that answer was answered: with no `since` at a cut, by
- * this host's clock at none. That second answer is the read's own: it is the same read in flight,
- * under the same 10 s, and when it fails the read fails.
- * An explicit omission at the cut carries no cached list, and writes no cache.
+ * or the read before was answered with the list left out at one, the read sends no `since`, and
+ * Dispatch answers the 72 hours before the cut it reads at, the token's, whatever cut the list
+ * kept. When the answer's having a cut differs from how the read asked (the list kept none, as on
+ * a token's first read, or the session's token now reads the present), the read asks once more,
+ * at once, as that answer was answered: with no `since` at a cut, by this host's clock at none.
+ * That second answer is the read's own: it is the same read in flight, under the same 10 s, and
+ * when it fails the read fails.
+ * An explicit omission at the cut carries no cached list, and writes no cache: only memory keeps
+ * that the read was answered at a cut.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -640,6 +647,7 @@ export async function readSessionAnswers(
     inFlight: undefined,
     overdue: false,
     noRouteReported: false,
+    omittedAtCut: false,
   };
   entries.set(url, current);
   if (current.cache === undefined && directory !== undefined) {
@@ -687,11 +695,11 @@ export async function readSessionAnswers(
       );
       return { response, cut, atCut };
     };
-    // The read asks as the list read before was answered: at a cut where it kept one. An answer
-    // whose having a cut differs (a token's first read, or a session whose token now reads the
-    // present) answered the wrong window, so the read asks once more, at once, as that answer was
-    // answered.
-    const started = ask(current.cache?.as_of !== undefined)
+    // The read asks as the read before was answered: at a cut where its list kept one or its
+    // answer left the list out at one. An answer whose having a cut differs (a token's first read,
+    // or a session whose token now reads the present) answered the wrong window, so the read asks
+    // once more, at once, as that answer was answered.
+    const started = ask(current.omittedAtCut || current.cache?.as_of !== undefined)
       .then((answer) => {
         const atCut = answer.cut.cut !== undefined;
         return answer.atCut === atCut ? answer : ask(atCut);
@@ -701,6 +709,7 @@ export async function readSessionAnswers(
           const asOf = cut.cut;
           if (asOf !== undefined && sessionAnswersWereLeftOut(response, cut)) {
             current.noRouteReported = false;
+            current.omittedAtCut = true;
             return { omittedAt: asOf };
           }
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a
@@ -717,6 +726,7 @@ export async function readSessionAnswers(
           };
           current.cache = cache;
           current.noRouteReported = false;
+          current.omittedAtCut = false;
           if (directory !== undefined) {
             try {
               mkdirSync(directory, { recursive: true, mode: 0o700 });

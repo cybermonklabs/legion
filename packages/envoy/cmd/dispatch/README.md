@@ -5079,6 +5079,10 @@ The reasons, which `asof.AbsentFields` gives for each member:
   The block of a post deleted at any time reads removed with no text, and none of the three is left out.
   A part of an ask is given where the ask's part ids and revision are given (above).
 
+- An agent's answers at a cut count an event that a person wrote in the window the request asks for, and whose `published_destinations` hold the session's topic, only where the event's `published_at` is at or before the cut.
+  The outbox records when it settled an event (`published_at`), not when it published the event to each topic, so no record gives whether the session's topic had an event that the outbox settled after the cut, or has not settled.
+  Where the window holds such an event, the answer leaves out both `items` and `total`, and names `/items` and `/total` (`sessionanswers.ErrPublicationAtCutUnknown`).
+
 - A GitHub read now: what each check is compared with, whether a pass stands, the CI result, and where a result's commit stands.
 
 - The program's current deploy, read now: whether a result of a check of production or of the graph, read after merge or on the default branch, counts (`not_counted`).

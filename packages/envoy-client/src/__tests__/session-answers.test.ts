@@ -1500,6 +1500,46 @@ describe("readSessionAnswers under a token that carries a cut", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
+  test("a fresh omission learns its cut in two requests, and the next read asks at it in one", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    const later = "2026-10-27T11:30:00.000000Z";
+    const missing = { session_id: session, since: "2026-10-24T11:30:00Z" };
+    let respond = () =>
+      Response.json(missing, {
+        headers: {
+          [DISPATCH_AS_OF_HEADER]: later,
+          [DISPATCH_AS_OF_ABSENT_HEADER]: "/items,/total",
+        },
+      });
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+    const sinces = () => calls.map((call) => call.url.searchParams.get("since"));
+    const omitted: SessionAnswersRead = {
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was left out at ${later}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    };
+
+    // No list was read, so the read asked by this host's clock; the answer named the cut, and the
+    // read asked once more, with no `since`.
+    expect(await readSessionAnswers(options)).toEqual(omitted);
+    expect(sinces()).toEqual([SINCE, null]);
+
+    // The omission kept no list, but the read remembers it was answered at a cut: one request.
+    expect(await readSessionAnswers(options)).toEqual(omitted);
+    expect(sinces()).toEqual([SINCE, null, null]);
+    expect(existsSync(cacheFile(root, session))).toBe(false);
+
+    // The token now reads the present: the read asks again by this host's clock, and the list it
+    // keeps names no cut, so the next read asks by that clock at once.
+    respond = () => listed(recent);
+    expect((await readSessionAnswers(options)).source).toBe("fresh");
+    expect(sinces()).toEqual([SINCE, null, null, null, SINCE]);
+    await readSessionAnswers(options);
+    expect(sinces()).toEqual([SINCE, null, null, null, SINCE, SINCE]);
+  });
+
   test("an answers.json that names no cut still renders, its left-out question as left out by Dispatch", async () => {
     const root = stateDir();
     const session = newSession();

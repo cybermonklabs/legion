@@ -43,9 +43,9 @@ func (s *server) asksChangedAfterTheCut(ctx context.Context, ids []string, cut a
 }
 
 // askPartsThen is the part state that the newest state event of an ask at a cut stored, as
-// public.events holds it (asof.AskPartsAtTheCutStatement): its revision, 0 where the payload holds
-// no whole number, and its options and its answer with the part id that the event's write stored
-// in each, never one that a read adds from the present tables (attachAskEventFields).
+// public.events holds it (asof.AskPartsAtTheCutStatement): its revision, a positive whole number,
+// and its options and its answer with the part id that the event's write stored in each, never
+// one that a read adds from the present tables (attachAskEventFields).
 type askPartsThen struct {
 	revision int
 	options  []model.AskOption
@@ -74,28 +74,33 @@ func (then askPartsThen) confirms(shown model.Ask) bool {
 
 // askPartsAtTheCut reads, of the asks ids names, the part state that the newest state event of
 // each at cut stored (asof.AskPartsAtTheCutStatement), by ask id, in one statement over every id.
-// An ask with no state event at the cut is not in it, and neither is one whose payload holds
-// options or an answer that this build cannot read: no record gives such an ask's parts.
+// An ask with no state event at the cut is not in it, and neither is one whose newest such event
+// stored no positive whole revision, or whose payload holds options or an answer that this build
+// cannot read: no record gives such an ask's parts.
 func (s *server) askPartsAtTheCut(ctx context.Context, ids []string, cut asof.Cut) (map[string]askPartsThen, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, asof.AskPartsAtTheCutStatement, ids, cut.Time())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	stored := map[string]askPartsThen{}
+	var stored map[string]askPartsThen
 	for rows.Next() {
 		var id string
 		var revision, options, answer []byte
 		if err := rows.Scan(&id, &revision, &options, &answer); err != nil {
 			return nil, err
 		}
-		var then askPartsThen
-		if number, err := strconv.Atoi(string(revision)); err == nil {
-			then.revision = number
+		number, err := strconv.Atoi(string(revision))
+		if err != nil || number <= 0 {
+			continue
 		}
+		then := askPartsThen{revision: number}
 		if options != nil && json.Unmarshal(options, &then.options) != nil ||
 			answer != nil && json.Unmarshal(answer, &then.answer) != nil {
 			continue
+		}
+		if stored == nil {
+			stored = map[string]askPartsThen{}
 		}
 		stored[id] = then
 	}
@@ -118,9 +123,6 @@ func (s *server) askPartsGivenAtTheCut(ctx context.Context, ids []string, cut as
 	}
 	shown := make([]*model.Ask, 0, len(stored))
 	for id, then := range stored {
-		if then.revision <= 0 {
-			continue
-		}
 		// The read below writes the present ids into the ask it reads, so it reads copies: then
 		// keeps the ids that the event stored.
 		ask := &model.Ask{ID: id, Options: slices.Clone(then.options)}
