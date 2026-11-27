@@ -18,6 +18,26 @@ function orDash(value: string | null): string {
  *  workflow command in a runner's log. */
 const plainWord = /^(?!.*##\[)[^\s"\\\p{Cc}\p{Cf}\p{Cs}\p{Mn}]+$/u;
 
+/** A combining mark, which `oneLineJson` writes as it stands: JSON escapes no such character, and
+ *  `printableJson` escapes none either, since a mark is a letter's own in the prose other commands
+ *  print through it. In a check id it is not prose: a variation selector (U+FE0F) or U+034F makes
+ *  an id read as another, so a quoted id writes each as its `\u` escape (`quotedCheck`). */
+const INVISIBLE_MARK = /\p{Mn}/gu;
+
+/** A check id that is no plain word, as one JSON string: `oneLineJson`, with each combining mark
+ *  written as its own `\u` escape, so the id a reader sees is the id Dispatch holds, character for
+ *  character. It reads back as the same string. */
+function quotedCheck(check: string): string {
+  return oneLineJson(check).replace(
+    INVISIBLE_MARK,
+    (mark) =>
+      Array.from(
+        { length: mark.length },
+        (_, unit) => `\\u${mark.charCodeAt(unit).toString(16).padStart(4, "0")}`
+      ).join("")
+  );
+}
+
 /** What a run's line ends with after its result: ` at <start>..<end>`, the commits its task's head
  *  was at when the run started and when it ended, where the record holds either, each cut to its
  *  first ten characters, or `-` for one the record does not hold yet; then, for a fix, ` fix of
@@ -31,7 +51,7 @@ function commitsAndFix(record: StepRecord): string[] {
     words.push("at", `${start}..${record.end_commit?.slice(0, 10) || "-"}`);
   }
   const check = record.fix_check;
-  if (check) words.push("fix of", plainWord.test(check) ? check : oneLineJson(check));
+  if (check) words.push("fix of", plainWord.test(check) ? check : quotedCheck(check));
   return words;
 }
 
