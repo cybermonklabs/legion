@@ -438,9 +438,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxBody | - | form | (paneSelection.id === undefined) ? …", {
     reason: REASONS[13],
   }),
-  ...answers("InboxBody | - | form | if (box === null && keysOnShownRow) return …", {
-    reason: REASONS[13],
-  }),
   ...answers('InboxBody | - | form | if (mode === "columns" && focusInPane()) return …', {
     reason: REASONS[13],
   }),

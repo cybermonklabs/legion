@@ -607,6 +607,7 @@ func checkErrorLineAt(t *testing.T, line rateLine, want string, beforeReset bool
 // different times, before_reset is each line's own: only the line of the installation read in the
 // last minute before one of its own resets carries it.
 func TestRateReadingIsOneJSONLine(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	installations := []rateInstallation{
 		{id: "77", owner: "acme", repository: "acme/widgets", permissions: map[string]string{"contents": "write", "metadata": "read"}},
 		{id: "78", owner: "initech", repository: "initech/gadgets", permissions: map[string]string{"metadata": "read"}},
@@ -750,6 +751,7 @@ func TestRateReadingIsOneJSONLine(t *testing.T) {
 // writes two lines, not four. acme's read token is the first the App mints, so its mint also reads
 // the App's bot user under it, a third REST call of the reading's on acme in the first pass.
 func TestRateReadingWritesALineForARefusedInstallation(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets"}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets", refused: true}
 	github := rateStandIn(t, acme, initech)
@@ -786,6 +788,7 @@ func TestRateReadingWritesALineForARefusedInstallation(t *testing.T) {
 // no installation and carrying the empty list as its error, so no pass is silent for an App the
 // daemon holds a key for. The list names no slug, so the App's own, from GET /app, names it.
 func TestRateReadingWritesALineForAnAppThatListsNoInstallation(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	github := rateStandIn(t)
 	rig := newRateRig(t, github, config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1", PrivateKey: github.key},
@@ -812,6 +815,7 @@ func TestRateReadingWritesALineForAnAppThatListsNoInstallation(t *testing.T) {
 // reset's last minute, which marks the reset read, so only the GraphQL reset, half an hour on, is
 // left to schedule by, and the core reset gets no second reading at once.
 func TestRateReadingSchedulesEachPassByNextOfTheResetsItHolds(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets"}
 	github := rateStandIn(t, acme)
 	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
@@ -836,6 +840,7 @@ func TestRateReadingSchedulesEachPassByNextOfTheResetsItHolds(t *testing.T) {
 // pass, so the second pass is an Interval after it and fails, and the third is due BeforeReset
 // before that reset only while the reading still holds it.
 func TestRateReadingKeepsAnInstallationsKnownResetsWhileItsReadingFails(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 15 * time.Minute}
 	for _, tc := range []struct {
 		name   string
@@ -880,6 +885,7 @@ func TestRateReadingKeepsAnInstallationsKnownResetsWhileItsReadingFails(t *testi
 // pass was scheduled for is not held behind every other installation's, and still reads every
 // installation listed. Each line says whether it was read in its own counter's last minute.
 func TestRateReadingReadsTheInstallationsInTheirLastMinuteFirst(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 30 * time.Minute}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
 	github := rateStandIn(t, acme, initech)
@@ -908,6 +914,7 @@ func TestRateReadingReadsTheInstallationsInTheirLastMinuteFirst(t *testing.T) {
 // after; App 2's 87 resets 80 s after. The second pass, due 45 s before 87's reset, reads 87, then
 // 77, both in their last minute, then 78.
 func TestRateReadingReadsTheLastMinuteOfEveryAppFirstBySoonestReset(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 90 * time.Second}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
 	globex := rateInstallation{id: "87", owner: "globex", repository: "globex/gizmos", coreAhead: 80 * time.Second}
@@ -941,6 +948,7 @@ func TestRateReadingReadsTheLastMinuteOfEveryAppFirstBySoonestReset(t *testing.T
 // has a line for the hour. An App the reading holds no installation of, its first list refused,
 // has the one line naming no installation.
 func TestRateReadingWritesALineForEachHeldInstallationOfARefusedList(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	t.Run("installations held", func(t *testing.T) {
 		acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second,
 			permissions: map[string]string{"contents": "write", "metadata": "read"}}
@@ -982,6 +990,7 @@ func TestRateReadingWritesALineForEachHeldInstallationOfARefusedList(t *testing.
 // A GitHub refusal whose body is long reaches the line's error bounded, as every line's error is
 // (githubrate.Write): here a token request answered 403 with 64 KiB of body.
 func TestRateReadingBoundsTheErrorOfALongRefusal(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	long := `{"message":"` + strings.Repeat("x", 64<<10) + `"}`
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", refused: true, refusalBody: long}
 	github := rateStandIn(t, acme)
@@ -1007,6 +1016,7 @@ func TestRateReadingBoundsTheErrorOfALongRefusal(t *testing.T) {
 // limit holds, and a pass after the hour sends the workflows read again. initech, which met no
 // limit, is read at every pass.
 func TestRateReadingSendsNothingForAnInstallationASecondaryLimitHolds(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", secondaryWorkflows: true}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
 	github := rateStandIn(t, acme, initech)
@@ -1057,6 +1067,7 @@ func TestRateReadingSendsNothingForAnInstallationASecondaryLimitHolds(t *testing
 // and is forgotten with its repository, one newly listed is read, and one still listed keeps the
 // repository it listed, so it is not listed again.
 func TestRateReadingFollowsAListThatChangesBetweenPasses(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets"}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
 	globex := rateInstallation{id: "79", owner: "globex", repository: "globex/gizmos"}
@@ -1092,6 +1103,7 @@ func TestRateReadingFollowsAListThatChangesBetweenPasses(t *testing.T) {
 // too: an empty list, a name that is no repository's, and a body that is no JSON. The line carries
 // both counters and no error, and no workflows read is made.
 func TestRateReadingReadsTheCoreCounterFromAListingThatNamesNoRepository(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	for _, tc := range []struct {
 		name, body string
 	}{
@@ -1124,6 +1136,7 @@ func TestRateReadingReadsTheCoreCounterFromAListingThatNamesNoRepository(t *test
 // one. The line carries both counters and no error, and the refused calls are among the reading's
 // own: the App's bot user, which acme's mint read, and each call GitHub answered.
 func TestRateReadingReadsTheCoreCounterFromARefusalInASpentHour(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	for _, tc := range []struct {
 		name      string
 		spend     func(*rateInstallation)
@@ -1168,6 +1181,7 @@ func TestRateReadingReadsTheCoreCounterFromARefusalInASpentHour(t *testing.T) {
 // still carries the core counter that answer names, and the next pass lists the installation's
 // repositories again rather than read the gone repository for ever.
 func TestRateReadingListsTheRepositoriesAgainAfterTheRepositoryAnswers404(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", workflows: http.StatusNotFound}
 	github := rateStandIn(t, acme)
 	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
@@ -1189,6 +1203,7 @@ func TestRateReadingListsTheRepositoriesAgainAfterTheRepositoryAnswers404(t *tes
 // makes the line an error: the counter GitHub answered is the old hour's, and the own counts the new
 // one's.
 func TestRateReadingRefusesAReadingThatSpansTwoRateWindows(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets"}
 	github := rateStandIn(t, acme)
 	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
@@ -1206,6 +1221,7 @@ func TestRateReadingRefusesAReadingThatSpansTwoRateWindows(t *testing.T) {
 // A reading that spans two rate windows in the last minute before its other counter's reset is a
 // before_reset error line, as Dispatch's is: that minute was tried and read nothing.
 func TestRateReadingMarksASpanningReadingInALastMinuteAsBeforeReset(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 29*time.Minute + 50*time.Second}
 	github := rateStandIn(t, acme)
 	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
@@ -1224,6 +1240,7 @@ func TestRateReadingMarksASpanningReadingInALastMinuteAsBeforeReset(t *testing.T
 // Each way an installation's reading fails gives that installation its error line, and the
 // installations listed before and after it are read as ever.
 func TestRateReadingWritesAnErrorLineForEachFailureBetweenTwoGoodReadings(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	for _, tc := range []struct {
 		name  string
 		fail  func(*rateInstallation)
@@ -1259,6 +1276,7 @@ func TestRateReadingWritesAnErrorLineForEachFailureBetweenTwoGoodReadings(t *tes
 // A daemon holding no App's key reads nothing, so it logs no start line for the reading, only that
 // each App is not read.
 func TestRateReadingLogsNoStartLineWithoutAKey(t *testing.T) {
+	t.Parallel()
 	apps := config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1", TokenCommand: "exit 1"},
 		Review:    config.GitHubApp{AppID: "2", TokenCommand: "exit 1"},
@@ -1277,6 +1295,7 @@ func TestRateReadingLogsNoStartLineWithoutAKey(t *testing.T) {
 // The key held by either role is enough to read an App: a token-command role encountered first
 // must not hide another role's key for that same App.
 func TestRateReadingUsesAKeyHeldByEitherRoleOfASharedApp(t *testing.T) {
+	t.Parallel()
 	apps := config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1", TokenCommand: "exit 1"},
 		Review:    config.GitHubApp{AppID: "1", PrivateKey: "a key held by the review role"},
@@ -1304,6 +1323,7 @@ func (a rateReadCalls) ReadToken(ctx context.Context, role appauth.AppRole, owne
 
 // A cancelled reader starts no list at all, so stopping a daemon makes no new GitHub work.
 func TestRateReadingDoesNotStartAListAfterItStops(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	source := rateReadCalls{list: func(context.Context, appauth.AppRole) (appauth.AppInstallations, error) {
 		calls++
@@ -1323,6 +1343,7 @@ func TestRateReadingDoesNotStartAListAfterItStops(t *testing.T) {
 // waits until its bound has really ended, and globex's is still asked, under a bound that began
 // after acme's ended, and gets its own line.
 func TestRateReadingBoundsEachListAndEachInstallationOnItsOwn(t *testing.T) {
+	t.Parallel()
 	var acmeEnded, globexDeadline time.Time
 	source := rateReadCalls{
 		list: func(ctx context.Context, _ appauth.AppRole) (appauth.AppInstallations, error) {
@@ -1370,6 +1391,7 @@ func TestRateReadingBoundsEachListAndEachInstallationOnItsOwn(t *testing.T) {
 // is read first in it and its line says before_reset. Without the reading at once, the pass would
 // be due after acme's reset and acme's hour would have no line from its last minute.
 func TestRateReadingReadsAtOnceAnInstallationWhoseLastMinuteBeganDuringThePass(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets", coreAhead: time.Hour}
 	github := rateStandIn(t, acme, initech)
@@ -1402,6 +1424,7 @@ func TestRateReadingReadsAtOnceAnInstallationWhoseLastMinuteBeganDuringThePass(t
 // minute marks that reset read, so no reset is left for the next pass but the GraphQL counters',
 // half an hour on, and the third pass is due an Interval after the second.
 func TestRateReadingSchedulesNoSecondPassForASampledResetThatDrifts(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 50 * time.Second}
 	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets", coreAhead: 80 * time.Second}
 	github := rateStandIn(t, acme, initech)
@@ -1436,6 +1459,7 @@ func TestRateReadingSchedulesNoSecondPassForASampledResetThatDrifts(t *testing.T
 // before_reset, since it was taken in the last minute of a reset the reading knows of it, so the
 // hour shows a last-minute try that read nothing.
 func TestRateReadingSchedulesNoPassAtOnceAfterAFailedTryInALastMinute(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second}
 	for _, tc := range []struct {
 		name        string
@@ -1475,6 +1499,7 @@ func TestRateReadingSchedulesNoPassAtOnceAfterAFailedTryInALastMinute(t *testing
 // ahead schedules the next pass BeforeReset before it, though GET /rate_limit answered 503 and the
 // line carries the error.
 func TestRateReadingKeepsTheCoreResetOfAReadingWhoseGraphQLReadFails(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, through newRateRig).
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second, rateLimit: http.StatusServiceUnavailable}
 	github := rateStandIn(t, acme)
 	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}

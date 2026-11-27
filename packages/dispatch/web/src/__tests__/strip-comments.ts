@@ -6,8 +6,8 @@ import * as ts from "typescript";
  * Every guard that reads the repository as text has the same problem: it has to describe the
  * marks it refuses in prose, and prose sits in the very files it scans, so a guard that read
  * its own comments would refuse the code that documents it. Stripping first is what lets each
- * one say what it looks for (`theme/no-raw-colors.test.ts`,
- * `components/one-definition.test.ts`).
+ * one say what it looks for (`components/one-definition.test.ts`,
+ * `features/refs/surface-lists.test.ts`).
  *
  * TypeScript decides what is a comment, not a pattern. A `/*` or a `//` inside a string
  * (`accept="image/*"`, a URL), a template literal or a regular expression belongs to that

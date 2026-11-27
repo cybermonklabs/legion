@@ -53,6 +53,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
+import { AskHandOn } from "../ask-body/AskHandOn";
+import { declineRefusal } from "../ask-body/DeclineControl";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { issuePriority } from "../issue/issue-priority";
@@ -80,7 +82,6 @@ import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
-import { AskHandOn } from "./AskHandOn";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { replyRefusal } from "./AskThread";
 import {
@@ -95,7 +96,6 @@ import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { useInboxWrites } from "./ask-writes";
 import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
-import { declineRefusal } from "./DeclineControl";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import {
   ALL_GROUP_KEY,
@@ -275,12 +275,6 @@ const BULK_PICKER_MARKS: ListMarks = { trigger: { [BULK_PICKER_ATTRIBUTE]: "" } 
 /** The bulk bar's snooze picker, its list's trigger: `h` hands it focus and Escape takes it back
  *  to the list. */
 const BULK_PICKER_SELECTOR = `[${BULK_PICKER_ATTRIBUTE}]`;
-
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
-const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
 
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */
 function focusedRow(): HTMLElement | null {
@@ -1865,17 +1859,9 @@ function InboxBody({
           openFocused();
           return;
         }
-        // A decision block's compact card folds its answer box behind "Add a note or answer in
-        // your own words"; Enter presses that disclosure, and the card lands the focus in the
-        // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column draws that compact card: from a row, and
-        // from a disclosure already open, the key goes straight to the box.
-        const box = inAnswerHand("[data-ask-answer]");
-        if (box === null && keysOnShownRow) {
-          inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
-          return;
-        }
-        box?.focus();
+        // The answer box stands in place in every ask body (`ask-body/AskBody.tsx`), the compact
+        // one a decision block hosts among them, so Enter puts the caret in it.
+        inAnswerHand("[data-ask-answer]")?.focus();
       },
       // Enter is the list's key: it carries the reader from the row they are on into the
       // column's answer box. Everywhere else the key belongs to the control that holds the
@@ -1896,8 +1882,7 @@ function InboxBody({
             ? (focusedRow() !== null ||
                 document.activeElement === document.body ||
                 document.activeElement === paneScroller()) &&
-              (inAnswerHand("[data-ask-answer]") !== null ||
-                inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
+              inAnswerHand("[data-ask-answer]") !== null
             : inAnswerHand("[data-ask-answer]") !== null,
     },
     {

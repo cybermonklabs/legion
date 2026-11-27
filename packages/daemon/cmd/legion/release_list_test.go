@@ -23,6 +23,7 @@ import (
 // a file with a build constraint, counts as linked. The list is written by hand, so this row names
 // each package found on one side only.
 func TestTheReleaseListNamesEveryEnvoyPackageLegionLinks(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..", "..", "..")
 	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yaml"))
 	if err != nil {
