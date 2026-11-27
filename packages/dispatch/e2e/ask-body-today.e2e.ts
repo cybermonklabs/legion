@@ -1440,3 +1440,57 @@ test("the inventory preserves each surface's words and controls", async ({ page 
   if (recording) await writeFile(inventoryFile, json, "utf8");
   else compareInventory(JSON.parse(await readFile(inventoryFile, "utf8")), inventory);
 });
+
+// SLOW(>=2s): seed the real records and open today's Conversation once.
+test("the first line's shape holds when the Conversation marks the issue read between its reads", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const data = await seed();
+  const surface = SURFACES.find((one) => one.name === "Conversation tab");
+  if (surface === undefined) throw new Error("SURFACES has no Conversation tab");
+  // The Conversation marks the issue read a dwell after it draws, and the "New" label above each
+  // turn goes, which moves every turn below it up the page (CI run 45954137251 at f8ad9368, shard
+  // (3): 281 px). The row-shape check must read one layout. This row holds the read mark back and
+  // draws its result, the labels gone, at the moment the check reads the words' first line: a
+  // check that reads the words and the first line's parts from one layout sees no move, and one
+  // that reads them at different moments sees the words move away from the parts it read first.
+  // The held write goes on after 10 s, so a check that waits for the read mark sees it land.
+  await page.route("**/api/v1/me/issues/*/state", async (route) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10_000);
+    await promise;
+    await route.continue().catch(() => undefined);
+  });
+  await page.addInitScript(() => {
+    const create = Document.prototype.createRange;
+    Document.prototype.createRange = function createRange(this: Document) {
+      const root = this.documentElement;
+      if (root.dataset.readMarkLands === "armed") {
+        delete root.dataset.readMarkLands;
+        const list = this.querySelector('[aria-label="Conversation turns"]');
+        for (const label of list?.querySelectorAll("span") ?? []) {
+          if (label.textContent?.trim() === "New" && label.parentElement !== null) {
+            label.parentElement.style.display = "none";
+          }
+        }
+      }
+      return create.call(this);
+    };
+  });
+  const card = await surface.open(page, data);
+  await expect(card).toBeVisible();
+  const body = card.locator(BODY);
+  await expect(body).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("list", { name: "Conversation turns" })
+      .getByText("New", { exact: true })
+      .first(),
+    "the seed's turns are unread when the Conversation opens"
+  ).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.dataset.readMarkLands = "armed";
+  });
+  await expectRow(body, surface.question, data.plannerName, surface.stacked);
+});
