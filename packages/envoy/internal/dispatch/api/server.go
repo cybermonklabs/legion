@@ -782,11 +782,12 @@ type RouteMux interface {
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{
-		Wait:             s.waitBackground,
-		ResumeDeliveries: s.resumeOwedDeliveries,
-		EventHead:        s.eventFeedHead,
-		EventHorizon:     s.horizon,
-		Agent:            s.dashboardAgent,
+		Wait:              s.waitBackground,
+		ResumeDeliveries:  s.resumeOwedDeliveries,
+		EventHead:         s.eventFeedHead,
+		EventHorizon:      s.horizon,
+		Agent:             s.dashboardAgent,
+		PostSystemMessage: s.postSystemMessage,
 	}
 }
 
@@ -815,6 +816,13 @@ type Background struct {
 	// which saves nothing (dashboardAgent). GET /auth/whoami draws the dashboard for it when the
 	// request carries no browser credential.
 	Agent func(*http.Request) (AgentCaller, bool)
+	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
+	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
+	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
+	// again under the same id writes no second message. Dispatch's outbox posts the message that
+	// says a role-routed event was recorded undelivered with it (internal/dispatch/outbox,
+	// postUndeliveredNotes).
+	PostSystemMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past

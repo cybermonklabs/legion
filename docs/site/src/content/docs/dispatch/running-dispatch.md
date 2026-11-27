@@ -426,7 +426,7 @@ that the GitHub client counts on every request a pass sends:
 
 - GitHub gave no answer: a network error, the client's own 20-second timeout, or a body the client
   could not read or that was past its size limit.
-- GitHub answered with a 5xx status or with 401.
+- GitHub answered with a 408, a 5xx status or 401.
 - A rate limit: a 429, a 403 that carries a limit, a GraphQL answer that reports a limit (also
   with status 200), or a limit already recorded that held the request before it was sent.
 

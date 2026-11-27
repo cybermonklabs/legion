@@ -672,10 +672,28 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 // day) or started on a day, each once, oldest creation first, $2 and $3 the days' starts and ends
 // and $4 and $5 Production.JobNames and Production.ApplyStep. Each day's two parts are ranges of
 // delivery_runs_kind_created and delivery_runs_kind_started_at.
+//
+// The days' lists (daysRunsListed) are a materialized CTE, built once whatever join the planner
+// takes for the runs they name. Inside the IN of the read of the runs, a planner that estimated one
+// deploy run, as it does over a fresh database's tables no ANALYZE has read, took a nested loop
+// semi join of each deploy run to the lists and built every day's lists, and each day's bound, again
+// for each run. A bound that finds no production job succeeded after its day walks every later run
+// and probes its jobs, so with the jobs not yet committed in the read's snapshot and their probe
+// planned while delivery_run_jobs was nearly empty (the repository's jobs read for each probe) the
+// read of 278 runs over 17 days probed the jobs 77,284 times and took 29 s, the eval day-row
+// refresher's pass waiting on it (dispatch://INFRA-2916).
 var daysRunsQuery = `
+		with listed_runs as materialized (` + daysRunsListed + `
+		)
 		select ` + RunColumns + `
 		from delivery_runs r
-		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.run_id in (
+		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.run_id in (select run_id from listed_runs)
+		order by ` + runCreatedAt + `, r.run_id
+		limit $6`
+
+// daysRunsListed is the run ids daysRunsQuery reads, each day's apply runs and the runs started on
+// it, over the alias d of the day's window.
+var daysRunsListed = `
 			select listed.run_id
 			from unnest($2::timestamptz[], $3::timestamptz[]) as d(from_at, to_at)
 			cross join lateral (
@@ -684,10 +702,7 @@ var daysRunsQuery = `
 				union all
 				select r.run_id from delivery_runs r
 				where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.started_at >= d.from_at and r.started_at < d.to_at
-			) as listed
-		)
-		order by ` + runCreatedAt + `, r.run_id
-		limit $6`
+			) as listed`
 
 // DaysDeploys is what ReadDaysDeploys reads of several days of one deploy repository: each day's
 // Deploys, index-aligned with the days, and, where it was asked for them, the apply runs of every
