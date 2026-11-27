@@ -655,7 +655,7 @@ func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim)
 	if slices.ContainsFunc(run.Queued, retroWakeStart) {
 		return nil
 	}
-	wake := wakeRow(*root, claim.RoleArchitect, pods.WakeRoleMessage, 0, retroArchitectWakeTask(string(token)))
+	wake := wakeRow(*root, claim.RoleArchitect, pods.WakeRoleMessage, string(token), 0, retroArchitectWakeTask(string(token)))
 	wake.RetroWake = true
 	e.logOnCommit(ctx, "wake: a message to the root architect of a closed tree wakes it while the tree takes a retro's wake",
 		"tree", root.Key, "architect", token, "state", held.State)

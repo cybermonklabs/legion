@@ -39,9 +39,12 @@ export function handledAttemptKey(messageId: string, attempt: number): string {
   return `${messageId}#${attempt}`;
 }
 
-/** The attempts a session's entries record it handled (`HANDLED_ATTEMPT_ENTRY`), by key. */
-export function handledAttempts(entries: readonly unknown[]): Set<string> {
-  const handled = new Set<string>();
+/** The `{ message_id, attempt }` record each `HANDLED_ATTEMPT_ENTRY` among a session's entries
+ *  holds, in the order written. */
+function handledRecords(
+  entries: readonly unknown[]
+): { readonly messageId: string; readonly attempt: number }[] {
+  const records: { readonly messageId: string; readonly attempt: number }[] = [];
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null) continue;
     if (!("type" in entry) || entry.type !== "custom") continue;
@@ -50,9 +53,22 @@ export function handledAttempts(entries: readonly unknown[]): Set<string> {
     const { data } = entry;
     if (!("message_id" in data) || typeof data.message_id !== "string") continue;
     if (!("attempt" in data) || typeof data.attempt !== "number") continue;
-    handled.add(handledAttemptKey(data.message_id, data.attempt));
+    records.push({ attempt: data.attempt, messageId: data.message_id });
   }
-  return handled;
+  return records;
+}
+
+/** The attempts a session's entries record it handled (`HANDLED_ATTEMPT_ENTRY`), by key. */
+export function handledAttempts(entries: readonly unknown[]): Set<string> {
+  return new Set(
+    handledRecords(entries).map(({ attempt, messageId }) => handledAttemptKey(messageId, attempt))
+  );
+}
+
+/** The Dispatch messages a session's entries record it handled an attempt of: among them, every
+ *  message the session took as its typed turn, which the host tags with that message's id. */
+export function handledMessages(entries: readonly unknown[]): Set<string> {
+  return new Set(handledRecords(entries).map(({ messageId }) => messageId));
 }
 
 /** What became of a person's text sent to `pi.sendUserInput`: the host's answer, the error it

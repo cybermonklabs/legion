@@ -465,7 +465,7 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 		fmt.Fprintf(&detail, "; sandbox Finished=%s %s", finished.Status, finished.Reason)
 	}
 	if initExit != nil {
-		if container == fetchContainer {
+		if container == initContainer {
 			detail.WriteString(r.fetchCacheState(pod))
 		}
 		fmt.Fprintf(&detail, "; last lines of %s:\n%s", container, r.logTail(ctx, pod.Name, container))
@@ -490,10 +490,10 @@ func outOfMemory(container string, state *corev1.ContainerStateTerminated) bool 
 	return container == runtime.IssuePodContainer && state != nil && state.Reason == "OOMKilled"
 }
 
-// fetchCacheState is what a failed workspace-fetch's detail says of the repository cache it fills
-// a fresh feed from: that cache's state, with the kubelet's reason while it is failing, or that the
-// repository has none. The repository is the one the pod's fetch container names
-// (fetchRepository); a pod whose fetch names none says nothing.
+// fetchCacheState is what a failed workspace-init's detail says of the repository cache that fills
+// its clone: that cache's state, with the kubelet's reason while it is failing, or that the
+// repository has none. The repository is the one workspace-init names (fetchRepository); a pod
+// whose workspace-init names none says nothing.
 func (r *Runtime) fetchCacheState(pod *corev1.Pod) string {
 	repo, ok := fetchRepository(pod)
 	if !ok {
@@ -501,20 +501,20 @@ func (r *Runtime) fetchCacheState(pod *corev1.Pod) string {
 	}
 	status, found := r.RepositoryCache(repo)
 	if !found {
-		return fmt.Sprintf("; %s has no repository cache, which a fresh feed comes from alone", repo)
+		return fmt.Sprintf("; %s has no repository cache, so workspace-init clones from GitHub alone", repo)
 	}
-	state := fmt.Sprintf("; the repository cache of %s, which a fresh feed comes from alone, is %s", repo, status.State)
+	state := fmt.Sprintf("; the repository cache of %s, which workspace-init fills the clone from, is %s", repo, status.State)
 	if status.Reason != "" {
 		state += ": " + status.Reason
 	}
 	return state
 }
 
-// fetchRepository is the repository pod's fetch container names (--repo), which the runtime wrote
-// there; false for a pod whose fetch names none that parses.
+// fetchRepository is the repository workspace-init names (--repo), which the runtime wrote there;
+// false for a pod whose workspace-init names none that parses.
 func fetchRepository(pod *corev1.Pod) (ghrepo.Repository, bool) {
 	for _, c := range pod.Spec.InitContainers {
-		if at := slices.Index(c.Command, "--repo"); c.Name == fetchContainer && at >= 0 && at+1 < len(c.Command) {
+		if at := slices.Index(c.Command, "--repo"); c.Name == initContainer && at >= 0 && at+1 < len(c.Command) {
 			repo, err := ghrepo.Parse("--repo", c.Command[at+1])
 			return repo, err == nil
 		}

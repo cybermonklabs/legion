@@ -1142,6 +1142,13 @@ var (
 	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
 	// queries take it as a parameter (RunsNothingStates).
 	runsNothing = append([]ClaimState{StateQueued}, gone...)
+	// unregistered is every state of a claim before its launch's agent registers its session:
+	// nothing launched yet (queued), a launch a crashed daemon left unreconciled
+	// (launch_uncertain), or one still coming up (launching, shim_connected). Such a launch can
+	// still resume the session the claim records or start a fresh one (startFresh), so the session
+	// it will run is not known. It is the one statement of the set: the table's pod-update rows
+	// read it, and so does the daemon's delivery of a message held for a launch (Unregistered).
+	unregistered = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected}
 )
 
 // LiveStates are the states of a claim whose process is up or coming up: launched, and not
@@ -1167,6 +1174,10 @@ func IsGone(state ClaimState) bool { return slices.Contains(gone, state) }
 
 // FailedOrRetired is whether state is failed or retired: gone, and started again by a retry alone.
 func FailedOrRetired(state ClaimState) bool { return state == StateFailed || state == StateRetired }
+
+// Unregistered is whether state is one of unregistered: the claim's launch has no registered
+// agent, so the session it will run is not known yet.
+func Unregistered(state ClaimState) bool { return slices.Contains(unregistered, state) }
 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
@@ -1395,7 +1406,6 @@ func fillTable(t *builder) {
 	// in, and unregistered is every state before that agent, where no process is there to
 	// signal, whatever answer the claim's record still carries.
 	answering := []ClaimState{StateRegistered, StateReady, StateWorking, StateIdle, StateSuspended}
-	unregistered := []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected}
 	t.row(onPodUpdateSignalled, "the worker signalled that its work is pushed and its process may be replaced", podUpdateSignalled,
 		nil, answering...)
 	t.ignore(onPodUpdateSignalled, "a claim with no registered agent cannot have signalled", unregistered...)

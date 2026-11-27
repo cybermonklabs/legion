@@ -189,7 +189,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 			return `{"target_session":"` + target + `","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 		{name: "messages/publish", path: "/v1/messages/publish", body: func(s string) string {
-			return `{"topic":"notifications.github.rig","source_session":"` + s + `","message":"a message of the rig"}`
+			return `{"topic":"notifications.team.rig","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 	}
 
@@ -330,7 +330,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 16
+const v1RoutePatterns = 17
 
 // walkSession is where a walk request's path or body names the session its token names.
 const walkSession = "<session>"
@@ -369,9 +369,10 @@ var v1Walk = []struct {
 	{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
 		`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
-		`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+		`{"topic":"notifications.team.rig","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
 	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1/sessions/<session>/successors", sessionSuccessorsPattern, ""},
 	{http.MethodGet, "/v1", "/v1", ""},
 	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 }

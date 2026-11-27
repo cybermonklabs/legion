@@ -13,7 +13,7 @@
 // lib/live-daemon-proof.sh makes around every whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin). Facts enter only by the transports production has: the
+// whole-daemon harness (startDaemonLogging). Facts enter only by the transports production has: the
 // Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes, its worker
 // stream, GitHub's pull-request events, and the runtime's own report of a process. A step reads
 // GET /legion/v1/state, the operator's claim listing, the prompts each claim's process was given,
@@ -228,7 +228,7 @@ func newRetroLive(t *testing.T) *retroLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.root = r.register(r.tree, r.tree, claim.RoleArchitect)
 	r.note("booted the daemon over the proof's nats-server and its own PostgreSQL, with the Envoy listener beside the stand-ins; registered and readied %s's architect as session %s", r.tree, r.root.session)
 	return r

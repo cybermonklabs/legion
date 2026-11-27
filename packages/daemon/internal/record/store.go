@@ -3016,6 +3016,18 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
+// QueuedMergeForwardAsk is Store.QueuedMergeForwardAsk: a delivered or ended row has left the
+// outbox, so any merge-forward row of the ask's step, role and head still there is queued.
+func (s *Postgres) QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, head string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from outbox where kind = $1 and issue = $2
+		and payload->>'step' = $3 and payload->>'role' = $4 and payload->>'head' = $5)`,
+		string(OutboxKindMergeForward), issue, string(MergeForwardAsk), string(role), head).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read the queued merge-forward asks of %s: %w", issue, err)
+	}
+	return queued, nil
+}
+
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause).
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
@@ -3241,22 +3253,25 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 // The outbox's runnable predicates are one SQL text, so the lanes' list of due rows (DueRows), their
 // claim (ClaimRow), the state report's held rows (HeldRows, PauseHeldRows) and the resume's mark of
 // the rows its pause held (MarkPauseHeldRows) can never disagree about which row may run. Each
-// refers to the statement's first five parameters, which outboxDueArgs supplies — $1 is now, $2
-// to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
-// embedding one numbers its own parameters from $6; the pause rule (outboxPauseFree) refers to
+// refers to the statement's first six parameters, which outboxDueArgs supplies — $1 is now, $2
+// to $4 and $6 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
+// embedding one numbers its own parameters from $7; the pause rule (outboxPauseFree) refers to
 // none. The outer table is `outbox`, unaliased, which the rules' subqueries name.
 
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
 
-// outboxInOrder is the three rules that hold a due row back behind something else of its issue. An
+// outboxInOrder is the four rules that hold a due row back behind something else of its issue. An
 // issue's Dispatch status writes run one at a time in the order they were made: a status row waits
 // while an older one for the same issue is unfinished, because each carries the status its
 // predecessor leaves, and a newer write run first would find the board short of it and finish
 // unwritten as though a human had moved it. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
-// the row retries. And a start marked as waiting for the issue's admission slot
+// the row retries. A start of an issue's role also waits while an older issue_release row of the
+// issue is in the outbox, and, once that release is committed, while its teardown row is, whatever
+// the start's age, so no role starts in the pod the release's teardown is about to take
+// (IssueRelease). And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. The store repeats this last rule (its slotWaitingStart, which
@@ -3267,7 +3282,39 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
 // runtime delayed.
 //
-// None of the three holds an issue's later rows back. A row that is merely unclaimable takes no
+// The teardown rule has two halves. Before the release commits, a start waits only for an older
+// teardown row. That is what makes a wake taken after a release recorded its role's claim as
+// `released` start that role once, in the pod that comes back (store.IssueRelease passes over that
+// wake's start). The lifecycle lane lists its rows by next_at and then by id, so without it a
+// teardown on its backoff would let a newer start run first: the start would launch the role in
+// the old pod, under the runtime's pod lock, and the teardown would then cancel the release. A
+// start older than the teardown row still runs when it comes due: it is work the pod was given,
+// and the teardown's read of the queued starts cancels the release for it (store.IssueRelease,
+// releaseOvertaken), or passes over it while it waits for its slot (store's idleWaitingRow).
+//
+// Once the runtime's read under the pod's launch turn commits the release (issue_releases.committed,
+// store.CommitIssueRelease), nothing cancels it, and the teardown's retry takes the pod whatever
+// runs in it. So from that commit until the teardown finishes, every start of the issue waits,
+// whatever its id: an older start that comes due during the teardown's backoff — a worker start
+// whose slot came since, or a start on its own retry backoff — would otherwise launch its role in
+// the pod the retry then takes. The mark is read by its issue alone, since its project column is
+// the daemon's project name, not the Dispatch key an issue key starts with, and one issue key
+// names one issue across projects. It is tied to the teardown row by its last_row, which is always
+// its release's teardown (store.ReleaseIdleIssue writes the release's rows with the teardown last),
+// so a teardown row of an earlier release still on the lane holds nothing for it, and the hold
+// ends when the committed release's own row leaves the outbox. The teardown clears the mark before
+// that, and its live lease holds the issue's other lifecycle rows until the row is gone
+// (outboxLaneFree).
+//
+// Neither half can deadlock. Only a `start` is held. The release's own role stops are supervise
+// rows of op `release`, below the teardown, and the teardown waits for no start: store's
+// issueStopFences reads the stop ops and the claims that may hold a process, never a start row,
+// and a committed teardown reads not even those, since store.IssueRelease answers a committed mark
+// ReleaseActs first. A cancel's resumes are queued above the teardown row and run once it
+// finishes, the teardown of a release that is over finishes at once (store.ReleaseOver), and a
+// committed release is never cancelled (store.CancelIssueRelease refuses it).
+//
+// None of the four holds an issue's later rows back. A row that is merely unclaimable takes no
 // lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker
 // start waits for a slot still runs its close's suspend, its Dispatch status writes and its
 // notices as they come due. That is what lets a transition apply at once and hold only the start.
@@ -3275,6 +3322,10 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
 			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
+		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox teardown
+			where teardown.kind = $6 and teardown.issue = outbox.issue and (teardown.id < outbox.id
+				or exists (select 1 from issue_releases mark
+					where mark.issue = teardown.issue and mark.last_row = teardown.id and mark.committed))))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
 			and not exists (select 1 from slots where slots.issue = outbox.issue))`
 
@@ -3335,9 +3386,11 @@ var outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + ou
 var lifecycleKindNames = kindNames(laneKinds[LaneLifecycle])
 
 // outboxDueArgs is the parameters of a statement that embeds the predicates: now, the ordering
-// rules' kinds and the lifecycle lane's kinds first, then the statement's own.
+// rules' kinds and the lifecycle lane's kinds first, then the teardown rule's kind, then the
+// statement's own.
 func outboxDueArgs(now time.Time, own ...any) []any {
-	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), string(OutboxKindIssueBranch), lifecycleKindNames}, own...)
+	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), string(OutboxKindIssueBranch),
+		lifecycleKindNames, string(OutboxKindIssueRelease)}, own...)
 }
 
 // kindNames is kinds as the text the outbox stores them in, an empty list for none.
@@ -3379,12 +3432,12 @@ func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string
 }
 
 // dueRowsSQL is DueRows' statement, built once from the outbox's rules (outboxClaimable). Its
-// project scope, `split_part(outbox.issue, '-', 1) = $6`, is the rule every write of a row by key
+// project scope, `split_part(outbox.issue, '-', 1) = $7`, is the rule every write of a row by key
 // takes from the other side (claim.KeyOfProject): a daemon writes no row keyed by another
 // project's issue, because only that project's daemon runs it here.
 var dueRowsSQL = `select ` + outboxColumns + ` from outbox
-		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
+		where split_part(outbox.issue, '-', 1) = $7 and ($8::text = '' or outbox.issue = $8::text)
+		and (cardinality($9::text[]) = 0 or outbox.kind = any($9::text[]))
 		and ` + outboxClaimable + `
 		order by next_at, id`
 
@@ -3443,8 +3496,8 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 }
 
 // claimRowSQL is ClaimRow's update, built once from the outbox's rules (outboxClaimable).
-var claimRowSQL = `update outbox set lease_token = $7, lease_until = $8
-		where outbox.id = $6 and ` + outboxClaimable + `
+var claimRowSQL = `update outbox set lease_token = $8, lease_until = $9
+		where outbox.id = $7 and ` + outboxClaimable + `
 		returning ` + outboxColumns
 
 // catchUpLockKey is the key of the transaction-scoped advisory lock of an issue's catch-ups, for
@@ -3566,7 +3619,10 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // state shows held is exactly what the lanes hold back. A start fenced behind an older issue_branch
 // row of its issue is held while the branch row runs — issue_branch is a lifecycle kind, so the
 // start waits on it — and listed by nothing while the branch row waits unleased for its retry, since
-// it then waits on no running row, as it did before the lanes. Board rows are never held: their lane
+// it then waits on no running row, as it did before the lanes. A start fenced behind an
+// issue_release row of its issue — an older one, or the teardown of a committed release whatever
+// the start's age (outboxInOrder) — is held and listed the same way: on the release's teardown
+// while it runs, and by nothing while the teardown waits for its retry. Board rows are never held: their lane
 // runs them as they come due. A row the lane rule holds fails the claim, so the claim's negation
 // adds no row to the lane rule's; it is written out because Postgres types a parameter by its uses
 // and refuses a statement with one it never uses, and the ordering rules' kinds are among the
@@ -3596,7 +3652,7 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 // outboxLaneFree).
 var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from outbox running
 			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
-		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		from outbox where split_part(outbox.issue, '-', 1) = $7 and ($8::text = '' or outbox.issue = $8::text)
 		and outbox.kind = any($5::text[])
 		and ` + outboxUnleasedDue + ` and not (` + outboxClaimable + `) and not ` + outboxLaneFree + `
 		order by next_at, id`

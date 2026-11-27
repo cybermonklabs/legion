@@ -216,9 +216,10 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			want: "dial tcp 127.0.0.1:9: connect: connection refused",
 		},
 		{
+			// The URL rule's own text of the URL, read from the rule, never written out here.
 			name: "a short text loses its URL credentials",
 			text: `Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`,
-			want: `Get "https://[a URL with credentials]/x": EOF`,
+			want: redact.URLCredentials(`Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,6 +247,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 	keep := FarSideErrorRunes / 2
 	middle := strings.Repeat("m", 1<<20)
+	start := redact.URLCredentials("start https://u:" + planted + "@h.example/x ")
 	for _, tc := range []struct {
 		name, text, want string
 	}{
@@ -261,9 +263,10 @@ func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 			want: strings.Repeat("é", keep-1) + "…" + strings.Repeat("é", keep),
 		},
 		{
+			// The start as the URL rule writes it, read from the rule, never written out here.
 			name: "a URL's credentials in the part the cut drops",
 			text: "start https://u:" + planted + "@h.example/x " + middle + " end",
-			want: "start https://[a URL with credentials]/x " + middle[:keep-1-len("start https://[a URL with credentials]/x ")] + "…" + middle[:keep-len(" end")] + " end",
+			want: start + middle[:keep-1-len(start)] + "…" + middle[:keep-len(" end")] + " end",
 		},
 		{
 			name: "a text of exactly the bound kept whole",
