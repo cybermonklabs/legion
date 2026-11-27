@@ -90,10 +90,10 @@ jobs:
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
       # The operator-token-minters check's harness is queued first: it is the longest, so the
-      # shorter ones fill the other cores. In this job it took 817.5 s (job 140439586917,
-      # 2026-11-27), against 718.6 s before people became its findings (job 140274727636) and
-      # 493.5 s for the next longest, loadtest/cluster/cluster.test.sh; the job's 30 minutes is 2.2
-      # times 817.5 s.
+      # shorter ones fill the other cores. In this job two runs of the same scripts took 817.5 s
+      # and 721.8 s (jobs 140439586917 and 140456707507, 2026-11-27), 718.6 s before people became
+      # its findings (job 140274727636), and the next longest, loadtest/cluster/cluster.test.sh,
+      # 493.5 s and 443.7 s. The job's 30 minutes is 2.2 times the longest of them.
       - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and curl; no cluster or cloud)
         run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
