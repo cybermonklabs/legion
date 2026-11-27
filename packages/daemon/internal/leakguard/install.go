@@ -436,8 +436,8 @@ func verifyServed(ctx context.Context, start procgroup.Starter, check, parent st
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
 	runErr := procgroup.Err(procgroup.Run(cmd, start))
-	// A context that ended killed the run itself, so its end, not the kill, is the cause.
-	if err := cmp.Or(ctx.Err(), procgroup.Said(runErr, printed.String())); err != nil {
+	// CONTROL: the regression row 1 must catch: the run's answer is read as a timeout.
+	if err := cmp.Or(error(context.DeadlineExceeded), ctx.Err(), procgroup.Said(runErr, printed.String())); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
 	answer := printed.String()
