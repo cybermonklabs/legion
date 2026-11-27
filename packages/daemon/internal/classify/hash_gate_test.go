@@ -16,12 +16,16 @@ import (
 )
 
 // The values the hash-gate fixtures carry (packages/contracts/fixtures/hash-gate): the document's
-// id, and the digests artifact-digest-current.json and artifact-digest-not-current.json name.
+// id, and the digests artifact-digest.json names, of the record of the version it is for
+// (content_sha256) and of the approved version's (approved_sha256), which match. The fixtures hold
+// no digest whose approval is not current: notCurrent's is artifact-digest.json with
+// approval_current false, no approved-version field and notCurrentDigest, a record's digest other
+// than the approved one, for its content_sha256.
 const (
-	hashGateArtifact   = "e470eab3-ee84-4cbb-a5f9-b8b117610f94"
-	currentDigest      = "3cd63d61a307828c936c8f57e230973fa538f32a7a23bf04e068b872673202f2"
-	currentApproved    = "fcb3d52cac0a068e46478d4d8d59fbdc95a3e46fdc05a121b0eede5bcd633981"
-	notCurrentDigest   = "42d81cd17ff49d3600be047a138cd7b84d3ae9b5b5c92b6d64c66a5832f081d7"
+	hashGateArtifact   = "00000000-0000-4000-8000-000000000001"
+	currentDigest      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	currentApproved    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	notCurrentDigest   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	hashGateIssue      = "ACME-7"
 	hashGateProject    = "ACME"
 	hashGateReviewText = "name the rollback path"
@@ -40,30 +44,40 @@ func hashGateAt(n int64) record.EventMark {
 }
 
 // hashGateFact is the fact one event file of packages/contracts/fixtures/hash-gate, the wire
-// contract of Dispatch's hash gate (R1 of dispatch://INFRA-6065), comes to: the event as the boot
-// catch-up decodes it (intake.DecodeDispatchEvent), at sequence seq and the time that goes with it
-// (hashGateMark), with its payload changed by change, taken as the workflow takes a live
-// DispatchArtifact. A row whose fact the files hold but for its version or its place is built
-// from the file, so the file's shape is what the transition reads.
+// contract of Dispatch's hash gate (R1 of dispatch://INFRA-6065), comes to. The file holds the
+// event's type and payload alone: the payload, changed by change, is wrapped in the envelope the
+// boot catch-up decodes (intake.DecodeDispatchEvent), at sequence seq and the time that goes with
+// it (hashGateMark), made by Dispatch's fill (a system actor) for a digest and by the architect's
+// session for a version, and the fact is taken as the workflow takes a live DispatchArtifact
+// (gateFactOf): the verdict's digest is a digest's content_sha256, never an artifact.version's,
+// which is the digest of the version's text. A row whose fact the files hold but for its version
+// or its place is built from the file, so the file's shape is what the transition reads.
 func hashGateFact(t *testing.T, name string, seq int64, change func(payload map[string]any)) GateFact {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "hash-gate", name))
 	if err != nil {
 		t.Fatalf("read the hash-gate fixture %s: %v", name, err)
 	}
-	var event map[string]any
-	if err := json.Unmarshal(raw, &event); err != nil {
+	var file map[string]any
+	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatalf("decode the hash-gate fixture %s: %v", name, err)
 	}
-	payload, ok := event["payload"].(map[string]any)
-	if !ok {
-		t.Fatalf("the hash-gate fixture %s has no payload object", name)
+	eventType, _ := file["type"].(string)
+	payload, ok := file["payload"].(map[string]any)
+	if eventType == "" || !ok || len(file) != 2 {
+		t.Fatalf("the hash-gate fixture %s is %s, want an event's type and payload alone", name, raw)
 	}
 	change(payload)
-	event["seq"], event["created_at"] = seq, hashGateMark(seq).At.Format(time.RFC3339Nano)
-	encoded, err := json.Marshal(event)
+	actor := map[string]string{"kind": "session", "id": "session-architect"}
+	if eventType == "artifact.digest" {
+		actor = map[string]string{"kind": "system", "id": "digest-fill"}
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"id": 9000 + seq, "issue_key": hashGateIssue, "artifact_id": nil, "project": hashGateProject, "seq": seq, "type": eventType,
+		"actor": actor, "notify": true, "created_at": hashGateMark(seq).At.Format(time.RFC3339Nano), "payload": payload,
+	})
 	if err != nil {
-		t.Fatalf("encode the hash-gate fixture %s: %v", name, err)
+		t.Fatalf("encode the event of %s: %v", name, err)
 	}
 	decoded, _, err := intake.DecodeDispatchEvent(hashGateProject, hashGateIssue, encoded)
 	if err != nil {
@@ -73,8 +87,12 @@ func hashGateFact(t *testing.T, name string, seq int64, change func(payload map[
 	if !ok {
 		t.Fatalf("the event of %s decoded to %#v, want an artifact fact", name, decoded)
 	}
+	digest := ""
+	if fact.Kind == intake.DispatchArtifactDigest {
+		digest = fact.ContentSHA256
+	}
 	return GateFact{Kind: DesignGateEventKind(fact.Kind), Version: fact.Version, Mark: fact.Mark, DigestOwed: fact.DigestOwed,
-		Verdict: fact.Verdict, Digest: fact.ContentSHA256, ApprovedSHA256: fact.ApprovedSHA256}
+		Verdict: fact.Verdict, Digest: digest, ApprovedSHA256: fact.ApprovedSHA256}
 }
 
 // assertVerdictAfterReviews holds a row to the rule the store's reader rests on (record's
@@ -140,7 +158,7 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 		return gate
 	}
 	version := func(number int, owes *bool, seq int64) GateFact {
-		return hashGateFact(t, "artifact-version-digest-owed.json", seq, func(payload map[string]any) {
+		return hashGateFact(t, "artifact-version.json", seq, func(payload map[string]any) {
 			payload["version"].(map[string]any)["number"] = number
 			if owes == nil {
 				delete(payload, "digest_owed")
@@ -150,18 +168,23 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 			payload["digest_owed"] = *owes
 		})
 	}
-	digest := func(name string, number int, seq int64) GateFact {
-		return hashGateFact(t, name, seq, func(payload map[string]any) { payload["version"] = number })
+	current := func(number int, seq int64) GateFact {
+		return hashGateFact(t, "artifact-digest.json", seq, func(payload map[string]any) { payload["version"] = number })
 	}
-	current := func(number int, seq int64) GateFact { return digest("artifact-digest-current.json", number, seq) }
-	notCurrent := func(number int, seq int64) GateFact { return digest("artifact-digest-not-current.json", number, seq) }
+	notCurrent := func(number int, seq int64) GateFact {
+		return hashGateFact(t, "artifact-digest.json", seq, func(payload map[string]any) {
+			payload["version"], payload["approval_current"], payload["content_sha256"] = number, false, notCurrentDigest
+			delete(payload, "approved_version")
+			delete(payload, "approved_sha256")
+		})
+	}
 	review := func(kind DesignGateEventKind, number int, mark record.EventMark) GateFact {
 		return GateFact{Kind: kind, Version: number, Mark: mark}
 	}
-	// read is a read of Dispatch's approval, as approval-standing-below-latest.json and
-	// approval-digest-owed.json show one (built by hand: classify reads no GET body): the review
-	// it shows (kind, version, its mark), its latest version, digest_owed and, where that is false,
-	// its verdict at the latest version with the read's mark of it.
+	// read is a read of Dispatch's approval, as artifact.json and artifact-owed.json show one
+	// (built by hand: classify reads no GET body): the review it shows (kind, version, its mark),
+	// its latest version, digest_owed and, where that is false, its verdict at the latest version
+	// with the read's mark of it and the latest version's digest (current_sha256).
 	read := func(kind DesignGateEventKind, number int, mark record.EventMark, latest int, owes *bool, verdict *bool, verdictMark record.EventMark) GateFact {
 		fact := GateFact{Kind: kind, Version: number, Mark: mark, Read: true, Latest: latest, DigestOwed: owes, Verdict: verdict, VerdictMark: verdictMark}
 		if owes != nil && !*owes {

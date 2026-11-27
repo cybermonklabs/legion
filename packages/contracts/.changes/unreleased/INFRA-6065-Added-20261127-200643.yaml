@@ -1,15 +1,19 @@
 kind: Added
 body: |-
   `fixtures/hash-gate/` holds the wire shapes of Dispatch's hash gate, the contract between the
-  Legion daemon and Dispatch for them (dispatch://INFRA-6065, R1): the `approval` of
-  `GET /api/v1/artifacts/{id}` with `current_sha256` and `digest_owed` (an approval that stands
-  below the latest version, and one whose digest is owed), one captured from a Dispatch that sends
-  neither, `artifact.version` with `digest_owed` true and false and `content_sha256`, and
-  `artifact.digest` (`artifact_id`, `name`, `version`, `content_sha256`, `approval_current`, and
-  the optional `approved_version` and `approved_sha256`). Its README names each file, the spec
-  clause it serves and the actor of each event. The daemon's readers decode these files in their
-  tests, and dispatch://INFRA-1253's emission test compares Dispatch's output with them. No
-  TypeScript or OpenAPI shape changes here: dispatch://INFRA-1253 adds them.
+  Legion daemon and Dispatch for them (dispatch://INFRA-6065, R1). Each file holds an event's
+  `type` and `payload`, or the body of `GET /api/v1/artifacts/{id}` (`id`, `name` and
+  `approval`), without the envelope around it: `artifact.json` (an approval of version 1 that
+  stands at latest version 2, with `current_sha256` and `digest_owed: false`),
+  `artifact-owed.json` (an approval of version 1 at latest version 2 whose digest is owed:
+  `current_sha256: null` and `digest_owed: true`), `artifact-version.json` (`artifact.version` of
+  version 2 with `content_sha256`, the digest of its text, and `digest_owed: true`),
+  `artifact-version-filled.json` (the same with `digest_owed: false`) and `artifact-digest.json`
+  (`artifact.digest` of version 2 with `content_sha256`, the digest of its record,
+  `approval_current: true`, `approved_version` 1 and `approved_sha256`). Its README says what each
+  file shows. The daemon's readers decode these files in their tests, and dispatch://INFRA-1253
+  holds the same bytes, so both pull requests carry one contract. No TypeScript or OpenAPI shape
+  changes here: dispatch://INFRA-1253 adds them.
 time: 2026-11-27T20:06:43Z
 custom:
     Issue: INFRA-6065
