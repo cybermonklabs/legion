@@ -1,6 +1,6 @@
 import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import {
@@ -22,14 +22,18 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import {
+  COMPONENT_CHIP,
+  componentChipIds,
+  IssueComponentsLine,
+} from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
-import { ReferencedBy } from "../refs/ReferencedBy";
-import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
+import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
+import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -54,13 +58,12 @@ import {
   UPRIGHT_BAR,
 } from "./details-icons";
 import {
-  FOLD_AFTER,
   IssueList,
   PropertySection,
   Row,
-  ShowAll,
   SMALL_GLYPH,
   STATUS_ROW_SHAPE,
+  useListPages,
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
@@ -74,8 +77,15 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  FILE_WORDS,
+  issueStatusWord,
+  PROGRESS_NOUNS,
+} from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { NamedRunRows, useRunRows } from "./run-references/run-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
@@ -184,9 +194,10 @@ export function IssueMarginCards({
  * picture page-v3-details-1440): every property the header does not hold, each a row of its
  * own - a label column with a shape for the property and its name, and the value beside it,
  * `None` where the issue has none - with every control the page had for it, and nothing
- * read-only. A field with no value is reachable from the one add control, and only a list of
- * unbounded length folds, after its first ten entries, behind a count that opens the rest. The
- * rows sit in three named sections the reader can collapse, kept for the next issue.
+ * read-only. A field with no value is reachable from the one add control, and a list of
+ * unbounded length draws its first 20 entries and, under them, Show more, which says how many
+ * are left and draws the next 20 (`useListPages`). The rows sit in three named sections the
+ * reader can collapse, kept for the next issue.
  *
  * Under the properties, the reader's pins as links to their rows. It holds no list of the
  * conversation: the outline is the conversation. The people, the facts of the focused row and
@@ -194,14 +205,14 @@ export function IssueMarginCards({
  *
  * A focus Details loses goes on only where the reader's own press took its element away: a save
  * of theirs that lands, a Retry whose request answers, an editor they close, an Unpin, a Show
- * all. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
+ * more. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
  * write hand the focus on in their row as they go (`useFocusHandOff`); an editor hands it on as
- * it closes, and an Unpin and a Show all move it at their press. A change the reader did not
- * make - another session's write, an event, a read that answers on its own, the issue closed
- * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
- * Details takes it; but one that reaches what the reader's press asked for while that press is
- * still out - the route set to the reader's draft, the claim released, the read answered - is
- * taken for the press's answer, and hands the focus on as that answer would.
+ * it closes, a Show more moves it at its press, and an Unpin once its row has gone. A change the
+ * reader did not make - another session's write, an event, a read that answers on its own, the
+ * issue closed elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and
+ * nothing in Details takes it; but one that reaches what the reader's press asked for while that
+ * press is still out - the route set to the reader's draft, the claim released, the read
+ * answered - is taken for the press's answer, and hands the focus on as that answer would.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
@@ -238,8 +249,14 @@ export function IssueMarginPanel({
 }): ReactNode {
   const sections = useMarginSections();
   const [referencesOpen, setReferencesOpen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(false);
-  const filesList = useRef<HTMLUListElement>(null);
+  // The pages of each list of unbounded length the panel's rows draw (`useListPages`), each with
+  // the box its entries are drawn in, where a press of its Show more finds the first entry it
+  // drew. The issues that wait on this one and the pins page their own lists.
+  const pullRequestPages = useListPages<HTMLDivElement>();
+  const linkPages = useListPages<HTMLDivElement>();
+  const componentPages = useListPages<HTMLDivElement>();
+  const referencePages = useListPages();
+  const filePages = useListPages<HTMLUListElement>();
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
@@ -357,6 +374,15 @@ export function IssueMarginPanel({
       ? []
       : [edge.node.issue_key]
   );
+  // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
+  // control has a number only once the list has been read, and then it is the rows the list
+  // shows, since the issue's count also holds its own asks, comments and messages, which the list
+  // leaves out (`listedEdges`).
+  const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
+  const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
+  const referencesDrawn = referencesOpen && readingReferences;
+  // The reader's command bar runs, read only while the list is drawn, linked by the page's address.
+  const runs = useRunRows(issue, referencesDrawn, useLocation());
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );
@@ -438,23 +464,26 @@ export function IssueMarginPanel({
   );
   // Referenced by's line stands while its read stands failed (`standsFailed`), as each line of
   // Details' own does - `ReferencedBy` draws it so where it is handed `retried` - so its Retry
-  // goes with it once the read the press sent answers. Where the reader's press of Retry took it
-  // away, the focus it held goes on to the list's first link; where the list draws none, with
-  // nothing to list, to Referenced by's own control, which opens and closes the list; and where
-  // that is not drawn - at a count of 0, while a list opened before stays open - to References'
-  // heading, the button that opens and closes the section. Each passes over a control that takes
-  // no press (`usableControl`). A line that goes with no press of its Retry - the list read again
-  // on an event, or after a press whose read failed - leaves the focus on the page's body.
+  // goes with it once the read the press sent answers. The line under the list that says the
+  // tree read failed, so the reader's runs are not listed (`useRunRows`), stands and goes by the
+  // same rule. Where the reader's press of either Retry took its line away, the focus it held goes
+  // on to the list's first link; where the list draws none, with nothing to list, to Referenced
+  // by's own control, which opens and closes the list and is drawn at every count; and past that
+  // to References' heading, the button that opens and closes the section. Each passes over a
+  // control that takes no press (`usableControl`). A line that goes with no press of its Retry - a
+  // read answering on an event, or after a press whose read failed - leaves the focus on the
+  // page's body.
   const referencesValue = useRef<HTMLDivElement>(null);
   const referencesControl = useRef<HTMLButtonElement>(null);
   const referencesHeading = useRef<HTMLButtonElement>(null);
-  const referencesRetry = useRetryHandOff(() =>
+  const referencesLeft = () =>
     firstUsable(
       referencesValue.current?.querySelector<HTMLElement>("a[href]"),
       referencesControl.current,
       referencesHeading.current
-    )
-  );
+    );
+  const referencesRetry = useRetryHandOff(referencesLeft);
+  const runsRetry = useRetryHandOff(referencesLeft);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -484,7 +513,8 @@ export function IssueMarginPanel({
   const labels = issue.labels ?? [];
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
-  const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
+  // The chips the Components row draws, as one list (`componentChipIds`).
+  const componentChips = componentChipIds(issue.components).length;
   const none = (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}
@@ -691,18 +721,33 @@ export function IssueMarginPanel({
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
-            while the reader can see them: Details open, and Development with it. */}
-        <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
+            while the reader can see them: Details open, and Development with it; and 20 at a
+            time, each one link, a child of the row's value. */}
+        <Row
+          glyph={RIGHT_OVER_LEFT_ARROWS}
+          label={PROPERTY_LABELS.pull_request}
+          valueRef={pullRequestPages.list}
+        >
           {pullRequests.length === 0 ? none : null}
-          {readingDevelopment
-            ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
-            : null}
+          {readingDevelopment ? (
+            <>
+              {pullRequests.slice(0, pullRequestPages.drawn).map((link) => (
+                <GitHubLink key={link.url} link={link} />
+              ))}
+              {pullRequestPages.more(pullRequests.length)}
+            </>
+          ) : null}
         </Row>
         {otherLinks.length === 0 ? null : (
-          <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {readingDevelopment
-              ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
-              : null}
+          <Row glyph="↗" label={PROPERTY_LABELS.external_links} valueRef={linkPages.list}>
+            {readingDevelopment ? (
+              <>
+                {otherLinks.slice(0, linkPages.drawn).map((link) => (
+                  <GitHubLink key={link.url} link={link} />
+                ))}
+                {linkPages.more(otherLinks.length)}
+              </>
+            ) : null}
           </Row>
         )}
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
@@ -768,8 +813,20 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components}>
-          <IssueComponentsLine inRow issue={issue} />
+        {/* The issue's components, then its retired ones, as one list, 20 at a time: each chip
+            carries the line's mark (`COMPONENT_CHIP`), in the list's order. The reason for no
+            components is drawn by the renderer, so the line stands in the words' mark
+            (`data-node-words`), by which a link in that reason takes the words' own ink rather
+            than the application's link blue (`styles.css`); the mark's box draws nothing
+            (`contents`), so the line is the row's own item as it was. */}
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentPages.list}>
+          <div className="contents" data-node-words="">
+            <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
+          </div>
+          {componentPages.more(
+            componentChips,
+            (index) => componentPages.list.current?.querySelectorAll(COMPONENT_CHIP)[index]
+          )}
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
           <Row glyph={TICKED_BOX} label={PROPERTY_LABELS.tasks}>
@@ -820,55 +877,78 @@ export function IssueMarginPanel({
         sections={sections}
       >
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
-            wherever no approval request waits on the reader. */}
+            wherever no approval request waits on the reader. A reason is drawn by the renderer,
+            so the steps stand in the words' mark (`data-node-words`), by which a link in a
+            reason takes the words' own ink rather than the application's link blue
+            (`styles.css`); the mark's box draws nothing (`contents`), so the steps are the row's
+            own item as they were. */}
         <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
-          <ApprovalSteps
-            actions={!approvalWaits}
-            entries={approvalEntries}
-            primaryArtifactId={issue.primary_artifact_id}
-            reasons
-            size="compact"
-            testId="issue-details-approval-steps"
-            versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
-          />
+          <div className="contents" data-node-words="">
+            <ApprovalSteps
+              actions={!approvalWaits}
+              entries={approvalEntries}
+              primaryArtifactId={issue.primary_artifact_id}
+              reasons
+              size="compact"
+              testId="issue-details-approval-steps"
+              versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
+            />
+          </div>
         </Row>
         <Row valueRef={referencesValue} wide>
-          {/* Details' own control of the list, with the name, the role and the states of the
-              application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
-              count of zero is a fact and not a control, as there: opening it would only say
-              that nothing references the issue. */}
-          {issue.referenced_by_count === 0 ? (
-            <span
-              className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
-            >
-              {referencedByControlName(0)}
-            </span>
-          ) : (
-            <button
-              aria-controls={referencesPanelId}
-              aria-expanded={referencesOpen}
-              className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
-              onClick={() => setReferencesOpen((open) => !open)}
-              ref={referencesControl}
-              type="button"
-            >
-              {referencedByControlName(issue.referenced_by_count)}
-            </button>
-          )}
+          {/* Details' own control of the list (`referencedByControlName`): a button at every
+              count, since a run is in no reader's `referenced_by_count`. */}
+          <button
+            aria-controls={referencesPanelId}
+            aria-expanded={referencesOpen}
+            className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
+            onClick={() => setReferencesOpen((open) => !open)}
+            ref={referencesControl}
+            type="button"
+          >
+            {referencedByControlName(
+              referencesListed === undefined || !runs.settled
+                ? undefined
+                : referencesListed + runs.rows.length
+            )}
+          </button>
           {/* The list reads what references the issue, and reads it again on each event about
               those references, so it is drawn only while the reader can see it: open, in an open
-              References of an open Details. */}
-          {referencesOpen && readingReferences ? (
-            <ReferencedBy
-              className="w-full"
-              reference={issueReference}
-              {...referencesRetry}
-              toggle={{ id: referencesPanelId }}
-            />
+              References of an open Details. Its rows are drawn 20 at a time, as one list
+              whatever source they cite from (`pages`), the reader's runs after the list's own. A
+              tree read that stands failed leaves the list's own rows drawn, with its line under
+              them, whose Retry reads the tree again. */}
+          {referencesDrawn ? (
+            <>
+              <NamedRunRows
+                draw={(extraRows) => (
+                  <ReferencedBy
+                    className="w-full"
+                    extraRows={extraRows}
+                    page
+                    pages={referencePages}
+                    reference={issueReference}
+                    {...referencesRetry}
+                    toggle={{ id: referencesPanelId }}
+                  />
+                )}
+                issue={issue}
+                rows={runs.rows}
+              />
+              {runs.failed ? (
+                <DetailsErrorLine
+                  failure={runs.failure}
+                  message={ANSWER_LINES.references_unreadable}
+                  onRetry={runs.retry}
+                  {...runsRetry}
+                  retrying={runs.retrying}
+                />
+              ) : null}
+            </>
           ) : null}
         </Row>
-        {/* Every document and file of the issue, each opening its own address, folded after ten
-            behind a count that opens the rest. */}
+        {/* Every document and file of the issue, each opening its own address, 20 at a time;
+            the count in the row's label is of them all. */}
         <Row
           glyph={LINED_SQUARE}
           label={
@@ -881,8 +961,12 @@ export function IssueMarginPanel({
           {artifacts.length === 0 ? (
             none
           ) : (
-            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files" ref={filesList}>
-              {files.map((artifact) => (
+            <ul
+              className="flex w-full min-w-0 flex-col"
+              data-testid="issue-files"
+              ref={filePages.list}
+            >
+              {artifacts.slice(0, filePages.drawn).map((artifact) => (
                 <li key={artifact.id}>
                   <Link
                     className={`grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md p-1 text-sm ${pageInkText} ${pageRowHoverBg}`}
@@ -909,14 +993,7 @@ export function IssueMarginPanel({
               ))}
             </ul>
           )}
-          {artifacts.length > FOLD_AFTER && !filesOpen ? (
-            <ShowAll
-              className="pt-1.5"
-              count={artifacts.length}
-              list={filesList}
-              onShow={() => setFilesOpen(true)}
-            />
-          ) : null}
+          {filePages.more(artifacts.length)}
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />

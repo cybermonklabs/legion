@@ -95,6 +95,7 @@ export type DispatchReadingSurface =
   | "check-retraction-reason"
   | "referenced-by-excerpt"
   | "referenced-by-title"
+  | "referenced-by-run-question"
   | "artifacts-reference-name"
   | "person-node-title"
   | "priority-description"
@@ -117,7 +118,14 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "issue-page-history-turn"
+  | "issue-page-history-handoff-body"
+  | "issue-page-history-handoff-data"
+  | "issue-page-history-block"
   | "plan-task-line"
+  | "run-page-answer"
+  | "run-page-question"
+  | "run-page-changed-line"
   | "spec-decision-line"
   | "document-page-title"
   | "agent-artifact-page-title"
@@ -292,6 +300,11 @@ const ONE_LINE_FIELD_REASON =
  *  the live document and a past version of one both say. */
 const EDITOR_REASON =
   "The Proof editor paints a document's body itself, from the document it edits, and draws each reference the body holds as a decoration over the stored text (`doc/document-references.tsx`, `@legion/proof-editor`'s `src/reference-decorations.ts`) - the renderer draws a read-only copy and the editor cannot be one. The references are read by the one reader every rendered body is read by (`refs/text-references.ts`), so a bare key, a `#id`, an address and a mention resolve by the same rules there.";
+
+/** Why a command bar run's question in Details and the line of a node it changed on its own page
+ *  are drawn as they are: each is a one-line place of the new issue page. */
+const RUN_ONE_LINE_REASON =
+  "It is a one-line place, so it is drawn as plain words, the formatting gone, with each reference named as every plain line of the new issue page names one (`issue-page/one-line.ts`'s `referenceStandIns`, from the names `issue-page/run-references/run-references.ts`'s `RunReferenceNames` hands it, decisions 140, 340, 350 and 491): a whole document by the page's word for a document; an issue by its key, a space and its title, any other target that is no party as its chip names it, a deleted post by its deleted line and an edited post with its mark, once the page's batched read of reference targets has named it, and by the words its author wrote until then and wherever Dispatch answers that it has none, that nothing answers to it, that the reader may not see it or that it is ambiguous, never by its short form and never by a read of its own, since the page sends that batched read once for each set of references it cites and reads a set that changes whole; and a party (a person, a role or an agent's session), which that read does not ask for, by a read of its own (`refs/plain-text.tsx`'s `useReferenceNames`), and by the words its author wrote until that read answers and wherever it names nothing, never by its short form.";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -667,6 +680,48 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "issue-pin",
   },
   {
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    reach: "/issues/<ISSUE>/activity with the new issue page on, a turn in Details' History",
+    record: true,
+    rendered: true,
+    surface: "issue-page-history-turn",
+  },
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History",
+    reason:
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+    record: false,
+    rendered: true,
+    surface: "issue-page-history-handoff-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of JSON in Details' History",
+    reason:
+      "A handoff field that holds an array, an object, a number, a boolean or null is the data its session wrote, not words: it is shown as the JSON it is.",
+    record: false,
+    rendered: false,
+    surface: "issue-page-history-handoff-data",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueHistory.test.tsx",
+      test: "a block's line in the history reads a reference as its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, the line of a repaired or refused block in Details' History",
+    reason: `A line of the history names a block by the one line of the node that carries it, its first line cut by the page's first-line rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-page-history-block",
+  },
+  {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx"],
     proof: {
@@ -678,6 +733,50 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "plan-task-line",
+  },
+  // A command bar run's own page, which only the person who asked the run reads
+  // (`run-page/RunPage.tsx`): the model's answer, drawn through the renderer, and the question as
+  // its asker typed it.
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/run-page/RunPage.tsx"],
+    reach:
+      "/runs/<RUN> with the new issue page on, as the person who asked the run, the text of its answer",
+    reason:
+      "A run's answer is the model's words, which Dispatch stores as the run's `text` frames (`GraphFrame`), and is no record of the reference graph: a run is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), so the renderer is given no `source` and a `#id` in the answer names nothing. The run's read sends no reading of the frames' words, so the renderer reads them on the page.",
+    record: false,
+    rendered: true,
+    surface: "run-page-answer",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/run-page/RunPage.tsx"],
+    reach: "/runs/<RUN> with the new issue page on, as the person who asked the run, its question",
+    reason:
+      "The question is what its asker typed into the command bar, and the page shows it whole, as the characters she typed, never read as markdown: a `*`, a `_` or a `[` in it is a character of her question. It is no record of the reference graph either: a run is none of the four kinds a `TextSource` names, so a `#id` in it declares nothing and names nothing.",
+    record: false,
+    rendered: false,
+    surface: "run-page-question",
+  },
+  {
+    cannotCarry: {
+      forms: ["question-id"],
+      why: "A changed node's line names its references as every one-line place does (`referenceStandIns`), which reads no question map, so a `#id` in it is drawn as written.",
+    },
+    files: [
+      "packages/dispatch/web/src/features/issue-page/run-page/RunPage.tsx",
+      "packages/dispatch/web/src/features/issue-page/run-page/run-page.ts",
+      "packages/dispatch/web/src/features/issue-page/run-references/run-references.ts",
+    ],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/run-page/RunPage.test.tsx",
+      test: "a changed node's line names each reference by its name once read, and as its author wrote it until then",
+    },
+    reach:
+      "/runs/<RUN> with the new issue page on, as the person who asked the run, the line of each node it changed",
+    reason: `The run's page names each node the run changed on one line, as a link to it beside its kind's word: the node's first line, cut by R1's first-line rule with its ellipsis, from the first block of the server's reading of the references read's excerpt of it (\`text_tree\`), and of the excerpt as stored where the read sent none (\`lineWordsRaw\`). ${RUN_ONE_LINE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "run-page-changed-line",
   },
   // The Spec view's decision cell and its because line: the quote of a decision and the question an
   // answer answers, each one line of words `specDecidedBy` has named before the view draws it.
@@ -1139,6 +1238,22 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "referenced-by-title",
+  },
+  {
+    files: [
+      "packages/dispatch/web/src/features/refs/ReferencedBy.tsx",
+      "packages/dispatch/web/src/features/issue-page/run-references/run-references.ts",
+    ],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/run-references/run-references.test.ts",
+      test: "a run's row names each reference in its question by its name once read, and as its asker wrote it until then",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, as the person who asked a command bar run that changed the issue, Details' Referenced by, the run's row",
+    reason: `A command bar run's row in Details' Referenced by, which only the person who asked the run sees, shows the run's question whole, with no clamp and no Show more: the words of the server's reading of it where the tree read sends one (\`text_tree\`), and of its stored text where it does not, on one line, which the row's host names and hands the list (\`run-references.ts\`), and the list draws as the characters they are (\`ExtraReferenceRow\`). ${RUN_ONE_LINE_REASON} A run is no record of the reference graph - none of the four kinds a \`TextSource\` names - so a \`#id\` in its question names nothing.`,
+    record: false,
+    rendered: false,
+    surface: "referenced-by-run-question",
   },
   // The Artifacts tab's References and Referenced by rows: each a link to the node at the far end
   // of a link of the issue's references read, worded with the name the read gives that node.

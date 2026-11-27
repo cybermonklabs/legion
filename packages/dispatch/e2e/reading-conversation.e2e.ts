@@ -1,5 +1,9 @@
+import { GOING_EVENT_END, GOING_EVENT_TEXT, type GraphFrame } from "@legion/contracts";
 import type { Locator } from "@playwright/test";
 
+import type { GraphReferences } from "../web/src/api/types";
+import { buildRunPath } from "../web/src/features/refs/routes";
+import { issueProject } from "../web/src/lib/issue-key";
 import {
   answerAsk,
   createAsk,
@@ -10,7 +14,9 @@ import {
 } from "./api";
 import { indexedBlockAsk } from "./editor";
 import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
+import { daemonOf, historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
+import { mainContent, runAs, runReference } from "./issue-page-z";
 import {
   expectReadsReferences,
   formReadings,
@@ -40,6 +46,17 @@ import { expect, test } from "./test";
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
  * its words names nothing, and its driver holds the other five forms. A row of the new page reads
  * no question map, so a `#id` in its words is drawn as written, and its driver holds the rest.
+ *
+ * Two drivers read the new page's Details history: a turn of a thread the history holds, which
+ * reads every form, and a handoff's opened fields, which read all but a question id, since a
+ * handoff is no record of the reference graph.
+ *
+ * One driver reads a command bar run's own page, which the new issue page draws for the person
+ * who asked the run alone: the run's answer, drawn through the renderer, which is no record of
+ * the reference graph, so its driver holds every form but a question id. The stack has no model,
+ * so a run it records answers one frame, its error (`e2e/issue-page-z.e2e.ts`), and no write of
+ * the API writes a run's frames: the driver answers the page's read of the run as the server
+ * answered it, with the reading text as the answer's text frame in place of that error.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -304,3 +321,76 @@ async function expectRowReadsForms(scope: Locator, world: ReadingWorld): Promise
   }
   await expect(scope).not.toContainText("dispatch://");
 }
+
+// SLOW(>=2s): seeds the reading world and a Legion daemon's message, then loads the new issue
+// page at `/activity`, which opens Details' History and resolves each reference the turn holds.
+test("issue-page-history-turn: an agents' thread turn in the new page's history draws a stored key, an address and a party through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // A message the project's Legion daemon writes with no target opens a thread the new page's
+  // history holds whole (`agents-only.ts`).
+  const turn = await createMessage(
+    world.host.key,
+    { body: readingText(world) },
+    daemonOf(issueProject(world.host.key))
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(historyItem(page, turn.id).locator(RENDERED_BODY), world, "link");
+});
+
+// SLOW(>=2s): seeds the reading world and a handoff, then loads the new issue page at `/activity`,
+// which opens Details' History and reads the handoff's fields and each reference in them.
+test("issue-page-history-handoff-body: a handoff's field of words in the new page's history draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  await createHandoff(
+    world.host.key,
+    "implement",
+    { phase: "implement", summary: readingText(world) },
+    readingAgent.actor
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(
+    historyPanel(page).locator('[data-handoff-field="summary"] .dispatch-markdown'),
+    world,
+    "link"
+  );
+});
+
+// SLOW(>=2s): seeds the reading world and asks the command bar a question, then one cold load of
+// the run's own page, which reads the run once and then the names of what its answer cites.
+test("run-page-answer: a command bar run's answer on its own page draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  const run = await runAs(READER, "What does the release need?", issueProject(world.host.key));
+  // The page's one read of the run (`GET /api/v1/references?to=<the run's address>`), answered as
+  // the server answered it, with the frames a model's answer writes: the reading text as one
+  // text frame, and the end.
+  const reference = runReference(run.id);
+  await page.route(
+    (url) => url.pathname === "/api/v1/references" && url.searchParams.get("to") === reference,
+    async (route) => {
+      const response = await route.fetch();
+      const read = (await response.json()) as GraphReferences;
+      const frames: GraphFrame[] = [
+        { data: { text: readingText(world) }, name: GOING_EVENT_TEXT, sequence: 1 },
+        { data: { items: 0, words: 0 }, name: GOING_EVENT_END, sequence: 2 },
+      ];
+      await route.fulfill({ json: { ...read, node: { ...read.node, frames } }, response });
+    }
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(buildRunPath(run.id));
+
+  await expectReadsReferences(mainContent(page).locator(RENDERED_BODY), world, "link");
+});

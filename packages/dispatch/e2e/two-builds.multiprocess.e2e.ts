@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
+import { buildRunPath } from "../web/src/features/refs/routes";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -31,6 +32,7 @@ import {
   webDistOf,
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
+import { RUN_WORD, runAs } from "./issue-page-z";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -168,6 +170,9 @@ const messageAuthor = {
   as: "agent" as const,
 };
 
+/** The question alice asks the command bar, whose run's own page the walk opens. */
+const runQuestion = "What is rolling out in Core?";
+
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -175,6 +180,7 @@ interface Seeded {
   readonly issue: string;
   readonly issueArtifact: string;
   readonly priority: string;
+  readonly run: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
@@ -264,6 +270,8 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id, "shot.png");
+  // A command bar run's own page draws only a run its reader asked.
+  const run = (await runAs("alice", runQuestion, "CORE")).id;
   await seedDeliveryFixture();
   return {
     agentArtifact,
@@ -272,6 +280,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
+    run,
   };
 }
 
@@ -543,6 +552,17 @@ function visits(seed: Seeded): readonly Visit[] {
           .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
       ],
       url: issue,
+    },
+    {
+      // A run's own page is drawn only for a reader with the new issue page turned on, so this
+      // visit is last for the same reason as the one before it.
+      route: "/runs/:id",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: RUN_WORD }),
+      ],
+      url: buildRunPath(seed.run),
     },
   ];
 }

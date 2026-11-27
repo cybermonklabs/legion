@@ -11,10 +11,66 @@
  *   `./page-words-parts`, and values from `./page-structure`. A value import from
  *   `page-words.ts` or `./page-words-parts` makes an import cycle.
  */
+import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
+/**
+ * The headings of a command bar run's own page (`run-page/RunPage.tsx`): the asker's whole
+ * question, and the nodes the run changed. The page's heading is the run's kind word,
+ * `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is in
+ * `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`. The question's heading is keyed
+ * `question_heading` and not `question`: the reading list's source test reads a field named
+ * `question` as a person's stored text wherever the page draws it (`surface-lists.test.ts`).
+ */
+export const RUN_PAGE_WORDS = freeze({
+  question_heading: "Question",
+  what_changed: "What it changed",
+} as const);
+
 export default {
-  add: {},
-  unasked: [],
+  add: {
+    NODE_REFERENCES_WORDS: {
+      edges: {
+        /** The edge from a node a command bar run changed to that run, which
+         *  `run-references/run-references.ts` draws on the run's row in Details' Referenced by. */
+        changed_by_run: "changed this issue",
+      },
+      kinds: {
+        /** A run of the command bar, which only its asker reads. It is lowercase, as this table
+         *  holds its words, and the row draws it with `sentenceCase`. */
+        interaction: "command bar run",
+      },
+    },
+    EMPTY_STATE_LINES: {
+      /** What a command bar run's page says for its `none` frame, where the model produced no
+       *  answer text at all (`run-page/RunPage.tsx`). */
+      run_none: "The model gave no answer.",
+    },
+    STATE_LINES: {
+      /** What a command bar run's page says for its `changed` frame, where pieces of the answer
+       *  are shown as plain text or removed (`run-page/RunPage.tsx`). The frame's `dropped` count
+       *  is drawn between `before` and `after`, as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+      run_changed: { after: ".", before: "Pieces of the answer shown as plain text or removed: " },
+      /** What a command bar run's page says for its `cut` frame, where the answer was cut short
+       *  (`run-page/RunPage.tsx`). The frame's `words` count is drawn between `before` and
+       *  `after`, as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+      run_cut: { after: " words.", before: "The answer was cut short after " },
+      /** What a command bar run's page says for the error code `ANSWER_DID_NOT_ARRIVE`
+       *  (`run-page/RunPage.tsx`). */
+      run_did_not_arrive: "The answer did not arrive in time.",
+      /** What a command bar run's page says for the error code `ANSWER_FAILED`, and for any code
+       *  the page does not know (`run-page/RunPage.tsx`). */
+      run_failed: "The question could not be answered.",
+      /** What a command bar run's page says for the error code `NO_MODEL_CONFIGURED`
+       *  (`run-page/RunPage.tsx`). */
+      run_no_model: "No model is set up to answer questions.",
+    },
+    ANSWER_LINES: {
+      /** What a command bar run's page says when its one read failed with anything but 400 or
+       *  404, with Retry beside it (`run-page/RunPage.tsx`). */
+      run_unreadable: "Could not load this run.",
+    },
+  },
+  unasked: [RUN_PAGE_WORDS],
   answers: [],
 } as const satisfies PartWords;

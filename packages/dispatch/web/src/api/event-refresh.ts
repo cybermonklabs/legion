@@ -1240,6 +1240,17 @@ function appendAgentConversation(targets: RefreshTarget[], target: string | unde
   }
 }
 
+// A reference to one of an agent's documents reads it under `["agent-artifacts", <id>]`
+// (`agentArtifactQuery`), the id of the `session:<id>` target that names its conversation. An
+// upload into a session's conversation appends no event (agent_artifacts.go `ownsEvents`): the
+// message that carries the file is that conversation's record of it, so that message's event is
+// the one that can change the document a reference shows.
+function appendAgentArtifacts(targets: RefreshTarget[], target: string | undefined): void {
+  if (target?.startsWith("session:") && target.length > "session:".length) {
+    targets.push({ queryKey: ["agent-artifacts", target.slice("session:".length)] });
+  }
+}
+
 function isMessageEvent(event: DispatchEvent): boolean {
   return (
     event.type === "message.created" ||
@@ -1901,6 +1912,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // The Inbox's Agent rows are the same two writes: the message that opens one and the reply
     // that makes it unread. `thread_logins` names the thread root's author, whose row it is.
     const targets: RefreshTarget[] = [{ queryKey }, { queryKey: ["broadcast"] }];
+    appendAgentArtifacts(targets, payloadString(event, "target"));
     if (event.type === "message.answered") {
       targets.push({ queryKey: userAgentStateQuery().queryKey });
     }

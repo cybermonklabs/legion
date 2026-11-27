@@ -560,6 +560,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     reason: "It draws InboxPage, the same component as / (web/src/app.tsx).",
   },
   {
+    kind: "excluded",
+    name: "run",
+    pattern: "/runs/:id",
+    reason:
+      "A command bar run's own page draws only for the reader who asked the run, with the new " +
+      "issue page turned on, and the review seed asks no run; every other reader gets " +
+      "NotFoundPage, which the not-found entry already reviews (e2e/issue-page-z.e2e.ts).",
+  },
+  {
     kind: "reviewed",
     // Not shot: its one non-trivial state is a capability probe that is briefly out, which is
     // what a comparison would flake on (e2e/machine-login.e2e.ts).

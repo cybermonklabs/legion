@@ -33,7 +33,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
-import { issueQuery, referenceTargetsQuery, userStateQuery } from "../../api/queries";
+import { issueQuery, issueTreeKey, referenceTargetsQuery, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
   Actor,
@@ -52,7 +52,7 @@ import type {
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
-import { componentsControlName } from "../issue/IssueComponentsLine";
+import { COMPONENT_CHIP, componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
@@ -66,15 +66,14 @@ import {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath, buildRunPath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { FOLD_AFTER } from "./details-leaves";
-import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import {
   DETAILS_OPENER_ATTRIBUTE,
   DETAILS_ROW_ATTRIBUTE,
@@ -106,14 +105,22 @@ import {
   BLOCKED_BY_REFUSALS,
   CONTROL_LABELS,
   issueStatusWord,
+  NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
   STATE_LINES,
+  sentenceCase,
 } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
-import { commentNode, postMarks, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
-import { outlineQuery } from "./tree-read/tree-read";
+import { commentNode, postMarks, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  subscribeTreeFreshness,
+  type TreeAnswer,
+} from "./tree-read/tree-read";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -196,6 +203,13 @@ function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
 }
 
+/** The row of Details' Files and documents, whose label carries the count of its entries. */
+function filesRow(): HTMLElement {
+  const row = screen.getByTestId("issue-files").closest(".grid");
+  if (!(row instanceof HTMLElement)) throw new Error("Details draws no Files and documents row");
+  return row;
+}
+
 /** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
 const OPEN_DRAWER: MarginDrawer = {
   open: true,
@@ -210,6 +224,33 @@ const SHUT_DRAWER: MarginDrawer = { ...OPEN_DRAWER, open: false };
  *  control are named from inside `NoTooltips` (`labelsControlName`, `componentsControlName`,
  *  `repoTextControlName`). */
 const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
+
+/** The issue's tree read with no node and no tuple in it, as the outline reads it before Details
+ *  draws (`tree-read/tree-read.ts`), in the route's shape (`tree-read/tree-fixtures.ts`). */
+const EMPTY_TREE: TreeAnswer = treeAnswer([]);
+
+/** A command bar run the reader asked that changed the issue, and the question they asked. */
+const RUN = "6b1d3f5a-8c2e-4a7b-9d0f-1e2c3b4a5d6f";
+const RUN_QUESTION = "Close this once the checks pass";
+
+/** The issue's tree read as the asker of the command bar run `run` reads it once that run, asked
+ *  as `question`, changed the issue: the `changed_by_run` tuple from the issue to the run, and the
+ *  run's node, as the read answers a run such a tuple of a node it holds names
+ *  (`issue_tree_read.go`'s `readContext`): a context node of the `interaction` kind and supertag,
+ *  by the run's id, the asker's alone, with the question as its text. */
+function treeWithRun(run: string, question: string): TreeAnswer {
+  return treeAnswer(
+    [
+      treeNode(run, "interaction", null, {
+        made_at: "2026-11-17T09:00:00Z",
+        role: "context",
+        text: question,
+        visibility: "author",
+      }),
+    ],
+    [treeTuple("changed_by_run", "CORE-1", run)]
+  );
+}
 
 /** The client every read of Details goes through by default (`renderDetails`): one whose answered
  *  reads are never stale, so none of those is read again by its age or a window focus; a read that
@@ -227,14 +268,23 @@ function detailsQueryClient(): QueryClient {
  *  publishes to unless `beside` does. `drawer` is the Details drawer it is drawn in; with none,
  *  Details makes none of the reads it makes only while open. `redraw` draws the same Details in
  *  the drawer it is handed, as a drawer that opens or closes does. `queryClient` is the client
- *  every read goes through, by default a new `detailsQueryClient()`. */
+ *  every read goes through, by default a new `detailsQueryClient()`. `heldTree` is the tree
+ *  read's answer the page holds as Details draws, by default `EMPTY_TREE`; with null the page
+ *  holds none. `address` is the router address the page starts at, by default `"/issues/CORE-1"`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
-  queryClient = detailsQueryClient()
+  queryClient = detailsQueryClient(),
+  heldTree: TreeAnswer | null = EMPTY_TREE,
+  address = "/issues/CORE-1"
 ) {
+  // The tree read with no view, as the page holds it once Graph has read it: Details' run rows
+  // read it at the list's opening only where the page holds none (`useRunRows`), so a case that
+  // opens the list over this answer stubs no tree read. A case that needs another answer puts it
+  // in the client this returns.
+  if (heldTree !== null) queryClient.setQueryData(issueTreeKey(issue.key), heldTree);
   const tree = (inDrawer: MarginDrawer | undefined) => (
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+    <MemoryRouter initialEntries={[address]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
           <ReferenceNamesProvider>
@@ -289,42 +339,25 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
- *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network-guard.ts`). */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
-  const reads = [
-    spyOn(api, "whoAmI").mockResolvedValue({ login: "alice" } as Awaited<
-      ReturnType<typeof api.whoAmI>
-    >),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-  ];
-  const pinReads = {
-    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
-    comments: spyOn(api, "listComments").mockResolvedValue([]),
-    messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  };
+  const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
   );
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
-    pinReads,
+    pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
-      for (const spy of reads) spy.mockRestore();
-      for (const spy of Object.values(pinReads)) spy.mockRestore();
+      reads.restore();
       patchIssue.mockRestore();
     },
   };
@@ -1237,9 +1270,9 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// Only a list of unbounded length folds after its first ten. An issue waits on at most
-// `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
-test("the blockers never fold", async () => {
+// Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
+// most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
+test("Blocked by draws every issue this one waits on whole, with no Show more", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
@@ -1252,12 +1285,10 @@ test("the blockers never fold", async () => {
       within(row)
         .getAllByRole("link")
         .map((link) => link.textContent),
-      "the Blocked by row folds the issues this one waits on"
+      "the Blocked by row does not draw every issue this one waits on"
     ).toEqual(blockers);
     expect(
-      within(row).queryByRole("button", {
-        name: (name) => name.startsWith(CONTROL_LABELS.show_all),
-      }),
+      within(row).queryByRole("button", { name: SHOW_MORE }),
       "the Blocked by row offers to show a list it already draws whole"
     ).not.toBeInTheDocument();
   } finally {
@@ -2782,47 +2813,177 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
   }
 });
 
-// A folded list's Show all goes with its press, so the focus goes on to the first entry it
-// opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
-test("Show all gives the focus to the first entry it opens", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  const withTwelve = withNotes(12);
-  getIssue.mockResolvedValue(withTwelve);
+/** How many entries each list of `MANY_ENTRIES` holds: two pages of 20 and five entries more. */
+const MANY = 2 * PAGE_SIZE + 5;
+
+/** `count` names, `stem` and a number from 1, padded so that they sort as they are numbered. */
+function numbered(stem: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, index) => `${stem}${String(index + 1).padStart(2, "0")}`
+  );
+}
+
+/** The fixture's issue with `MANY` entries in each list of unbounded length its rows of Details
+ *  draw: its pull requests, its other links, its components (25 live and the rest retired, which
+ *  the row draws after them as one list), and its documents. */
+const MANY_ENTRIES: IssueDetails = {
+  ...withNotes(MANY - 1),
+  components: {
+    ids: numbered("panel-", 25),
+    inherited_from: null,
+    mode: "explicit",
+    reason: null,
+    unknown: numbered("retired-", MANY - 25),
+  },
+  external_links: [
+    ...numbered("", MANY).map((number) => ({
+      kind: "github_pr" as const,
+      url: `https://github.com/acme/web/pull/${number}`,
+    })),
+    ...numbered("", MANY).map((number) => ({
+      url: `https://github.com/acme/web/issues/${number}`,
+    })),
+  ],
+};
+
+/** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
+ *  Pinned lists as one list. */
+const MANY_PINS = [
+  ...numbered("00000000-0000-4000-8000-0000000000", PAGE_SIZE + 5).map((id) =>
+    conversationItemId("comment", id)
+  ),
+  ...Array.from({ length: MANY - PAGE_SIZE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
+];
+
+/** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
+ *  on it, each link's read of GitHub answered, and the project's architecture read; the call that
+ *  puts every read back. */
+function stubManyEntries(): () => void {
+  const { getIssue, getMyState, restore } = stubIssueApi();
+  getIssue.mockResolvedValue(MANY_ENTRIES);
+  getMyState.mockResolvedValue(pinnedState(...MANY_PINS));
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const waiting = keysFrom2(12);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
-    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-  });
+  const stubs = [
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: keysFrom2(MANY).map((key) => waitingEdge(key, `Waits for ${key}`)),
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    }),
+    // A reference with no head, so a pull request's read reads no checks after it.
+    spyOn(api, "githubRest").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ state: "open", title: "Ship the web app" }), {
+          headers: { "Content-Type": "application/json" },
+        })
+    ),
+    spyOn(api, "getArchitecture").mockResolvedValue(architecture),
+    // The page holds the tree read with no view (`renderDetails`), which answers none of the
+    // pinned comments, so open Details reads each on its own (`IssuePins.tsx`). Dispatch holds
+    // no such comment, and Pinned draws each by its kind's word.
+    spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {})),
+  ];
+  return () => {
+    for (const stub of stubs) stub.mockRestore();
+    restore();
+  };
+}
+
+/** The chips drawn of the box of chips with the test id `testId`, the components', each by the
+ *  mark the line gives a chip where Details pages them (`data-component-chip`). */
+function drawnChips(testId: string): HTMLElement[] {
+  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(COMPONENT_CHIP)].filter(
+    (chip) => !chip.hidden
+  );
+}
+
+/** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and
+ *  each entry it draws, in order. */
+interface PagedList {
+  readonly box: () => HTMLElement;
+  readonly entries: () => readonly Element[];
+}
+
+/** Each link a row of Details draws, by the row's name. */
+function linksOfRow(name: string): PagedList {
+  return {
+    box: () => detailsRow(name),
+    entries: () => within(detailsRow(name)).getAllByRole("link"),
+  };
+}
+
+/** Every list of unbounded length that Details' own rows and Pinned draw. */
+const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
+  ["Blocks", linksOfRow(PROPERTY_LABELS.blocks)],
+  ["Pull request", linksOfRow(PROPERTY_LABELS.pull_request)],
+  ["Links", linksOfRow(PROPERTY_LABELS.external_links)],
+  [
+    "Components, the retired ones after the live ones",
+    {
+      box: () => detailsRow(PROPERTY_LABELS.components),
+      entries: () => drawnChips("issue-components"),
+    },
+  ],
+  [
+    "Files and documents",
+    {
+      box: () => filesRow(),
+      entries: () => within(screen.getByTestId("issue-files")).getAllByRole("listitem"),
+    },
+  ],
+  [
+    "Pinned, the history's lines after the comments",
+    {
+      box: () => screen.getByRole("region", { name: CONTROL_LABELS.pinned }),
+      entries: () =>
+        within(screen.getByRole("region", { name: CONTROL_LABELS.pinned })).getAllByRole(
+          "listitem"
+        ),
+    },
+  ],
+];
+
+// Each list of unbounded length draws its first 20 entries and, under them, Show more, which says
+// how many entries are left. A press keeps the entries drawn, draws the next 20 and moves the focus
+// to the first of them, whether the control stays or goes, rather than let it fall to the page; the
+// control goes once every entry is drawn. A list drawn from two sources - a component and a
+// retired one, a pinned comment and a pinned line of the history - is one list, whose pages run
+// on from one source into the other and whose count is of both.
+test.each(
+  PAGED_LISTS
+)("%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end", async (_name, list) => {
+  const user = userEvent.setup();
+  const restoreReads = stubManyEntries();
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
-    const showFiles = await screen.findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${withTwelve.artifacts?.length ?? 0}`,
-    });
-    act(() => showFiles.focus());
-    await user.keyboard("{Enter}");
-    expect(
-      document.activeElement,
-      "Show all of Files and documents left the focus off the first entry it opened"
-    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+    await waitFor(() =>
+      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE_SIZE)
+    );
+    const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
 
-    const blocks = detailsRow(PROPERTY_LABELS.blocks);
-    const showBlocks = await within(blocks).findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${waiting.length}`,
-    });
-    act(() => showBlocks.focus());
+    act(() => more.focus());
     await user.keyboard("{Enter}");
+    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
+      2 * PAGE_SIZE
+    );
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
     expect(
-      document.activeElement,
-      "Show all of Blocks left the focus off the first entry it opened"
-    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+      list.entries()[PAGE_SIZE]?.contains(document.activeElement),
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+
+    act(() => more.focus());
+    await user.keyboard("{Enter}");
+    expect(list.entries()).toHaveLength(MANY);
+    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+    expect(
+      list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
+      "Show more went with the last entries and did not move the focus to the first it drew"
+    ).toBe(true);
   } finally {
     unmount();
-    getReferences.mockRestore();
-    restore();
+    restoreReads();
   }
 });
 
@@ -2840,7 +3001,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", { name: referencedByControlName(3) });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -2858,8 +3019,528 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
       "aria-controls",
       list.id
     );
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(toggle);
   } finally {
     unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A command bar run the reader asked is in no reader's `referenced_by_count`, so Details' control
+// of Referenced by is a control at every count, and it reads the rows its list shows, the list's
+// own and the reader's runs, only once both reads have answered: a tree read that stands failed
+// adds no run to the count, and one still out holds the count back.
+test("Referenced by counts the reader's runs once both reads answer, and is a control at zero", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const otherComment = "44444444-4444-4444-8444-444444444444";
+  // CORE-2's comment cites CORE-1: a row of the list's own (`referenced-by-page.test.tsx`).
+  const cited: GraphEdge = {
+    created_at: "2026-11-16T10:00:00Z",
+    direction: "in",
+    excerpt: { text: "CORE-2's comment cites CORE-1." },
+    kind: "mentions",
+    node: graphNode({
+      id: otherComment,
+      issue_key: "CORE-2",
+      kind: "comment",
+      project: "CORE",
+      ref: `dispatch://CORE-2/comment/${otherComment}`,
+    }),
+    source_seq: 7,
+  };
+  let listed = NOTHING_REFERENCES;
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async (_to, options) =>
+    options === undefined ? listed : NOTHING_REFERENCES
+  );
+  const listReads = () =>
+    getReferences.mock.calls.filter(([to, options]) => to === reference && options === undefined)
+      .length;
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(readFailure());
+  const runKind = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 0 });
+  let view = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    // Nothing references the issue and the reader asked no run: a control all the same.
+    const zero = await screen.findByRole("button", { name: referencedByControlName(undefined) });
+    expect(zero).toHaveAttribute("aria-expanded", "false");
+    await user.click(zero);
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(zero);
+    view.unmount();
+
+    // The reader's run changed the issue, and CORE-2's comment cites it: the issue's count holds
+    // the comment alone.
+    listed = { ...NOTHING_REFERENCES, edges: [cited] };
+    getReferences.mockClear();
+    getIssue.mockResolvedValue({ ...issue, referenced_by_count: 1 });
+    view = renderDetails(undefined, OPEN_DRAWER);
+    const { queryClient } = view;
+    act(() => {
+      queryClient.setQueryData(issueTreeKey(issue.key), treeWithRun(RUN, RUN_QUESTION));
+    });
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await waitFor(() =>
+      expect(getReferences).toHaveBeenCalledWith(reference, { kind: "blocked_by" })
+    );
+    expect(listReads(), "Details read the list before the reader opened it").toBe(0);
+    await user.click(control);
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(2) }),
+      "Referenced by's control does not count the reader's run with the list's own row"
+    ).toBe(control);
+    const list = screen.getByRole("region", { name: "Referenced by" });
+    const listedRow = within(list).getByRole("link", { name: "Comment · CORE-2" });
+    const runRows = list.querySelector<HTMLElement>("[data-extra-references]");
+    if (runRows === null) throw new Error("the list draws no row of the reader's run");
+    expect(within(runRows).getByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `/runs/${RUN}`
+    );
+    expect(runRows, "the run's row does not hold its question").toHaveTextContent(RUN_QUESTION);
+    // The list draws the rows its host adds after its own (`ReferencedBy`'s `extraRows`).
+    expect(
+      listedRow.compareDocumentPosition(runRows) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the run's row stands before the list's own"
+    ).toBeTruthy();
+    view.unmount();
+
+    // The tree read with no view stands failed: the list keeps its own row, with the failure's
+    // line after it, and the control counts that row alone.
+    view = renderDetails(undefined, OPEN_DRAWER);
+    const failing = view.queryClient;
+    await act(async () => {
+      await failing.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+      await failing.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const unread = await screen.findByRole("button", { name: referencedByControlName(undefined) });
+    await user.click(unread);
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(1) }),
+      "Referenced by's control does not read the list's own rows while the tree read stands failed"
+    ).toBe(unread);
+    const kept = within(screen.getByRole("region", { name: "Referenced by" })).getByRole("link", {
+      name: "Comment · CORE-2",
+    });
+    const failure = screen.getByText(ANSWER_LINES.references_unreadable);
+    expect(
+      kept.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the tree read's line stands before the list's own row"
+    ).toBeTruthy();
+    const line = failure.parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const treeReads = getIssueTree.mock.calls.length;
+    await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() =>
+      expect(getIssueTree, "Retry did not read the tree again").toHaveBeenCalledTimes(treeReads + 1)
+    );
+    view.unmount();
+
+    // The tree read is out as the reader opens the list: the list's own read answers, and the
+    // control holds its count back until the tree read answers too, with the reader's run in it.
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    view = renderDetails(undefined, OPEN_DRAWER);
+    const reading = view.queryClient;
+    await act(async () => {
+      await reading.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+    });
+    act(() => {
+      void reading.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const holding = await screen.findByRole("button", { name: referencedByControlName(undefined) });
+    await user.click(holding);
+    const opened = await screen.findByRole("region", { name: "Referenced by" });
+    await within(opened).findByRole("link", { name: "Comment · CORE-2" });
+    expect(
+      holding,
+      "Referenced by counted the list's rows before the tree read answered"
+    ).toHaveAccessibleName(referencedByControlName(undefined));
+    await act(async () => treeRead.resolve(treeWithRun(RUN, RUN_QUESTION)));
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(2) }),
+      "Referenced by does not count the reader's run once the tree read answers"
+    ).toBe(holding);
+  } finally {
+    view.unmount();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Decision 533: Details hands the page's router address (`useLocation`) to `useRunRows`, so on an
+// issue page that `?issue_page=new` opened, each run row in Referenced by links to its run's page
+// with `?issue_page=new` and the opening issue's key.
+test("on an issue page opened with ?issue_page=new, Referenced by links a run row with ?issue_page=new and the issue key", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const { unmount } = renderDetails(
+    undefined,
+    OPEN_DRAWER,
+    detailsQueryClient(),
+    treeWithRun(RUN, RUN_QUESTION),
+    "/issues/CORE-1?issue_page=new"
+  );
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const runKind = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+    expect(await within(list).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `${buildRunPath(RUN)}?issue_page=new&issue=CORE-1`
+    );
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("opening Referenced by reads the run question's three comment names in one batch", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const names = ["Warm the cache", "Check the logs", "Ship the build"];
+  const targets = names.map((name, at) => ({
+    gone: false,
+    kind: "comment",
+    name,
+    ref: `dispatch://CORE-2/comment/44444444-4444-4444-8444-00000000000${at + 1}`,
+  }));
+  const refs = targets.map(({ ref }) => ref);
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const perTarget = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const tree = treeWithRun(RUN, `What follows ${refs.join(" and ")}?`);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), tree);
+  try {
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
+    expect(batch).not.toHaveBeenCalled();
+    expect(perTarget).not.toHaveBeenCalled();
+    await user.click(toggle);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByRole("link", {
+      name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+    });
+    expect(perTarget, "individual comment reads while the batch is out").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+    await act(async () => answer.resolve({ targets }));
+    await within(list).findByText(`What follows ${names.join(" and ")}?`);
+    expect(perTarget, "individual comment reads after the batch answered").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+  } finally {
+    unmount();
+    perTarget.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Details draws the list 20 rows at a time, the reader's runs after its own rows in the one
+// sequence (`ReferencedBy`'s `pages`, `extraRows`): the control counts every row of the list, its
+// own and the runs, and not the rows its first page draws, and Show more under them says how many
+// of both are left.
+test("N counts every row of the list and not the rows its pages draw", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  // 19 comments of CORE-2, each citing CORE-1: rows of the list's own.
+  const cited = Array.from({ length: 19 }, (_, index): GraphEdge => {
+    const id = `44444444-4444-4444-8444-${String(index + 1).padStart(12, "0")}`;
+    return {
+      created_at: "2026-11-16T10:00:00Z",
+      direction: "in",
+      excerpt: { text: `CORE-2's comment ${index + 1} cites CORE-1.` },
+      kind: "mentions",
+      node: graphNode({
+        id,
+        issue_key: "CORE-2",
+        kind: "comment",
+        project: "CORE",
+        ref: `dispatch://CORE-2/comment/${id}`,
+      }),
+      source_seq: 7,
+    };
+  });
+  // Three runs the reader asked, each of which changed the issue (`treeWithRun`).
+  const runs = [1, 2, 3].map((n) => `6b1d3f5a-8c2e-4a7b-9d0f-00000000000${n}`);
+  const tree = treeAnswer(
+    runs.map((run, index) =>
+      treeNode(run, "interaction", null, {
+        made_at: `2026-11-17T0${index}:00:00Z`,
+        role: "context",
+        text: `Question ${index + 1}`,
+        visibility: "author",
+      })
+    ),
+    runs.map((run) => treeTuple("changed_by_run", "CORE-1", run))
+  );
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async (_to, options) =>
+    options === undefined ? { ...NOTHING_REFERENCES, edges: cited } : NOTHING_REFERENCES
+  );
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 19 });
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), tree);
+
+  try {
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(control);
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(22) }),
+      "Referenced by's control does not count every row of the list, its own and the runs"
+    ).toBe(control);
+    const list = screen.getByRole("region", { name: "Referenced by" });
+    expect(
+      list.querySelectorAll(":scope > ul > li > ul > li"),
+      "the list does not draw the 20 rows of its first page"
+    ).toHaveLength(20);
+    expect(
+      within(list).getAllByRole("link", {
+        name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+      }),
+      "the first page does not draw the newest run after the list's 19 own rows"
+    ).toHaveLength(1);
+    expect(
+      within(list).getByRole("button", { name: SHOW_MORE }).textContent,
+      "Show more does not count the rows of both left"
+    ).toBe(showMoreName(2));
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The list's runs come from the tree read with no view, which the page reads for Graph alone: the
+// page's load sends none of it for runs, and the list's first opening sends it once where the
+// page does not hold it, and none where it does. A read Dispatch refused is not sent again at the
+// list's next opening, only by its Retry.
+test("the list's first opening reads the tree with no view where the page does not hold it, and the load reads none", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const getIssueTree = spyOn(api, "getIssueTree").mockResolvedValue(treeWithRun(RUN, RUN_QUESTION));
+  const treeReads = () => getIssueTree.mock.calls.length;
+  const runKind = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+  // The page holds no tree read: the load, with Details and References open and the list shut.
+  let view = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), null);
+  let stopFreshness: (() => void) | undefined;
+
+  try {
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await waitFor(() =>
+      expect(getReferences).toHaveBeenCalledWith(reference, { kind: "blocked_by" })
+    );
+    expect(treeReads(), "the page's load read the tree for runs").toBe(0);
+    await user.click(control);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    expect(await within(list).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `/runs/${RUN}`
+    );
+    expect(
+      getIssueTree.mock.calls.map(([key, query]) => [key, query]),
+      "the list's first opening did not read the tree once, with no view and no kind"
+    ).toEqual([["CORE-1", {}]]);
+    // Shut and opened again, the list draws the answer the page now holds.
+    await user.click(control);
+    await user.click(control);
+    const reopened = await screen.findByRole("region", { name: "Referenced by" });
+    await within(reopened).findByRole("link", { name: runKind });
+    expect(treeReads(), "the list's second opening read the tree again").toBe(1);
+    view.unmount();
+
+    // The page holds the tree read, as it does once Graph has read it.
+    getIssueTree.mockClear();
+    view = renderDetails(
+      undefined,
+      OPEN_DRAWER,
+      detailsQueryClient(),
+      treeWithRun(RUN, RUN_QUESTION)
+    );
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
+    const held = await screen.findByRole("region", { name: "Referenced by" });
+    expect(await within(held).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `/runs/${RUN}`
+    );
+    expect(treeReads(), "the list's opening read a tree the page holds").toBe(0);
+    view.unmount();
+
+    // The page holds no tree read, and Dispatch refuses it. The page's subscription to the tree's
+    // freshness, which its stage holds (`ViewReadProvider`), marks a refused read valid, so only
+    // a new ask of it - its Retry, an event of the issue - lets a new observer read it again.
+    getIssueTree.mockClear();
+    getIssueTree.mockRejectedValue(readFailure());
+    const refusing = detailsQueryClient();
+    const release = subscribeTreeFreshness(refusing, issue.key);
+    // The subscription ends once released and once the client holds the tree no more.
+    stopFreshness = () => {
+      release();
+      refusing.clear();
+    };
+    view = renderDetails(undefined, OPEN_DRAWER, refusing, null);
+    const refused = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(refused);
+    await screen.findByText(ANSWER_LINES.references_unreadable);
+    expect(treeReads(), "the list's first opening did not read the tree once").toBe(1);
+    await user.click(refused);
+    await user.click(refused);
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    expect(treeReads(), "the list's next opening read the refused tree again").toBe(1);
+    await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(treeReads(), "Retry did not read the tree again").toBe(2));
+  } finally {
+    view.unmount();
+    stopFreshness?.();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Where the tree read stands failed, a press of its line's Retry reads the tree again, and once
+// that read answers the line goes: that press is the reader's, so the focus goes on in the row,
+// and since the list draws no link, to Referenced by's own control, which opens and closes the
+// list, as Referenced by's own Retry hands it on.
+test("the tree read's Retry hands the focus on when its line goes", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(readFailure());
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await act(async () => {
+      await queryClient.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+      await queryClient.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(control);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByText("Nothing references this yet.");
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const retry = within(line).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () => treeRead.resolve(EMPTY_TREE));
+    await waitFor(() =>
+      expect(retry, "the tree read answered, but its Retry is still drawn").not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(control).toHaveFocus());
+  } finally {
+    stopBlurring();
+    unmount();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The tree read's line stands while that read stands failed (`standsFailed`), as each line of
+// Details' own does. A refresh that fails over the answer the read holds keeps the run's row and
+// draws no line. A Retry of a read that stands failed keeps its line, busy and with the focus,
+// while the read it sent is out, and the line stays, with the focus on Retry, once that read
+// fails again.
+test("a failed refresh over the tree read's answer draws no line, and a Retry of a read that stands failed keeps its line and its focus while it runs and fails again", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(readFailure());
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const treeKey = issueTreeKey(issue.key);
+
+  try {
+    act(() => {
+      queryClient.setQueryData(treeKey, treeWithRun(RUN, RUN_QUESTION));
+    });
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const runRow = await within(list).findByRole("link", {
+      name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+    });
+
+    // A refresh of the tree read fails over the answer it holds.
+    await act(async () => {
+      await queryClient.prefetchQuery({ ...issueTreeQuery(issue.key), staleTime: 0 });
+    });
+    const refreshed = queryClient.getQueryState(treeKey);
+    expect(
+      [refreshed?.status, refreshed?.data !== undefined],
+      "the tree read was not read again with a failure over the answer it holds"
+    ).toEqual(["error", true]);
+    expect(runRow, "a failed refresh took the run's row away").toBeInTheDocument();
+    expect(
+      screen.queryByText(ANSWER_LINES.references_unreadable),
+      "Details says a failure over the tree read's answer"
+    ).toBeNull();
+
+    // The tree read holds no answer, and its read fails: it stands failed.
+    await act(async () => {
+      await queryClient.resetQueries({ exact: true, queryKey: treeKey });
+      await queryClient.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const retry = within(line).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    expect(
+      screen.getByText(ANSWER_LINES.references_unreadable).parentElement,
+      "the tree read's line went while the read its Retry sent is out"
+    ).toBe(line);
+    expect(retry).toHaveFocus();
+
+    await act(async () => treeRead.reject(readFailure()));
+    await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+    expect(
+      screen.getByText(ANSWER_LINES.references_unreadable).parentElement,
+      "the tree read's line is not the one that stood before its read failed again"
+    ).toBe(line);
+    expect(retry).toHaveFocus();
+  } finally {
+    stopBlurring();
+    unmount();
+    getIssueTree.mockRestore();
     getReferences.mockRestore();
     restore();
   }
@@ -2886,7 +3567,9 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
 
@@ -3005,7 +3688,9 @@ function referencedByDetails() {
     answerList,
     listKey,
     open: async () => {
-      const control = await screen.findByRole("button", { name: referencedByControlName(3) });
+      const control = await screen.findByRole("button", {
+        name: referencedByControlName(undefined),
+      });
       await user.click(control);
       const list = await screen.findByRole("region", { name: "Referenced by" });
       return { control, list, retry: await within(list).findByRole("button", { name: "Retry" }) };
@@ -3193,7 +3878,7 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
   try {
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
     await details.user.click(
-      await screen.findByRole("button", { name: referencedByControlName(3) })
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
     );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     await within(list).findAllByRole("link");
@@ -3220,13 +3905,13 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
   }
 });
 
-// Details draws Referenced by's control only at a count above 0, and a list the reader opened
-// stays open as the count Details draws falls to 0, as another session's change makes it. A press
-// of the list's Retry there takes its line away once the read it sent answers, here with nothing
-// to list, and with no link and no control of the list in the row, the focus goes on to
-// References' heading, the button that opens and closes the section, rather than to the page's
-// body.
-test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus to References' heading", async () => {
+// Details draws Referenced by's control at every count, since a command bar run the reader asked
+// is in no reader's `referenced_by_count`: it stays as the count Details draws falls to 0, as
+// another session's change makes it, and so does the list the reader opened. A press of the
+// list's Retry there takes its line away once the read it sent answers, here with nothing to
+// list, and with no link in the row, the focus goes on to Referenced by's control rather than to
+// the page's body.
+test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus to Referenced by's control, which stays", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
@@ -3238,22 +3923,25 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(control);
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
     drawIssue(getIssue, queryClient, { ...issue, referenced_by_count: 0 });
-    await screen.findByText(referencedByControlName(0));
+    expect(
+      screen.queryByText(referencedByControlName(0)),
+      "Details draws the count of 0 as a fact in place of Referenced by's control"
+    ).toBeNull();
+    expect(control, "Referenced by's control went at a count of 0").toBeInTheDocument();
 
     getReferences.mockResolvedValue(NOTHING_REFERENCES);
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await within(list).findByText("Nothing references this yet.");
     expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument();
-    await settleFocus();
-    expect(
-      document.activeElement,
-      "Retry's read answered at a count of 0, and the focus fell to the page's body rather than to References' heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references }));
+    await waitFor(() => expect(control).toHaveFocus());
   } finally {
     stopBlurring();
     unmount();
@@ -3315,15 +4003,18 @@ test("closing References or Details takes an open Referenced by list, and its re
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const { queryClient, redraw, unmount } = renderDetails(undefined, OPEN_DRAWER);
-  // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
+  // What reads the list (`ReferencedBy`'s `referencesQuery`). The control's own watch of that
+  // read's cache, which counts the rows it lists, is `enabled: false` and reads nothing.
   const listReaders = () =>
-    queryClient
-      .getQueryCache()
-      .find({ exact: true, queryKey: ["references", "to", reference] })
-      ?.getObserversCount() ?? 0;
+    (
+      queryClient.getQueryCache().find({ exact: true, queryKey: ["references", "to", reference] })
+        ?.observers ?? []
+    ).filter((observer) => observer.options.enabled !== false).length;
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -3388,7 +4079,9 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
   const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     await waitFor(() => {
       expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
@@ -7488,6 +8181,53 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   }
 });
 
+// Pinned draws its first 20 pins. Unpin on the 20th, the last pin drawn, takes its row away,
+// and the 21st pin, which no row drew, is drawn in its place: the focus goes to that pin's link,
+// at the place of the row the Unpin took away, and not to the 19th pin before it. A choice made
+// before the list is drawn again finds no pin after the 20th, and takes the one before.
+test("Unpin of the last pin drawn gives the focus to the pin drawn in its place", async () => {
+  const user = userEvent.setup();
+  const { getMyState, restore } = stubIssueApi();
+  const ids = numbered("6d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b", PAGE_SIZE + 5);
+  const words = (index: number) => `Pin ${String(index + 1).padStart(2, "0")}.`;
+  getMyState.mockResolvedValue(pinnedState(...ids.map((id) => conversationItemId("comment", id))));
+  // Pinned draws a pinned comment from the outline's tree read, as the page holds it.
+  const client = detailsQueryClient();
+  holdComments(
+    client,
+    ids.map((id, index) => commentOf(id, words(index)))
+  );
+  // The unpin is held out, so the page shows its own state of the pins throughout.
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  const { unmount } = renderDetails(undefined, undefined, client);
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await within(pins).findByRole("link", { name: words(PAGE_SIZE - 1) });
+    const rows = () => within(pins).getAllByRole("listitem");
+    expect(rows(), "Pinned does not draw its first 20 pins").toHaveLength(PAGE_SIZE);
+    const last = rows()[PAGE_SIZE - 1];
+    if (last === undefined) throw new Error("Pinned draws no 20th pin");
+    act(() => within(last).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(last.isConnected, "the 20th pin's row stayed").toBe(false));
+    expect(rows(), "Pinned does not draw 20 pins after the Unpin").toHaveLength(PAGE_SIZE);
+    const inItsPlace = within(pins).getByRole("link", { name: words(PAGE_SIZE) });
+    expect(rows()[PAGE_SIZE - 1]?.contains(inItsPlace), "the 21st pin is not drawn 20th").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      `Unpin of the last pin drawn did not give the focus to the pin drawn in its place (focus: ${document.activeElement?.textContent})`
+    ).toBe(inItsPlace);
+  } finally {
+    unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
 // The two comments of CORE-1 the table below pins, each drawn by its words.
 const FIRST_PIN = "4b7d1e2f-6a3c-4d8e-9f0a-1b2c3d4e5f60";
 const SECOND_PIN = "5c8e2f3a-7b4d-4e9f-8a1b-2c3d4e5f6a71";
@@ -7572,11 +8312,12 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
 /**
  * The elements of Details below, each of which a change made elsewhere takes off the page, or
  * disables, while it holds the focus, and which one case can drive through the query cache: a
- * pin, a blocker, a reference, a file or a priority taken away, a route moved, a claim made,
- * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
- * open menu or for its only one, the repository's None and its text drawn in each other's place,
- * the priority's line moved by another session's write, and the issue closed while the focus is
- * on a control of Development. None of these is a press of the reader's.
+ * pin, a blocker, a file or a priority taken away, a route moved, a claim made,
+ * released or taken again, a list's Show more as the list falls to the 20 entries it draws, a
+ * value set for an entry of Add's open menu or for its only one, the repository's None and its
+ * text drawn in each other's place, the priority's line moved by another session's write, and
+ * the issue closed while the focus is on a control of Development. None of these is a press of
+ * the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -7629,14 +8370,12 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Blocks' Show all, the issues that wait falling to ten",
+    "Blocks' Show more, the issues that wait falling to 20",
     {
-      after: { waiting: keysFrom2(FOLD_AFTER) },
-      before: { waiting: keysFrom2(FOLD_AFTER + 1) },
+      after: { waiting: keysFrom2(PAGE_SIZE) },
+      before: { waiting: keysFrom2(PAGE_SIZE + 1) },
       focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
-          name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
-        }),
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", { name: SHOW_MORE }),
     },
   ],
   [
@@ -7655,14 +8394,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
       before: { issue: { ...issue, blocked_by: ["CORE-2"] } },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
-    },
-  ],
-  [
-    "Referenced by's control, the last reference taken away",
-    {
-      after: { issue: { ...issue, referenced_by_count: 0 } },
-      before: { issue: { ...issue, referenced_by_count: 3 } },
-      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
     },
   ],
   [
@@ -7781,12 +8512,14 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Files' Show all, the files falling to ten",
+    "Files' Show more, the files falling to 20",
     {
-      after: { issue: withNotes(FOLD_AFTER - 1) },
-      before: { issue: withNotes(FOLD_AFTER) },
-      focused: () =>
-        screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
+      after: { issue: withNotes(PAGE_SIZE - 1) },
+      before: { issue: withNotes(PAGE_SIZE) },
+      focused: async () => {
+        await screen.findByTestId("issue-files");
+        return within(filesRow()).getByRole("button", { name: SHOW_MORE });
+      },
     },
   ],
   [
@@ -8028,15 +8761,5 @@ test.each(
     priorities.mockRestore();
     getReferences.mockRestore();
     restore();
-  }
-});
-
-// Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
-// row's facts and the history. Until something fills them, each draws nothing.
-test("Details' places for the people, the focused row's facts and the history draw nothing", () => {
-  for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
-    const view = render(<Place issue={issue} state={undefined} />);
-    expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
-    view.unmount();
   }
 });

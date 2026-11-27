@@ -18,8 +18,9 @@ import { blockFragment, parseBlockReference } from "./block-reference";
  * server's `text.parseStoreAddress` (`internal/dispatch/text/refs.go`), and both are tested
  * against the shared text table (`DISPATCH_TEXT_REFERENCES`).
  *
- * The dashboard has no page for these nodes, so a reference to one is a reference without a route:
- * text cites it as the server indexes it, and nothing links it.
+ * A reference to one of these nodes is a reference without a route: text cites it as the server
+ * indexes it, and nothing links it. A command bar run (`interaction`) has a page of its own,
+ * `/runs/<uuid>` (`RUN_PATH`), which only its asker may open, so no text links it either.
  */
 const STORE_ADDRESS = {
   /** The kinds addressed by a uuid. */

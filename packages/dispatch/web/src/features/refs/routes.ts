@@ -1347,6 +1347,17 @@ export function routeIsInbox(pathname: string): boolean {
 /** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
 export const ANSWERS_PATH = "/answers";
 
+/** A command bar run's own page (`features/issue-page/run-page/RunRoute.tsx`): its asker's
+ *  question, its answer and what it changed. `:id` is the run's uuid, the last segment of its
+ *  `dispatch://interaction/<uuid>` address, which `parseNodeReference` does not read: no reader
+ *  but the asker may open it. */
+export const RUN_PATH = "/runs/:id";
+
+/** The address of the page of the run `id` (`RUN_PATH`), with the id encoded. */
+export function buildRunPath(id: string): string {
+  return `/runs/${encodeURIComponent(id)}`;
+}
+
 /** One person's page (`PersonPage`), linked from the signed-in login in the rail. */
 export const PERSON_PATH = "/people/:login";
 
