@@ -67,9 +67,6 @@ func changesLogged(t *testing.T, pool *store.Pool, seq int64) []delivery.Change 
 	return changes
 }
 
-// sameMoment is whether one of a change's two moments is the moment wanted.
-func sameMoment(got *time.Time, want time.Time) bool { return got != nil && got.Equal(want) }
-
 // markedDays is the UTC days a change names, each once and in order: the day of its t_old and the
 // day of its t_new, where each is set. They are the days a later reader of per-day rows rewrites
 // for that change (R6), so for a facts change they must be the issue's close day before the change
@@ -122,10 +119,10 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 		t.Fatalf("one facts write logged %d changes, want one: %+v", len(changes), changes)
 	}
 	logged := changes[0]
-	if logged.Kind != "issue_facts" || logged.Repo != factsProject || logged.Ref != "LEGION-1" || logged.RunKind != "" {
-		t.Fatalf("the change = %+v, want kind issue_facts, repo %s, ref LEGION-1 and no run kind", logged, factsProject)
+	if logged.Kind != delivery.ChangeKindIssueFacts || logged.Repo != factsProject || logged.Ref != "LEGION-1" || logged.RunKind != "" {
+		t.Fatalf("the change = %+v, want kind %s, repo %s, ref LEGION-1 and no run kind", logged, delivery.ChangeKindIssueFacts, factsProject)
 	}
-	if logged.TOld != nil || !sameMoment(logged.TNew, closed) {
+	if logged.TOld != nil || !sameTime(logged.TNew, &closed) {
 		t.Fatalf("the change's moments = %v and %v, want none before (the row is new) and its close %s after",
 			logged.TOld, logged.TNew, closed)
 	}
@@ -164,7 +161,7 @@ func TestOneFilingsWriteLogsOneIssueFilingsChange(t *testing.T) {
 	if logged.Kind != delivery.ChangeKindIssueFilings || logged.Repo != factsProject || logged.Ref != "LEGION-2" || logged.RunKind != "" {
 		t.Fatalf("the change = %+v, want kind %s, repo %s, ref LEGION-2 and no run kind", logged, delivery.ChangeKindIssueFilings, factsProject)
 	}
-	if logged.TOld != nil || !sameMoment(logged.TNew, filed) {
+	if logged.TOld != nil || !sameTime(logged.TNew, &filed) {
 		t.Fatalf("the change's moments = %v and %v, want none before (the row is new) and its filing %s after", logged.TOld, logged.TNew, filed)
 	}
 	if again := write("write the same filing again", filing); len(again) != 0 {
@@ -173,7 +170,7 @@ func TestOneFilingsWriteLogsOneIssueFilingsChange(t *testing.T) {
 	moved := filing
 	moved.Class = metrics.ClassInTreeLater
 	reclassed := write("write the filing under another class", moved)
-	if len(reclassed) != 1 || !sameMoment(reclassed[0].TOld, filed) || !sameMoment(reclassed[0].TNew, filed) {
+	if len(reclassed) != 1 || !sameTime(reclassed[0].TOld, &filed) || !sameTime(reclassed[0].TNew, &filed) {
 		t.Errorf("a write that moved the filing's class logged %+v, want one change carrying its filing %s before and after", reclassed, filed)
 	}
 	t.Logf("1 filing written: %d change logged, kind %s, repo %s, ref %s, marking %v; the same filing again logged none, and its class moved logged %d",
@@ -287,7 +284,7 @@ func TestAFactsChangeMarksTheIssuesCloseDaysAndNoWorkDay(t *testing.T) {
 
 	// The negative control: a change naming the issue's work days is judged by the same rule and
 	// found wrong.
-	workSpan := delivery.Change{Kind: "issue_facts", Repo: factsProject, Ref: "LEGION-3", TOld: &movedFirst, TNew: &movedLast}
+	workSpan := delivery.Change{Kind: delivery.ChangeKindIssueFacts, Repo: factsProject, Ref: "LEGION-3", TOld: &movedFirst, TNew: &movedLast}
 	problems := closeMarkProblems(markedDays(workSpan), []string{"2026-11-06", "2026-11-08"})
 	if len(problems) == 0 {
 		t.Errorf("a mark of the work's days %v passes as the close days, so the judgement proves nothing", markedDays(workSpan))

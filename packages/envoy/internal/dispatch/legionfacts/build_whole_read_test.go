@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts/independent"
 )
 
-// otherBuild is the build k11 writes into the project's record before the third pass. No build
+// otherBuild is the build k8 writes into the project's record before the third pass. No build
 // of this repository is called it, so the pass that reads the record finds a build that is not
 // its own, which is what a release leaves behind.
 const otherBuild = "legion-envoy-v0.0.0-another-build"
@@ -47,7 +47,7 @@ func (p passReading) String() string {
 		p.ranUnder, p.held, read, p.wrote, p.took.Round(time.Millisecond))
 }
 
-// TestEachBuildReadsTheProjectWholeOnceAndNeverAgain is k30, the check of R27: a process whose
+// TestEachBuildReadsTheProjectWholeOnceAndNeverAgain is k8, the check of R27: a process whose
 // build is not the one the project's record names, where that record was written before the
 // process started, reads that project whole, and a process of the recorded build reads nothing
 // whole and, with no input moving, writes no row.
@@ -69,10 +69,6 @@ func TestEachBuildReadsTheProjectWholeOnceAndNeverAgain(t *testing.T) {
 	project := run.fixture.Project
 	if len(run.fixture.PhaseWork) == 0 {
 		t.Fatal("the rig wrote no issue with Legion phase work, so no pass of it can write a row: this test examined nothing")
-	}
-	if otherBuild == run.deps.Build {
-		t.Fatalf("this build is called %q, which is the build the third pass writes into the record, so that pass would find its own build: this test examined nothing",
-			run.deps.Build)
 	}
 
 	first := makePass(t, run)

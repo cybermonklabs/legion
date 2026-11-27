@@ -190,7 +190,7 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	}
 	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: otherBuild, Filings: []Filing{{
 		Project: project, IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
-			Key: kept, At: newer.at.Add(-time.Hour), Filer: "implementer", FilerIssue: older.fixture.Open[0], Class: "out_of_tree",
+			Key: kept, At: newer.at.Add(-time.Hour), Filer: "implementer", FilerIssue: older.fixture.Open[0], Class: metrics.ClassOutOfTree,
 		}, Root: kept},
 	}}}); err != nil {
 		t.Fatalf("write the newer build's filing of %s: %v", kept, err)
@@ -211,7 +211,7 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	}
 	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: testBuild, Filings: []Filing{{
 		Project: project, IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
-			Key: lone, At: newer.at.Add(-time.Hour), Filer: "controller", Class: "by_the_controller",
+			Key: lone, At: newer.at.Add(-time.Hour), Filer: "controller", Class: metrics.ClassByTheController,
 		}, Root: lone},
 	}}}); err != nil {
 		t.Fatalf("write the older build's filing of %s: %v", lone, err)

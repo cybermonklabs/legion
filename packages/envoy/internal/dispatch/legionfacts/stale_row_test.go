@@ -14,13 +14,11 @@ import (
 // the issues its tree walk climbs onto). The issue it left then carries no phase work, and its
 // row must go.
 //
-// It did not. The write only upserted and no pass deleted, so the row stood for ever and the
-// board served it. Measured against a real Dispatch server of this head on 2026-11-11: one
-// session wrote a comment on WIDGETS-1 titled for that issue, and the board answered one entry;
-// the same session then wrote on WIDGETS-2 titled for WIDGETS-2, and the board answered two
-// entries, one of them for the issue the session's work had left, and over four passes of the
-// loop the stale row did not go. The independent reading of R1 answered one issue against the
-// two stored rows.
+// A write that only upserted would leave that row standing for ever, and the board would serve
+// an entry for an issue Legion no longer works. So the test computes the project after the
+// session moved, which answers no row for the issue it left, and writes that computation whole
+// (WriteProject), which deletes every stored row of the project the computation answers none
+// for: the table holds no row of that issue after it.
 //
 // The issue here is one the rig says no Legion role worked, given its work by one session of
 // this test, so the session is the whole of its phase work and moving that session takes all of

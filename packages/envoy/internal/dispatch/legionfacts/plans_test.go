@@ -69,16 +69,9 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 	defer connection.Release()
 	generic := explaintest.GenericPlan(t, ctx, connection, "closed_in", wideSelect+closedInWhere, []string{"text", "timestamptz", "timestamptz"},
 		[]string{"'FC'", "'" + from.Format(time.RFC3339) + "'", "'" + now.Format(time.RFC3339) + "'"})
-	for how, plan := range map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw), "under the generic plan": generic} {
-		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
-			t.Errorf("%s, ReadClosedIn scans issue_facts sequentially; want a range of issue_facts_closed:\n%s", how, plan)
-		}
-		scans := explaintest.IndexScans(t, plan)
-		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_facts_closed" }) {
-			t.Errorf("%s, ReadClosedIn reads %v; want issue_facts_closed:\n%s", how, scans, plan)
-		}
-		t.Logf("%s, ReadClosedIn answered %d issues of FC closed in 28 days, through %v", how, len(closed), scans)
-	}
+	requireIndexReads(t, "ReadClosedIn", "issue_facts", "issue_facts_closed",
+		map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw), "under the generic plan": generic})
+	t.Logf("ReadClosedIn answered %d issues of FC closed in 28 days", len(closed))
 }
 
 // setOf is keys as a set, which absent reads.
@@ -657,6 +650,7 @@ func TestEachDeletionOfStaleFactsReadsItsListOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin the deletions: %v", err)
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	stated, err := deleteStaleRows(ctx, tx, ProjectWrite{Project: "PL", Stated: keys}, computed)
 	if err != nil {
 		t.Fatalf("deleteStaleRows: %v", err)

@@ -37,6 +37,10 @@ const (
 	changeLockObject = 0
 )
 
+// batchRows is the most rows one drain transaction moves, as the drain tests state the contract:
+// written out rather than read from drainBatch, so a batch that grows past it fails them.
+const batchRows = 250
+
 // clearPending removes any pending changes from the clone's seed so the test reads only its own.
 func clearPending(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
@@ -61,14 +65,7 @@ func recordPending(t *testing.T, ctx context.Context, pool *store.Pool, project 
 // several writers at once holds, beside the shared one's few.
 func wideTestPool(t *testing.T, pool *store.Pool) *store.Pool {
 	t.Helper()
-	config := pool.Config().Copy()
-	config.MaxConns = 16
-	pgxPool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("open a wider pool: %v", err)
-	}
-	t.Cleanup(pgxPool.Close)
-	return store.NewPool(pgxPool)
+	return storetest.Reopened(t, &store.Store{Pool: pool}, func(config *pgxpool.Config) { config.MaxConns = 16 }).Pool
 }
 
 // takeChangeLock begins a transaction holding the change log's lock, which the test commits to let
@@ -367,10 +364,7 @@ func TestTheDrainMovesABurstABatchPerTransaction(t *testing.T) {
 		t.Fatalf("a drain of an empty outbox moved %d, %v; want 0", moved, err)
 	}
 	transactions := recordDrainTransactions(t, ctx, pool)
-	// The contract the test states, written out rather than read from drainBatch, so a batch that
-	// grows past it fails here: at most 250 rows a transaction, 6 transactions for 1,400 and 40 for
-	// 10,000.
-	const batchRows = 250
+	// At most batchRows rows a transaction: 6 transactions for 1,400 and 40 for 10,000.
 	for _, burst := range []struct{ rows, transactions int }{{1400, 6}, {10000, 40}} {
 		recordPending(t, ctx, pool, fmt.Sprintf("BATCHED%d", burst.rows), burst.rows)
 		stop := storetest.SampleAdvisoryHolds(t, pool, changeLockClass, changeLockObject)
@@ -424,9 +418,6 @@ func TestTheDrainMovesABurstABatchPerTransaction(t *testing.T) {
 func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	clearPending(t, ctx, pool)
-	// The contract the test states, written out rather than read from drainBatch, as
-	// TestTheDrainMovesABurstABatchPerTransaction writes it.
-	const batchRows = 250
 	type batch struct {
 		moved int64
 		more  bool
@@ -449,10 +440,7 @@ func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 		}
 		taken := 0
 		for index, want := range burst.batches {
-			var head int64
-			if err := pool.QueryRow(ctx, `select coalesce(max(seq), 0) from delivery_changes`).Scan(&head); err != nil {
-				t.Fatalf("read the log's head: %v", err)
-			}
+			head := latestChange(t, ctx, pool)
 			moved, more, err := DrainPendingBatch(ctx, pool)
 			if err != nil || moved != want.moved || more != want.more {
 				t.Errorf("batch %d of %d pending changes moved %d and said more %t (%v), want %d and %t",
@@ -526,12 +514,12 @@ func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 // triggers, after its rows; let go, it lands. The run's 400 jobs are written unfinished first, so
 // the gated write updates and locks each existing row, and the run carries a jobs-unfetchable mark
 // that the write clears, so its run row moves too. A write that cleared the mark in a statement of
-// its own before its jobs' (main's two statements before INFRA-5577) would take the lock in that
-// statement's trigger, holding the run's row and none of its jobs', and take it again in the jobs'
-// statement: another transaction would then find the 400 job rows unlocked. The time from the
-// lock's release to its answer, which bounds its hold from above, is logged and asserted nowhere:
-// the wall clock is the build farm's measure (k20). Its deadlock test against a run write of the
-// same run is TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock.
+// its own before its jobs' would take the lock in that statement's trigger, holding the run's row
+// and none of its jobs', and take it again in the jobs' statement: another transaction would then
+// find the 400 job rows unlocked. The time from the lock's release to its answer, which bounds its
+// hold from above, is logged and asserted nowhere: the wall clock is the build farm's measure
+// (k20). Its deadlock test against a run write of the same run is
+// TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock.
 func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	shared, ctx := deliveryTestPool(t)
 	pool := wideTestPool(t, shared)
@@ -668,22 +656,6 @@ func TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequ
 	t.Logf("the deployed write waited for the change log's lock holding its pull request's row, the pull request's write behind it; it held the lock at most %s", held.Round(time.Microsecond))
 }
 
-// inGroupTransaction answers a call that runs write in a transaction of its own and commits it, as
-// each session group route does (api/delivery_session_groups.go).
-func inGroupTransaction(ctx context.Context, pool *store.Pool, write func(pgx.Tx) error) func() error {
-	return func() error {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback(context.Background()) }()
-		if err := write(tx); err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	}
-}
-
 // clearSessionGroups removes the named groups from the clone's seed.
 func clearSessionGroups(t *testing.T, pool *store.Pool, names ...string) {
 	t.Helper()
@@ -716,10 +688,12 @@ func TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock(t *testing.T) {
 	if _, err := gate.Exec(ctx, `lock table delivery_pull_requests in access exclusive mode`); err != nil {
 		t.Fatalf("hold the pull requests from every read: %v", err)
 	}
-	create := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
-		_, err := CreateSessionGroup(ctx, tx, "Reading crew", []string{"reading-s1"}, actor)
-		return err
-	}))
+	create := goTimed(func() error {
+		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := CreateSessionGroup(ctx, tx, "Reading crew", []string{"reading-s1"}, actor)
+			return err
+		})
+	})
 	// The group's create reads the pull requests' sessions.
 	storetest.WaitForLockWaiters(t, gate, 1)
 	probe, err := pool.Begin(ctx)
@@ -727,7 +701,8 @@ func TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock(t *testing.T) {
 		t.Fatalf("begin the probe: %v", err)
 	}
 	var changesFree, groupsFree bool
-	err = probe.QueryRow(ctx, `select pg_try_advisory_xact_lock(6900, 0), pg_try_advisory_xact_lock(hashtext('delivery-session-groups'))`).Scan(&changesFree, &groupsFree)
+	err = probe.QueryRow(ctx, `select pg_try_advisory_xact_lock($1, $2), pg_try_advisory_xact_lock(hashtext('delivery-session-groups'))`,
+		changeLockClass, changeLockObject).Scan(&changesFree, &groupsFree)
 	_ = probe.Rollback(ctx)
 	if err != nil {
 		t.Fatalf("probe the locks: %v", err)
@@ -769,19 +744,21 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 	clearSessionGroups(t, pool, names...)
 	actor := model.Actor{Kind: "system", ID: "delivery-test"}
 	var crew SessionGroup
-	if err := inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		crew, err = CreateSessionGroup(ctx, tx, names[0], []string{"outbox-s1"}, actor)
 		return err
-	})(); err != nil {
+	}); err != nil {
 		t.Fatalf("create the group: %v", err)
 	}
 
 	gate := takeChangeLock(t, ctx, pool)
-	update := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
-		_, err := UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{Add: []string{"outbox-s2"}, Remove: []string{"outbox-s1"}}, actor)
-		return err
-	}))
+	update := goTimed(func() error {
+		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{Add: []string{"outbox-s2"}, Remove: []string{"outbox-s1"}}, actor)
+			return err
+		})
+	})
 	// The group's update waits for the change log's lock.
 	storetest.WaitForLockWaiters(t, gate, 1)
 	var groupsFree bool
@@ -799,10 +776,12 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 	}
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := goTimed(func() error { return UpsertRun(ctx, pool, changeTestRun(812, DeliveryRunKindDeploy, started, started)) })
-	second := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
-		_, err := CreateSessionGroup(ctx, tx, names[1], []string{"outbox-s3"}, actor)
-		return err
-	}))
+	second := goTimed(func() error {
+		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := CreateSessionGroup(ctx, tx, names[1], []string{"outbox-s3"}, actor)
+			return err
+		})
+	})
 	// The run write and the second create both wait, behind the change log's lock or the update.
 	storetest.WaitForLockWaiters(t, gate, 3)
 	released := time.Now()
@@ -847,29 +826,27 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 	clearSessionGroups(t, pool, "Steady crew")
 	author := model.Actor{Kind: "system", ID: "delivery-test"}
 	var crew SessionGroup
-	if err := inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		crew, err = CreateSessionGroup(ctx, tx, "Steady crew", []string{"steady-s1", "steady-s2"}, author)
 		return err
-	})(); err != nil {
+	}); err != nil {
 		t.Fatalf("create the group: %v", err)
 	}
-	head, err := ChangesHead(ctx, pool)
-	if err != nil {
-		t.Fatalf("read the change log's head: %v", err)
-	}
-	seq := head.Seq
+	seq := latestChange(t, ctx, pool)
 
 	gate := takeChangeLock(t, ctx, pool)
 	name := crew.Name
 	var answered SessionGroup
-	edit := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
-		var err error
-		answered, err = UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{
-			Name: &name, Add: []string{"steady-s1"}, Remove: []string{"steady-absent"},
-		}, model.Actor{Kind: "user", ID: "another-editor"})
-		return err
-	}))
+	edit := goTimed(func() error {
+		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var err error
+			answered, err = UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{
+				Name: &name, Add: []string{"steady-s1"}, Remove: []string{"steady-absent"},
+			}, model.Actor{Kind: "user", ID: "another-editor"})
+			return err
+		})
+	})
 	if answer := testwait.Receive(t, "the unchanged edit to answer while the change log's lock is held", edit).err; answer != nil {
 		t.Fatalf("the edit that changes nothing: %v", answer)
 	}
@@ -886,10 +863,7 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 			t.Errorf("%s = %+v, want the group as created, %+v", label, group, crew)
 		}
 	}
-	changes, err := ChangesSince(ctx, pool, seq, 100)
-	if err != nil {
-		t.Fatalf("read the changes after the edit: %v", err)
-	}
+	changes := changesAfter(t, ctx, pool, seq)
 	for _, change := range changes {
 		if change.Kind == ChangeKindSessionGroup {
 			t.Errorf("the edit that changes nothing logged a session_group change at seq %d", change.Seq)

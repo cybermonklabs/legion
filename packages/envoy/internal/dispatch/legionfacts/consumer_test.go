@@ -115,12 +115,7 @@ func (c *consumer) exec(t *testing.T, what, statement string, args ...any) {
 // (legiontest.SessionActor), so the event is work of that issue.
 func (c *consumer) writeEvent(t *testing.T, issue, role, kind, payload string, at time.Time) {
 	t.Helper()
-	actor := legiontest.SessionActor(role, issue)
-	c.exec(t, "write an event of "+issue, `
-		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
-		        $2, $3::jsonb, $4::jsonb, false, $5)
-	`, issue, kind, actor, payload, at)
+	c.writeEventAs(t, issue, legiontest.SessionActor(role, issue), kind, payload, at)
 }
 
 // rows is every stored row of the history's project, by issue key, with every column (readWhole).
@@ -276,10 +271,7 @@ func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T
 
 	// An observation of an open issue a minute after the moment the next pass computes at.
 	open := run.fixture.Open[0]
-	run.exec(t, "observe an open issue after the pass's moment", `
-		insert into legion_observations (project, issue_key, field, value, observed_at)
-		values ($1, $2, $3, '"testing"', $4)
-	`, run.fixture.Project, open, legion.FieldPhase, run.at.Add(time.Minute))
+	run.observe(t, open, legion.FieldPhase, legion.PhaseTesting, run.at.Add(time.Minute))
 	before := run.rows(t)[open]
 	if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
@@ -855,11 +847,11 @@ func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherSoon(t *testing.T)
 		held, took.Round(time.Millisecond), event, waits, len(after), open)
 }
 
-// TestTheSetOfRowsOneChangeTouches: the set a change touches is the issues named, the issues
-// above them and the issues below them. It is the set the pass computes before it writes, and
-// no row outside it is written.
-//
-// The issues below are in it whatever the change was (rowsTouchedBy).
+// TestTheSetOfRowsOneChangeTouches: the set a change touches (rowsTouchedBy) is the issues named,
+// the issues above them and the issues below them, whatever the change was, and a walk up a parent
+// chain that loops ends. It is the set the pass computes before it writes; this test checks the
+// set alone, and the pass tests above it hold that a pass writes no row outside it
+// (TestAnEventChangesTheIssuesRowAndItsAncestorsAndNoRowOutsideThatSet).
 func TestTheSetOfRowsOneChangeTouches(t *testing.T) {
 	// One tree: ROOT over MIDDLE over LEAF and SIBLING, with OTHER a root of its own, and a
 	// pair whose parent links point at each other, which the walk must not follow for ever.
@@ -924,17 +916,15 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 }
 
 // loopLatencyBound is how long after an event's commit the loop may take to store the row the
-// event moves in TestAnEventAfterTheBootPassMovesItsRowAtOnce: half of the 10 s the loop's MinGap
-// once held a pass to after the pass before it began, so a loop that holds the pass back again
-// fails it, and a pass of the rig's size, which takes well under a second, passes it on a loaded
-// machine.
+// event moves in TestAnEventAfterTheBootPassMovesItsRowAtOnce: a pass of the rig's size takes well
+// under a second, so the bound holds on a loaded machine, and a loop whose MinGap held a pass to
+// 10 s after the start of the one before it would take about twice the bound.
 const loopLatencyBound = 5 * time.Second
 
 // TestAnEventAfterTheBootPassMovesItsRowAtOnce: the loop as the server runs it (run, under its
 // lease), woken by hand as the hub wakes it. An event of an open issue written once the boot pass
 // ended wakes the pass that moves the issue's row within loopLatencyBound of the event's commit,
-// since nothing holds one pass back from the next. Before, the loop's MinGap held that pass to
-// 10 s after the boot pass began.
+// since nothing holds one pass back from the next (the loop's MinGap is zero).
 func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
 	c := newConsumer(t, 2)
 	c.at = c.at.Add(10 * time.Minute)
@@ -1041,9 +1031,20 @@ func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 			whole := time.Since(started)
 			open := run.fixture.Open[0]
 			run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
+			// The horizon is awaited before the timer starts, so the length is the pass's own:
+			// the wait is this test's (consumer.pass), which a server's woken pass does not make.
+			if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
+				t.Fatalf("await the event log's safe horizon: %v", err)
+			}
 			started = time.Now()
-			changed := run.pass(t)
+			changed, heldBack, err := pass(t.Context(), run.deps, run.sched)
 			woken := time.Since(started)
+			if err != nil {
+				t.Fatalf("the pass after an event on %s failed: %v", open, err)
+			}
+			if heldBack {
+				t.Errorf("a pass that read every event written before it says its safe horizon held one back")
+			}
 			if !slices.Contains(changed, open) {
 				t.Errorf("the pass after an event on %s changed %v, which does not hold it", open, changed)
 			}
@@ -1060,6 +1061,9 @@ func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 					t.Errorf("at %d issues %s takes %s, above the %s the pass an event waits behind and its own pass share",
 						len(run.fixture.Keys), length.what, length.took.Round(time.Millisecond), budget)
 				}
+			}
+			if settledRows != 0 {
+				t.Errorf("with every row of %s written by this build the read of the rows another build wrote answered %d rows, want none", project, settledRows)
 			}
 			if stored := len(run.rows(t)); rolledRows != stored {
 				t.Errorf("with every row of %s written by another build the read answered %d rows, want the %d stored", project, rolledRows, stored)

@@ -32,6 +32,7 @@ func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the issues a handoff names: %v", err)
 	}
+	defer hrows.Close()
 	for hrows.Next() {
 		var key string
 		if err := hrows.Scan(&key); err != nil {
@@ -39,7 +40,6 @@ func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 		}
 		handed[key] = true
 	}
-	hrows.Close()
 	if err := hrows.Err(); err != nil {
 		t.Fatalf("read the issues a handoff names: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
 		        'issue.updated', '{"kind":"user","id":"alice"}'::jsonb, '{"status":"todo"}'::jsonb, false, $2)`,
 		target, before.OpenedAt.Add(time.Minute))
-	writeSessionEvent(t, run, session, target, before.OpenedAt.Add(2*time.Minute))
+	writeRoleEvent(t, run.history, session, target, before.OpenedAt.Add(2*time.Minute))
 	run.at = run.at.Add(time.Minute)
 	run.pass(t)
 	gained := run.rows(t)[target]

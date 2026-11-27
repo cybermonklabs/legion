@@ -171,7 +171,7 @@ func TestAParentGainingLegionStandingMovesEveryIssueBeneathIt(t *testing.T) {
 			child, before.Tree, parent)
 	}
 
-	writeSessionEvent(t, run, session, parent, run.at.Add(-time.Hour))
+	writeRoleEvent(t, run.history, session, parent, run.at.Add(-time.Hour))
 	run.at = run.at.Add(time.Minute)
 	run.pass(t)
 
@@ -205,7 +205,7 @@ func TestAParentLosingLegionStandingMovesEveryIssueBeneathItBack(t *testing.T) {
 		other = run.fixture.PhaseWork[1]
 	}
 
-	writeSessionEvent(t, run, session, parent, run.at.Add(-2*time.Hour))
+	writeRoleEvent(t, run.history, session, parent, run.at.Add(-2*time.Hour))
 	run.pass(t)
 	before := run.rows(t)[child]
 	if before.Tree != parent {

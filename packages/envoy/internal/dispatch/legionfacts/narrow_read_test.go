@@ -2,6 +2,7 @@ package legionfacts
 
 import (
 	"context"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -37,8 +39,8 @@ func TestAFilingOutsideTheScopeHoldsTheRootTheProjectComputedWhole(t *testing.T)
 	at := run.at.Add(-2 * time.Hour)
 
 	parent := run.fileIssue(t, project, 901, "", `{"kind":"user","id":"alice"}`, at)
-	run.writeEventAs(t, parent, roleSession("planner", parent), "comment.created", `{}`, at.Add(time.Minute))
-	filed := run.fileIssue(t, project, 902, parent, roleSession("implementer", filer), at.Add(2*time.Minute))
+	run.writeEventAs(t, parent, legiontest.SessionActor("planner", parent), "comment.created", `{}`, at.Add(time.Minute))
+	filed := run.fileIssue(t, project, 902, parent, legiontest.SessionActor("implementer", filer), at.Add(2*time.Minute))
 
 	_, whole, err := ComputeProject(t.Context(), pool, project, run.at)
 	if err != nil {
@@ -156,18 +158,8 @@ func TestANarrowPassReadsTheEventLogOnlyByIssueOrByItsPage(t *testing.T) {
 			}
 		}
 	}
-	if read == 0 || !slices.ContainsFunc(slicesOfKeys(byIndex), func(read string) bool { return strings.Contains(read, "issue_key") }) {
+	if read == 0 || !slices.ContainsFunc(slices.Sorted(maps.Keys(byIndex)), func(read string) bool { return strings.Contains(read, "issue_key") }) {
 		t.Fatalf("the narrow pass read the event log %d times and never through an index on its issues (%v), so it computed nothing this test can judge", read, byIndex)
 	}
 	t.Logf("the pass after an event on %s read the event log %d times, through %v; read through an index under no condition at the rig's size: %v", open, read, byIndex, unkeyed)
-}
-
-// slicesOfKeys is the keys of counts, sorted.
-func slicesOfKeys(counts map[string]int) []string {
-	keys := make([]string, 0, len(counts))
-	for key := range counts {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }

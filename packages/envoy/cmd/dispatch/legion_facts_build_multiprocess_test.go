@@ -62,6 +62,7 @@ const factsRecordWait = time.Minute
 // second process that swept instead would leave the record where the first left it, and this row
 // would fail on the build it still named.
 func TestASecondReleaseReadsTheProjectWholeAndRecordsItsOwnCommit(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: factsSeedTrees})
 	if len(fixture.PhaseWork) == 0 {

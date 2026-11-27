@@ -1,6 +1,7 @@
 package legionfacts
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestARetitledFilingSessionMovesItsFilingToTheProjectItsNewTitleNamesInOnePa
 		t.Fatalf("%s was filed by a session titled for %s and %s stores %s (stored %t), want its filing",
 			filed, reviewed, project, showFiling(got), has)
 	}
-	wholeReads := run.wholeReads(t)
+	wholeReads := computedWholeAt(t, run)
 
 	run.at = run.at.Add(time.Minute)
 	run.writeEventAs(t, otherRoot, after, "comment.created", `{}`, run.at.Add(-time.Hour))
@@ -57,48 +58,10 @@ func TestARetitledFilingSessionMovesItsFilingToTheProjectItsNewTitleNamesInOnePa
 		t.Errorf("%s is stored in %s as %s, want the implementer of %s in accepting, out_of_tree, under its own root",
 			filed, other.Project, showFiling(got), otherRoot)
 	}
-	if now := run.wholeReads(t); !sameWholeReads(now, wholeReads) {
+	if now := computedWholeAt(t, run); !maps.EqualFunc(now, wholeReads, time.Time.Equal) {
 		t.Errorf("the pass that read the retitle read a project whole: the records were %v and are %v", wholeReads, now)
 	}
 	_, stillLeft := left[filed]
 	t.Logf("%s filed by %s, titled for %s then for %s: after one pass %s holds %d filings (%s among them: %t) and %s holds %d, %s among them as %s; whole reads before and after %v",
 		filed, session, reviewed, otherRoot, project, len(left), filed, stillLeft, other.Project, len(joined), filed, showFiling(got), wholeReads)
-}
-
-// wholeReads is when each project was last read whole, from the record each whole read writes
-// (markComputedWhole).
-func (c *consumer) wholeReads(t *testing.T) map[string]time.Time {
-	t.Helper()
-	rows, err := c.database.Pool.Query(t.Context(), `select project_key, computed_at from issue_facts_computed`)
-	if err != nil {
-		t.Fatalf("read the whole reads: %v", err)
-	}
-	defer rows.Close()
-	reads := map[string]time.Time{}
-	for rows.Next() {
-		var project string
-		var at time.Time
-		if err := rows.Scan(&project, &at); err != nil {
-			t.Fatalf("read the whole reads: %v", err)
-		}
-		reads[project] = at
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the whole reads: %v", err)
-	}
-	return reads
-}
-
-// sameWholeReads is whether two records of the whole reads name the same projects at the same
-// moments.
-func sameWholeReads(got, want map[string]time.Time) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for project, at := range want {
-		if !got[project].Equal(at) {
-			return false
-		}
-	}
-	return true
 }

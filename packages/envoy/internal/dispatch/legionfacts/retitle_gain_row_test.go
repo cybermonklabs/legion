@@ -22,14 +22,7 @@ func TestAClosedIssueThatGainsPhaseWorkOnNoIssueGetsItsRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
 
-	gain := ""
-	if err := run.database.Pool.QueryRow(t.Context(), `
-		select i.key from issues i
-		left join issue_facts f on f.issue_key = i.key
-		where i.project_key = $1 and i.closed_at is not null and f.issue_key is null
-		order by i.key limit 1`, run.fixture.Project).Scan(&gain); err != nil {
-		t.Fatalf("no closed issue without a row: %v", err)
-	}
+	gain := run.closedWithNoRow(t)
 	const session = "s-one-role"
 	other := run.fixture.PhaseWork[0]
 	writeTitledEvent(t, run, session, gain, other, run.at.Add(-3*time.Hour))

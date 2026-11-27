@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // AdvisoryHold is one transaction's hold of a transaction advisory lock as SampleAdvisoryHolds saw
@@ -106,11 +108,19 @@ func SampleAdvisoryHolds(t testing.TB, pool *store.Pool, key1, key2 int32) (stop
 			}
 		}
 	}()
-	return func() []AdvisoryHold {
-		t.Helper()
+	// The sampler's goroutine and connection end once, whichever of stop and the test's cleanup
+	// comes first: a test that fails before it calls stop leaves neither running past its end,
+	// and a stop called again ends nothing more.
+	var once sync.Once
+	end := func() {
 		cancel()
 		<-done
 		_ = conn.Close(context.Background())
+	}
+	testcleanup.Add(t, func() { once.Do(end) })
+	return func() []AdvisoryHold {
+		t.Helper()
+		once.Do(end)
 		if failure != nil {
 			t.Fatalf("sample the holders of the advisory lock (%d, %d): %v", key1, key2, failure)
 		}

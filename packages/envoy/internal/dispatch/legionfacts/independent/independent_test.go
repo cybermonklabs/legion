@@ -47,7 +47,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now, AwaitingChildren: true, PlannedTree: true})
 
-	computed, population := computedFacts(t, database.Pool, fixture.Project, now, false)
+	computed, defaults, population := computedFacts(t, database.Pool, fixture.Project, now)
 	computedScope := population.Project
 	computedWindow := independent.Window{From: population.From, To: population.To}
 	scope := independent.Scope{Project: fixture.Project}
@@ -107,7 +107,6 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	}
 	// The planned tree is what makes this comparison read the plan rule: were none of its hours
 	// in another phase by the default steps' order, a reading that ignored every plan would pass.
-	defaults, _ := computedFacts(t, database.Pool, fixture.Project, now, true)
 	moved := 0
 	for _, key := range fixture.Planned {
 		if phaseHoursDiffer(computed[key].PhaseHours, defaults[key].PhaseHours) {
@@ -127,25 +126,32 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 }
 
 // computedFacts is the computation's facts of every issue of project at now, as the stored rows
-// hold them (metrics.ProjectFactsClosed) grown to now, beside the population they were computed
-// from. Under defaultSteps every issue's plans are taken out of the population first, so each
-// issue reads the order of the default steps: what that order makes of the same history.
-func computedFacts(t *testing.T, pool *store.Pool, project string, now time.Time, defaultSteps bool) (map[string]metrics.IssueFacts, *metrics.Population) {
+// hold them (metrics.ProjectFactsClosed) grown to now, beside the same facts under the default
+// steps and the population they were computed from. The defaults are computed from that one
+// population with every issue's plans taken out, so each issue reads the order of the default
+// steps: what that order makes of the same history. No rule of the computation writes to the
+// population it reads (metrics.Population.at), so the second computation reads the inputs the
+// first read, less the plans, and the population answered holds no plan.
+func computedFacts(t *testing.T, pool *store.Pool, project string, now time.Time) (computed, defaults map[string]metrics.IssueFacts, population *metrics.Population) {
 	t.Helper()
 	population, err := metrics.ReadProject(t.Context(), pool, project, now)
 	if err != nil {
 		t.Fatalf("read the population of %s: %v", project, err)
 	}
-	if defaultSteps {
-		for _, issue := range population.Issues {
-			issue.Plans = nil
-		}
+	computed = grownFacts(population)
+	for _, issue := range population.Issues {
+		issue.Plans = nil
 	}
-	computed := map[string]metrics.IssueFacts{}
+	return computed, grownFacts(population), population
+}
+
+// grownFacts is ProjectFactsClosed's facts of every issue of population, grown to its To.
+func grownFacts(population *metrics.Population) map[string]metrics.IssueFacts {
+	grown := map[string]metrics.IssueFacts{}
 	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-		computed[key] = closed.FactsAt(population.To)
+		grown[key] = closed.FactsAt(population.To)
 	}
-	return computed, population
+	return grown
 }
 
 // phaseHoursDiffer is whether two readings of one issue's hours by phase put more than a tenth of
@@ -342,8 +348,7 @@ func TestTheIndependentReadingFollowsEachPlanRuleAsTheComputationDoes(t *testing
 			`, c.key, project, start, c.hour(row.closed))
 			row.write(c)
 
-			computed, _ := computedFacts(t, database.Pool, project, now, false)
-			defaults, _ := computedFacts(t, database.Pool, project, now, true)
+			computed, defaults, _ := computedFacts(t, database.Pool, project, now)
 			reading, err := independent.Read(t.Context(), database.Pool, independent.Scope{Project: project}, independent.Window{To: now})
 			if err != nil {
 				t.Fatalf("read %s independently: %v", project, err)

@@ -29,19 +29,12 @@ func TestASessionsEventOnTheProjectTakesTheRowOfAClosedIssueItLeftAndKeepsTheWor
 	run := newConsumer(t, 3)
 	run.pass(t)
 
-	left := ""
-	if err := run.database.Pool.QueryRow(t.Context(), `
-		select i.key from issues i
-		left join issue_facts f on f.issue_key = i.key
-		where i.project_key = $1 and i.closed_at is not null and f.issue_key is null
-		order by i.key limit 1`, run.fixture.Project).Scan(&left); err != nil {
-		t.Fatalf("find a closed issue of %s with no stored row: %v", run.fixture.Project, err)
-	}
+	left := run.closedWithNoRow(t)
 	const session = "s-one-role"
 
 	// The session's first event, on the closed issue its own title names, gives that issue
 	// Legion phase work, and the next pass writes its row.
-	writeSessionEvent(t, run, session, left, run.at.Add(-2*time.Hour))
+	writeRoleEvent(t, run.history, session, left, run.at.Add(-2*time.Hour))
 	run.at = run.at.Add(time.Minute)
 	run.pass(t)
 	if _, has := run.rows(t)[left]; !has {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
@@ -57,9 +58,9 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 		`insert into projects (key, name, default_assignee, next_number) values ('OTHER', 'OTHER', 'alice', 2)`)
 	controller := `{"kind":"session","id":"s-controller","origin":{"session_title":"Legion controller · ` + project + `"}}`
 	byController := run.fileIssue(t, project, 901, "", controller, at(9))
-	later := run.fileIssue(t, project, 902, root, roleSession("implementer", implemented), at(10))
-	outside := run.fileIssue(t, project, 903, "", roleSession("reviewer", reviewed), at(27))
-	across := run.fileIssue(t, "OTHER", 1, "", roleSession("implementer", otherImplemented), at(12))
+	later := run.fileIssue(t, project, 902, root, legiontest.SessionActor("implementer", implemented), at(10))
+	outside := run.fileIssue(t, project, 903, "", legiontest.SessionActor("reviewer", reviewed), at(27))
+	across := run.fileIssue(t, "OTHER", 1, "", legiontest.SessionActor("implementer", otherImplemented), at(12))
 	run.pass(t)
 	added := run.filings(t)
 	compareFilings(t, run, project, "the pass that read the new filings", added)
@@ -185,11 +186,6 @@ func (c *consumer) writeEventAs(t *testing.T, issue, actor, kind, payload string
 		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
 		        $2, $3::jsonb, $4::jsonb, false, $5)
 	`, issue, kind, actor, payload, at)
-}
-
-// roleSession is the actor of the session a Legion role works issue under, as the rig titles it.
-func roleSession(role, issue string) string {
-	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`, role, issue, "Legion "+role+" · "+issue)
 }
 
 // showFiling is one filing written for a failure message.

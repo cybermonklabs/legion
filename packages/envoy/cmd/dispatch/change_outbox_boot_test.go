@@ -14,8 +14,9 @@ import (
 // delivery_changes by the next server's boot before it serves: the boot logs that it moved both
 // before it logs that it listens, and the log holds each stamped at the drain's own time
 // (migration 20261127133240), nothing left pending. Its drain's notification wakes every hub
-// TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains holds a hub to the wake).
+// (TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains holds a hub to the wake).
 func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := t.Context()
 	recorded := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
@@ -31,7 +32,7 @@ func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T
 		t.Fatal(err)
 	}
 	started := time.Now()
-	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{})
+	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
 	served := time.Since(started)
 	output := process.Output.String()
