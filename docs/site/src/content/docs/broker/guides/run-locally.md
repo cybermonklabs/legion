@@ -803,7 +803,7 @@ dev-airlock: ready.
 ```
 
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
-stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the fake secrets file names the kind
+stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the memory secrets file names the kind
 `stest`, which binds the stand-in service S, `s.airlock.test`, and names no headers, so its value
 travels in `authorization`, the one header a kind with none takes. The command gets a placeholder of 58 characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the

@@ -330,7 +330,7 @@ Environment defaults: AGENT_SECRETS_URL, AGENT_SECRETS_ACCOUNT_TOKEN_FILE, AGENT
 // machine logs in and devrelay approves its typed code by the operator's login, the resulting
 // launcher credential enrolls a box, the box asks for an approval-required secret, the operator
 // signs in to the broker's own page and approves that record there (no relay can decide it), and
-// the grant releases the fake secrets store's value.
+// the grant releases the memory store's value.
 func TestDevStackEnrollsRequestsApprovesAndReleases(t *testing.T) {
 	brokerURL, callerToken, issuer := newDevrelayTestServer(t)
 
@@ -431,7 +431,7 @@ func TestDevStackEnrollsRequestsApprovesAndReleases(t *testing.T) {
 		t.Fatalf("GET /v1/requests/{id} after the page's approval = %d %s (%v), want state=granted with a grant_id", status, body, err)
 	}
 
-	// --- release: the grant's value is the fake secrets store's ---
+	// --- release: the grant's value is the memory store's ---
 	valuesProof, err := proof.Sign(sessionKey, enrolled.EnrollmentID, http.MethodPost, brokerURL+"/v1/grants/"+*approved.GrantID+"/values", time.Now())
 	if err != nil {
 		t.Fatal(err)

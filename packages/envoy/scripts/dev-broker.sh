@@ -541,7 +541,7 @@ GITHUB_COMMIT_SHA="$(stand .github_commit_sha)"
 CA_CERT_FILE="$(stand .ca_cert_file)"
 CA_KEY_FILE="$(stand .ca_key_file)"
 
-# --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, two
+# --- The memory store's file: one agent-tier secret its owner's sessions get without asking, two
 # human-tier secrets its owner approves, one of them a github-app secret, one agent-tier secret
 # the registered service owns, which every pod session of that service gets without asking and
 # no person's session sees, and the three other github-app secrets, which that same service owns

@@ -58,7 +58,7 @@ var personPodMapping = []string{
 
 // TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval drives the REAL compiled broker on a
 // real Postgres. A local OIDC issuer stands in for the cluster's ServiceAccount token issuer
-// (BROKER_K8S_OIDC_ISSUER). The fake secrets store holds one secret, owned by ada at the agent
+// (BROKER_K8S_OIDC_ISSUER). The memory store's file holds one secret, owned by ada at the agent
 // tier. Each pod is the REAL compiled agent-secrets, which runs as a pod runs it: `enroll --pod
 // --service <its login service>` with the projected token of its own account, bound to its own
 // pod.

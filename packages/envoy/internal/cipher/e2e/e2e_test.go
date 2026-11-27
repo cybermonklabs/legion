@@ -7,8 +7,8 @@
 // the broker's own approval page, by a browser signed in to the broker at the test's provider.
 //
 // Unlike internal/cipher/api/api_test.go's per-route unit coverage, this test's wiring mirrors
-// cmd/cipherd/main.go exactly: policy.NewCurrent runs a real policy.Loader over the fake Secrets
-// Manager and reloads it on a real ticker, so step 8 edits a secret's tags in that store and waits
+// cmd/cipherd/main.go exactly: policy.NewCurrent runs a real policy.Loader over the memory store
+// and reloads it on a real ticker, so step 8 edits a secret's tags in that store and waits
 // for the live ticker to pick the edit up rather than standing up a second policy.Current to fake
 // "a reload happened".
 //
@@ -146,7 +146,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 	return newE2EServerWith(t, e2eOptions{secrets: e2eSecrets})
 }
 
-// newE2EServerWith holds o's secrets in a fake Secrets Manager and wires the full service graph —
+// newE2EServerWith holds o's secrets in the memory store and wires the full service graph —
 // enroll.Service (+ ChainVerifier), the group reader, requests.Machine, machine.Service,
 // policy.NewCurrent — the same way main.go does, minus the HTTP listener and signal handling
 // (api.Register mounts on an httptest.Server instead of a real net/http.Server, as api_test.go's
@@ -241,7 +241,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	}
 }
 
-// e2eSecrets are the fake Secrets Manager's secrets. Every one testApprover owns is human-tier but
+// e2eSecrets are the memory store's secrets. Every one testApprover owns is human-tier but
 // AUTO_READ_TOKEN, so it needs their approval, and each approval-needing secret used across the
 // steps gets its own distinct name: requests.Machine.Create's reuseLiveGrant check reuses any
 // still-live grant for an exact name-set match against the same enrollment before ever evaluating
