@@ -353,13 +353,16 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * next line anyway, the labels go on with it.
  *
  * What fits is read off the page, never guessed at a width the typeface decides. For a reading
- * every chip is laid out with the count drawn at its widest, and that layout is read once
- * (`fitOf`): in a `ResizeObserver` notification, after the browser has laid the frame out itself
- * and before it paints it, with no write between the reads, so the reading forces no layout of
- * its own. The line draws the chips the box's first line holds beside the count, so it holds no
- * word it hides; where every chip would fit on the line with no count drawn, it draws them all
- * and no count. The count keeps the width it had in that reading, so the line breaks around it
- * as it did then and the count names every chip left out.
+ * every chip is laid out with the count at its widest, and that layout is read once (`fitOf`):
+ * in a `ResizeObserver` notification, after the browser has laid the frame out itself and before
+ * it paints it, with no write between the reads, so the reading forces no layout of its own.
+ * Until that reading's fit is drawn, the box and the count are hidden (`visibility: hidden`,
+ * which keeps every box where it is laid out): no frame paints, and no check of the page run
+ * before the notification finds, a chip the line does not hold or a count of the wrong number.
+ * The line draws the chips the box's first line holds beside the count, so it holds no word it
+ * hides; where every chip would fit on the line with no count drawn, it draws them all and no
+ * count. The count keeps the width it had in that reading, so the line breaks around it as it
+ * did then and the count names every chip left out.
  *
  * A reading is taken whenever the labels change, again in the frame after the line's width
  * changes, and again whenever the document's fonts finish loading: the typeface can arrive after
@@ -383,6 +386,9 @@ function HeaderLabels({
   const [fit, setFit] = useState<(LabelsFit & { readonly key: string }) | null>(null);
   // Null while the line is being read: every chip laid out, and the count at its widest.
   const drawn = fit?.key === key ? fit : null;
+  // The box and the count are hidden while a reading is owed. A browser with no `ResizeObserver`
+  // takes none, and so draws them at once.
+  const measuring = drawn === null && typeof ResizeObserver !== "undefined";
   // The labels a reading is owed for, and the observer that takes it.
   const owed = useRef<string | null>(null);
   const sizes = useRef<ResizeObserver | null>(null);
@@ -454,7 +460,7 @@ function HeaderLabels({
           which takes no width and, by its margin, no gap: the first chip wraps too when it does
           not fit. */}
       <div
-        className="flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden"
+        className={`flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden ${measuring ? "invisible" : ""}`}
         data-testid="issue-header-labels"
         ref={box}
         style={drawn?.boxMinWidth === undefined ? undefined : { minWidth: drawn.boxMinWidth }}
@@ -475,7 +481,7 @@ function HeaderLabels({
         // 24 px tall at every width (WCAG 2.5.8). Tabular digits, so a count is as wide as any
         // other of as many digits.
         <button
-          className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
+          className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing} ${measuring ? "invisible" : ""}`}
           data-testid="issue-labels-left"
           onClick={onOpenAll}
           ref={count}

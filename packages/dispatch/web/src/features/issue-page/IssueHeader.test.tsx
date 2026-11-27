@@ -3657,3 +3657,78 @@ test("each reading of the labels is one `issue-header-labels` measure", async ()
     performance.clearMeasures(LABELS_MEASURE);
   }
 });
+
+// A commit that lays the line out for a reading draws neither the labels' box nor the count until
+// the `ResizeObserver` notification that takes the reading draws its fit: both carry `invisible`
+// (`visibility: hidden`, which keeps every box where it is laid out), so a check of the page run
+// before that notification, as `e2e/layout-check.ts`'s runs as soon as the fonts have loaded,
+// finds no chip the line does not hold and no count of the wrong number. So for the first
+// reading, for one after the room changes, and for one after the document's fonts finish loading,
+// which the unit DOM has none of: the case gives it a font set of its own.
+test("the labels' box and count are hidden from the commit that lays them out for a reading until its fit is drawn", async () => {
+  const sizes = installResizeObserver();
+  const room = { width: 480 };
+  const layout = layOutLabels(room);
+  // Before the header is drawn: the line listens to the font set it finds as it first lays out.
+  const fonts = new EventTarget();
+  Object.defineProperty(document, "fonts", { configurable: true, value: fonts });
+  const restore = stubHeader({ ...issue, labels: [...TWENTY_LABELS] });
+  const view = renderHeader();
+  const both = ["issue-header-labels", "issue-labels-left"];
+  /** Which of the labels' box and the count carry `invisible`. */
+  const invisible = () =>
+    both.filter((testId) => screen.getByTestId(testId).classList.contains("invisible"));
+  try {
+    const box = await screen.findByTestId("issue-header-labels");
+    expect(invisible(), "the first commit drew the line before its reading").toEqual(both);
+    expect(labelsDrawn(room.width), "the first commit laid the line out for a reading").toEqual(
+      expect.objectContaining({ count: "+20 labels", shown: [...TWENTY_LABELS] })
+    );
+    // The frame that lays the chips out notifies the observer, which reads them.
+    sizes.resize(box);
+    expect(invisible(), "the first reading's fit was drawn hidden").toEqual([]);
+    expect(labelsDrawn(room.width), "in 480 px of room").toEqual({
+      count: "+15 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 5),
+    });
+
+    // The room narrows: the frame it narrows in notifies the box's new width, which lays the
+    // line out for a reading again, and the next frame notifies the observer, which reads it.
+    await act(nextFrame);
+    room.width = 200;
+    sizes.resize(box);
+    expect(invisible(), "the line was drawn before the reading after the room changed").toEqual(
+      both
+    );
+    sizes.resize(box);
+    expect(invisible(), "the fit read after the room changed was drawn hidden").toEqual([]);
+    expect(labelsDrawn(room.width), "in 200 px of room").toEqual({
+      count: "+19 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 1),
+    });
+
+    // The fonts finish loading, which lays the line out for a reading again.
+    await act(nextFrame);
+    act(() => {
+      fonts.dispatchEvent(new Event("loadingdone"));
+    });
+    expect(invisible(), "the line was drawn before the reading after the fonts loaded").toEqual(
+      both
+    );
+    sizes.resize(box);
+    expect(invisible(), "the fit read after the fonts loaded was drawn hidden").toEqual([]);
+    expect(labelsDrawn(room.width), "in 200 px of room, once the fonts loaded").toEqual({
+      count: "+19 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 1),
+    });
+  } finally {
+    view.unmount();
+    restore();
+    Reflect.deleteProperty(document, "fonts");
+    layout.restore();
+    sizes.restore();
+  }
+});
