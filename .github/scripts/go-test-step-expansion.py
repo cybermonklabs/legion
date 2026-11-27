@@ -67,7 +67,8 @@ merge base in a clone under a temporary directory:
     python3 .github/scripts/go-test-step-expansion.py > "$TMPDIR/head.txt"; echo "head: $?"
     git clone --no-local "$(cd "$store" && realpath "$(cat git_target)")" "$TMPDIR/base"
     git -C "$TMPDIR/base" checkout <merge base>
-    cp .github/scripts/go-test-step-expansion.py "$TMPDIR/base/.github/scripts/"
+    cp .github/scripts/go-test-step-expansion.py .github/scripts/go_test_steps.py \
+      "$TMPDIR/base/.github/scripts/"
     (cd "$TMPDIR/base" && python3 .github/scripts/go-test-step-expansion.py) > "$TMPDIR/base.txt"
     echo "base: $?"
     grep '^PAIR' "$TMPDIR/head.txt" > "$TMPDIR/head.pairs"
@@ -75,11 +76,14 @@ merge base in a clone under a temporary directory:
     diff "$TMPDIR/base.pairs" "$TMPDIR/head.pairs"   # empty: the change loses no test
 
 It reads the repository root off its own path, so the copy under the temporary directory checks
-itself and not the workspace it was copied from, and it reads a step's directory and its
-comment-free lines with `ci_filter_coverage`'s own helpers, which sit beside it in both trees.
-Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its own, so the set of documents
-it reads is ci.yaml and every workflow a job of it calls, which it derives with that module's
-`called_workflows` (`documents()` below says why it loads them itself).
+itself and not the workspace it was copied from. It reads a step's directory, its comment-free
+lines and the scripts AUDITED_SCRIPTS reads with the helpers of `go_test_steps.py`, the step
+reader the test-reach search imports, which sits beside it and needs PyYAML alone; the recipe
+copies that file too, so the copy runs with the helpers it was written against at any base, one
+older than that file included. Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its
+own, so the set of documents it reads is ci.yaml and every workflow a job of it calls, which it
+derives with that module's `called_workflows` (`documents()` below says why it loads them
+itself).
 Keep `GOMODCACHE` and `GOCACHE` the same for both runs: the second run then reuses the first
 run's compile.
 
@@ -87,27 +91,30 @@ How it reads a step:
 
   * the working directory is the step's own `working-directory`, else the job's, else the
     workflow's `defaults.run.working-directory`, else the repository root, as GitHub reads it and
-    as check-ci-filters.sh reads it (`ci_filter_coverage.step_workdir`);
-  * a `go vet`, `go build`, `go list` or `go install` line runs no test and is skipped; a line it
-    cannot read stops the run, since silently skipping a `go test` would hide both a duplicate
-    and a function that step is the only one to compile;
+    as check-ci-filters.sh reads it (`go_test_steps.step_workdir`, a copy of
+    `ci_filter_coverage.step_workdir`);
+  * a `go vet`, `go build`, `go list` or `go install` line runs no test and is skipped, unless it
+    chains a command that could start one (`go vet ./... && go test ./...`); a line it cannot read
+    stops the run, since silently skipping a `go test` would hide both a duplicate and a function
+    that step is the only one to compile;
   * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
     in the step's own directory, and its output used; a step looping over packages
     (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
-    runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
+    runs it; every other `-skip` pattern is refused rather than read
+    (go_test_steps.SKIP_ALTERNATION says why);
   * what a step compiles is a second `go test -list` over the same packages under the same build
     flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
     pattern it is given and a `-run` listing names only the functions the step runs. The second
     listing reuses the first's build, so it costs the test binaries' own run and no compile;
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
-  * a line that sets variables before its command (`NAME=value go test …`) or runs it under one of
-    the wrappers GO_WRAPPERS names (`go-test.sh --race-memory go test …`) is the go command behind
-    them: neither changes which test functions run, nor does an `-exec 'env GODEBUG=…'` among the
-    go test flags, which hands a variable to the test binary alone. A value holding `$` and a
-    wrapper that tuple does not name are refused rather than guessed at;
+  * a line that sets variables before its command (`NAME=value go test …`) or runs it under the
+    wrapper go_test_steps.GO_WRAPPERS names (`go-test.sh --race-memory go test …`) is the go
+    command behind them: neither changes which test functions run, nor does an `-exec 'env
+    GODEBUG=…'` among the go test flags, which hands a variable to the test binary alone. A value
+    holding `$` and a wrapper that tuple does not name are refused rather than guessed at;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
     a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
@@ -161,11 +168,11 @@ from pathlib import Path
 
 import yaml
 import go_test_steps
-from go_test_steps import BACKEND_COUNT_TESTS, UNIT_SKIP, called_workflows, script_lines, step_workdir
+from go_test_steps import (BACKEND_COUNT_TESTS, FOR_LINE, NAME, NO_TEST_GO, TAGGED_TESTS, UNIT_SKIP, VALUE_FLAGS,
+                           WORKFLOW, Refused, called_workflows, chained, expand, loop_body, passed_over,
+                           script_lines, skip_names, spellings, step_workdir)
 
 ROOT = Path(__file__).resolve().parents[2]
-# Repository-relative, as the documents below are keyed and as every message names them.
-WORKFLOW = ".github/workflows/ci.yaml"
 # The three Go modules this check covers. packages/daemon joined them with the first pair of
 # steps in this repository that share a package through a `-run` and a `-skip` naming the same
 # three tests (ci-job-plugin-pack.yaml and ci-job-daemon-go.yaml's race step): the pairing is
@@ -383,12 +390,8 @@ EXCEPTIONS = (
     ),
 )
 
-# `go test -list` prints one name per line, then a status line per package.
-NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*$")
+# `go test -list` prints one name per line (NAME), then a status line per package.
 STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
-# A shell variable, as the steps write it: $pkg or ${pkg}.
-SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
-FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 # `… | xargs <command>`: the command is resolved through AUDITED_SCRIPTS where it is a script the
 # table names (the API's legs: `xargs scripts/database-skips.sh …`), then read as any other line
@@ -404,7 +407,6 @@ XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 # How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
 JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
-TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
 # The scripts a step runs as its whole run:, or as what a legs step pipes its packages into, each
@@ -414,35 +416,9 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # too, so a script read again is read again in one place. Its entries for forced-order.sh and its
 # test are the search's alone: that script's `go test` builds -tags odatrace against the hooked
 # nats-server it builds first, so this script's `go test -list` could not compile it, and those
-# steps stay unread here, as they were before the table moved.
+# steps stay unread here.
 NOT_LISTED = ("packages/envoy/scripts/forced-order.sh", "packages/envoy/scripts/forced-order.test.sh")
 AUDITED_SCRIPTS = {path: entry for path, entry in go_test_steps.AUDITED_SCRIPTS.items() if path not in NOT_LISTED}
-# A variable a step sets before its command, as the steps write it: RACE_MEM_LIMIT_KB=8388608
-# behind `xargs env`.
-# A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
-ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# The wrappers a step runs a go command under, and the options a wrapper takes before the command:
-# .github/scripts/go_test_steps.py's GO_WRAPPERS and GO_WRAPPER_OPTIONS, the one list the test-reach
-# search reads too (race_memory.py and go-test.sh).
-GO_WRAPPERS = go_test_steps.GO_WRAPPERS
-GO_WRAPPER_OPTIONS = go_test_steps.GO_WRAPPER_OPTIONS
-# go commands that run no test, so a step may hold one and this script need not read it.
-NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
-# go test flags whose value is the next argument.
-VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cpu", "-bench",
-               "-o", "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode",
-               "-p")
-# The one `-skip` shape this script reads: the anchored alternation of whole test names
-# ci_job_reads.py builds for both steps of this repository that carry one, `^(Name|Name|…)$`.
-# Its names are read off the pattern's own text, and every other pattern is refused by name,
-# because `go test` runs the real `-skip` through Go's regexp: a Python `re` matched against a
-# listing would be a second engine, and two engines that agree on every pattern anyone wrote
-# down disagree on the one nobody tried, leaving this script wrong about what a step runs.
-SKIP_ALTERNATION = re.compile(r"^\^\(([^()|]+(?:\|[^()|]+)*)\)\$$")
-
-
-class Refused(Exception):
-    """A shape this script will not guess at."""
 
 
 @dataclass
@@ -515,25 +491,15 @@ def indent(text: str) -> str:
     return "".join(f"    | {line}\n" for line in (text or "").strip().splitlines())
 
 
-def expand(text: str, variables: dict[str, str]) -> str:
-    def one(match: re.Match[str]) -> str:
-        name = match.group(1) or match.group(2)
-        if name not in variables:
-            raise Refused(f"the shell variable ${name} is set outside the step, or not at all")
-        return variables[name]
-
-    return SHELL_VAR.sub(one, text)
-
-
 def documents() -> dict:
     """ci.yaml and every workflow a job of it calls, keyed by repository-relative path. A job of
     ci.yaml keeps its id, its `needs: changes` and its whole `if:` there and holds its steps in
     the `ci-job-<id>.yaml` its `uses:` names, so ci.yaml alone holds none of the `go test` steps
-    below. The set is the one check-ci-filters.sh reads, derived with that check's own
-    `called_workflows`; it is loaded here rather than through `ci_filter_coverage`'s
-    `workflow_documents`, which roots itself at the current working directory and appends to the
-    checker's problem list, because this script roots itself at its own path (the module header
-    says why) and refuses instead."""
+    below. The set is the one check-ci-filters.sh reads, derived with go_test_steps'
+    `called_workflows`, which gives what that check's own gives; it is loaded here rather than
+    through `ci_filter_coverage`'s `workflow_documents`, which roots itself at the current working
+    directory and appends to the checker's problem list, because this script roots itself at its
+    own path (the module header says why) and refuses instead."""
     found = {WORKFLOW: yaml.safe_load((ROOT / WORKFLOW).read_text()) or {}}
     for path, job_id in called_workflows(found[WORKFLOW]).items():
         if not (ROOT / path).is_file():
@@ -547,8 +513,8 @@ def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test`, or names an AUDITED_SCRIPTS
     script, and whose directory is one of the three modules. A step of a matrix job that writes a
     matrix value is one step per row, read with the row's values written in. The directory and the
-    comment-free lines are read with check-ci-filters.sh's own helpers
-    (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree on what a
+    comment-free lines are read with go_test_steps' step_workdir and script_lines, copies of
+    check-ci-filters.sh's own (ci_filter_coverage's), so this tool and the gate agree on what a
     step runs and where."""
     steps = []
     for path, document in found.items():
@@ -606,19 +572,6 @@ def matrix_rows(label: str, body: dict) -> list[dict]:
         raise Refused(f"{label}: its job's matrix is not a matrix of lists alone, which is the one shape read here")
     keys = list(matrix)
     return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
-
-
-def spellings(path: str, workdir: str) -> set[str]:
-    """The ways a run: in workdir names path, a repository-relative file: its path from workdir
-    behind `./`, and bare where that path holds a `/` (a bare name without one is looked up on
-    PATH by the shell, not in the directory)."""
-    if workdir in ("", "."):
-        relative = path
-    elif path.startswith(f"{workdir}/"):
-        relative = path[len(workdir) + 1:]
-    else:
-        return set()
-    return {f"./{relative}"} | ({relative} if "/" in relative else set())
 
 
 # A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
@@ -737,6 +690,9 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
         words, command = go_command(line)
         if len(words) > 1 and words[0] == "go" and words[1] in NO_TEST_GO:
+            if not all(passed_over(chained_command) for chained_command in chained(step, line)):
+                raise Refused(f"{step.label}: `{line}` chains to its `go {words[1]}` a command that may "
+                              "start a go test, which this script does not read")
             continue
         if len(words) > 1 and words[0] == "go" and words[1] == "test":
             found.append(parse_go_test(step, expand(command, variables), []))
@@ -745,62 +701,15 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
 
 def go_command(line: str) -> tuple[list[str], str]:
-    """The command a line runs, with the variables it sets before it and the wrapper it runs it
-    under dropped: its words, and its text with those words removed.
-
-    A step writes `env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory
-    go test … -exec 'env GODEBUG=checkfinalizers=1' …` behind an xargs. Neither the
-    variables nor the wrapper changes which test functions the command runs, which is all this
-    script reads, so both are dropped and what is left is the go command. A value holding `$`,
-    and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the
-    line rather than guessing. The text is cut word by word off the line itself, so the quoting
-    of what is left - a `-run` pattern above all - is the line's own.
-    """
+    """The command a line runs, as go_test_steps.go_command reads it - its words, and its text,
+    with the variables it sets before it and the wrapper it runs it under dropped - and with a
+    leading `env` dropped first: xargs runs a program, not a shell, so a step that must set a
+    variable for the command it pipes into writes `xargs env NAME=value … <command>`, and `env`
+    changes no test the command runs, as the variables themselves do not."""
     rest = line.strip()
-    # `xargs env NAME=value … <command>`: xargs runs a program, not a shell, so a step that must
-    # set a variable for the command it pipes into writes `env`. It changes no test the command
-    # runs, so it is dropped as the variables themselves are.
     if rest.split(None, 1)[:1] == ["env"] and len(rest.split(None, 1)) == 2:
         rest = rest.split(None, 1)[1]
-    while True:
-        head = rest.split(None, 1)
-        if len(head) == 2 and ENV_PREFIX.match(head[0]):
-            rest = head[1]
-            continue
-        break
-    head = rest.split(None, 1)
-    if len(head) == 2 and head[0].endswith(GO_WRAPPERS):
-        behind = head[1]
-        while behind.split(None, 1)[0] in GO_WRAPPER_OPTIONS and len(behind.split(None, 1)) == 2:
-            behind = behind.split(None, 1)[1]
-        if behind.split(None, 1)[0] == "go":
-            rest = behind
-    return rest.split(), rest
-
-
-def loop_body(step: Step, lines: list[str], index: int) -> tuple[list[str], int]:
-    body, depth = [], 1
-    while index < len(lines):
-        line = lines[index].strip()
-        index += 1
-        if FOR_LINE.match(line) or line.startswith("while ") or line.startswith("until "):
-            depth += 1
-        elif line == "done":
-            depth -= 1
-            if depth == 0:
-                return body, index
-        body.append(line)
-    raise Refused(f"{step.label}: a `for` loop with no `done`")
-
-
-def skip_names(pattern: str) -> list[str] | None:
-    """The test names an anchored alternation leaves out, or None for a pattern of any other
-    shape, which the caller refuses by name rather than guessing at."""
-    match = SKIP_ALTERNATION.match(pattern)
-    if not match:
-        return None
-    names = match.group(1).split("|")
-    return names if all(NAME.match(name) for name in names) else None
+    return go_test_steps.go_command(rest)
 
 
 def parse_go_test(step: Step, text: str, appended: list[str]) -> GoTest:

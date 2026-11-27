@@ -972,16 +972,16 @@ check "legs-no-job: exits 2, as an input it cannot read" "$(is "$status" 2)"
 check "legs-no-job: names the job and the file" \
   "$(contains "$out" 'cannot read an input: .*legs / The leg.s packages: .github/go-legs.yaml lists no legs of legs under packages/envoy')"
 
-echo "case: a go test a step runs under the race memory sampler"
+echo "case: a go test a step runs under go-test.sh's race memory sampler"
 root=$(fixture race-memory)
 go_test_file "$root/packages/envoy/unit/sampled_test.go" unit sampledtag TestOnlyUnderTheSampler
 required_job "$root" sampled '    runs-on: ubuntu-24.04
     steps:
       - name: Race-test under the sampler
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -exec "env GODEBUG=checkfinalizers=1" -tags sampledtag ./unit/
+        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -exec "env GODEBUG=checkfinalizers=1" -tags sampledtag ./unit/
         working-directory: packages/envoy'
 run_check "$root"
-passes "race-memory: the go test behind race_memory.py is read, its -tags among it"
+passes "race-memory: the go test behind go-test.sh --race-memory is read, its -tags among it"
 
 # Workflows ci-ok does not need, each of whose steps that runs a test file is read.
 echo "case: a workflow run on a pull request only when its own files change, with a preload"

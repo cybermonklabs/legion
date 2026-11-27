@@ -101,8 +101,8 @@
 # `.github/scripts/go_legs.py <module> <job> <leg> <legs>` lister prints (the union of the packages
 # .github/go-legs.yaml lists for every leg of that job, each read whole), `for` loops, `-tags`,
 # `-race`, `-run`, `-skip`, `-exec`, a gotestsum command (its `--packages`, and the `go test`
-# flags after its `--`), a go command behind .github/scripts/race_memory.py or
-# .github/scripts/go-test.sh, a script the step runs whose lines the reader reads, and the scripts
+# flags after its `--`), a go command behind .github/scripts/go-test.sh, a script the step runs
+# whose lines the reader reads, and the scripts
 # its AUDITED_SCRIPTS reads (database-skips.sh, backend-count.sh, race-unit.sh and forced-order.sh,
 # by their arguments); a -run of the pattern .github/scripts/go-tagged-tests.sh prints is the
 # alternation that script prints, read off the

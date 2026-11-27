@@ -1,22 +1,23 @@
 """The `go test` commands of ci.yaml's jobs, read off the workflow text: the step reader
 check-test-reach.sh imports.
 
-It loads `.github/workflows/ci.yaml` and every workflow a job of it calls (`documents`), picks
-each step whose `run:` holds a `go test` (or a gotestsum command) in one of the Go modules
-(`steps_of`, one step at a time `step_of`), and reads each such step line by line into its
-`go test` commands (`commands_of`, `read_block`): packages, `-tags`, `-race`, `-run` and
-`-skip`, through the variables a line sets before its command, the wrappers GO_WRAPPERS names,
-`for` loops over packages, and the scripts AUDITED_SCRIPTS reads.
+Its caller walks the workflows and hands `step_of` each run: a step makes, with the directory it
+runs in and the Go modules to read. `step_of` keeps a run: that runs a script AUDITED_SCRIPTS
+reads, one whose script `script_step` reads, and one that holds a `go test` (or a gotestsum
+command) in one of those modules; `commands_of` reads such a step line by line into its
+`go test` commands (`read_block`): packages, `-tags`, `-race`, `-run` and `-skip`, through the
+variables a line sets before its command, the wrappers GO_WRAPPERS names and `for` loops over
+packages.
 
-A step is read in each form the workflows write it in. A matrix job's step is read once for each
-leg of its matrix (`matrix_legs`), with each `${{ matrix.<name> }}` it writes replaced by the
-leg's value, and a called workflow's step once for each job that calls it, with each
-`${{ inputs.<name> }}` replaced by what that job's `with:` gives (`call_inputs`, `substitute`). A
-step that `uses:` a local composite action is read through the action's own `run:` steps, under
-the inputs its `with:` gives them (`local_action_steps`); such a step keeps the name of the step
-that uses the action, so a reader keys it as it keys any step of the file. A step whose run: is
-one command that runs a shell script of the repository is read through the script's own lines
-(`script_step`), where the reader can read every line of it. A gotestsum command is read as the
+The caller reads a step in each form the workflows write it in, with the helpers here. A matrix
+job's step is read once for each leg of its matrix (`matrix_legs`), with each
+`${{ matrix.<name> }}` it writes replaced by the leg's value, and a called workflow's step once
+for each job that calls it, with each `${{ inputs.<name> }}` replaced by what that job's `with:`
+gives over the defaults the workflow declares (`input_defaults`, `substitute`). A step that
+`uses:` a local composite action is read through the action's own `run:` steps, under the inputs
+its `with:` gives them (`local_action_steps`). A step whose run: is one command that runs a shell
+script of the repository is read through the script's own lines (`script_step`), where the reader
+can read every line of it. A gotestsum command is read as the
 `go test` it wraps: its `--packages` list and the `go test` flags after its `--`
 (`parse_gotestsum`). The variables a line sets before its command, and those a
 `-exec 'env NAME=value'` hands the test binary, are the command's own environment (`GoTest.env`).
@@ -48,6 +49,7 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 import yaml
@@ -55,12 +57,10 @@ import yaml
 # The repository holding this file: its own path, not resolved through a symlink, so a fixture
 # tree that links this file in is the repository it reads.
 ROOT = Path(__file__).absolute().parents[2]
-# Repository-relative, as the documents below are keyed and as every message names them.
+# Repository-relative, as every message names it.
 WORKFLOW = ".github/workflows/ci.yaml"
 # A job's `uses:` that names a reusable workflow of this repository.
 LOCAL_WORKFLOW = "./.github/workflows/"
-# The three Go modules whose steps are read when a caller names no other set.
-MODULE_DIRS = ("packages/envoy", "packages/envoy/infra", "packages/daemon")
 
 # A test function's name, as `go test -list` prints it and as a `-skip` alternation names it.
 NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*$")
@@ -73,19 +73,24 @@ ASSIGNMENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)="?\$\((.+)\)"?$')
 # runs the command plain xargs runs, so the reader reads it as plain xargs. The command may be
 # `env NAME=value …` and a GO_WRAPPERS wrapper before its `go test` (envoy-go-race-docs' legs run
 # `env RACE_MEM_LIMIT_KB=… go-test.sh --race-memory go test … -exec 'env GODEBUG=…' …`);
-# read_block reads it through go_command, as it reads the same command written on a line of its own.
+# read_block reads it through go_command, as it reads the same command written on a line of its
+# own, and refuses a command that is no go test once those are read past (`xargs timeout 60 go
+# test`, `xargs go vet`): xargs is among the commands NOT_PASSED_OVER names.
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<command>.+)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # The script that prints what one leg of a legs job runs, from LEGS_FILE: given `<module> <job>
 # <leg> <legs> [<build flag>…]`, the leg's packages, or a split package's group of tests as
 # `-run=^(…)$` and the package. A legs step pipes what it prints into xargs.
-LEGS = ".github/scripts/go_legs.py"
+LEGS_SCRIPT = ".github/scripts/go_legs.py"
 LEGS_FILE = ".github/go-legs.yaml"
 # The keys of a module's entry in LEGS_FILE that name no job: the packages another job's own steps
 # run (`elsewhere`), why a package runs in the legs of two jobs (`twice`), and the job whose last
-# leg runs each package no place names (`unlisted`).
+# leg runs each package no place names (`unlisted`). They are go_legs.py's ELSEWHERE, TWICE,
+# UNLISTED and NOT_JOBS, written here since this module imports nothing of the repository.
+LEGS_ELSEWHERE = "elsewhere"
+LEGS_TWICE = "twice"
 LEGS_UNLISTED = "unlisted"
-LEGS_NOT_JOBS = ("elsewhere", "twice", LEGS_UNLISTED)
+LEGS_NOT_JOBS = (LEGS_ELSEWHERE, LEGS_TWICE, LEGS_UNLISTED)
 # A run: that starts a go test or a gotestsum, by its comment-free lines.
 GO_TEST_TEXT = re.compile(r"\b(?:go\s+test|gotestsum)\b")
 # The commands read as gotestsum (parse_gotestsum), by the last part of the word that names them.
@@ -99,14 +104,13 @@ GOTESTSUM_VALUE_FLAGS = ("--format", "-f", "--jsonfile", "--junitfile", "--packa
                          "--junitfile-project-name", "--post-run-command", "--jsonfile-timing-events",
                          "--hide-summary")
 GOTESTSUM_REFUSED = ("--raw-command", "--watch")
-# The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
-# which tests it runs in no way, so the command behind it is read as though it stood alone; one
-# this tuple does not name is refused rather than guessed at. Matched by the end of the word,
-# since a step writes the path from its own working directory. go-test.sh runs the go test
-# command its words after its options are under gotestsum, with the same packages and flags, and
-# a merge group's rerun of a failed test runs no test the command does not; GO_WRAPPER_OPTIONS
-# are the options a wrapper takes before the command.
-GO_WRAPPERS = (".github/scripts/race_memory.py", ".github/scripts/go-test.sh")
+# The wrapper a step runs a go command under, matched by the end of the word, since a step writes
+# the path from its own working directory: go-test.sh, which runs the go test command its words
+# after its options are under gotestsum, with the same packages and flags, and whose merge-group
+# rerun of a failed test runs no test the command does not, so the command behind it is read as
+# though it stood alone. A wrapper this tuple does not name is refused rather than guessed at.
+# GO_WRAPPER_OPTIONS are the options a wrapper takes before the command.
+GO_WRAPPERS = (".github/scripts/go-test.sh",)
 GO_WRAPPER_OPTIONS = ("--race-memory",)
 # The expressions a step's text is read through before its lines are: a matrix value, and an input
 # the job that calls the workflow, or the step that uses the composite action, gives. Any other
@@ -188,8 +192,9 @@ BACKEND_COUNT_TESTS = (
     "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
 )
 
-# envoy-go's unit legs' -skip, quoted as the step writes it: the web display fixture's two tests,
-# BACKEND_COUNT_TESTS and the rows whose bound is on time, which envoy-go-alone runs.
+# envoy-go's unit legs' -skip, quoted as ci_job_reads.UNIT_TEST_SCRIPT writes it from
+# UNIT_SKIP_TESTS: the web display fixture's two tests, BACKEND_COUNT_TESTS and the rows whose
+# bound is on time, which envoy-go-alone runs (ci_job_reads.UNIT_ALONE_TESTS).
 UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|"
              "TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|"
              "TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|"
@@ -235,7 +240,8 @@ FORCED_ORDER = "go test -tags odatrace -race -count=1 -timeout 10m -run '^TestFo
 # over, and an entry here is how such a script is read. This is the one table of such readings:
 # go-test-step-expansion.py reads it from here too. A wrapper script a Go step calls in place of
 # `go test` (one that runs gotestsum for it) is read only once its command name is in
-# GOTESTSUM_COMMANDS above or it has an entry here; until then the tests its steps run read as run
+# GOTESTSUM_COMMANDS above, its path is in GO_WRAPPERS above (so that the go command it is handed
+# is read in its place), or it has an entry here; until then the tests its steps run read as run
 # by no step, and the search fails on each of them.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -count=1`
@@ -310,7 +316,8 @@ AUDITED_SCRIPTS = {
     # argument. Of its five cases one gets as far as a go test: forced-order.sh over the fixture
     # package ./internal/testnats/hooktest/skiponly/, whose one forced-order test skips itself,
     # the refusal that case holds; the other four are refused before anything is built
-    # (test-value-md 9.8). So the step runs that package's tests, under forced-order.sh's command.
+    # (dispatch://INFRA-3411's test-value-md, row 9.8). So the step runs that package's tests,
+    # under forced-order.sh's command.
     "packages/envoy/scripts/forced-order.test.sh": AuditedScript(
         module="packages/envoy",
         commands={"": f"{FORCED_ORDER} ./internal/testnats/hooktest/skiponly/"},
@@ -321,7 +328,9 @@ AUDITED_SCRIPTS = {
 # behind `xargs env`.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# go commands that run no test, so a step may hold one and the reader need not read it.
+# go commands that run no test, so a step may hold one and the reader need not read it: alone on
+# its line, or with only commands the reader passes over chained after it (CHAINS). A line that
+# chains anything else to one (`go vet ./... && go test ./...`) is refused.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # The commands a line that names no `go` may still start one through, or move the directory a
 # later `go test` reads its packages from with: such a line is refused like any other this module
@@ -330,10 +339,19 @@ NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate
 NOT_PASSED_OVER = ("cd", "pushd", "popd", "source", ".", "eval", "exec", "bash", "sh", "env", "make",
                    "timeout", "xargs", "nohup", "sudo")
 GO_WORD = re.compile(r"(?<![\w./-])go(?![\w.-])")
-# go test flags whose value is the next argument.
-VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cpu", "-bench",
-               "-o", "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode",
-               "-p")
+# The operators that end one command of a line and start the next, as shlex's punctuation tokens
+# spell them.
+CHAINS = ("&&", "||", ";", "|", "|&", "&")
+# The go build and test flags that take the next argument as their value when written without
+# `=`: go-test.sh's GO_VALUE_FLAGS, in its order, which Python cannot read out of the bash
+# (`go help build`, `go help testflag`). Every other flag is a boolean, or written `-flag=value`.
+VALUE_FLAGS = ("-asmflags", "-bench", "-benchtime", "-blockprofile", "-blockprofilerate", "-buildmode",
+               "-compiler", "-count", "-covermode", "-coverpkg", "-coverprofile", "-cpu", "-cpuprofile",
+               "-exec", "-fuzz", "-fuzzcachedir", "-fuzzminimizetime", "-fuzztime", "-gccgoflags",
+               "-gcflags", "-installsuffix", "-ldflags", "-list", "-memprofile", "-memprofilerate", "-mod",
+               "-modfile", "-mutexprofile", "-mutexprofilefraction", "-o", "-outputdir", "-overlay", "-p",
+               "-parallel", "-pgo", "-pkgdir", "-run", "-shuffle", "-skip", "-tags", "-timeout",
+               "-toolexec", "-trace", "-vet")
 # The one `-skip` shape this module reads: the anchored alternation of whole test names
 # every step of this repository that carries a -skip writes, `^(Name|Name|…)$`.
 # Its names are read off the pattern's own text, and every other pattern is refused by name,
@@ -354,17 +372,10 @@ class Step:
     name: str
     workdir: str  # repository-relative, as the file writes it
     script: str
-    # The variables the workflow's, the job's and the step's `env:` set (an action's step's own
-    # too), by name, each value as written there with the step's matrix values and inputs read in.
-    env: dict[str, str] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
         return f"{self.workflow}'s {self.job} / {self.name}"
-
-    @property
-    def directory(self) -> Path:
-        return ROOT / self.workdir
 
 
 @dataclass
@@ -378,7 +389,6 @@ class GoTest:
     race: bool = False
     run: str = ""
     skip: str = ""  # the pattern as the step writes it; skip_names reads the names out of it
-    resolved: list[str] = field(default_factory=list)  # import paths
     # The variables the command's own line sets before it, and those a `-exec 'env NAME=value'`
     # hands the test binary, which is how the steps give it GODEBUG=checkfinalizers=1.
     env: dict[str, str] = field(default_factory=dict)
@@ -399,62 +409,22 @@ def expand(text: str, variables: dict[str, str]) -> str:
     return SHELL_VAR.sub(one, text)
 
 
-def documents() -> dict:
-    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path: a job of
-    ci.yaml holds its steps in the `ci-job-<id>.yaml` (or other workflow) its `uses:` names, or
-    itself. A `uses:` naming a file the repository does not have is refused."""
-    found = {WORKFLOW: yaml.safe_load((ROOT / WORKFLOW).read_text()) or {}}
-    for path, job_id in called_workflows(found[WORKFLOW]).items():
-        if not (ROOT / path).is_file():
-            raise Refused(f"job {job_id} of {WORKFLOW} calls {path}, which is not in the "
-                          f"repository, so the steps it runs are read by nothing here")
-        found[path] = yaml.safe_load((ROOT / path).read_text()) or {}
-    return found
-
-
-def steps_of(found: dict) -> list[Step]:
-    """Every step of those documents whose run: holds a `go test` or a gotestsum command and whose
-    directory is one of the three modules, and every step that runs an AUDITED_SCRIPTS script or
-    a script script_step reads: once for each leg of its job's matrix and each job that calls its
-    workflow, through the local composite action it uses. Two legs, two callers or two action
-    steps that read the same are one step."""
-    steps: list[Step] = []
-    inputs = call_inputs(found)
-    for path, document in found.items():
-        for job, body in (document.get("jobs") or {}).items():
-            body = body or {}
-            if body.get("uses"):
-                continue  # a job that calls a workflow holds no step; its workflow's are read
-            for given in inputs.get(path, [{}]):
-                for leg in matrix_legs(body):
-                    contexts = {"matrix": leg, "inputs": given}
-                    for index, raw in enumerate(body.get("steps", []) or []):
-                        name = raw.get("name") or f"step {index + 1}"
-                        for script, workdir, env in run_texts(document, body, raw, contexts):
-                            step = step_of(path, job, name, workdir, script)
-                            if step is None:
-                                continue
-                            step.env = env
-                            if step not in steps:
-                                steps.append(step)
-    return steps
-
-
 def step_of(workflow: str, job: str, name: str, workdir: str, script: str,
-            modules: tuple[str, ...] = MODULE_DIRS) -> Step | None:
-    """The step one run: makes, as steps_of reads it, or None where it starts no `go test` this
-    module reads: an AUDITED_SCRIPTS script's entry; the lines of a script script_step reads; or
-    the run: itself, where it holds a `go test` or a gotestsum command and runs in one of
-    `modules` (MODULE_DIRS, or check-test-reach.sh's every module of the tree)."""
+            modules: tuple[str, ...]) -> Step | None:
+    """The step one run: makes, or None where it starts no `go test` this module reads: an
+    AUDITED_SCRIPTS script's entry; the lines of a script script_step reads; or the run: itself,
+    where it holds a `go test` or a gotestsum command and runs in one of `modules`
+    (check-test-reach.sh's every module of the tree)."""
     audited = audited_step(workflow, job, name, workdir, script)
     if audited is not None:
         return audited
-    followed = script_step(Step(workflow=workflow, job=job, name=name, workdir=workdir, script=script), modules)
+    step = Step(workflow=workflow, job=job, name=name, workdir=workdir, script=script)
+    followed = script_step(step, modules)
     if followed is not None:
         return followed
     if workdir not in modules or not GO_TEST_TEXT.search("\n".join(script_lines(script))):
         return None
-    return Step(workflow=workflow, job=job, name=name, workdir=workdir, script=script)
+    return step
 
 
 def context_text(value) -> str:
@@ -518,25 +488,20 @@ def input_defaults(document: dict) -> dict[str, str]:
             if isinstance(spec, dict) and "default" in spec}
 
 
-def call_inputs(found: dict) -> dict[str, list[dict[str, str]]]:
-    """The inputs each workflow of `found` is called with: for each job of a document of `found`
-    that calls it with `uses:`, its `with:` over the defaults the workflow declares, as text. A
-    workflow no document of `found` calls is read with no input."""
-    calls: dict[str, list[dict[str, str]]] = {}
-    for document in found.values():
-        for body in (document.get("jobs") or {}).values():
-            uses = str((body or {}).get("uses") or "")
-            path = uses.removeprefix("./")
-            if not uses.startswith("./") or path not in found:
-                continue
-            given = {str(k): context_text(v) for k, v in ((body or {}).get("with") or {}).items()}
-            calls.setdefault(path, []).append({**input_defaults(found[path]), **given})
-    return calls
-
-
 def env_text(block, contexts: dict[str, dict[str, str]]) -> dict[str, str]:
     """An `env:` block's variables, each value as text with the contexts read in."""
     return {str(k): substitute(context_text(v), contexts) for k, v in (block or {}).items()} if isinstance(block, dict) else {}
+
+
+@cache
+def local_action(base: str) -> tuple[str, dict] | None:
+    """The action file of the local directory `base`, action.yml or action.yaml, and what it
+    holds, or None where it has neither: read once for each directory, since every leg of a job
+    and every job that calls its workflow reads the same file."""
+    path = next((f"{base}/{name}" for name in ("action.yml", "action.yaml") if (ROOT / base / name).is_file()), None)
+    if path is None:
+        return None
+    return path, yaml.safe_load((ROOT / path).read_text()) or {}
 
 
 def local_action_steps(uses: str, given: dict[str, str],
@@ -547,11 +512,10 @@ def local_action_steps(uses: str, given: dict[str, str],
     is no local directory with an action.yml or action.yaml has none here."""
     if not uses.startswith("./") or uses in seen:
         return []
-    base = uses.removeprefix("./").rstrip("/")
-    path = next((f"{base}/{name}" for name in ("action.yml", "action.yaml") if (ROOT / base / name).is_file()), None)
-    if path is None:
+    loaded = local_action(uses.removeprefix("./").rstrip("/"))
+    if loaded is None:
         return []
-    action = yaml.safe_load((ROOT / path).read_text()) or {}
+    path, action = loaded
     declared = action.get("inputs") or {}
     inputs = {**{str(k): context_text(v.get("default")) for k, v in declared.items()
                  if isinstance(v, dict) and "default" in v}, **given}
@@ -572,26 +536,7 @@ def action_workdir(step: dict, inputs: dict[str, str]) -> str:
     return WORKSPACE_DIRECTORY.sub("", given).strip() or "."
 
 
-def run_texts(document: dict, job: dict, step: dict,
-              contexts: dict[str, dict[str, str]]) -> list[tuple[str, str, dict[str, str]]]:
-    """What one step of a job runs, as (its run: text, the directory it runs in, its env: blocks'
-    variables), with the leg's matrix values and the caller's inputs read in: the step's own run:,
-    or the run: of each step of the local composite action it uses, under the inputs its `with:`
-    gives."""
-    env = {**env_text(document.get("env"), contexts), **env_text(job.get("env"), contexts),
-           **env_text(step.get("env"), contexts)}
-    if step.get("run"):
-        return [(substitute(str(step["run"]), contexts), substitute(step_workdir(document, job, step), contexts), env)]
-    given = {str(k): substitute(context_text(v), contexts) for k, v in (step.get("with") or {}).items()}
-    found = []
-    for _, inner, inputs in local_action_steps(str(step.get("uses") or ""), given):
-        inner_contexts = {"inputs": inputs}
-        found.append((substitute(str(inner["run"]), inner_contexts), action_workdir(inner, inputs),
-                      {**env, **env_text(inner.get("env"), inner_contexts)}))
-    return found
-
-
-def script_step(step: Step, modules: tuple[str, ...] = MODULE_DIRS) -> Step | None:
+def script_step(step: Step, modules: tuple[str, ...]) -> Step | None:
     """The step a run: that is one command running a shell script of the repository makes: the
     script's own lines, read in the directory it runs them in - the step's, or the one its first
     command moves to from its own (`cd "$(dirname "$0")/<path>"`) - where that is one of
@@ -604,7 +549,7 @@ def script_step(step: Step, modules: tuple[str, ...] = MODULE_DIRS) -> Step | No
         return None
     line = lines[0]
     for prefix in ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/"):
-        line = line.replace(f'"{prefix}', f'"{WORKSPACE_MARK}').replace(prefix, WORKSPACE_MARK)
+        line = line.replace(prefix, WORKSPACE_MARK)
     if any(c in line for c in "|&;<>`$("):
         return None
     try:
@@ -636,7 +581,7 @@ def script_step(step: Step, modules: tuple[str, ...] = MODULE_DIRS) -> Step | No
     if workdir not in modules:
         return None
     followed = Step(workflow=step.workflow, job=step.job, name=step.name, workdir=workdir,
-                    script="\n".join(body), env=dict(step.env))
+                    script="\n".join(body))
     try:
         commands_of(followed, lambda _step, _text: "(read by the reader's own answer)")
     except Refused:
@@ -717,13 +662,14 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
                 script=entry.commands[arguments])
 
 
-def module_packages(module: str) -> list[str]:
-    """The directories of `module` that hold a Go package, as the go list over ./... that LEGS
-    runs finds them, read off the tree with no `go` command: each directory under the module holding a `.go`
-    file whose name starts with neither `.` nor `_`, outside a `testdata`, `vendor`, `.`- or
-    `_`-named directory and outside a nested module; `.` for the module's own root. A directory
-    whose every file a build tag excludes is read as a package here, which errs wide; the tag rule
-    holds such files on its own."""
+@cache
+def module_packages(module: str) -> tuple[str, ...]:
+    """The directories of `module` that hold a Go package, as the go list over ./... that
+    LEGS_SCRIPT runs finds them, read off the tree with no `go` command: each directory under the
+    module holding a `.go` file whose name starts with neither `.` nor `_`, outside a `testdata`,
+    `vendor`, `.`- or `_`-named directory and outside a nested module; `.` for the module's own
+    root. A directory whose every file a build tag excludes is read as a package here, which errs
+    wide; the tag rule holds such files on its own. Walked once for each module."""
     base = ROOT / module
     found: list[str] = []
     for directory, subdirectories, files in os.walk(base):
@@ -734,7 +680,19 @@ def module_packages(module: str) -> list[str]:
         if any(name.endswith(".go") and not name.startswith((".", "_")) for name in files):
             relative = here.relative_to(base).as_posix()
             found.append("." if relative == "." else relative)
-    return found
+    return tuple(found)
+
+
+@cache
+def legs_document() -> dict:
+    """LEGS_FILE as it parses, read once: every leg of every legs step reads it."""
+    return yaml.safe_load((ROOT / LEGS_FILE).read_text()) or {}
+
+
+def package_argument(package: str) -> str:
+    """A package of LEGS_FILE as a go command names it, from the module's root: go_legs.py's
+    package_argument."""
+    return "./" if package == "." else f"./{package}/"
 
 
 def legs_packages(step: Step, text: str) -> list[str] | None:
@@ -742,23 +700,22 @@ def legs_packages(step: Step, text: str) -> list[str] | None:
     off LEGS_FILE with no `go` command: each package any leg of that job lists, once, whole, as
     `./<directory>/` from the module, in the file's order, and, for the job the module's
     `unlisted` names, each package of the module (module_packages) that no place of the file names,
-    which go_legs.py runs in that job's last leg; or None where `text` calls no LEGS. A split
+    which go_legs.py runs in that job's last leg; or None where `text` calls no LEGS_SCRIPT. A split
     package is whole here: go_legs.py fails a leg unless each of its tests is in one group the
     job's legs run. A call this reading cannot place - a module or job the file lacks, a step that
     runs outside the module the packages are relative to - is refused."""
     words = shlex.split(text)
-    at = next((index for index, word in enumerate(words) if word.endswith(Path(LEGS).name)), None)
+    at = next((index for index, word in enumerate(words) if word.endswith(Path(LEGS_SCRIPT).name)), None)
     if at is None:
         return None
     if len(words) < at + 5:
-        raise Refused(f"{step.label}: `{text}` is no call of {LEGS} this reader reads: it takes "
+        raise Refused(f"{step.label}: `{text}` is no call of {LEGS_SCRIPT} this reader reads: it takes "
                       "<module> <job> <leg> <legs>")
     module, job = words[at + 1], words[at + 2]
     if module != step.workdir:
         raise Refused(f"{step.label}: `{text}` lists the packages of {module} as paths from that module, "
                       f"and the step runs in {step.workdir}")
-    document = yaml.safe_load((ROOT / LEGS_FILE).read_text()) or {}
-    entry = document.get(module) or {}
+    entry = legs_document().get(module) or {}
     legs = entry.get(job) if job not in LEGS_NOT_JOBS else None
     if not isinstance(legs, dict) or not legs:
         raise Refused(f"{step.label}: {LEGS_FILE} lists no legs of {job} under {module}")
@@ -777,16 +734,16 @@ def legs_packages(step: Step, text: str) -> list[str] | None:
 
     found: list[str] = []
     for package in listed_packages(legs):
-        argument = "./" if package == "." else f"./{package}/"
+        argument = package_argument(package)
         if argument not in found:
             found.append(argument)
     if entry.get(LEGS_UNLISTED) == job:
-        named = set(entry.get("elsewhere") or {}) | set(entry.get("twice") or {})
+        named = set(entry.get(LEGS_ELSEWHERE) or {}) | set(entry.get(LEGS_TWICE) or {})
         for other, other_legs in entry.items():
             if other not in LEGS_NOT_JOBS and isinstance(other_legs, dict):
                 named.update(listed_packages(other_legs))
         for package in module_packages(module):
-            argument = "./" if package == "." else f"./{package}/"
+            argument = package_argument(package)
             if package not in named and argument not in found:
                 found.append(argument)
     return found
@@ -830,22 +787,28 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
         piped = XARGS.match(line)
         if piped:
-            command_line = piped.group("command").strip()
+            written = piped.group("command").strip()
+            command_line = written
             if command_line.split(None, 1)[0] == "env" and len(command_line.split(None, 1)) == 2:
                 command_line = command_line.split(None, 1)[1]
             words, command_text = go_command(command_line)
-            if words[:2] == ["go", "test"]:
-                lister = expand(piped.group("lister"), variables)
-                appended = answer(step, lister).split()
-                if not appended:
-                    raise Refused(f"{step.label}: `{lister}` printed no package")
-                command = parse_go_test(step, expand(command_text, variables), appended)
-                command.env = {**line_env(command_line), **command.env}
-                found.append(command)
-                continue
+            if words[:2] != ["go", "test"]:
+                raise Refused(f"{step.label}: `{written}`, what `{line}` pipes into xargs, is no go test "
+                              "this reader reads")
+            lister = expand(piped.group("lister"), variables)
+            appended = answer(step, lister).split()
+            if not appended:
+                raise Refused(f"{step.label}: `{lister}` printed no package")
+            command = parse_go_test(step, expand(command_text, variables), appended)
+            command.env = {**line_env(command_line), **command.env}
+            found.append(command)
+            continue
 
         words, command_text = go_command(line)
         if len(words) > 1 and words[0] == "go" and words[1] in NO_TEST_GO:
+            if not all(passed_over(command) for command in chained(step, line)):
+                raise Refused(f"{step.label}: `{line}` chains to its `go {words[1]}` a command that may "
+                              "start a go test, which this reader does not read")
             continue
         if len(words) > 1 and words[0] == "go" and words[1] == "test":
             command = parse_go_test(step, expand(command_text, variables), [])
@@ -857,20 +820,47 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             command.env = {**line_env(line), **command.env}
             found.append(command)
             continue
-        if (words and not GO_WORD.search(line) and words[0] not in NOT_PASSED_OVER
-                and "/" not in words[0] and not words[0].endswith((".sh", ".py"))):
+        if passed_over(line):
             continue
         raise Refused(f"{step.label}: this reader cannot read `{line}`")
+
+
+def passed_over(command: str) -> bool:
+    """Whether a command starts no go command the reader could see, so the reader passes it over:
+    it holds no `go` word, and the word that names it once go_command has read past its variables
+    is no gotestsum, no NOT_PASSED_OVER command and no path to a program or a script."""
+    words, _ = go_command(command)
+    return (bool(words) and not GO_WORD.search(command) and words[0].rsplit("/", 1)[-1] not in GOTESTSUM_COMMANDS
+            and words[0] not in NOT_PASSED_OVER and "/" not in words[0] and not words[0].endswith((".sh", ".py")))
+
+
+def chained(step: Step, line: str) -> list[str]:
+    """The commands a line runs after its first, each as its words joined by spaces: what follows
+    each CHAINS operator outside quotes and comments, as bash splits the line. A line whose quoting
+    does not close, which bash would refuse to run, is refused."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    commands: list[list[str]] = []
+    try:
+        for token in lexer:
+            if token in CHAINS:
+                commands.append([])
+            elif commands:
+                commands[-1].append(token)
+    except ValueError as error:
+        raise Refused(f"{step.label}: this reader cannot split `{line}` into its commands: {error}") from None
+    return [" ".join(words) for words in commands]
 
 
 def go_command(line: str) -> tuple[list[str], str]:
     """The command a line runs, with the variables it sets before it and the wrapper it runs it
     under dropped: its words, and its text with those words removed.
 
-    A step writes `env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory
-    go test … -exec 'env GODEBUG=checkfinalizers=1' …` behind an xargs. Neither the variables nor
-    the wrapper changes which test functions the command runs, which is all the reader reads, so
-    both are dropped and what is left is the go command, or the gotestsum command that runs it. A
+    Behind an xargs a step writes `env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh
+    --race-memory go test … -exec 'env GODEBUG=checkfinalizers=1' …`, which read_block hands here
+    without its `env`. Neither the variables nor the wrapper changes which test functions the
+    command runs, which is all the reader reads, so both are dropped and what is left is the go
+    command, or the gotestsum command that runs it. A
     value holding `$`, and a wrapper GO_WRAPPERS does not name, are left where they are, so the
     caller refuses the line rather than guessing. The text is cut word by word off the line
     itself, so the quoting of what is left - a `-run` pattern above all - is the line's own. The
@@ -987,7 +977,7 @@ def parse_go_test(step: Step, text: str, appended: list[str]) -> GoTest:
             elif flag == "-exec":
                 exec_words = shlex.split(value)
                 if exec_words[:1] == ["env"]:
-                    command.env.update(line_env(" ".join(exec_words[1:]) + " -"))
+                    command.env.update(line_env(" ".join(exec_words[1:])))
             elif flag == "-skip":
                 if skip_names(value) is None:
                     raise Refused(f"{step.label}: `{text}` skips by `{value}`, and this reader "

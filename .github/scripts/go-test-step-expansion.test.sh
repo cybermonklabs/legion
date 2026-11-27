@@ -2,7 +2,8 @@
 # Tests for `go-test-step-expansion.py`'s reading of one line of a step's script: which command a
 # line runs, and which shapes it refuses rather than guesses at; that its step reader reads every
 # `go test` step of this head's workflows; and that each script AUDITED_SCRIPTS reads still has
-# the SHA-256 its entry pins.
+# the SHA-256 its entry pins. One case holds the refusals of go_test_steps.py's own reader, which
+# the script imports and the test-reach search reads its steps with.
 #
 # Only the reader and the pins. What the script makes of a command - the packages a
 # `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
@@ -11,12 +12,10 @@
 # it, or a file's hash.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
-# it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
-# no pair list at all - so the rule answered nothing about any pair while
-# `RACE_MEM_LIMIT_KB=… race_memory.py go test …` stood in ci-job-envoy-go-race-docs.yaml and
-# ci-job-envoy-go-docs-finalizers.yaml, a job since deleted, held
-# `GODEBUG=checkfinalizers=1 go test …`; the detector now stands on the race-docs line as go
-# test's `-exec 'env GODEBUG=checkfinalizers=1'`, which the case below reads.
+# it under the memory wrapper, is read as the go command behind them, since a refusal stops the
+# whole run at exit 2 with no pair list at all, and the rule then answers nothing about any pair.
+# The race-docs legs' line is such a line, `env RACE_MEM_LIMIT_KB=… go-test.sh --race-memory go
+# test … -exec 'env GODEBUG=checkfinalizers=1' …`, which the cases below read.
 #
 # The module is imported from the directory it lives in, the way check-ci-filters.sh imports its
 # own (PYTHONPATH, no bytecode), so the code under test is the file a person runs. It needs a
@@ -36,7 +35,7 @@ source "$script_dir/test-lib.sh"
 # py <statements> [argument ...]: the statements with the module as `ex` and the arguments in
 # sys.argv[1:]. The file's name holds dashes, which no import statement can spell, so it is
 # loaded by path - the file a person runs, not a copy - with PYTHONPATH naming the directory
-# beside it so its own `from ci_filter_coverage import …` resolves as it does for the script.
+# beside it so its own `import go_test_steps` resolves as it does for the script.
 py() {
   local statements=$1
   shift
@@ -84,7 +83,7 @@ check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test .
 
 echo "case: the wrapper's own path is read from its end, as a step writes it"
 check "a deeper relative path is still the wrapper" \
-  "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
+  "$(is "$(command_of '../../../.github/scripts/go-test.sh go test ./pkg')" "go test ./pkg")"
 
 echo "case: a -run pattern keeps its quoting"
 line="GO_TEST_RETRY=off go test -run '^(TestOne|TestTwo)\$' ./pkg"
@@ -97,8 +96,37 @@ check "a value needing the shell is left in place" \
 check "a wrapper GO_WRAPPERS does not name is left in place" \
   "$(is "$(command_of 'timeout 60 go test ./pkg')" "timeout 60 go test ./pkg")"
 check "a wrapper with no go command behind it is left in place" \
-  "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
+  "$(is "$(command_of '../../.github/scripts/go-test.sh --help')" "../../.github/scripts/go-test.sh --help")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
+
+# The test-reach search reads every step with go_test_steps.py's reader, and a `go test` that
+# reader passed over would be a test the search reads as run by no step, or as run where it is
+# not. A line whose command behind `| xargs` is no go test, and a line that chains a command that
+# could start one to a go command that runs no test, are each refused, by step and line; a go
+# command that chains only a command starting no go is passed over, as such a line alone is.
+echo "case: go_test_steps' reader refuses a go test it would otherwise pass over"
+# steps_read <script>: the packages of each go test go_test_steps' reader reads in a step that
+# runs the script, each lister answered with ./pkg/, or the reader's refusal.
+steps_read() { py 'import go_test_steps as steps
+step = steps.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy",
+                  script=sys.argv[1])
+try:
+    print("; ".join(" ".join(command.packages) for command in steps.commands_of(step, lambda _step, _text: "./pkg/")))
+except steps.Refused as refusal:
+    print(refusal)' "$1"; }
+check "a go test behind another command xargs runs is refused, by step and line" \
+  "$(is "$(steps_read 'go list ./... | xargs timeout 60 go test -count=1')" \
+    "(a test case)'s (a job) / (a step): \`timeout 60 go test -count=1\`, what \`go list ./... | xargs timeout 60 go test -count=1\` pipes into xargs, is no go test this reader reads")"
+check "a go command that runs no test behind xargs is refused" \
+  "$(is "$(steps_read 'go list ./... | xargs go vet')" \
+    "(a test case)'s (a job) / (a step): \`go vet\`, what \`go list ./... | xargs go vet\` pipes into xargs, is no go test this reader reads")"
+check "a go test chained to a go vet is refused, by step and line" \
+  "$(is "$(steps_read 'go vet ./... && go test ./internal/bus/')" \
+    "(a test case)'s (a job) / (a step): \`go vet ./... && go test ./internal/bus/\` chains to its \`go vet\` a command that may start a go test, which this reader does not read")"
+check "a go vet that chains only an echo is passed over, and the go test on the next line read" \
+  "$(is "$(steps_read $'go vet ./... && echo vetted\ngo test ./internal/bus/')" "./internal/bus/")"
+check "a go test behind xargs is read, with the packages its lister printed" \
+  "$(is "$(steps_read 'go list ./... | xargs go test -count=1')" "./pkg/")"
 
 echo "case: the step whose line this harness exists for is read as ci.yaml writes it"
 file=.github/workflows/ci-job-envoy-go-race-docs.yaml
@@ -288,7 +316,7 @@ print("\n".join(read.glob for gate in ci_job_reads.GATES
                 if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
 while IFS=$'\t' read -r path pinned; do
   actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
-  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
+  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go_test_steps.py)" \
     "$(is "$actual" "$pinned")"
   check "$path is among the reads the go_test_step_expansion_test gate declares (add it to .github/ci-gates/test.go_test_step_expansion_test.py)" \
     "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
