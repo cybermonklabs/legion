@@ -67,7 +67,7 @@ import { DeletedLine, FirstLine, NodeParentLine } from "./node-line";
 import { documentWord } from "./node-row-chip";
 import { NodeMarks } from "./node-states/NodeMarks";
 import { marksOf } from "./node-states/node-states";
-import { SettleAct } from "./node-states/SettleAct";
+import { SettleAct, SettleRefusal } from "./node-states/SettleAct";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -1225,7 +1225,10 @@ export function NodeOptions({
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
  * the writer's acts and Settle. Its answer, copied or failed, is said after it in the page's words.
  * Settle (`SettleAct`), on a proposed row where `settles` holds (R4), carries `data-row-act` but
- * needs no writer: a cookie proves a person.
+ * needs no writer: a cookie proves a person. Where `settles` holds, the sentence of a refused
+ * settle of the node (`SettleRefusal`) stands right after it until the reader's next act, and
+ * stays in that place once a read draws the node settled and the act goes (R4): it says why the
+ * press did nothing.
  *
  * After Copy reference and its answer, on every row of Conversation and Graph whose node the
  * invoke route takes, whatever the focus, the row draws the Lens act and its menu of lens kinds
@@ -1253,9 +1256,9 @@ export function RowActs({
   /** Whether the row carries Reply where its node takes one: not on a message's context row,
    *  whose thread is replied to in Threads (R9, `presets.ts`' `isThreadContext`). */
   replies?: boolean;
-  /** Whether the row offers Settle where it is proposed: every row RowActs is drawn on, but the
-   *  outline's `NodeRow`, which draws RowActs on every row and offers Settle on its focused row
-   *  alone (R4). */
+  /** Whether the row offers Settle where it is proposed, and draws a refused settle's sentence:
+   *  every row RowActs is drawn on, but the outline's `NodeRow`, which draws RowActs on every row
+   *  and offers Settle on its focused row alone (R4). */
   settles?: boolean;
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
@@ -1313,6 +1316,7 @@ export function RowActs({
         </button>
       ))}
       {settles && isProposed(node) ? <SettleAct node={node} tabStops={tabStops} /> : null}
+      {settles && reference !== undefined ? <SettleRefusal reference={reference} /> : null}
       {reference === undefined ? null : (
         <button
           className={`dispatch-inline-link ${pageRowAct}`}

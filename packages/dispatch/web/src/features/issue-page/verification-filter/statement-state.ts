@@ -208,8 +208,7 @@ export type IssueCovered =
  * (`GET /api/v1/issues/{key}/coverage`): every `requirement` block of the issue's spec is one of
  * its rows (`requirements`), and one is covered where a check of the issue or of an issue under
  * it serves it (`checks`). The summary gives it that read less the rows `countedCoverage` leaves
- * out. No page of the view read cuts that read, so the count is the same on every read of the
- * same issue, whichever of its statements the view has loaded. While a document of the issue is
+ * out, so the count can move as the view loads more statements. While a document of the issue is
  * still being indexed (`coverageNotes`), the coverage read's counts may not hold what serves a
  * statement yet, so this answers those lines in place of any count.
  */
@@ -226,21 +225,38 @@ export function issueCovered(coverage: IssueCoverage | undefined): IssueCovered 
 
 /**
  * The coverage read less each row no count reads (R3): a row the read marks `proposed`, a
- * proposed statement's, or `closed`, the row of a statement at or under an overtaken node, where a
- * question written as an `:::ask` block is overtaken by its ask node's state
- * (`coverage_tuples.go`'s `treeRequirements.closed`). The read marks every statement of the
- * issue's spec, the ones the view has not loaded among them, so this leaves out the same rows
- * whichever page of the view is loaded. A read that marks no row so is answered as it came.
+ * proposed statement's, or `closed`, the row of a statement at or under a node the read finds
+ * overtaken (`coverage_tuples.go`'s `treeRequirements.closed`); and a row whose statement stands
+ * out of the counts (`outOfCounts`) among `statements`, the statements the view holds at any
+ * depth as its reading holds them (`verificationReading`'s `statements`), paired by the address
+ * the tree gave that statement, which is the row's own `ref` (`tree-read/tree-nodes.ts`'
+ * `keptReference`).
+ *
+ * The view half stands because the coverage read reads the state of block nodes and asks alone,
+ * and none of a comment or a message above a statement (INFRA-1196's decision 557), so it leaves
+ * the row of a statement under an overtaken comment or message unclosed, though the page closes
+ * that statement. That half covers only the statements the view has loaded
+ * (`TreeNode.moreToRead`). The read's `closed` covers the rest where a block or an ask is what is
+ * overtaken; a statement the view has not loaded yet under an overtaken comment or message stays
+ * counted until its page loads. It stands until the read reads the state of every conversation
+ * node that can hold a statement (INFRA-1253). A read none of whose rows is left out is answered
+ * as it came.
  */
-export function countedCoverage(coverage: IssueCoverage | undefined): IssueCoverage | undefined {
+export function countedCoverage(
+  coverage: IssueCoverage | undefined,
+  statements: readonly StatementReading[]
+): IssueCoverage | undefined {
   const requirements = coverage?.requirements;
-  if (coverage === undefined || !requirements?.some(markedOutOfCounts)) return coverage;
-  return { ...coverage, requirements: requirements.filter((row) => !markedOutOfCounts(row)) };
-}
-
-/** Whether the coverage read marks its row `row` out of every count: `proposed` or `closed`. */
-function markedOutOfCounts(row: NonNullable<IssueCoverage["requirements"]>[number]): boolean {
-  return row.coverage === "proposed" || row.coverage === "closed";
+  if (coverage === undefined || !requirements) return coverage;
+  const outside = new Set(
+    statements.flatMap(({ node }) =>
+      node.reference !== undefined && outOfCounts(node) ? [node.reference] : []
+    )
+  );
+  const counted = requirements.filter(
+    (row) => row.coverage !== "proposed" && row.coverage !== "closed" && !outside.has(row.ref)
+  );
+  return counted.length === requirements.length ? coverage : { ...coverage, requirements: counted };
 }
 
 /**
