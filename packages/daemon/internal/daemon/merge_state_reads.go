@@ -164,9 +164,13 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 			delete(w.mergeStateQueued, issue)
 			if run, running := w.mergeStateRunning[issue]; running {
 				run.asked = true
+				select {
+				case run.wake <- struct{}{}:
+				default:
+				}
 				continue
 			}
-			w.mergeStateRunning[issue] = &mergeStateRun{}
+			w.mergeStateRunning[issue] = &mergeStateRun{wake: make(chan struct{}, 1)}
 			started[issue] = follow
 		}
 		w.mergeStateMu.Unlock()
@@ -179,9 +183,14 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 }
 
 // mergeStateRun is one running ladder's bookkeeping (workflowRuntime.mergeStateRunning): asked is
-// whether a request for a read arrived since its climb began.
+// whether a request for a read arrived since its climb began, and wake ends a climb's wait after a
+// failed read of the record for that request (climbWait). wake holds one signal at most:
+// readMergeStates sends it without blocking and mergeStateEnds drains it as it takes the request
+// up, both under mergeStateMu, so a request a climb answers leaves no signal behind to cut a later
+// wait short.
 type mergeStateRun struct {
 	asked bool
+	wake  chan struct{}
 }
 
 // mergeStateLadder runs issue's ladder: it climbs (climbMergeState) - or, when follow names a pull
@@ -214,6 +223,10 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 	defer w.mergeStateMu.Unlock()
 	if run := w.mergeStateRunning[issue]; run != nil && run.asked && ctx.Err() == nil {
 		run.asked = false
+		select {
+		case <-run.wake:
+		default:
+		}
 		return false
 	}
 	delete(w.mergeStateRunning, issue)
@@ -249,11 +262,14 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // the issue: there is no pull request to hand, and nobody else owes the head a read. The climb
 // keeps the read it owes and makes it again: it logs the failure and waits, the ladder's wait after
 // the first failure and twice the one before after each failure that follows it, up to
-// mergeStateFollowWaits of the ladder's waits, and ctx's end ends the wait and the ladder. Such a
-// failed read is none of the climb's mergeStateLadderReads reads. A climb that ended on that
-// failure left mergeStateEnds to take the issue off, and nothing read the head again until another
-// fact asked, so an answer GitHub had by then - the one an approval after a fix waits on, a
-// CONFLICTING one among them - reached nothing.
+// mergeStateFollowWaits of the ladder's waits (climbWait). A request for a read of the issue ends
+// the wait, before it or during it, and the climb answers nil, so the ladder climbs again at once
+// (mergeStateEnds): once the database is back, the read the request asked for is not held behind
+// the rest of a wait of up to mergeStateFollowWaits of the ladder's. ctx's end ends the wait and
+// the ladder. Such a failed read is none of the climb's mergeStateLadderReads reads. A climb that
+// ended on that failure left mergeStateEnds to take the issue off, and nothing read the head again
+// until another fact asked, so an answer GitHub had by then - the one an approval after a fix waits
+// on, a CONFLICTING one among them - reached nothing.
 //
 // The climb takes the issue out of its base's reads once: after its first read, when GitHub
 // answered and the record took the answer, or the record held no open pull request to read, and
@@ -292,10 +308,8 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 				backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())
 				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record's read failed, and the read is made again after the wait",
 					"issue", issue, "read", read, "wait", backoff, "error", err)
-				select {
-				case <-ctx.Done():
+				if !w.climbWait(ctx, issue, backoff) {
 					return nil
-				case <-time.After(backoff):
 				}
 				continue
 			}
@@ -322,6 +336,34 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 			return nil
 		case <-time.After(w.mergeStateWait()):
 		}
+	}
+}
+
+// climbWait waits wait before a climb makes again the read of the record that failed
+// (climbMergeState), and says whether to make that read: false once a request for a read of issue
+// has arrived, before the wait or during it, since the ladder then climbs at once (mergeStateEnds),
+// and false when ctx ends.
+func (w *workflowRuntime) climbWait(ctx context.Context, issue string, wait time.Duration) bool {
+	w.mergeStateMu.Lock()
+	run := w.mergeStateRunning[issue]
+	asked := run != nil && run.asked
+	var wake chan struct{}
+	if run != nil {
+		wake = run.wake
+	}
+	w.mergeStateMu.Unlock()
+	if asked {
+		return false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-wake:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
