@@ -228,7 +228,7 @@ func TestEveryDPoPEntryIsHeldToItsOwnDestinationsHost(t *testing.T) {
 		upstreams  []PrivateUpstream
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"a dpop block of two hosts", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"dispatch.test", "other.test"} }},
+		{"a dpop block of two hosts", "is of kind dpop and must bind one exact host", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"dispatch.test", "other.test"} }},
 		{"a dpop block of a *. host", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"*.test"} }},
 		{"a dpop block with no allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Allow = nil }},
 		{"a dpop block with an empty allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Allow = []proxyrules.Allow{} }},
