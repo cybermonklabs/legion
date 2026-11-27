@@ -43,5 +43,51 @@
     "end": [],
     "after": [],
     "notReplayed": []
+  },
+  {
+    "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+    "verdict": "ok",
+    "seed": [],
+    "calls": [],
+    "end": [
+      {
+        "kind": "dispatch",
+        "source": "R01 bad trace, action 1",
+        "what": "request-approval",
+        "at": "2030-01-07T15:01:00Z",
+        "outcomeSeq": 1,
+        "refused": {
+          "cause": "missing-artifact",
+          "status": null,
+          "code": null,
+          "diagnostic": "document \"plan.md\" not found by slug; this issue's documents: spec-md (spec.md)"
+        }
+      }
+    ],
+    "after": [],
+    "notReplayed": []
+  },
+  {
+    "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+    "verdict": "ok",
+    "seed": [],
+    "calls": [],
+    "end": [
+      {
+        "kind": "dispatch",
+        "source": "R01 bad trace, action 1",
+        "what": "request-approval",
+        "at": "2030-01-07T15:01:00Z",
+        "outcomeSeq": 1,
+        "refused": {
+          "cause": "plan-approval",
+          "status": 409,
+          "code": "PLAN_APPROVED_BY_REVIEW",
+          "diagnostic": "PLAN_APPROVED_BY_REVIEW: a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)"
+        }
+      }
+    ],
+    "after": [],
+    "notReplayed": []
   }
 ]

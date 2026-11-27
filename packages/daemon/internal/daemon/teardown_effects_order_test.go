@@ -237,13 +237,16 @@ type teardownEffectsPullMutation struct {
 // teardownEffectsChange is one recorded change to Git, GitHub, Dispatch or the role's workspace:
 // where it was recorded, when on the case's clock, and the outcome.json action that records it (0
 // for a seeded record or a move of the workspace, which no outcome holds; the workspace record's
-// line and jj operation are its provenance).
+// line and jj operation are its provenance). Refused is the refusal of a write the replay made as
+// a refused write, which changed nothing (a trace's request-approval,
+// teardownEffectsApprovalRefusal); nil for every change the replay made.
 type teardownEffectsChange struct {
-	Kind       string    `json:"kind"`
-	Source     string    `json:"source"`
-	What       string    `json:"what"`
-	At         time.Time `json:"at"`
-	OutcomeSeq int       `json:"outcomeSeq,omitempty"`
+	Kind       string                  `json:"kind"`
+	Source     string                  `json:"source"`
+	What       string                  `json:"what"`
+	At         time.Time               `json:"at"`
+	OutcomeSeq int                     `json:"outcomeSeq,omitempty"`
+	Refused    *teardownEffectsRefusal `json:"refused,omitempty"`
 	from, to   time.Time
 	fault      string
 	push       *teardownEffectsPush

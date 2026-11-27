@@ -28,9 +28,14 @@
  *   action and time): its whole outcome, as lane R recorded it, and no effects. A line the reader
  *   fails fails the run; otherwise the daemon state is unverified, never a pass.
  * - `HARNESS` of the harness's own records (harness-record): nothing; the run is unverified.
- * No verdict, cause, reason, difference or disposition reaches the reader. Each outcome it is given,
- * a run's whole or observed and a control's, is modelOutcome's projection: no audit record that
- * outcome.ts keeps beside the scored actions (`otherWrites`, `actor`, `change`) reaches it either.
+ * A change replay.json records as `refused` is a trace's request-approval that lane D made again
+ * through the real dispatch CLI, which the CLI or Dispatch refused, so it changed nothing (a
+ * control's alone: a run's replay makes no such write). It is bound to that request-approval of the
+ * outcome, at its action and case time.
+ * No verdict, cause, reason, difference, refusal or disposition reaches the reader. Each outcome
+ * it is given, a run's whole or observed and a control's, is modelOutcome's projection: no audit
+ * record that outcome.ts keeps beside the scored actions (`otherWrites`, `actor`, `change`)
+ * reaches it either.
  */
 import { LEGION_WORKFLOW_PHASES } from "@legion/contracts/legion-api";
 import { z } from "zod";
@@ -93,15 +98,50 @@ export type EffectRecord = z.infer<typeof EffectRecord>;
 /** A request the real daemon answered otherwise than the stand-in. */
 export type Difference = EffectRecord["diverged"][number];
 
+/** The refusal of a trace's request-approval, which lane D made again through the real dispatch
+ * CLI as the role's session and which changed nothing (teardownEffectsRefusal): `missing-artifact`,
+ * the CLI's own refusal of a document the issue does not hold, made before it sent Dispatch any
+ * request, so Dispatch gave no status or code; or `plan-approval`, Dispatch's 409
+ * PLAN_APPROVED_BY_REVIEW of a plan. `diagnostic` is what the CLI printed. Lane D takes no other
+ * refusal, and fails the replay where Dispatch accepted the request. */
+const Refusal = z.discriminatedUnion("cause", [
+  z.strictObject({
+    cause: z.literal("missing-artifact"),
+    status: z.null(),
+    code: z.null(),
+    diagnostic: Text,
+  }),
+  z.strictObject({
+    cause: z.literal("plan-approval"),
+    status: z.literal(409),
+    code: z.literal("PLAN_APPROVED_BY_REVIEW"),
+    diagnostic: Text,
+  }),
+]);
+
 /** A recorded change the replay applied before a call, or that followed the last one
- * (teardownEffectsChange): `outcomeSeq` is absent for a seeded record or a move of the workspace. */
-const Change = z.strictObject({
-  kind: z.enum(["push", "github", "dispatch", "workspace"]),
-  source: Text,
-  what: Text,
-  at: Instant,
-  outcomeSeq: OutcomeSeq.optional(),
-});
+ * (teardownEffectsChange): `outcomeSeq` is absent for a seeded record or a move of the workspace,
+ * and `refused` is present on a trace's request-approval alone, which lane D makes as a refused
+ * write. */
+const Change = z
+  .strictObject({
+    kind: z.enum(["push", "github", "dispatch", "workspace"]),
+    source: Text,
+    what: Text,
+    at: Instant,
+    outcomeSeq: OutcomeSeq.optional(),
+    refused: Refusal.optional(),
+  })
+  .superRefine((change, context) => {
+    const request = change.kind === "dispatch" && change.what === "request-approval";
+    if (change.refused !== undefined && (!request || change.outcomeSeq === undefined))
+      context.addIssue({
+        code: "custom",
+        path: ["refused"],
+        message:
+          "only a trace's request-approval, a Dispatch write of an outcome action, is made as a refused write",
+      });
+  });
 
 /** One answer to a call's request (teardownEffectsAnswerRef): the stand-in's, with the outcome.json
  * action that records it where one does, or the real daemon's, with its place among effects.json's
@@ -272,8 +312,8 @@ function saidBy(body: unknown, said: { readonly isError: boolean; readonly text:
  * What lane D's receipt says of `outcome`'s run: replay.json (`receipt`), and effects.json
  * (`effects`, null where the run holds none), read against the run's outcome and its case's
  * `rules`. Throws where either is another run's, where the two disagree with each other or with
- * the outcome, and where a DIVERGED run's first difference is two acceptances, which lane D never
- * records as a difference.
+ * the outcome (a refused change bound to no request-approval of it among them), and where a
+ * DIVERGED run's first difference is two acceptances, which lane D never records as a difference.
  */
 export function replayOf(
   outcome: OutcomeRecord,
@@ -295,6 +335,7 @@ export function replayOf(
       `replay.json is ${receipt.verdict}, and the run holds no effects.json, which lane D writes beside every replay that is not HARNESS`
     );
   agree(outcome, receipt, effects);
+  refusedOf(outcome, receipt);
   if (receipt.verdict === "ok") {
     if (effects.diverged.length > 0 || receipt.notReplayed.length > 0)
       throw new Error(
@@ -304,6 +345,29 @@ export function replayOf(
     return { verdict: "ok", effects };
   }
   return divergedOf(outcome, receipt, effects, rules);
+}
+
+/** Throws where a change replay.json records as refused is not a request-approval that outcome.json
+ * scores at that action and case time: a refusal is bound to the write it refused. */
+function refusedOf(outcome: OutcomeRecord, receipt: ReplayRecord): void {
+  const changes = [
+    ...receipt.seed,
+    ...receipt.calls.flatMap((call) => call.before),
+    ...(receipt.end ?? []),
+    ...receipt.after,
+  ];
+  for (const change of changes) {
+    if (change.refused === undefined) continue;
+    const action = outcome.actions.find((each) => each.seq === change.outcomeSeq);
+    if (
+      action?.kind !== "dispatch" ||
+      action.command !== "request-approval" ||
+      parseInstant(action.at) !== parseInstant(change.at)
+    )
+      throw new Error(
+        `replay.json records ${change.source} as a refused request-approval, and outcome.json holds no request-approval as action ${change.outcomeSeq} at ${change.at}`
+      );
+  }
 }
 
 /** A HARNESS receipt's cause. The role's write is taken only where the receipt types it so and

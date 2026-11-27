@@ -199,7 +199,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	if world.GitHub != nil {
 		r.repo = world.GitHub.Repository
 	}
-	r.proxy = teardownEffectsStartProxy(t, cfg.DaemonURL)
+	r.proxy = teardownEffectsStartProxy(t, cfg.DaemonURL, teardownEffectsToolRoute)
 	r.model = teardownEffectsStartModel(t, h.home, h.profile)
 	r.rt = newLocalRuntime(t, cfg.StateDir, h.legion, h.omp, h.home, h.profile)
 	r.rt.paneLogs = filepath.Join(h.out, "panes", filepath.Base(cfg.StateDir))
@@ -636,15 +636,19 @@ func teardownEffectsWriteJSON(t *testing.T, path string, value any) {
 	}
 }
 
-// Observe actual bytes on the pane's HTTP hop to the real daemon. Boot, registration,
-// and asynchronous lifecycle calls are not tool answers.
+// Observe actual bytes on one HTTP hop: the pane's to the real daemon, where only the tool routes
+// are observed (boot, registration, and asynchronous lifecycle calls are not tool answers), or the
+// dispatch CLI's to Dispatch, where every request is observed. asked counts each observed request,
+// and records holds each that came back, with its answer, so a request that got no answer (a
+// transport failure) shows as a gap between the two.
 type teardownEffectsProxy struct {
 	mu      sync.Mutex
 	url     string
+	asked   int
 	records []teardownEffectsHTTP
 }
 
-func teardownEffectsStartProxy(t *testing.T, target string) *teardownEffectsProxy {
+func teardownEffectsStartProxy(t *testing.T, target string, observe func(path string) bool) *teardownEffectsProxy {
 	t.Helper()
 	dest, err := url.Parse(target)
 	if err != nil {
@@ -674,7 +678,10 @@ func teardownEffectsStartProxy(t *testing.T, target string) *teardownEffectsProx
 		return nil
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if teardownEffectsToolRoute(req.URL.Path) {
+		if observe(req.URL.Path) {
+			p.mu.Lock()
+			p.asked++
+			p.mu.Unlock()
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				http.Error(w, "cannot observe request", 400)
@@ -698,6 +705,14 @@ func (p *teardownEffectsProxy) mark() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.records)
+}
+
+// observed is the number of requests the proxy observed, and each of them that came back, with its
+// answer, in order.
+func (p *teardownEffectsProxy) observed() (int, []teardownEffectsHTTP) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.asked, slices.Clone(p.records)
 }
 
 // One scripted turn executes one tool at a time. The next request carries the tool result;
@@ -889,18 +904,19 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 				continue
 			}
 			apply := change.apply
-			change.apply = func() error {
+			change.apply = func() (*teardownEffectsRefusal, error) {
 				turned := teardownEffectsTurned{call: teardownEffectsReplayCall{State: teardownEffectsState{Phase: string(r.issue(r.key).Phase)}}, before: r.productionCheck()}
-				if err := apply(); err != nil {
-					return err
+				refused, err := apply()
+				if err != nil {
+					return nil, err
 				}
 				turned.call.PhaseAfter, turned.after = string(r.issue(r.key).Phase), r.productionCheck()
 				if err := teardownEffectsShows(p, c, turned); err != nil {
 					t.Errorf("%s: %v", p, err)
-					return nil
+					return refused, nil
 				}
 				ran(p, "the comment left the phase and the production check as they were")
-				return nil
+				return refused, nil
 			}
 		}
 		return r, script
@@ -946,7 +962,7 @@ func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase
 	made := func(kind, command string) {
 		for _, a := range good.Actions {
 			if a.Kind == kind && a.Command == command {
-				if err := r.applyTraceAction(a); err != nil {
+				if _, err := r.applyTraceAction(a); err != nil {
 					t.Fatalf("%s's known-good trace, action %d: %v", c.ID, a.Seq, err)
 				}
 			}
@@ -1028,12 +1044,6 @@ func teardownEffectsCheckText(check *teardownEffectsCheck) string {
 		return text + ", check_wake row due " + check.CheckWakeRow.DueAt.UTC().Format(time.RFC3339)
 	}
 	return text + ", no check_wake row"
-}
-
-// teardownEffectsApplied is one recorded change a replay makes again, and how it makes it.
-type teardownEffectsApplied struct {
-	teardownEffectsChange
-	apply func() error
 }
 
 // teardownEffectsTurn is one legion call a replay makes: the call (its op and arguments, and what
@@ -1126,11 +1136,13 @@ func (h teardownEffectsHarness) receipt(t *testing.T, id, out string, prepare fu
 	return got, turned
 }
 
-// play makes script again on r and records it in record: before each call the changes before it,
-// then the call through the real pane and daemon, judged by its turn; after the first difference no
-// later call is replayed, and otherwise the changes after the last call are made too. A failure is
-// handed to harness, the replay's HARNESS verdict. It answers the effect record's answers,
-// differences and handoff records, and each call as it was made.
+// play makes script again on r and records it in record: before each call the changes before it
+// (teardownEffectsMake), then the call through the real pane and daemon, judged by its turn; after
+// the first difference no later call is replayed, and otherwise the changes after the last call are
+// made too. A change the replay made as a refused write is recorded with its refusal, and the
+// replay goes on to the next action. A failure is handed to harness, the replay's HARNESS verdict.
+// It answers the effect record's answers, differences and handoff records, and each call as it was
+// made.
 func (r *teardownEffectsRun) play(script teardownEffectsScript, record *teardownEffectsReplayRecord, harness func(error)) ([]teardownEffectsAnswer, []teardownEffectsDifference, []teardownEffectsHandoff, []teardownEffectsTurned) {
 	var answers []teardownEffectsAnswer
 	var differences []teardownEffectsDifference
@@ -1141,12 +1153,9 @@ func (r *teardownEffectsRun) play(script teardownEffectsScript, record *teardown
 			record.NotReplayed = append(record.NotReplayed, turn.call.ID)
 			continue
 		}
-		before := []teardownEffectsChange{}
-		for _, c := range turn.before {
-			if err := c.apply(); err != nil {
-				harness(fmt.Errorf("%s (%s), before legion call %d (%s): %w", c.Source, c.What, i+1, turn.call.ID, err))
-			}
-			before = append(before, c.teardownEffectsChange)
+		before, err := teardownEffectsMake(turn.before, fmt.Sprintf("before legion call %d (%s)", i+1, turn.call.ID))
+		if err != nil {
+			harness(err)
 		}
 		replayed := teardownEffectsReplayCall{Call: turn.call.ID, Op: turn.call.Op, At: turn.at, Before: before, State: r.state(), Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}}
 		check := r.productionCheck()
@@ -1171,11 +1180,10 @@ func (r *teardownEffectsRun) play(script teardownEffectsScript, record *teardown
 		turned = append(turned, teardownEffectsTurned{call: replayed, replies: replies, client: client, handoffs: handoffs, before: check, after: r.productionCheck()})
 	}
 	if len(differences) == 0 {
-		for _, c := range script.end {
-			if err := c.apply(); err != nil {
-				harness(fmt.Errorf("%s (%s), after the last legion call: %w", c.Source, c.What, err))
-			}
-			record.End = append(record.End, c.teardownEffectsChange)
+		end, err := teardownEffectsMake(script.end, "after the last legion call")
+		record.End = append(record.End, end...)
+		if err != nil {
+			harness(err)
 		}
 	}
 	return answers, differences, names, turned
@@ -1202,7 +1210,7 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 	for i, step := range plan.Steps {
 		turn := teardownEffectsTurn{call: step.Call, at: clock.Add(step.Call.At.Sub(launched)).UTC()}
 		for _, c := range step.Before {
-			turn.before = append(turn.before, teardownEffectsApplied{teardownEffectsChange: c, apply: func() error { return r.applyChange(c, own, runDir, &plan.Readback) }})
+			turn.before = append(turn.before, teardownEffectsApplied{teardownEffectsChange: c, apply: func() (*teardownEffectsRefusal, error) { return nil, r.applyChange(c, own, runDir, &plan.Readback) }})
 		}
 		turn.judge = func(replies []teardownEffectsHTTP, client teardownEffectsAnswered, seq int) ([]teardownEffectsAnswerRef, []teardownEffectsDifference, error) {
 			standin := []teardownEffectsAnswerRef{}
@@ -1221,9 +1229,10 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 // legion call through the real pane at the action's case time, held to the answer the trace records
 // (teardownEffectsTraceAnswer); each push, GitHub change and Dispatch write a change made before the
 // next call, or after the last one, by the run replay's own writers at the action's case time
-// (applyTraceAction). A staging action, and a GitHub call that changes no pull request (a read:
-// teardownEffectsTraceRead), change nothing the replay holds, and are not made. It also answers the
-// seq of each call's action, in the order of the calls.
+// (applyTraceAction), a request-approval among them, which the replay makes as a refused write and
+// records with its refusal under the action's own seq and case time. A staging action, and a GitHub
+// call that changes no pull request (a read: teardownEffectsTraceRead), change nothing the replay
+// holds, and are not made. It also answers the seq of each call's action, in the order of the calls.
 func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffectsTrace) (teardownEffectsScript, []int) {
 	var script teardownEffectsScript
 	var seqs []int
@@ -1253,7 +1262,7 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 				what = a.Method + " " + a.Path
 			}
 			change := teardownEffectsChange{Kind: a.Kind, Source: source, What: what, At: a.At.UTC(), OutcomeSeq: a.Seq}
-			pending = append(pending, teardownEffectsApplied{teardownEffectsChange: change, apply: func() error { return r.applyTraceAction(a) }})
+			pending = append(pending, teardownEffectsApplied{teardownEffectsChange: change, apply: func() (*teardownEffectsRefusal, error) { return r.applyTraceAction(a) }})
 		}
 	}
 	script.end = pending
@@ -1266,8 +1275,10 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 // request the action records (teardownEffectsTraceChange), its commits mapped and what it leaves to
 // the state filled from the replay's own (teardownEffectsScratch.resolve), made by the rule a run's
 // change is made by (teardownEffectsScratch.change); a Dispatch write is made by the role's session
-// as the run replay makes one (teardownEffectsTraceWrite, applyDispatch).
-func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) error {
+// as the run replay makes one (teardownEffectsTraceWrite, applyDispatch), but a request-approval,
+// which the role's session makes through the real dispatch CLI as a refused write
+// (requestApproval). It answers that write's refusal, and nil for every change it made.
+func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*teardownEffectsRefusal, error) {
 	r.clock.advance(a.At)
 	switch a.Kind {
 	case "push":
@@ -1279,14 +1290,14 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) erro
 		if old == "" {
 			old = teardownEffectsNoCommit
 		}
-		return r.applyPush(teardownEffectsPush{Ref: ref, Old: old, New: r.sha(a.Commit)}, "")
+		return nil, r.applyPush(teardownEffectsPush{Ref: ref, Old: old, New: r.sha(a.Commit)}, "")
 	case "github":
 		change, err := teardownEffectsTraceChange(a)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if change == nil {
-			return fmt.Errorf("the trace's GitHub action %d changes no pull request, and the replay makes no read", a.Seq)
+			return nil, fmt.Errorf("the trace's GitHub action %d changes no pull request, and the replay makes no read", a.Seq)
 		}
 		p := *change
 		p.SHA, p.Commit = r.sha(p.SHA), r.sha(p.Commit)
@@ -1295,17 +1306,50 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) erro
 		defer g.mu.Unlock()
 		scratch := r.scratch()
 		if p, err = scratch.resolve(p, a.At); err != nil {
-			return err
+			return nil, err
 		}
-		return scratch.change(p)
+		return nil, scratch.change(p)
 	case "dispatch":
+		if a.Command == teardownEffectsApprovalCommand {
+			return r.requestApproval(a)
+		}
 		e, readback, err := teardownEffectsTraceWrite(r.key, r.session, a, r.sha, r.nextVersion)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return r.applyDispatch(e, r.session, &readback)
+		return nil, r.applyDispatch(e, r.session, &readback)
 	}
-	return fmt.Errorf("the replay makes no %s action", a.Kind)
+	return nil, fmt.Errorf("the replay makes no %s action", a.Kind)
+}
+
+// requestApproval makes the trace's request-approval a again as the role's session makes one: the
+// real dispatch CLI, run as recordResult runs it, with the document and the summary the trace names
+// (teardownEffectsApprovalRequest), through a proxy that keeps each request the CLI sends Dispatch
+// and Dispatch's answer to it. The replay makes a request-approval only as a refused write: it
+// answers the refusal, typed from those answers (teardownEffectsApprovalRefusal), and an error,
+// which makes the replay HARNESS, where Dispatch took the request or another write, failed, or
+// refused for another cause.
+func (r *teardownEffectsRun) requestApproval(a teardownEffectsTraceAction) (*teardownEffectsRefusal, error) {
+	artifact, summary, err := teardownEffectsApprovalRequest(r.key, a)
+	if err != nil {
+		return nil, err
+	}
+	dir := r.t.TempDir()
+	args := []string{teardownEffectsApprovalCommand, "--issue", r.key}
+	for _, field := range []struct{ flag, value string }{{"artifact", artifact}, {"summary", summary}} {
+		file := filepath.Join(dir, field.flag)
+		writeProofFile(r.t, file, field.value)
+		args = append(args, "--"+field.flag+"-file", file)
+	}
+	proxy := teardownEffectsStartProxy(r.t, r.dispatch.base, func(string) bool { return true })
+	shell := cliShell{t: r.t, dir: dir, session: r.session, base: proxy.url, token: r.dispatch.token}
+	out, exit := shell.bun(nil, dispatchCLI(r.harness.root), args...)
+	asked, sent := proxy.observed()
+	refusal, err := teardownEffectsApprovalRefusal(r.key, artifact, exit, string(out.stdout)+string(out.stderr), asked, sent)
+	if err != nil {
+		return nil, fmt.Errorf("the trace's request-approval at action %d: %w", a.Seq, err)
+	}
+	return refusal, nil
 }
 
 // nextVersion is the version the next handoff record of phase takes: one more than the newest the

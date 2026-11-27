@@ -1291,8 +1291,8 @@ const TEARDOWN_EFFECTS = path.join(
 );
 
 test("replay.json is read in the Go driver's own format, and a role's write is bound to the outcome action it names", () => {
-  // The three records TestTeardownEffectsReplayRecordJSON holds its encoding to, as compact JSON:
-  // an ok replay of no call, the role's own write and the harness's own records.
+  // The first three records TestTeardownEffectsReplayRecordJSON holds its encoding to, as compact
+  // JSON: an ok replay of no call, the role's own write and the harness's own records.
   const exampleFile = path.join(TEARDOWN_EFFECTS, "replay-example.json");
   const examples: { reason?: string }[] = JSON.parse(readFileSync(exampleFile, "utf8"));
   const [ok = "", write = "", records = ""] = examples.map((each) => JSON.stringify(each));
@@ -1335,6 +1335,101 @@ test("replay.json is read in the Go driver's own format, and a role's write is b
   expect(() => replayOf(outcome, parseReplay(typed), null, P05)).toThrow(
     "which only a HARNESS receipt names"
   );
+});
+
+test("a refused request-approval is read with its typed cause, bound to its outcome action, and never reaches the reader", () => {
+  // The last two records TestTeardownEffectsReplayRecordJSON holds its encoding to, as compact
+  // JSON: an ok control replay whose one change is a trace's request-approval, refused by the CLI
+  // for a document the issue does not hold, and by Dispatch 409 PLAN_APPROVED_BY_REVIEW for a plan.
+  const examples: unknown[] = JSON.parse(
+    readFileSync(path.join(TEARDOWN_EFFECTS, "replay-example.json"), "utf8")
+  );
+  const [missing = "", plan = ""] = examples.slice(3).map((each) => JSON.stringify(each));
+  expect(parseReplay(missing).end?.[0]?.refused).toEqual({
+    cause: "missing-artifact",
+    status: null,
+    code: null,
+    diagnostic: `document "plan.md" not found by slug; this issue's documents: spec-md (spec.md)`,
+  });
+  expect(parseReplay(plan).end?.[0]?.refused).toMatchObject({
+    cause: "plan-approval",
+    status: 409,
+    code: "PLAN_APPROVED_BY_REVIEW",
+  });
+
+  // The control's trace: the role asks a person to approve the plan, and does nothing else.
+  const id = parseReplay(missing).id;
+  const outcome = parseOutcome(
+    JSON.stringify({
+      id,
+      actions: [
+        {
+          kind: "dispatch",
+          seq: 1,
+          at: "2030-01-07T15:01:00Z",
+          command: "request-approval",
+          target: "ACME-12",
+          fields: { artifact: "plan.md", summary: "Approve the plan." },
+        },
+      ],
+      skillReads: [],
+      dispatchFirstInjected: true,
+      lastText: "I asked a person to approve the plan.",
+    })
+  );
+  const effects = parseEffects(
+    JSON.stringify({
+      id,
+      answers: [],
+      phaseBefore: "planning",
+      phaseAfter: "planning",
+      productionCheck: null,
+      handoffRecords: [],
+      diverged: [],
+    })
+  );
+  const hidden = ["refused", "cause", "diagnostic", "PLAN_APPROVED_BY_REVIEW", "not found by slug"];
+  for (const receipt of [missing, plan]) {
+    const replay = replayOf(outcome, parseReplay(receipt), effects, P05);
+    expect(replay.verdict).toBe("ok");
+    // The reader is given the trace and its effects, as it is given an ok run's, and nothing of
+    // the refusal lane D recorded.
+    const graded = gradedOf(outcome, replay);
+    expect(Object.keys(graded ?? {})).toEqual(["outcome", "effects"]);
+    for (const text of hidden) expect(JSON.stringify(graded)).not.toContain(text);
+  }
+
+  // A refusal bound to an action that is no request-approval, or at another time, is refused.
+  const elsewhere = missing.replace('"outcomeSeq":1', '"outcomeSeq":2');
+  expect(() => replayOf(outcome, parseReplay(elsewhere), effects, P05)).toThrow(
+    "outcome.json holds no request-approval as action 2"
+  );
+  const later = plan.replace("15:01:00Z", "15:01:01Z");
+  expect(() => replayOf(outcome, parseReplay(later), effects, P05)).toThrow(
+    "outcome.json holds no request-approval as action 1"
+  );
+  // The parser takes these two refusals alone: another code or status, a status on the CLI's own
+  // refusal, another cause, a key the Go driver does not write and a blank diagnostic are each
+  // refused, and so is a refused change that is no request-approval.
+  const withRefused = (receipt: string, patch: Record<string, unknown>) => {
+    const parsed = JSON.parse(receipt);
+    Object.assign(parsed.end[0].refused, patch);
+    return JSON.stringify(parsed);
+  };
+  for (const patched of [
+    withRefused(plan, { code: "NO_VERSION" }),
+    withRefused(plan, { status: 400 }),
+    withRefused(missing, { status: 409 }),
+    withRefused(missing, { cause: "accepted" }),
+    withRefused(missing, { exit: 1 }),
+    withRefused(missing, { diagnostic: " " }),
+  ])
+    expect(() => parseReplay(patched)).toThrow();
+  for (const moved of [
+    missing.replace('"kind":"dispatch"', '"kind":"push"'),
+    missing.replace('"what":"request-approval"', '"what":"comment"'),
+  ])
+    expect(() => parseReplay(moved)).toThrow("only a trace's request-approval");
 });
 
 // Lane D's control records: CONTROLS is what teardown-effects.sh --controls wrote of the example in

@@ -87,8 +87,10 @@ type teardownEffectsDifference struct {
 // the replay; then the changes the replay made after its last call (`end`: a control's trace makes
 // every action it holds, so the actions after its last daemon call too; a run's replay makes none),
 // the changes recorded after the last call, which the replay did not apply (`after`: a run's), and
-// the calls it did not replay, which follow the first call the real daemon answered otherwise.
-// Every list is an array, never null (teardownEffectsNewReplayRecord).
+// the calls it did not replay, which follow the first call the real daemon answered otherwise. A
+// change the replay made as a refused write (a trace's request-approval) carries its refusal
+// (`refused`), which effects.json does not hold. Every list is an array, never null
+// (teardownEffectsNewReplayRecord).
 type teardownEffectsReplayRecord struct {
 	ID          string                      `json:"id"`
 	Verdict     string                      `json:"verdict"`
@@ -873,7 +875,8 @@ func teardownEffectsTraceAnswer(seq int, op string, code *string, replayed []tea
 // that version gives its phase; a result's commit is mapped too. It writes what the run replay
 // writes: a handoff, an issue comment, a result and a question. Any other write is an error, a
 // document among them (Dispatch's artifact.created event names no text, so a trace holds none),
-// and so is a write on another issue than key.
+// and so is a write on another issue than key. A request-approval is not made here: the replay
+// makes it through the real dispatch CLI, as a refused write (teardownEffectsApprovalRefusal).
 func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction, sha func(string) string, version func(phase string) int) (teardownEffectsEvent, teardownEffectsReadback, error) {
 	var readback teardownEffectsReadback
 	author := teardownEffectsActor{Kind: "session", ID: session}
@@ -933,6 +936,166 @@ func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction
 		}
 	}
 	return event, readback, nil
+}
+
+// teardownEffectsApprovalCommand is the command of a trace's Dispatch write that asks a person to
+// approve a document, `dispatch request-approval`. The replay makes it through the real dispatch
+// CLI as the role's session, and takes it only as a refused write: Dispatch's acceptance of it
+// fails the replay (teardownEffectsApprovalRefusal).
+const teardownEffectsApprovalCommand = "request-approval"
+
+// The causes of a refused request-approval (teardownEffectsRefusal).
+const (
+	// teardownEffectsMissingArtifact: the issue holds no document the request names, so the CLI's
+	// own resolver refuses the request before it sends it (resolveArtifact,
+	// packages/envoy-client/src/dispatch-commands/document-targets.ts), and Dispatch answers nothing.
+	teardownEffectsMissingArtifact = "missing-artifact"
+	// teardownEffectsPlanApproval: the document is a plan, and Dispatch refuses the request 409
+	// PLAN_APPROVED_BY_REVIEW (requestArtifactApproval, packages/envoy/internal/dispatch/api/reviews.go).
+	teardownEffectsPlanApproval = "plan-approval"
+)
+
+// teardownEffectsRefusal is the refusal of a trace's request-approval that the replay made again,
+// which changed nothing: its cause; the status and the code of Dispatch's answer, null where the
+// CLI refused the request before it sent it; and what the CLI printed. replay.json records it on
+// the change (`refused`). effects.json, which the reader gives the judge, holds none of it.
+type teardownEffectsRefusal struct {
+	Cause      string  `json:"cause"`
+	Status     *int    `json:"status"`
+	Code       *string `json:"code"`
+	Diagnostic string  `json:"diagnostic"`
+}
+
+// teardownEffectsApprovalRoute is the path of Dispatch's approval request route, which
+// `dispatch request-approval` posts to: POST /api/v1/artifacts/{id}/approval-requests.
+var teardownEffectsApprovalRoute = regexp.MustCompile(`^/api/v1/artifacts/[^/]+/approval-requests$`)
+
+// teardownEffectsApprovalRequest is the document and the summary of the trace's request-approval a.
+// a must be a write on the issue key that names both fields as text, and no other field.
+func teardownEffectsApprovalRequest(key string, a teardownEffectsTraceAction) (artifact, summary string, err error) {
+	if a.Target != key {
+		return "", "", fmt.Errorf("the trace's request-approval at action %d is on %s, and the replay writes on %s alone", a.Seq, a.Target, key)
+	}
+	for _, field := range slices.Sorted(maps.Keys(a.Fields)) {
+		if field != "artifact" && field != "summary" {
+			return "", "", fmt.Errorf("the trace's request-approval at action %d names the field %s, and the replay makes a request of an artifact and a summary alone", a.Seq, field)
+		}
+	}
+	artifact, summary = teardownEffectsString(a.Fields, "artifact"), teardownEffectsString(a.Fields, "summary")
+	if strings.TrimSpace(artifact) == "" || strings.TrimSpace(summary) == "" {
+		return "", "", fmt.Errorf("the trace's request-approval at action %d names no artifact or no summary as text", a.Seq)
+	}
+	return artifact, summary, nil
+}
+
+// teardownEffectsApprovalRefusal is the refusal of the trace's request-approval of the document
+// reference on the issue key, as the real dispatch CLI made it again. exit is the CLI's exit code,
+// printed is what it printed, asked is the number of requests it sent Dispatch, and sent is each of
+// those requests that came back, with Dispatch's answer, in order. It takes two refusals alone,
+// and neither changes anything:
+//   - plan-approval: the CLI sent one approval request, Dispatch refused it 409
+//     PLAN_APPROVED_BY_REVIEW, and the CLI exited 1;
+//   - missing-artifact: the CLI sent no approval request and exited 1, and Dispatch's answer to
+//     the CLI's last read of the issue lists no document by that reference, as the CLI's resolver
+//     matches one: `spec` the issue's primary document, any other reference an id, a slug or a
+//     filename.
+//
+// Every other outcome is an error, which makes the replay HARNESS, so it is never a passing
+// control: Dispatch's acceptance of the approval request; another write of the CLI's that Dispatch
+// took; a request that got no answer, or an answer of 500 or more (a transport or server failure);
+// any other refusal; and a refusal the CLI printed nothing of.
+func teardownEffectsApprovalRefusal(key, reference string, exit int, printed string, asked int, sent []teardownEffectsHTTP) (*teardownEffectsRefusal, error) {
+	if asked != len(sent) {
+		return nil, fmt.Errorf("the CLI sent Dispatch %d requests, and %d came back: a transport failure, not a refusal", asked, len(sent))
+	}
+	var requests []teardownEffectsHTTP
+	var issue *teardownEffectsHTTP
+	for i, x := range sent {
+		switch {
+		case x.Status >= 500:
+			return nil, fmt.Errorf("Dispatch answered %s %s: a server failure, not a refusal", x.route(), teardownEffectsStatusText(x.status()))
+		case x.Method == "POST" && teardownEffectsApprovalRoute.MatchString(x.Path):
+			requests = append(requests, x)
+		case x.Status >= 400:
+			return nil, fmt.Errorf("Dispatch refused the CLI's %s %s, which is no approval request: a refusal of another cause", x.route(), teardownEffectsStatusText(x.status()))
+		case x.Method != "GET":
+			return nil, fmt.Errorf("Dispatch took the CLI's %s (%d), a change that a refused request-approval does not make", x.route(), x.Status)
+		case x.Path == "/api/v1/issues/"+key:
+			issue = &sent[i]
+		}
+	}
+	refusal := teardownEffectsRefusal{Diagnostic: strings.TrimSpace(printed)}
+	switch len(requests) {
+	case 0:
+		if issue == nil {
+			return nil, fmt.Errorf("the CLI sent no approval request, and Dispatch answered no read of %s that it made, so no missing document is shown", key)
+		}
+		var read struct {
+			Artifacts []struct {
+				ID, Slug, Name string
+				Primary        bool
+			}
+			PrimaryArtifactID string `json:"primary_artifact_id"`
+		}
+		if err := json.Unmarshal(issue.Answer, &read); err != nil {
+			return nil, fmt.Errorf("Dispatch's answer to the CLI's read of %s: %w", key, err)
+		}
+		for _, d := range read.Artifacts {
+			named := reference == d.ID || reference == d.Slug || reference == d.Name
+			if reference == "spec" {
+				named = d.Primary || read.PrimaryArtifactID != "" && d.ID == read.PrimaryArtifactID
+			}
+			if named {
+				return nil, fmt.Errorf("the CLI sent no approval request, and %s holds the document %s (%s) that the request names: a refusal of another cause than a missing document", key, d.Slug, d.Name)
+			}
+		}
+		refusal.Cause = teardownEffectsMissingArtifact
+	case 1:
+		x := requests[0]
+		code := teardownEffectsOutcomeCode(x.status())
+		if x.Status < 400 {
+			return nil, fmt.Errorf("Dispatch took the approval request (%s %d): an acceptance, and the replay makes a request-approval only as a refused write", x.route(), x.Status)
+		}
+		if x.Status != 409 || code != "PLAN_APPROVED_BY_REVIEW" {
+			return nil, fmt.Errorf("Dispatch refused the approval request %s, which is not its refusal of a plan (409 PLAN_APPROVED_BY_REVIEW)", teardownEffectsStatusText(x.status()))
+		}
+		refusal.Cause, refusal.Status, refusal.Code = teardownEffectsPlanApproval, &x.Status, &code
+	default:
+		return nil, fmt.Errorf("the CLI sent %d approval requests, and one request-approval sends one", len(requests))
+	}
+	if exit != 1 {
+		return nil, fmt.Errorf("the CLI exited %d, and it exits 1 on a refusal (%s)", exit, refusal.Cause)
+	}
+	if refusal.Diagnostic == "" {
+		return nil, fmt.Errorf("the CLI printed nothing of its refusal (%s)", refusal.Cause)
+	}
+	return &refusal, nil
+}
+
+// teardownEffectsApplied is one recorded change a replay makes again, and how it makes it. apply
+// answers the refusal of a change the replay made as a refused write (a trace's request-approval,
+// teardownEffectsApprovalRefusal), and nil for a change it made.
+type teardownEffectsApplied struct {
+	teardownEffectsChange
+	apply func() (*teardownEffectsRefusal, error)
+}
+
+// teardownEffectsMake makes changes again in their order, each with its apply, and answers each as
+// replay.json records it: a change made as a refused write carries its refusal, and the changes
+// after it are made too. It stops at the first change it cannot make. It then answers the changes
+// made before it, and an error that names that change, its record and where, when it was to be
+// made.
+func teardownEffectsMake(changes []teardownEffectsApplied, where string) ([]teardownEffectsChange, error) {
+	made := []teardownEffectsChange{}
+	for _, c := range changes {
+		refused, err := c.apply()
+		if err != nil {
+			return made, fmt.Errorf("%s (%s), %s: %w", c.Source, c.What, where, err)
+		}
+		c.Refused = refused
+		made = append(made, c.teardownEffectsChange)
+	}
+	return made, nil
 }
 
 // teardownEffectsTurned is one legion call as a replay made it: its record in replay.json, the
@@ -1133,11 +1296,15 @@ func TestTeardownEffectsRecordJSONRoundTrip(t *testing.T) {
 }
 
 // replay.json as heldout-reader-receipt.ts's ReplayRecord reads it, byte for byte: every list an
-// array however little the replay reached, `reason` and `fault` on a HARNESS verdict alone, and a
+// array however little the replay reached, `reason` and `fault` on a HARNESS verdict alone, a
 // role's write named by its record, its outcome.json action and case time, its author, the role's
 // session and the call it preceded (the fault teardownEffectsOrder gives the local-only-head control
-// whose result event is made a status write). testdata/teardown-effects/replay-example.json is the
-// three records as replay.json encodes each, in one array; heldout-reader.test.ts reads that file.
+// whose result event is made a status write), and a trace's request-approval that the replay made
+// as a refused write, under its own action and case time, with its refusal: the CLI's own of a
+// document the issue does not hold, whose status and code are null, and Dispatch's 409
+// PLAN_APPROVED_BY_REVIEW of a plan. A change made as no refused write holds no `refused` key.
+// testdata/teardown-effects/replay-example.json is the five records as replay.json encodes each, in
+// one array; heldout-reader.test.ts reads that file.
 func TestTeardownEffectsReplayRecordJSON(t *testing.T) {
 	t.Parallel()
 	const id, role = "1b815eb3-4c9a-4174-b231-5c3d864f1622", "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
@@ -1150,7 +1317,18 @@ func TestTeardownEffectsReplayRecordJSON(t *testing.T) {
 	records := teardownEffectsNewReplayRecord(id)
 	setup := fmt.Errorf("boot changed ACME-12 from implementing to planning")
 	records.Verdict, records.Reason, records.Fault = "HARNESS", setup.Error(), teardownEffectsFaultOf(setup)
-	got, err := json.MarshalIndent([]teardownEffectsReplayRecord{ok, write, records}, "", "  ")
+	requested := time.Date(2030, 1, 7, 15, 1, 0, 0, time.UTC)
+	refused := func(refusal teardownEffectsRefusal) teardownEffectsReplayRecord {
+		record := teardownEffectsNewReplayRecord(id)
+		record.Verdict = "ok"
+		record.End = []teardownEffectsChange{{Kind: "dispatch", Source: "R01 bad trace, action 1", What: teardownEffectsApprovalCommand, At: requested, OutcomeSeq: 1, Refused: &refusal}}
+		return record
+	}
+	status, code := 409, "PLAN_APPROVED_BY_REVIEW"
+	missing := refused(teardownEffectsRefusal{Cause: teardownEffectsMissingArtifact, Diagnostic: `document "plan.md" not found by slug; this issue's documents: spec-md (spec.md)`})
+	plan := refused(teardownEffectsRefusal{Cause: teardownEffectsPlanApproval, Status: &status, Code: &code,
+		Diagnostic: "PLAN_APPROVED_BY_REVIEW: a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)"})
+	got, err := json.MarshalIndent([]teardownEffectsReplayRecord{ok, write, records, missing, plan}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1532,6 +1710,170 @@ func TestTeardownEffectsTraceWrite(t *testing.T) {
 		if _, _, err := teardownEffectsTraceWrite("ACME-12", session, refused, sha, version); err == nil {
 			t.Fatalf("made the write %s on %s %v", refused.Command, refused.Target, refused.Fields)
 		}
+	}
+}
+
+// A trace's request-approval names the document and the summary of the request the replay sends
+// again, on the case's own issue, and nothing else: one on another issue, one that names another
+// field, and one with no document or no summary as text are refused before any request is sent.
+func TestTeardownEffectsApprovalRequest(t *testing.T) {
+	t.Parallel()
+	asked := func(target string, fields map[string]any) teardownEffectsTraceAction {
+		return teardownEffectsTraceAction{Kind: "dispatch", Command: teardownEffectsApprovalCommand, Target: target, Seq: 1, At: time.Date(2030, 1, 7, 15, 1, 0, 0, time.UTC), Fields: fields}
+	}
+	artifact, summary, err := teardownEffectsApprovalRequest("ACME-12", asked("ACME-12", map[string]any{"artifact": "plan.md", "summary": "Approve the plan."}))
+	if err != nil || artifact != "plan.md" || summary != "Approve the plan." {
+		t.Fatalf("read the request of %q with %q, %v; want plan.md and its summary", artifact, summary, err)
+	}
+	for _, row := range []struct {
+		name   string
+		action teardownEffectsTraceAction
+		fault  string
+	}{
+		{"on another issue", asked("ACME-10", map[string]any{"artifact": "plan.md", "summary": "Approve the plan."}), "is on ACME-10"},
+		{"with another field", asked("ACME-12", map[string]any{"artifact": "spec", "summary": "Approve both.", "include_verification": true}), "names the field include_verification"},
+		{"with no document", asked("ACME-12", map[string]any{"summary": "Approve the plan."}), "no artifact or no summary"},
+		{"with a blank summary", asked("ACME-12", map[string]any{"artifact": "plan.md", "summary": " "}), "no artifact or no summary"},
+		{"with a document that is no text", asked("ACME-12", map[string]any{"artifact": 7, "summary": "Approve the plan."}), "no artifact or no summary"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, err := teardownEffectsApprovalRequest("ACME-12", row.action); err == nil || !strings.Contains(err.Error(), row.fault) {
+				t.Fatalf("read %v, %v; want an error that names %q", row.action.Fields, err, row.fault)
+			}
+		})
+	}
+}
+
+// A request-approval the replay sends again through the real dispatch CLI passes only as one of
+// the two refusals a trace's request can hold, and neither changes anything: the CLI's own refusal
+// of a document the issue does not hold, made before any approval request, with no status or code,
+// and Dispatch's 409 PLAN_APPROVED_BY_REVIEW of a plan. Each of these is an error, which no control
+// passes: Dispatch's acceptance of the request, with any exit code; another write Dispatch took; a
+// request with no answer, or one answered 500 or more; another refusal; a document the issue holds;
+// two requests; another exit code; and a refusal the CLI printed no words of.
+func TestTeardownEffectsApprovalRefusal(t *testing.T) {
+	t.Parallel()
+	const key, approval = "ACME-12", "/api/v1/artifacts/a-plan/approval-requests"
+	http := func(method, path string, status int, answer string) teardownEffectsHTTP {
+		return teardownEffectsHTTP{Method: method, Path: path, Status: status, Answer: json.RawMessage(answer)}
+	}
+	refusal := func(code string) string { return `{"code":"` + code + `","error":"refused"}` }
+	const spec = `{"id":"a-spec","slug":"spec-md","name":"spec.md","primary":true}`
+	const plan = `{"id":"a-plan","slug":"plan-md","name":"plan.md","primary":false}`
+	issue := func(artifacts ...string) teardownEffectsHTTP {
+		return http("GET", "/api/v1/issues/"+key, 200, `{"key":"ACME-12","primary_artifact_id":"a-spec","artifacts":[`+strings.Join(artifacts, ",")+`]}`)
+	}
+	blocks := http("GET", "/api/v1/artifacts/a-plan/blocks", 200, `{"blocks":[]}`)
+	planned := func(answer teardownEffectsHTTP) []teardownEffectsHTTP {
+		return []teardownEffectsHTTP{issue(spec, plan), blocks, answer}
+	}
+	missing := []teardownEffectsHTTP{issue(spec), issue(spec)}
+	refused := http("POST", approval, 409, refusal("PLAN_APPROVED_BY_REVIEW"))
+	accepted := http("POST", approval, 201, `{"ask":{"id":"ask-1"},"version":1}`)
+	const missingText = `document "plan.md" not found by slug; this issue's documents: spec-md (spec.md)`
+	const planText = "PLAN_APPROVED_BY_REVIEW: a plan is approved by its plan review, not by a person"
+	status, code := 409, "PLAN_APPROVED_BY_REVIEW"
+	for _, row := range []struct {
+		name      string
+		reference string
+		exit      int
+		printed   string
+		lost      int
+		sent      []teardownEffectsHTTP
+		want      *teardownEffectsRefusal
+		fault     string
+	}{
+		{name: "a plan, which Dispatch refuses 409 PLAN_APPROVED_BY_REVIEW", reference: "plan.md", exit: 1, printed: planText + "\n", sent: planned(refused),
+			want: &teardownEffectsRefusal{Cause: teardownEffectsPlanApproval, Status: &status, Code: &code, Diagnostic: planText}},
+		{name: "a document the issue does not hold, which the CLI refuses before any request", reference: "plan.md", exit: 1, printed: missingText + "\n", sent: missing,
+			want: &teardownEffectsRefusal{Cause: teardownEffectsMissingArtifact, Diagnostic: missingText}},
+		{name: "Dispatch took the request, opening it for a person", reference: "plan.md", printed: "Approval requested for plan.md", sent: planned(accepted), fault: "an acceptance"},
+		{name: "Dispatch took the request of a document approved already", reference: "plan.md", printed: "plan.md is already approved", sent: planned(http("POST", approval, 200, `{"ask":null,"version":1}`)), fault: "an acceptance"},
+		{name: "Dispatch took the request, and the CLI exited 1", reference: "plan.md", exit: 1, printed: "Approval requested for plan.md", sent: planned(accepted), fault: "an acceptance"},
+		{name: "another refusal of the request", reference: "plan.md", exit: 1, printed: "NO_VERSION: no settled version", sent: planned(http("POST", approval, 409, refusal("NO_VERSION"))), fault: "409 NO_VERSION"},
+		{name: "a refusal of the request that names no code", reference: "plan.md", exit: 1, printed: "HTTP_409: conflict", sent: planned(http("POST", approval, 409, `"conflict"`)), fault: "refused the approval request 409,"},
+		{name: "a summary Dispatch refuses", reference: "plan.md", exit: 1, printed: "SUMMARY_INPUT: summary is blank", sent: planned(http("POST", approval, 400, refusal("SUMMARY_INPUT"))), fault: "400 SUMMARY_INPUT"},
+		{name: "a server failure of the request", reference: "plan.md", exit: 1, printed: "HTTP_503: unavailable", sent: planned(http("POST", approval, 503, refusal("UNAVAILABLE"))), fault: "server failure"},
+		{name: "a server failure of the read of the issue", reference: "plan.md", exit: 1, printed: "HTTP_500", sent: []teardownEffectsHTTP{http("GET", "/api/v1/issues/"+key, 500, `"boom"`)}, fault: "server failure"},
+		{name: "a request that got no answer", reference: "plan.md", exit: 1, printed: "fetch failed", lost: 1, sent: missing, fault: "transport failure"},
+		{name: "no request that reached Dispatch", reference: "plan.md", exit: 1, printed: "Unable to connect", fault: "answered no read"},
+		{name: "a read of the issue Dispatch refused", reference: "plan.md", exit: 1, printed: "NOT_FOUND: no issue", sent: []teardownEffectsHTTP{http("GET", "/api/v1/issues/"+key, 404, refusal("NOT_FOUND"))}, fault: "404 NOT_FOUND"},
+		{name: "another write Dispatch took", reference: "plan.md", exit: 1, printed: missingText, sent: []teardownEffectsHTTP{issue(spec), http("POST", "/api/v1/issues/"+key+"/comments", 201, `{"id":"c-1"}`)}, fault: "a change"},
+		{name: "a document the issue holds, refused before the request (an open decision block)", reference: "plan.md", exit: 1, printed: "dispatch request-approval refuses an open block", sent: []teardownEffectsHTTP{issue(spec, plan), blocks}, fault: "holds the document plan-md (plan.md)"},
+		{name: "a document the issue holds, named by its slug", reference: "plan-md", exit: 1, printed: "refused", sent: []teardownEffectsHTTP{issue(spec, plan)}, fault: "holds the document plan-md (plan.md)"},
+		{name: "the spec, which names the issue's primary document", reference: "spec", exit: 1, printed: "refused", sent: []teardownEffectsHTTP{issue(spec)}, fault: "holds the document spec-md (spec.md)"},
+		{name: "two approval requests", reference: "plan.md", exit: 1, printed: planText, sent: []teardownEffectsHTTP{issue(spec, plan), refused, refused}, fault: "2 approval requests"},
+		{name: "a plan's refusal the CLI exited 0 on", reference: "plan.md", printed: planText, sent: planned(refused), fault: "exited 0"},
+		{name: "a missing document the CLI exited 2 on, a usage error", reference: "plan.md", exit: 2, printed: missingText, sent: missing, fault: "exited 2"},
+		{name: "a refusal the CLI printed no words of", reference: "plan.md", exit: 1, printed: " \n", sent: planned(refused), fault: "printed nothing"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := teardownEffectsApprovalRefusal(key, row.reference, row.exit, row.printed, len(row.sent)+row.lost, row.sent)
+			if row.want != nil {
+				if err != nil || !reflect.DeepEqual(got, row.want) {
+					t.Fatalf("judged %+v, %v; want %+v", got, err, row.want)
+				}
+				return
+			}
+			if got != nil || err == nil || !strings.Contains(err.Error(), row.fault) {
+				t.Fatalf("judged %+v, %v; want no refusal and an error that names %q", got, err, row.fault)
+			}
+		})
+	}
+}
+
+// A synthetic trace: a request-approval Dispatch refused, then a comment and a push. The replay
+// records each change under its own source, case time and outcome action, the refused one with its
+// refusal and the others with none, and goes on to make the changes after the refusal. A change it
+// cannot make stops the replay there: the error names the change and where it stood, and the changes
+// made before it are kept.
+func TestTeardownEffectsMake(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2030, 1, 7, 15, 0, 0, 0, time.UTC)
+	status, code := 409, "PLAN_APPROVED_BY_REVIEW"
+	refusal := &teardownEffectsRefusal{Cause: teardownEffectsPlanApproval, Status: &status, Code: &code, Diagnostic: "PLAN_APPROVED_BY_REVIEW: a plan is approved by its plan review"}
+	var made []int
+	change := func(seq int, kind, what string, refused *teardownEffectsRefusal, err error) teardownEffectsApplied {
+		c := teardownEffectsChange{Kind: kind, Source: fmt.Sprintf("S01 bad trace, action %d", seq), What: what, At: start.Add(time.Duration(seq) * time.Minute), OutcomeSeq: seq}
+		return teardownEffectsApplied{teardownEffectsChange: c, apply: func() (*teardownEffectsRefusal, error) {
+			made = append(made, seq)
+			return refused, err
+		}}
+	}
+	trace := []teardownEffectsApplied{
+		change(1, "dispatch", teardownEffectsApprovalCommand, refusal, nil),
+		change(2, "dispatch", "comment", nil, nil),
+		change(3, "push", "refs/heads/legion/ACME-12 c1", nil, nil),
+	}
+	got, err := teardownEffectsMake(trace, "before legion call 1 (S01 bad trace, action 4)")
+	if err != nil || !slices.Equal(made, []int{1, 2, 3}) || len(got) != 3 {
+		t.Fatalf("made the actions %v and recorded %+v, %v; want all three, in their order", made, got, err)
+	}
+	for i, c := range got {
+		want := trace[i].teardownEffectsChange
+		if i == 0 {
+			want.Refused = refusal
+		}
+		if !reflect.DeepEqual(c, want) {
+			t.Fatalf("recorded change %d as %+v, want %+v", i, c, want)
+		}
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(encoded), `"refused"`) != 1 || !strings.Contains(string(encoded), `"at":"2030-01-07T15:01:00Z","outcomeSeq":1,"refused":{"cause":"plan-approval","status":409,"code":"PLAN_APPROVED_BY_REVIEW"`) {
+		t.Fatalf("encoded %s, want the refusal on action 1's change alone", encoded)
+	}
+
+	made = nil
+	failed := change(2, "dispatch", "comment", nil, errors.New("Dispatch POST /api/v1/issues/ACME-12/comments = 500"))
+	got, err = teardownEffectsMake([]teardownEffectsApplied{trace[0], failed, trace[2]}, "after the last legion call")
+	if !slices.Equal(made, []int{1, 2}) || len(got) != 1 || got[0].Refused != refusal || err == nil ||
+		err.Error() != "S01 bad trace, action 2 (comment), after the last legion call: Dispatch POST /api/v1/issues/ACME-12/comments = 500" {
+		t.Fatalf("made %v and recorded %+v, %v; want the refused write kept and the comment's failure named", made, got, err)
 	}
 }
 
