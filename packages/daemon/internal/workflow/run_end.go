@@ -303,10 +303,9 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 //
 // No state these tests reach keeps such a start open: a leave ends its issue's task with its run
 // (leave, endTaskWithLeave), so the settle that follows it holds every run of the issue over
-// (runOver), and a run of an earlier generation is over by its generation alone. The line below is
-// printed 0 times over the whole package's 871 tests, where the line of the deletion itself is
-// printed 21 times in the same log. So what becomes of the branches of a task whose start stays
-// open is proved by nothing here, and this says only what the code does.
+// (runOver), and a run of an earlier generation is over by its generation alone. So what becomes
+// of the branches of a task whose start stays open is proved by nothing here, and this says only
+// what the code does.
 func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
 	for task, issue := range runs.deleteAfterOldRuns {
 		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
@@ -317,7 +316,7 @@ func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *
 		for _, start := range starts {
 			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
 				open = true
-				e.logOnCommit(ctx, "workflow: a start of the task is still open, so the deletion its move into the retro queued is the one", "issue", task.issue,
+				e.logOnCommit(ctx, "workflow: a start of the task is still open, so no deletion of the branches beside its fixes is queued here; the next leave or new generation of the task asks again", "issue", task.issue,
 					"generation", task.generation, "task", task.place.Task, "kind", start.Place.Kind, "place", start.Place.Place)
 				break
 			}

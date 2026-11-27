@@ -1,9 +1,9 @@
 -- 20261127131056_fix_beside_steps.up.sql — what a fix beside the other steps of a task is recorded
 -- in: whether a task's run takes a fix, each fix of a task, each failure of a CI check at a head,
 -- the commits and the check of each step's start, the fix a step started beside and the branch it
--- pushes to, the fix, the working copies and the fix's branch of a pending delivery, the fix's
--- working copy of a released workspace's saved work, and the outbox kinds that read a fix's failed
--- job, tell a task's steps of its CI, and delete the branches beside a fix.
+-- pushes to, the fix, the working copies and the fix's branch of a pending delivery, and the
+-- outbox kinds that read a fix's failed job, tell a task's steps of its CI, and delete the branches
+-- beside a fix.
 --
 -- plan_tasks.fixes_ci says the task's run takes a fix when a check that a CI job runs fails at the
 -- task's head (record.PlanTask.FixesCI). Every task the upgrade finds belongs to a run that started

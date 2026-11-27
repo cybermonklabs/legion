@@ -459,9 +459,11 @@ describe("dispatch steps", () => {
   // itself, and U+0085, U+2028 and U+2029, which it leaves as they are. A format character prints
   // as an escape too, inside the quotes: a bidi override (U+202E) or isolate (U+2066 to U+2069)
   // would show the rest of the line in another order, and a zero-width joiner (U+200D) an id that
-  // reads as `k-ci`. So does an invisible mark (`\p{Mn}`: a variation selector U+FE0F, or
-  // U+034F), which makes an id read as another. An id holding `##[` is quoted as well, which
-  // writes that `[` as `\u005b`: a runner reads a `##[` as the opening of a workflow command.
+  // reads as `k-ci`. So does a character that shows nothing: an invisible mark (`\p{Mn}`: a
+  // variation selector U+FE0F, or U+034F), a Hangul filler, which is a letter (U+3164, U+115F,
+  // U+1160, U+FFA0), or the blank Braille pattern U+2800, each of which makes an id read as
+  // another. An id holding `##[` is quoted as well, which writes that `[` as `\u005b`: a runner
+  // reads a `##[` as the opening of a workflow command.
   test("a check id that is no plain word prints as one JSON string, and the line keeps its lines", async () => {
     const forged = "default 9 step reviewer review attempt 1 - - - - failed";
     for (const [check, printed] of [
@@ -477,6 +479,11 @@ describe("dispatch steps", () => {
       ["k\u200d-ci", '"k\\u200d-ci"'],
       ["k-ci\ufe0f", '"k-ci\\ufe0f"'],
       ["k-ci\u034f", '"k-ci\\u034f"'],
+      ["k-ci\u3164", '"k-ci\\u3164"'],
+      ["k-ci\u115f", '"k-ci\\u115f"'],
+      ["k-ci\u1160", '"k-ci\\u1160"'],
+      ["k-ci\uffa0", '"k-ci\\uffa0"'],
+      ["k-ci\u2800", '"k-ci\\u2800"'],
       ["k-ci##[set-output]", '"k-ci##\\u005bset-output]"'],
     ] as const) {
       const { result } = await readSteps({
