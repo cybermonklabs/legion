@@ -1,0 +1,61 @@
+---
+type: component
+id: dispatch
+name: Dispatch
+kind: component
+purpose:
+  - It keeps the issues, the documents and the results of each project.
+---
+type: component
+id: legion
+name: Legion
+kind: component
+purpose:
+  - It runs the agents that work on the issues of a project.
+---
+type: requirement
+id: legion-keeps-each-claim-in-dispatch
+kind: behavior
+text:
+  - Legion keeps the claim of each issue in Dispatch.
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+parent: legion-keeps-each-claim-in-dispatch
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: a-claim-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/daemon TestARestartKeepsTheClaim
+  job: go-checks
+claim: The daemon reads the claim of an issue after it starts again.
+procedure_text:
+  - The program claims one issue, starts the daemon again and reads the claims.
+  - It must find the claim one time.
+failing_example:
+  - A daemon that keeps its claims in memory only.
+---
+type: requirement
+id: a-lost-claim-is-reported
+kind: behavior
+text:
+  - Legion reports each claim that it cannot read after a restart.
+---
+type: check
+id: the-log-names-a-lost-claim
+serves: a-lost-claim-is-reported
+subject: production
+procedure: agent
+claim: The daemon reports a claim that it cannot read after a restart.
+procedure_text:
+  - An agent stops the database during a restart and reads the log of the daemon.
+  - It must find one report for the claim.
+failing_example:
+  - A daemon that starts with no claims and writes no report.

@@ -1,0 +1,45 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: requirement
+id: a-claim-survives-a-database-restart
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the database starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: a-claim-survives-a-restart
+subject: code
+procedure: agent
+claim: The daemon reads the claim of an issue after it starts again.
+procedure_text:
+  - An agent claims one issue, starts the daemon again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.
+---
+type: check
+id: a-database-restart-keeps-the-claim
+serves: a-claim-survives-a-database-restart
+subject: code
+procedure: agent
+claim: The daemon reads the claim of an issue after the database starts again.
+procedure_text:
+  - An agent claims one issue, starts the database again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.
+---
+type: check
+id: each-restart-keeps-the-claim
+serves: a-claim-survives-a-database-restart a-claim-survives-a-restart
+subject: code
+procedure: agent
+claim: The daemon reads the claim of an issue after each restart.
+procedure_text:
+  - An agent claims one issue, starts the daemon and the database again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.

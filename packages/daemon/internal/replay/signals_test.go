@@ -577,15 +577,16 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 	})
 }
 
-// stateGolden is the body of `legion state --json` that internal/api's golden of the state with the
-// controller's claim pins: one slot of two in use, LEGION-208's, idle since its admission at
-// 2026-10-06T18:02:11Z with no turn ended.
+// stateGolden is the body of `legion state --json` that internal/daemon's composition of the state
+// with the controller's claim writes (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds):
+// one slot of six in use, LEGION-208's, idle since its admission at 2126-10-06T18:02:11Z with no
+// turn ended.
 var stateGolden = filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state-controller-claim.json")
 
 // The idle share read live from R6's states and times in a body of `legion state --json` is the
 // share the window's lines give at that moment (spec R11). The body is the daemon's state golden
 // stateGolden; the window holds the same slot: ACME-208 takes the one slot in use at
-// 2026-10-06T18:02:11Z and no turn of it ends. At d 10 minutes, an hour and 4 hours, the test
+// 2126-10-06T18:02:11Z and no turn of it ends. At d 10 minutes, an hour and 4 hours, the test
 // reads both at the slot's admission, a second before d has passed, when it has, and an hour later,
 // and fails where they differ or where either differs from the share worked out by hand: none
 // before d has passed, the whole after.
@@ -595,7 +596,7 @@ func TestTheIdleShareFromTheStateJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitted := time.Date(2026, time.October, 6, 18, 2, 11, 0, time.UTC)
+	admitted := time.Date(2126, time.October, 6, 18, 2, 11, 0, time.UTC)
 	from := admitted.Truncate(time.Hour)
 	b := newWindowBuilder(t, from, from.Add(6*time.Hour))
 	b.boot(from.Add(-time.Hour))

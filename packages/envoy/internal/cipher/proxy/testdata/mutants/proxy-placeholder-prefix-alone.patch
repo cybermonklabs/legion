@@ -1,0 +1,20 @@
+# proxy-placeholder-prefix-alone: the leftover check reads the placeholder prefix alone, or with fewer
+# letters and digits after it than a placeholder holds, as a placeholder, so a request that only
+# mentions the prefix - a code search for it - is refused, though it carries no proxy password.
+# must fail: TestThePrefixWithNoPlaceholderAfterItIsNotRefused
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -148,8 +148,9 @@
+ 		opening += word + 1
+ 	}
+ 	end := opening + placeholder.Length
++	// MUTANT: the prefix alone, or with fewer than Length characters after it, is a placeholder.
+ 	if end > len(text) || !alphabetOnly(text[opening:end]) {
+-		return ""
++		return text[:opening]
+ 	}
+ 	return text[:end]
+ }

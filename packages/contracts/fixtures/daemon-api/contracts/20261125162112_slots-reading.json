@@ -39,7 +39,6 @@
         "admission.slots.waitOnlyForSlot.oldest",
         "admission.slots.working",
         "admission.slots.working.count",
-        "admission.slots.working.oldest",
         "issues.*.rank",
         "issues.*.rootRank",
         "issues.*.slot.since",

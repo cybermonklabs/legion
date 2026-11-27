@@ -34,6 +34,9 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
+	// Needs are the tasks the task needs, each by its id (record.PlanTask.Needs), which the run's
+	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
+	Needs []string
 	// Line is the phases the task walks: one for each step, then retro and merging.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
@@ -76,11 +79,26 @@ func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line
 // (record.StoredPlan.Task, the one rule for the task a run is on), or a step whose role runs as no
 // phase, is an error: no plan this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	w, err := readWalk(ctx, e.store, tx, issue)
+	w.Conflict = e.conflict
+	return w, err
+}
+
+// LineOf is the line of phases issue's run walks (Walk.Line), as store holds it in tx: the one
+// order a reader outside the engine names the task's steps in, such as the news of an approved
+// design, whose answer for an issue in accepting names the phases a move back reaches
+// (acceptingAnswer).
+func LineOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]phase.Phase, error) {
+	w, err := readWalk(ctx, store, tx, issue)
+	return w.Line, err
+}
+
+// readWalk is the walk of issue's run as store holds it in tx (walk), read by no engine, so it
+// carries no slot rule's conflict move (Walk.Conflict), which walk adds to it.
+func readWalk(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (Walk, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
-		w := todaysWalk()
-		w.Conflict = e.conflict
-		return w, err
+		return todaysWalk(), err
 	}
 	task, err := stored.Task()
 	if err != nil {
@@ -91,8 +109,8 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
-	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
-		StoppedReason: task.StoppedReason, Version: stored.Version, Conflict: e.conflict}, nil
+	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Needs: task.Needs, Line: line, State: task.State, Place: task.Place,
+		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -139,8 +157,7 @@ func (w Walk) steps() []phase.Phase {
 // steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
 // which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
-	back := slices.Index(w.Line, to)
-	return back >= 0 && back < slices.Index(w.Line, from)
+	return phase.MovesBackOn(w.Line, from, to)
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done

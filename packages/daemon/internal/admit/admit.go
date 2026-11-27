@@ -219,12 +219,13 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 
 // UseClock sets the clock this admission's passes read the time from: the slot a promotion
 // grants (record.Slot.AdmittedAt), the mark of a release for a wait (releaseSlotsForWaits), the
-// movement a promotion marks, the rows it queues and every judgement of the line made at a
-// moment. New sets the wall clock, which is the daemon's, and a replay of a recorded window sets
-// its simulated clock, the one its engine (workflow.Config.Clock) and its store
-// (record.NewStoreWithClock) read, so the pass writes and compares the window's times. It is a
-// setter rather than a parameter of New for the reason UseExperiments is: every test that admits
-// anything builds an admission, and none of them but the package's own sets a clock.
+// movement a promotion marks, the rows it queues, every judgement of the line made at a moment
+// and every bound it reads. The daemon registers its one clock, the workflow engine's own
+// (workflow.Config.Clock) and the state's read (internal/daemon's source.State), so the
+// architect-stalled arms the state serves are judged at the instant the rest of the state is read
+// at; a replay of a recorded window sets its simulated clock, the one its engine and its store
+// (record.NewStoreWithClock) read, so the pass writes and compares the window's times. Without it
+// the admission reads the wall clock, as every test that builds one by hand leaves it.
 func (a *Admission) UseClock(clock func() time.Time) {
 	a.now = clock
 }
