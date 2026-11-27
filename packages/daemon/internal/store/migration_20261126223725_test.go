@@ -309,8 +309,9 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
 // store that release boots on: each column, constraint, function, index and version recorded. The
 // release before applies every embedded migration but this one, and this one stands above them
-// all, so the check the release before leaves on the outbox is the merge holds' of 20261126110259,
-// which block B puts back whole. So a difference is what the block leaves of this migration, or
+// all, so the check the release before leaves on the outbox is the state events' of
+// 20261126163320, which block B puts back whole. So a difference is what the block leaves of this
+// migration, or
 // what it takes of the release before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
@@ -463,8 +464,8 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 }
 
 // mainsNewestAtTheLastMerge is the newest migration main carried at this branch's last forward
-// merge (main 69ee4c8b, 2026-11-27): the merge-holds kind list.
-const mainsNewestAtTheLastMerge = 20261126110259
+// merge (main dc18a1fe, 2026-11-27): the state events' kind list.
+const mainsNewestAtTheLastMerge = 20261126163320
 
 // This migration stands above every migration main carried at that merge. Migrate applies every
 // unrecorded migration in version order, so on a database main migrated, a migration of main

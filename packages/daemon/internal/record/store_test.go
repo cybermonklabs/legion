@@ -1439,9 +1439,8 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload, at time.Time) int64 {
 		row, err := NewOutboxRow(issue, payload, at)
 		must(t, err)
-		must(t, records.Enqueue(ctx, tx, row))
-		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
 		return id
 	}
 	lease := func(tx pgx.Tx, id int64) {
@@ -1756,9 +1755,8 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) int64 {
 		row, err := NewOutboxRow(issue, payload, now)
 		must(t, err)
-		must(t, records.Enqueue(ctx, tx, row))
-		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
 		return id
 	}
 	due := func(tx pgx.Tx, issue string, kinds []OutboxKind) []string {
@@ -2520,7 +2518,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "state_seq", "state_at", "state_tx"},
 		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
