@@ -985,7 +985,7 @@ func (g pluginGate) budget(ctx context.Context) (context.Context, context.Cancel
 	if g.expire != nil {
 		return g.expire(ctx)
 	}
-	return context.WithTimeout(ctx, g.timeout)
+	return context.WithCancel(ctx)
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
