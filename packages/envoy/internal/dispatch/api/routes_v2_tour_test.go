@@ -276,18 +276,27 @@ func TestV2RouteTour(t *testing.T) {
 		}
 	})
 
+	// A step whose route takes no body has no body to add a member to, and a public route answers a
+	// caller with no credential, so neither makes a subtest below: a skipped subtest reads as a pass
+	// and fails the skip counter (scripts/database-skips.sh).
 	t.Run("undeclared-members", func(t *testing.T) {
 		for _, step := range steps {
 			if step.Method == http.MethodGet {
 				continue
 			}
+			if tour.stepRoute(t, step).Body.Kind == bodyNone {
+				continue
+			}
 			t.Run(step.name(), func(t *testing.T) {
 				route := tour.stepRoute(t, step)
 				request := step.Setup(t, tour)
-				if request.Body == nil {
-					t.Skip("the step sends no body to add a member to")
+				// A route whose body is optional may have a step that sends none; the member then
+				// goes in an object of its own.
+				body := request.Body
+				if body == nil {
+					body = map[string]any{}
 				}
-				request.Body = withUndeclaredMember(t, request.Body)
+				request.Body = withUndeclaredMember(t, body)
 				if response := tour.send(t, route, request, ""); response.Code != step.Status {
 					t.Fatalf("with a member the route does not declare: answered %d %s, want %d as without it",
 						response.Code, response.Body.String(), step.Status)
@@ -323,11 +332,11 @@ func TestV2RouteTour(t *testing.T) {
 
 	t.Run("unauthenticated", func(t *testing.T) {
 		for _, step := range steps {
+			if tour.stepRoute(t, step).Auth == authPublic {
+				continue
+			}
 			t.Run(step.name(), func(t *testing.T) {
 				route := tour.stepRoute(t, step)
-				if route.Auth == authPublic {
-					t.Skip("a public route answers a caller with no credential")
-				}
 				request := step.Setup(t, tour)
 				request.As = tourCaller{}
 				response := tour.send(t, route, request, "")

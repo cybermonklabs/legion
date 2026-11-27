@@ -122,10 +122,17 @@ func TestEachLayersRefusalIsAmongItsOperationsCodes(t *testing.T) {
 			},
 		},
 		{
+			// A token scoped to one project may write another, public project's objects (#4682), so the
+			// project check refuses only a private project's object, as a target that resolves to no
+			// project.
 			layer: "the project check, another project's object", method: http.MethodPatch, pattern: "/issues/{key}", code: "PROJECT_SCOPE",
 			request: func(t *testing.T) *http.Request {
+				issue := tour.issue(t)
+				seedExec(t, tour.database, "the other project made private", `
+					update projects set owner = 'alice', visibility = 'private' where key = $1
+				`, tour.projectOf(t, issue))
 				caller, token := brokerToken(t, liveNamedToken)
-				return caller.presenting(t, http.MethodPatch, "/api/v2/issues/"+tour.issue(t).Key, token, map[string]any{"title": "Retitled"})
+				return caller.presenting(t, http.MethodPatch, "/api/v2/issues/"+issue.Key, token, map[string]any{"title": "Retitled"})
 			},
 		},
 		{
