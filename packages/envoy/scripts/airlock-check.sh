@@ -1026,7 +1026,7 @@ EOF
 		"the header POST answered ${K3[post]} saying '${K3[post_error]}', the body POST ${K3[postbody]} saying '${K3[postbody_error]}' and GET /other ${K3[other]} saying '${K3[other_error]}'; S recorded $post_records POST and $other_records /other"
 	judge "$(contains "agent-secrets-placeholder" "$t_ph" && [ "$(printf '%s' "$t_recs" | jq length)" = 1 ] && echo 0 || echo 1)" \
 		"T records the placeholder, and only the one call to T reaches it" \
-		"T recorded $(printf '%s' "$t_recs" | jq length) request(s) (want 1); its Authorization was $(shape "$t_ph") (want the grant's placeholder, which opens agent-secrets-placeholder); the two mismatch requests reach T not"
+		"T recorded $(printf '%s' "$t_recs" | jq length) request(s) (want 1); its Authorization was $(shape "$t_ph") (want the grant's placeholder, which opens agent-secrets-placeholder)"
 	judge "$( { contains "t.airlock.test" "${K3[mismatch_sni]}" || contains "mismatch" "${K3[mismatch_sni]}"; } && contains "host header mismatch" "${K3[mismatch_host]}" && [ "$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.host == "t.airlock.test")] | length')" = 0 ] && echo 0 || echo 1)" \
 		"the request whose TLS name and Host name T fails the handshake, the Host-only mismatch is refused 'host header mismatch', and neither S nor T records a value for T" \
 		"the TLS-name mismatch answered: ${K3[mismatch_sni]}; the Host-only mismatch answered: ${K3[mismatch_host]} (want a refusal naming 'host header mismatch')"
@@ -1715,8 +1715,11 @@ check_k6() {
 
 	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && [ "$K6_AZ_ACCESS_PLACEHOLDERS" = 5 ] && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
-		"az ran $K6_AZ_RUNS times against the stand-in cloud ($K6_AZ_FAILED exited non-zero; want 5 runs, 0 failed), and the token az held after each run opens 'agent-secrets-placeholder' on $K6_AZ_ACCESS_PLACEHOLDERS of the five (want 5) ($K6_AZ_ACCESS_SHAPES)"
+		"az ran $K6_AZ_RUNS times against the stand-in cloud ($K6_AZ_FAILED exited non-zero; want 5 runs, 0 failed), and the token az held after each run opens 'agent-secrets-placeholder' on $K6_AZ_ACCESS_PLACEHOLDERS of the $K6_AZ_RUNS runs (want 5) ($K6_AZ_ACCESS_SHAPES)"
 
+	# The Resource Manager calls are az's own, one per run, made with the azure-access placeholder
+	# the exchange handed it. The front hands each connection to whichever broker it picks, so
+	# K6_AZ_SERVED counts, from each broker process's own log, the calls that process served.
 	local arm_calls=0 arm_real=0 header
 	for header in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do
 		arm_calls=$((arm_calls + 1))
@@ -1724,7 +1727,7 @@ check_k6() {
 	done
 	judge "$([ "$arm_calls" = 5 ] && [ "$arm_real" = 5 ] && [ "$(echo "$K6_AZ_SERVED" | tr ' ' '\n' | grep -c ':[1-9]')" -ge 2 ] && echo 0 || echo 1)" \
 		"the stand-in Resource Manager gets a real access token in Authorization on all five runs, whichever process served each call" \
-		"$arm_real of $arm_calls calls carried a token that is no placeholder, each answered by whichever broker the front gave its connection to ($K6_AZ_SERVED); the five calls are az's own, one per run, made with the azure-access placeholder the exchange handed it"
+		"$arm_real of $arm_calls calls carried a token that is no placeholder (want 5 of 5); the calls each broker process served, from its own log: $K6_AZ_SERVED (want 2 or more processes serving)"
 
 	k6_aws
 	local aws_secret aws_session
