@@ -59,13 +59,13 @@ const Freshness = time.Minute
 // (`go test -count=1 -v -run '^TestAPassHoldsTheFreshnessRequirement$'
 // ./internal/dispatch/legionfacts/` from packages/envoy), over two runs on 2026-11-27 in a pod of
 // 2 CPUs shared with other work: one pass that reads one event on one issue, timed alone with the
-// horizon awaited before its timer starts, takes 113 ms to 114 ms over the 252 issues of the
-// facts' own rig, 210 of them with Legion phase work, and 134 ms to 191 ms over four times that
+// horizon awaited before its timer starts, takes 66 ms to 72 ms over the 252 issues of the facts'
+// own rig, 210 of them with Legion phase work, and 77 ms to 106 ms over four times that
 // population; one whole read of the project (ComputeProject and WriteProject), the pass a new
-// build makes once, takes 315 ms to 576 ms and 930 ms to 1,008 ms. The read of the rows another
+// build makes once, takes 278 ms to 288 ms and 888 ms to 968 ms. The read of the rows another
 // build wrote, which every first page of the recorded build makes (otherBuildsRows), takes
-// 0.6 ms to 1.2 ms finding none over the rig and 1.1 ms to 1.8 ms over four times it, and 1.2 ms
-// to 2.2 ms and 4.3 ms to 5.0 ms finding every row of the project written by another build.
+// 0.6 ms finding none over the rig and 1.1 ms to 1.2 ms over four times it, and 1.3 ms and
+// 4.1 ms to 4.2 ms finding every row of the project written by another build.
 //
 // Every pass that computes a project narrowly also reads the project's tree links
 // (metrics.TreeLinks). That read takes about 4.5 ms over the rig's 252 issues and 2,142
