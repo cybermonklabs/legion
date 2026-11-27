@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  A session bucket `envoy-infra buckets` creates keeps a record for 2 hours instead of 5 minutes, so under
+  the default gone horizon a stalled session reads unresponsive until it reads gone. The 2 hours
+  are fixed: the default gone horizon plus one hour, whatever `ENVOY_SESSION_GONE_HORIZON` says.
+  An existing bucket keeps its age until `ENVOY_SESSION_MAX_AGE` raises it. A listener whose
+  bucket keeps a record no longer than the gone horizon logs one warning at its start that names
+  both values, and `/healthz` carries `session_gone_horizon` beside `session_max_age`.
+time: 2026-11-16T18:39:51Z
+custom:
+    Issue: pr4194

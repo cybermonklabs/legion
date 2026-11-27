@@ -23,7 +23,7 @@
 # the recreate just after a tick of the listener's self-health monitor, which ticks every 30 s from
 # the "envoy-listener ready" line, so no tick falls while the listener is stopped. recreate-live
 # leaves the listener running and recreates 26 to 28 s before a tick, so the tick cannot be what
-# reads the new bucket.
+# reads the new bucket. recreate-live runs an INVALID shape again, up to 3 attempts in all.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -147,10 +147,10 @@ readonly interrupt_side_count=1000
 readonly boot_count=40000
 # recreate-live: same and chg sessions of this many each in the old bucket, which is created with
 # this MaxAge (the listener adopts a bucket's, so the renewed session's old record expires within a
-# minute rather than five); that record expires this long after the recreate; NATS is stopped this
-# long from the watcher's finding, well under the 10 s the listener's JetStream requests wait, so
-# the read of the new bucket comes after that expiry; the longer shape writes same and chg this many
-# times more.
+# minute rather than the 2 hours of a bucket envoy-infra buckets creates, session.BucketMaxAge);
+# that record expires this long after the recreate; NATS is stopped this long from the watcher's
+# finding, well under the 10 s the listener's JetStream requests wait, so the read of the new
+# bucket comes after that expiry; the longer shape writes same and chg this many times more.
 readonly live_count=1000
 readonly live_ttl_seconds=60
 readonly live_renewed_expiry_ms=3500
@@ -158,8 +158,9 @@ readonly live_stop_seconds=4
 readonly live_pads=2
 readonly outage_count=300
 readonly outage_api_count=3
-# The listener's stale bound: 2 minutes, or half a bucket's MaxAge when that is shorter (the session
-# bucket's is 5 minutes). The listener has no setting for it.
+# The listener's stale bound: 2 minutes, or half a bucket's MaxAge when that is shorter (a session
+# bucket envoy-infra buckets creates keeps 2 hours, session.BucketMaxAge). The listener has no
+# setting for it.
 readonly stale_bound_seconds=120
 readonly refill_role="refill-rig"
 readonly refill_holder="ses_refill_api_0"
@@ -232,8 +233,12 @@ say "building refillrig and fixturebuckets, and the listener and natsd unless gi
   cd "$envoy_dir"
   go build -o "$rig" ./internal/testnats/cmd/refillrig
   go build -o "$fixturebuckets" ./internal/testnats/cmd/fixturebuckets
-  [[ -n "$listener_bin" ]] || go build -o "${bin_dir}/listener" ./cmd/listener
-  [[ -n "$natsd_bin" ]] || go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  if [[ -z "$listener_bin" ]]; then
+    go build -o "${bin_dir}/listener" ./cmd/listener
+  fi
+  if [[ -z "$natsd_bin" ]]; then
+    go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  fi
 )
 listener_binary="${listener_bin:-${bin_dir}/listener}"
 natsd_binary="${natsd_bin:-${bin_dir}/natsd}"
@@ -507,10 +512,10 @@ reread_phase() {
 }
 
 # run_reread registers old and both through the listener, then recreates the session bucket
-# holding both with changed titles and new, the interest bucket holding both with changed topics
-# and new, and the session bucket again with the very records it holds, so only its creation time
-# changes. A phase that could not recreate its bucket ends the scenario: what the next phase
-# expects the buckets to hold is unknown.
+# holding both with changed titles and new, the interest bucket holding both with changed
+# directories and new, and the session bucket again with the very records it holds, so only its
+# creation time changes. A phase that could not recreate its bucket ends the scenario: what the
+# next phase expects the buckets to hold is unknown.
 run_reread() {
   local n=$reread_count phases=() universe first second phase label name kind before after steady
   universe="old=${n},both=${n},new=${n}"
@@ -603,7 +608,8 @@ run_interrupt() {
     -after "both=${n}:2,new=${side}:2" -interrupted-ns "$interrupted" -mode "$mode")"
 }
 
-# live_shape runs one shape of recreate-live into phase_result, on a NATS and listener of its own.
+# live_shape runs one attempt at one shape of recreate-live into phase_result, on a NATS and
+# listener of its own, with its evidence in <out>/<dir>.
 # The old session bucket has a 60 s MaxAge and holds hb, written so its old record expires 3.5 s
 # after the recreate, and same and chg, written pads+1 times, which makes the old stream shorter (0)
 # or longer (2) than the new one. The recreate lands 2 to 4 s after a self-health tick, 26 to 28 s
@@ -615,11 +621,11 @@ run_interrupt() {
 # before the read delivers its renewal: the copy must keep it. A listener that finds a recreate only
 # by the tick's Check fails both shapes.
 live_shape() {
-  local shape=$1 pads=$2 n=$live_count pad offset line now_ms ready_ms probe_ms recreate_ms
+  local shape=$1 pads=$2 dir=$3 n=$live_count pad offset line now_ms ready_ms probe_ms recreate_ms
   local renewed_from renewed_to
   local before="same=${n}:1,chg=${n}:1,hb=1:1" after="new=${n}:2,chg=${n}:2,same=${n}:1,hb=1:2"
   local universe="same=${n},chg=${n},new=${n},hb=1"
-  fresh "recreate-live/${shape}"
+  fresh "$dir"
   "$rig" seed -nats "$nats_url" -create -buckets sessions -ttl "${live_ttl_seconds}s" -sets "" >&2
   "$rig" seed -nats "$nats_url" -create -buckets interests -sets "$universe" >&2
   start_listener
@@ -668,15 +674,52 @@ live_shape() {
     -renewed-from-ns "$renewed_from" -renewed-to-ns "$renewed_to" -ttl "${live_ttl_seconds}s" -shape "$shape")"
 }
 
+# run_recreate_live runs each shape and folds the two into the scenario's verdict line.
 run_recreate_live() {
   local phases=()
-  live_shape shorter 0
+  live_attempts shorter 0
   phases+=("shorter old stream: ${phase_result}")
   say "${phases[-1]}"
-  live_shape longer "$live_pads"
+  live_attempts longer "$live_pads"
   phases+=("longer old stream: ${phase_result}")
   say "${phases[-1]}"
   verdict recreate-live "$(combine "${phases[@]}")"
+}
+
+# live_attempts runs one shape (live_shape) into phase_result. A shape whose verdict is INVALID runs
+# again on a fresh NATS and listener, up to 3 attempts in all. A PASS or a FAIL ends the shape. The
+# first attempt's evidence is in recreate-live/<shape>, a later one's in
+# recreate-live/<shape>-attempt-<k>. When the shape took more than one attempt, its line says on
+# which attempt it ended and quotes the INVALID reason of each earlier attempt. Three INVALIDs are
+# INVALID, with all three reasons.
+#
+# An attempt can miss the window it means to observe. NATS sends the first 2 MB of the new bucket
+# at once, without waiting for the listener: that is the push consumer's flow-control window. The
+# new bucket holds 3,001 records, about 0.9 MB, and NATS has sent all of it about 18 ms after the
+# read begins. A stop after that does not hold the read back: the listener reads what it was sent
+# (in 95 to 220 ms) and completes the read while NATS is stopped. In an agent pod with 2 CPUs the
+# stop on the finding line came 0.2 to 24 ms after that line, and the attempt whose stop came 24 ms
+# after it missed the window. On a faster machine NATS sends sooner: on a 4-CPU build Job 2 of 8
+# shapes missed the window. A missed window is INVALID, never a PASS, so a new attempt keeps every
+# judgement the same. A larger set count does not help: the window grows only past 2 MB, between
+# 2,500 and 3,000 records a set. At 3,000 the fill took 0.63 to 0.86 s in the pod, and once the
+# probe 1 s after the recreate came only 25 ms after the fill ended.
+live_attempts() {
+  local shape=$1 pads=$2 attempts=3 attempt=1 dir="recreate-live/$1" earlier="" word
+  while :; do
+    live_shape "$shape" "$pads" "$dir"
+    if [[ "$phase_result" != INVALID* ]] || ((attempt == attempts)); then
+      break
+    fi
+    earlier+="${earlier:+; }attempt ${attempt}: ${phase_result}"
+    attempt=$((attempt + 1))
+    dir="recreate-live/${shape}-attempt-${attempt}"
+    say "recreate-live (${shape}): attempt $((attempt - 1)) was ${phase_result}; running attempt ${attempt} of ${attempts}"
+  done
+  if ((attempt > 1)); then
+    word="${phase_result%% *}"
+    phase_result="${word} on attempt ${attempt} of ${attempts} (${earlier}): ${phase_result#"${word} "}"
+  fi
 }
 
 # run_hook runs a --during-refuse or --after-refuse command with the listener's URL and the seeded

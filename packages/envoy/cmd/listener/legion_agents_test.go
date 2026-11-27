@@ -247,7 +247,7 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 		{"a batch with a bad member", http.MethodPut, "/v1/legion/agents", `{"entries":[` + good + `,` + badRole + `]}`, http.StatusBadRequest, "entries[1]"},
 		{"a batch without entries", http.MethodPut, "/v1/legion/agents", `{}`, http.StatusBadRequest, "entries is required"},
 		{"a batch past its bound", http.MethodPut, "/v1/legion/agents", `{"entries":[` + strings.Join(many, ",") + `]}`, http.StatusRequestEntityTooLarge, "at most 256"},
-		{"a body past 1 MiB", http.MethodPut, "/v1/legion/agents", `{"entries":[],"pad":"` + strings.Repeat("x", 1<<20) + `"}`, http.StatusRequestEntityTooLarge, "past 1048576 bytes"},
+		{"a body past the /v1 body limit", http.MethodPut, "/v1/legion/agents", `{"entries":[],"pad":"` + strings.Repeat("x", apiBodyLimit) + `"}`, http.StatusRequestEntityTooLarge, apiBodyTooLarge},
 		{"a role token read by PUT", http.MethodPut, "/v1/legion/agents/roles/legion-infra-infra-448-tester", good, http.StatusMethodNotAllowed, "method not allowed"},
 		{"a delete", http.MethodDelete, "/v1/legion/agents/sessions/ses-good", "", http.StatusMethodNotAllowed, "method not allowed"},
 	} {

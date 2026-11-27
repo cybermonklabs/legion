@@ -13,14 +13,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A lost hold ends the connection of a pending hand-back even when a read of that connection holds
-// the bus client's lock. The holder's stop holds two messages of a pull request behind the one in its
-// handler. The first hand-back's publish waits behind a held write, and the second's connected read
-// (mayHandBack) waits for nats.go's lock while it holds the client's, and is left running. The
-// holder's renewals are then refused: by the time the standby creates the durable, the connection
-// that carries the pending hand-back must be closed, and no -NAK may reach the server after the
-// creation. A Sever that took the client's lock waited behind that read, and the standby created
-// the durable with the connection still open.
+// A lost hold ends the connection of a pending hand-back even while a read of that connection
+// waits for nats.go's lock. The holder's stop holds two messages of a pull request behind the one in
+// its handler. The first hand-back's publish waits behind a held write, and the second's connected
+// read (mayHandBack) waits for nats.go's lock, and is left running. The holder's renewals are then
+// refused: by the time the standby creates the durable, the connection that carries the pending
+// hand-back must be closed, and no -NAK may reach the server after the creation. A Sever that
+// waited behind that read let the standby create the durable with the connection still open. The
+// read holds no lock of the bus client's while it waits: Connected reads nats.go's status with the
+// client's lock released (bus.Client.Connected).
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)

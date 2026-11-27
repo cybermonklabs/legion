@@ -164,8 +164,8 @@ func runSeed(args []string) error {
 	buckets := flags.String("buckets", "sessions,interests", "buckets to write: sessions, interests or both, comma-separated")
 	spec := flags.String("sets", "", "record sets, name=count[:variant],...")
 	role := flags.String("role", "", "role the first session of each set holds")
-	create := flags.Bool("create", false, "create a missing bucket with the listener's config")
-	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the listener's 5 minutes")
+	create := flags.Bool("create", false, "create a missing bucket with the config envoy-infra buckets creates it with")
+	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the copied bucket's "+bus.SessionBucketMaxAge.String())
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

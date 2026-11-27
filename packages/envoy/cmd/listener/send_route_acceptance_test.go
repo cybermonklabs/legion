@@ -247,6 +247,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s.
+//
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
 // answering without resetting its sockets - is unreachable too, and a send and a publish answer it
 // with the same named 503 inside the caller's attempt. nats.go cannot tell such a link is dead
@@ -285,7 +288,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			name:    "publish",
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
-			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.1", "source": "agent", "source_session": sender, "message": "is the bus there?"},
+			body:    map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": sender, "message": "is the bus there?"},
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {

@@ -31,8 +31,9 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// staleBound is the kvwatch stale bound the listener's session and interest copies run with: their
-// buckets' MaxAge is 5 minutes or none, so the 2-minute default applies.
+// staleBound is the kvwatch stale bound the listener's session and interest copies run with: the
+// session bucket's MaxAge (session.BucketMaxAge) is more than twice it and the interest bucket has
+// none, so the 2-minute default applies.
 const staleBound = 2 * time.Minute
 
 // assertListRefilling fails the test unless response is the list routes' refilling answer: 503,

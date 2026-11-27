@@ -54,12 +54,6 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 	return s, nil
 }
 
-// knownJetStream is the JetStream context one attempt to open the bucket asks through: its
-// requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
-func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
-}
-
 // openBucket makes one attempt to open the bucket on conn within ctx (openKnownBucket) and records
 // whether it found the bucket missing (bucketMissing), which a write then reads: the start's
 // attempt and the background repair's alike.
