@@ -2818,6 +2818,11 @@ type commitPullsFake struct {
 	// refused maps a commit to the status that GitHub refuses the list of its pull requests with.
 	// GitHub answers the list of each other commit.
 	refused map[string]int
+	// refuseQuery, where set, is the status GitHub refuses a batched query of commits' pull
+	// requests with, given the commits the query names; 0 answers it. namedByQuery is every such
+	// query's commits, in the order GitHub was asked them, a refused query's included.
+	refuseQuery  func(shas []string) int
+	namedByQuery [][]string
 	// commits answers GET /repos/{owner}/{repo}/pulls/{number}/commits with a status and, for a
 	// 200, a page of commits. No function is one empty page. commitPages counts those reads.
 	commits     func(repo, number string) (int, string)
@@ -2951,6 +2956,22 @@ func (f *commitPullsFake) commitQueries() int {
 	return f.commitQueried
 }
 
+// refusesCommitQueries makes GitHub refuse each batched query of commits' pull requests with the
+// status refuse answers for the commits it names, from now on; 0 answers it.
+func (f *commitPullsFake) refusesCommitQueries(refuse func(shas []string) int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refuseQuery = refuse
+}
+
+// commitsNamedByQueries is the commits each batched query of commits' pull requests named, in the
+// order GitHub was asked them, from the from-th query on.
+func (f *commitPullsFake) commitsNamedByQueries(from int) [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.namedByQuery[min(from, len(f.namedByQuery)):])
+}
+
 // factsAlias reads the aliases of the batched query of facts (delivery's factsQuery), in their
 // order. Each is a repository alias with the names of its two variables, or a pull request alias
 // with its number.
@@ -3051,11 +3072,16 @@ func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWri
 	f.asked[repo] += len(aliases)
 	f.commitQueried++
 	var refusal int
-	for _, alias := range aliases {
-		if status, refused := f.refused[alias[1]]; refused {
+	named := make([]string, len(aliases))
+	for index, alias := range aliases {
+		named[index] = alias[1]
+		if status, refused := f.refused[alias[1]]; refused && refusal == 0 {
 			refusal = status
-			break
 		}
+	}
+	f.namedByQuery = append(f.namedByQuery, named)
+	if refusal == 0 && f.refuseQuery != nil {
+		refusal = f.refuseQuery(named)
 	}
 	f.mu.Unlock()
 	if refusal != 0 {

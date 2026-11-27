@@ -2,6 +2,8 @@ package api
 
 import (
 	"fmt"
+	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -142,5 +144,99 @@ func TestAPassAtACommitOnlyAReadThroughLearnsStandsOnTheFirstRead(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+// A batch GitHub refuses holds the claims of its own commits and of no other. The issue's pass is at
+// headCommit, which only a read-time read-through can learn (as in
+// TestAPassAtACommitOnlyAReadThroughLearnsStandsOnTheFirstRead), and thirty fails stand at commits
+// GitHub names no pull request for, so one read asks about 31 commits in two batches, the fails'
+// first. GitHub answers 502 to every query that does not name headCommit: the first batch.
+//
+// The read stops at that failure, as every read of GitHub stops at one. Its first batch's commits
+// were asked and GitHub failed, so their claims stand for delivery.CommitPullReadStaleAfter, as the
+// read of one commit's claim stands when GitHub fails it. The second batch was never asked, so no
+// answer of GitHub's is behind its claims: the next read, inside that span, asks about exactly
+// those commits, learns the pull request at headCommit and answers pass_stands `yes`. A read whose
+// claims stand for commits no query named asks nothing on the second read and answers `no` for a
+// pass that stands until the span ends.
+func TestAFailedBatchLeavesTheCommitsNoQueryNamedToTheNextRead(t *testing.T) {
+	t.Parallel()
+	handler, _, _, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESFB", "acme/widgets", "A batch GitHub refuses")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	const fails = 30
+	every := []string{headCommit}
+	for at := range fails {
+		commit := fmt.Sprintf("%040x", at+1)
+		every = append(every, commit)
+		if response := recordResult(t, handler, issue.Key, resultBody("k1", "fail", commit, nil)); response.Code != 201 {
+			t.Fatalf("record the fail at %s: %d %s", commit, response.Code, response.Body.String())
+		}
+	}
+	opened := openPullAt(93, issue.Key)
+	fake.answers(func(repo, sha string) string {
+		if sha != headCommit {
+			return `[]`
+		}
+		return opened(repo, sha)
+	})
+	fake.refusesCommitQueries(func(shas []string) int {
+		if slices.Contains(shas, headCommit) {
+			return 0
+		}
+		return http.StatusBadGateway
+	})
+	named := func(queries [][]string) []string {
+		var commits []string
+		for _, query := range queries {
+			for _, sha := range query {
+				if !slices.Contains(commits, sha) {
+					commits = append(commits, sha)
+				}
+			}
+		}
+		slices.Sort(commits)
+		return commits
+	}
+	answer := func(check model.CheckBlock) string {
+		for _, result := range check.Results {
+			if result.ID == pass.Result.ID && result.CommitStands != nil {
+				return check.PassStands.Answer + ", the pass " + result.CommitStands.Answer + "/" + result.CommitStands.Reason
+			}
+		}
+		return check.PassStands.Answer + ", the pass not answered"
+	}
+
+	before := len(fake.commitsNamedByQueries(0))
+	first := checkOf(t, readResults(t, handler, issue.Key), "k1")
+	firstQueries := fake.commitsNamedByQueries(before)
+	refused := named(firstQueries)
+	if len(firstQueries) == 0 || slices.Contains(refused, headCommit) {
+		t.Fatalf("the first read's queries named %v, want the fails' batch alone, which GitHub refuses: "+
+			"the pass's commit must be in a batch after it for this row to test anything", firstQueries)
+	}
+	t.Logf("first read: %d queries naming %d commits, GitHub answering 502; %s", len(firstQueries), len(refused), answer(first))
+
+	between := len(fake.commitsNamedByQueries(0))
+	second := checkOf(t, readResults(t, handler, issue.Key), "k1")
+	asked := named(fake.commitsNamedByQueries(between))
+	var want []string
+	for _, sha := range every {
+		if !slices.Contains(refused, sha) {
+			want = append(want, sha)
+		}
+	}
+	slices.Sort(want)
+	t.Logf("second read: asked about %d commits; %s", len(asked), answer(second))
+	if !slices.Equal(asked, want) {
+		t.Fatalf("the second read asked GitHub about %d commits, want the %d that no query of the first read named "+
+			"(its refused batch's claims stand, and no answer is behind the rest): asked %v, want %v",
+			len(asked), len(want), asked, want)
+	}
+	if second.PassStands.Answer != model.PassStandsYes {
+		t.Fatalf("the second read answers %s, want pass_stands yes: it asked about the pass's commit and GitHub named the pull request there",
+			answer(second))
 	}
 }
