@@ -5059,10 +5059,12 @@ describe("forwardOnly", () => {
   // Catches: a world whose `passes` names no check. The label's test records a pass of each check
   // the world names, and the retro's gate holds the run while a before_merge check has none, so a
   // world naming none would send its pane past a gate that holds nothing.
+  // The directory is made here, at the scope of the describe: temporaryDirectory registers a
+  // beforeAll hook, which bun refuses inside a test.
+  const worldPasses = temporaryDirectory("forward-world-passes");
   test("forwardOnly refuses a world whose passes names no check", () => {
     const worlds = path.join(import.meta.dir, "worlds", "forward-only");
-    const made = temporaryDirectory("forward-world-passes");
-    const dir = path.join(made, "retro-defect");
+    const dir = path.join(worldPasses, "retro-defect");
     cpSync(path.join(worlds, "retro-defect"), dir, { recursive: true });
     const file = path.join(dir, "world.json");
     const world = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
