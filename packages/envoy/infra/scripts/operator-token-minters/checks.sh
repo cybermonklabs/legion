@@ -101,19 +101,27 @@ fi
 # With no render or preview given there is nothing whose writers to read.
 [ "$((${#RBAC_RENDERS[@]} + ${#SECRET_RENDERS[@]} + ${#IAM_PREVIEWS[@]}))" -gt 0 ] || CHECK_MISSING[renders]=skip
 
-# iam_verdict CHECK MEMBER ROLE ATTACHED HOW [CONDITION]: sets VERDICT to ok (allowed), skip (a group
-# judged by its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding
-# is made on; HOW is `expanded` for a group the analysis lists the members of, `code` for a member a
-# preview declares (its group, if any, is the live steps' to expand) or empty; CONDITION is the
-# binding's condition expression, empty for none. A `user:` member, a person, is judged as every
-# other holder is: nobody holds the operator identity standing, a person included (INFRA-840's R16,
-# dispatch://INFRA-840/spec#b-r-operator-minters), so no case below allows one.
+# iam_verdict CHECK MEMBER ROLE ATTACHED HOW [CONDITION]: sets VERDICT to ok (allowed) or finding,
+# with NOTE beside a finding. ATTACHED is the resource the binding is made on; HOW is `expanded` for
+# a group the analysis lists the members of, `code` for a member a preview declares or empty;
+# CONDITION is the binding's condition expression, empty for none. A `user:` member, a person, is
+# judged as every other holder is: nobody holds the operator identity standing, a person included
+# (INFRA-840's R16, dispatch://INFRA-840/spec#b-r-operator-minters), so no case below allows one. A
+# `group:` member is a finding as the group, whatever its members: the group is the standing path,
+# since whoever is added to it holds what it holds with no grant and no second person, so a group
+# with no member today, or with accepted members alone, is as much a finding as any other. An
+# expanded group's members are judged too, each on its own record (analysis.jq), so a person inside
+# it is a finding by name beside the group's.
 iam_verdict() {
   local check="$1" member="$2" role="$3" attached="$4" how="$5" condition="${6:-}" object
   VERDICT=finding NOTE=""
   case "$member" in
     group:*)
-      if [ "$how" = expanded ] || [ "$how" = code ]; then VERDICT=skip; else NOTE=" (a group whose members the analysis does not list)"; fi
+      case "$how" in
+        expanded) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members; each member is judged too)" ;;
+        code) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members)" ;;
+        *) NOTE=" (a group whose members the analysis does not list)" ;;
+      esac
       return
       ;;
   esac

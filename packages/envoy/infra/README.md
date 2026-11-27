@@ -4818,7 +4818,10 @@ IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the proje
 (`--project`, the pool project and each fleet member's project) are allowed; another project's
 agent is a finding naming its project number, and another Google service agent the deployment
 needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
-which takes no other address. The broker's grant to mint the operator's token,
+which takes no other address. An IAM group holding a checked permission is a finding as the group,
+whatever its members: whoever is added to it holds what it holds with no grant and no second
+person. Each member Policy Analyzer expands is judged besides, so a person in the group is a finding
+by name. The broker's grant to mint the operator's token,
 `roles/iam.serviceAccountTokenCreator` on `--gsa`, is allowed to `--broker-account` and to the
 Workload Identity principal of `--broker-workload`,
 `principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<namespace>/sa/<name>`,
@@ -5000,8 +5003,8 @@ the `commit` and `run_id` metadata the report quotes, changes the bucket's polic
 managed folder's policy, which grants object writes under its prefix and is on neither the bucket's
 policy nor its ancestors'. It accepts:
 
-- a group judged by its expanded members, and Google's service agents, as every IAM step (a
-  person is a finding here as in every step);
+- Google's service agents, as every IAM step (a person, and a group as the group whatever its
+  members, are findings here as in every step);
 - `--renders-admin EMAIL`, the account that applies the bucket, for any of them; the answer
   must list it, or the step is `UNKNOWN`;
 - each `--render-writer EMAIL=program/object`, only through a binding whose condition is exactly

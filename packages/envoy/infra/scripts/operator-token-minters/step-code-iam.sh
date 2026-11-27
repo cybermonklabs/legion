@@ -123,6 +123,6 @@ else
     esac
   done 3<"$WORK/preview.rec"
   if unchanged; then
-    pass "$step" "the previews grant the checked permissions to no one but Google's service agents and the accounts allowed by name, no person among them ($judged grants read; a group they name is judged by its members in the live steps)"
+    pass "$step" "the previews grant the checked permissions to no one but Google's service agents and the accounts allowed by name, no person and no group among them ($judged grants read)"
   fi
 fi

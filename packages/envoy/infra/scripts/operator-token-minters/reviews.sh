@@ -719,7 +719,12 @@ masters_bindings() {
 # now or not. MODE `own`: a cluster that is no GKE cluster takes its users and groups from its own
 # authenticator: UNKNOWN when a Group is bound. A User subject bound there, whatever its name, is
 # reviewed as every User subject is (bound_subjects). MODE `unknown:<why>`: UNKNOWN when a Group is
-# bound.
+# bound. An IAM group is a finding as the group (iam_verdict), where a cluster's Group is UNKNOWN
+# here, and the two differ on purpose: an IAM binding to a group is read with the right it grants,
+# so the group itself can be named holding it, while a cluster that gives a Group its members from
+# Google or its own authenticator is a cluster whose reviews see none of them, so what cannot be
+# made is the whole cluster's reading. Either way the group is named and the run does not pass;
+# with Google Groups for RBAC off a cluster's Group reaches no one, so it is no path to name.
 groups_verdict() {
   local step="$1" mode="$2" groups=""
   if [ "$BINDINGS_OK" = true ]; then

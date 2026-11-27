@@ -12,7 +12,9 @@ body: |-
   finding. A person is now a finding like any other holder, in every IAM step and in every RBAC
   review, with the right and where it was granted: nobody holds the operator identity standing
   (INFRA-840's R16), and a person's User subject is reviewed as every User is, an email-shaped one
-  on a fleet member that is no GKE cluster included. Another step makes a finding of each GKE cluster of the pool that no
+  on a fleet member that is no GKE cluster included. An IAM group holding a checked permission is a
+  finding as the group, whatever its members, in the live steps and in a preview alike, and each
+  member Policy Analyzer expands is judged besides. Another step makes a finding of each GKE cluster of the pool that no
   `--audited-cluster` names. On another GKE Standard cluster of the pool, a system ServiceAccount
   with a pod on a node is reviewed for every right that cluster's review asks. A guarded namespace
   on another cluster of the pool now brings the operator's cluster's rights to that cluster's

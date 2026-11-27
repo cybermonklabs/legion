@@ -66,6 +66,10 @@
 #        (example-grade, 222222222222) holding it there exits 0;
 #   (gp) a Policy Analyzer group path expanded to a service account is still a finding naming that
 #        account; a stub that drops expanded members misses it.
+#   (gr) a group holding a checked permission is a finding as the group, whatever its members: with
+#        no member, with an accepted member alone (GKE's service agent), and declared by a preview
+#        while every live step is refused, where the code step names it and does not pass; a copy
+#        that judges a group by its members alone misses the last two (its controls);
 #   (rw) the renders bucket's writers: the applier and the four writers each under its own object's
 #        condition pass; a person, and a person in a group, holding storage.admin there are each a
 #        finding naming the person; another account with storage.admin there, a
@@ -554,6 +558,76 @@ if row gp; then
   ! has_prefix "FINDING serviceAccount:$worker_gsa:" ||
     fail "the group-members stub still named the expanded service account"
   passed "(gp) a service account expanded from a group is a finding, which the stub control misses"
+fi
+
+# --- (gr) A group on a standing path is a finding as the group, whatever its members: whoever is
+# added to it holds what it holds with no grant and no second person, so a group with no member
+# today, or whose one member the reading accepts, is the path itself. A preview's group is the code
+# step's finding too, so no group is left to a live step that may not run (every live step refused,
+# as on a host with no sign-in). Controls: a copy that judges an expanded or declared group by its
+# members alone, as the reading did before, misses the accepted and the declared group. ---
+readonly ops_group=group:ops@example.com
+group_row() {
+  local script="$check"
+  base_world
+  case "$1" in
+    *-control)
+      script="$(script_copy "group-by-members-$1")"
+      plant "$(dirname "$script")/operator-token-minters/checks.sh" '      case "$how" in' \
+        $'      if [ "$how" = expanded ] || [ "$how" = code ]; then VERDICT=skip; return; fi\n      case "$how" in'
+      ;;
+  esac
+  case "$1" in
+    empty)
+      edit "$world/groups.json" '. + {($g): []}' --arg g "$ops_group"
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$ops_group"
+      ;;
+    accepted | accepted-control)
+      edit "$world/groups.json" '. + {($g): [$m]}' --arg g "$ops_group" --arg m "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$ops_group"
+      ;;
+    code | code-control)
+      refuse_live
+      edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops",
+        provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops", custom: true,
+        type: "gcp:serviceaccount/iAMMember:IAMMember",
+        inputs: {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.serviceAccountTokenCreator", member: $g}}}]' \
+        --arg p "$project" --arg gsa "$gsa" --arg g "$ops_group"
+      ;;
+  esac
+  run_script="$script" run
+  local live="FINDING $ops_group: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res"
+  local declared="FINDING $ops_group: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, declared by urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops"
+  case "$1" in
+    empty)
+      want_status 1 "a group with no member minting the operator's token"
+      want_line "$live (a group whose members the analysis does not list)" "a group with no member"
+      ;;
+    accepted)
+      want_status 1 "a group whose one member is GKE's service agent"
+      want_line "$live (a group: whoever is added to it holds this, so it is a finding whatever its members; each member is judged too)" \
+        "a group whose one member is GKE's service agent"
+      ! has_prefix "FINDING serviceAccount:service-$number@container-engine-robot" || fail "a group whose one member is GKE's service agent: the agent is a finding"
+      ;;
+    code)
+      want_status 1 "a preview's group minting the operator's token, every live step refused"
+      want_line "$declared (a group: whoever is added to it holds this, so it is a finding whatever its members)" "a preview's group"
+      ! has_prefix "PASS code: IAM: " || fail "a preview's group: the code step passed"
+      ;;
+    accepted-control)
+      want_status 0 "the copy judging a group by its members, on a group of GKE's service agent"
+      ! has_prefix "FINDING $ops_group: " || fail "the copy judging a group by its members still named the group"
+      ;;
+    code-control)
+      want_status 2 "the copy judging a group by its members, on a preview's group"
+      ! has_prefix "FINDING $ops_group: " || fail "the copy judging a group by its members still named the declared group"
+      want_text "PASS code: IAM: " "the copy judging a group by its members, on a preview's group"
+      ;;
+  esac
+}
+if row gr; then
+  each group_row empty accepted code accepted-control code-control
+  passed "(gr) a group holding a checked permission is a finding as the group, with no member, with an accepted member alone, and declared by a preview while every live step is refused; a copy judging a group by its members misses the last two"
 fi
 
 # --- (rw) The renders bucket's writers. ---

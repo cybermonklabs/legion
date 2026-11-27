@@ -64,8 +64,8 @@
 #                     role's permissions from the preview's own custom roles or `gcloud iam roles
 #                     describe`. A binding the preview does not know all of (a value computed at
 #                     apply) and a resource type there that can grant on those resources but that
-#                     this check does not read are UNKNOWN. A group the code names is judged by its
-#                     members in the live steps, which expand it.
+#                     this check does not read are UNKNOWN. A group the code names is a finding as
+#                     the group, as in the live steps, which also judge each member they expand.
 #   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster. The
 #                     operator's cluster is --cluster in --location, or, without --location, the
 #                     list's one cluster of that name; a name the list holds more than once with no
@@ -372,8 +372,9 @@
 # workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<ns>/sa/<name> of --broker-workload.
 #
 # In every IAM step a `user:` member, a person, is judged as every other holder is, a finding for
-# each checked permission it holds; a group the analysis expands is judged
-# by its members, and one it does not expand is a finding; the Google service agents the deployment
+# each checked permission it holds; a group is a finding as the group, whatever its members, since
+# whoever is added to it holds what it holds with no grant, and the members of a group the analysis
+# expands are judged besides, each by name (one it does not expand says so); the Google service agents the deployment
 # needs are allowed: GKE's (service-<number>@container-engine-robot), GKE Hub's
 # (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system) of a
 # project the check reads (--project, the pool project and each fleet member's project, each number
