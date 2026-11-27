@@ -17,18 +17,13 @@ const (
 	cRun, cStore = "6f1b8d2a-4e7c-4a59-9d3b-0c5e2a7f8b16", "1e7c3b9d-5a2f-4c86-8e0b-4d6a1f9c2e73"
 )
 
-// windowed has every Client wait readWindow at the most for a daemon's answer, as the rig's client
-// window, until the test ends: every Client shares the default transport.
-func windowed(t *testing.T, readWindow time.Duration) {
-	t.Helper()
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = readWindow
-	shared := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() {
-		http.DefaultTransport = shared
-		transport.CloseIdleConnections()
-	})
+// windowed has every whole read of the rig's intakes wait readWindow at the most for a daemon's
+// answer (Intake.stateOptions), rather than the production RequestTimeout. It is the rig's own
+// client option, not a change of http.DefaultTransport, which every test of the process shares, so
+// a test that calls it runs beside the others. Call it before start.
+func (r *intakeRig) windowed(readWindow time.Duration) {
+	r.t.Helper()
+	r.stateOptions = append(r.stateOptions, WithTimeout(readWindow))
 }
 
 // finishedThrough reports whether the intake has acknowledged every message through stream sequence
@@ -69,8 +64,8 @@ func (r *intakeRig) handBacksOf() map[uint64]int {
 // stateMaxHolds times.
 func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 	const readWindow = 3 * time.Second
-	windowed(t, readWindow)
 	rig := newIntakeRig(t)
+	rig.windowed(readWindow)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()
@@ -161,8 +156,8 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 // is judged at its next delivery: it is finished unapplied, writes nothing at or below the read's
 // 13, and its store, the cursor's own, is not marked as no daemon of INFRA.
 func TestAHeldMessageOfTheStoreASettingNamedBeforeWritesNothingWhenTheNewURLServesThatStore(t *testing.T) {
-	windowed(t, 3*time.Second)
 	rig := newIntakeRig(t)
+	rig.windowed(3 * time.Second)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()

@@ -218,6 +218,16 @@ type Intake struct {
 	// time, and lastRetry how long at the most, the wait doubling after each failure between
 	// (untilDone): applyFirstRetry and applyLastRetry. A test shrinks both.
 	firstRetry, lastRetry time.Duration
+	// log is where the intake writes its lines (logger): nil writes each where slog.Default()
+	// points as the line is written, as every line of the package went before the intake took a
+	// logger, and no program sets it. A test sets it over a handler of its own, so it reads its own
+	// intake's lines alone and runs beside other tests.
+	log *slog.Logger
+	// stateOptions are the options of the Client a whole read calls its daemon with (fetchWhole):
+	// none in a program, so every read shares the default transport. A test names a transport of
+	// its own (withTransport) to give its daemon's answers a window, rather than replace
+	// http.DefaultTransport for every test of the process.
+	stateOptions []Option
 
 	mu sync.Mutex
 	// reported is when each line of reportEvery was last logged for each project, for the lines
@@ -333,7 +343,7 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 	settings, err := ListSettings(ctx, in.pool)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("legion intake: read the Legion settings to check each project's starting point", "error", err)
+			in.logger().Warn("legion intake: read the Legion settings to check each project's starting point", "error", err)
 		}
 		return
 	}
@@ -527,7 +537,7 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	defer in.finished(m.Msg)
 	message, err := decodeStateMessage(m.Envelope, m.Msg.Data)
 	if err != nil {
-		slog.Error("legion intake: decode a state message; acknowledging it", "subject", m.Msg.Subject, "error", err)
+		in.logger().Error("legion intake: decode a state message; acknowledging it", "subject", m.Msg.Subject, "error", err)
 		m.Ack()
 		return
 	}
@@ -540,7 +550,7 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	}
 	result, finished := in.untilDone(ctx, m.Msg, message.Project, step)
 	if !finished {
-		slog.Warn("legion intake: the intake stopped before a state message was applied; handing it back",
+		in.logger().Warn("legion intake: the intake stopped before a state message was applied; handing it back",
 			"project", message.Project, "seq", message.Seq)
 		m.HandBack()
 		return
@@ -548,18 +558,18 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	sequences := []any{"run", message.Run, "firstSeq", message.FirstSeq, "seq", message.Seq}
 	if attempt.back > 0 {
 		if m.HandBackAfter(attempt.back) {
-			slog.Info(heldLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
+			in.logger().Info(heldLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
 				"handBack", attempt.holds, "delay", attempt.back, "reason", attempt.reason}, sequences...)...)
 		}
 		return
 	}
 	m.Ack()
 	if attempt.released {
-		slog.Warn(releasedLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
+		in.logger().Warn(releasedLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
 			"handBacks", attempt.holds}, sequences...)...)
 	}
 	if refusal := attempt.refusal; refusal != nil {
-		slog.Warn(refusedLine, append([]any{"project", message.Project, "sqlstate", refusal.Code, "error", refusal.Message},
+		in.logger().Warn(refusedLine, append([]any{"project", message.Project, "sqlstate", refusal.Code, "error", refusal.Message},
 			sequences...)...)
 	}
 	switch result {
@@ -580,7 +590,7 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 		in.reportEvery(otherStoreLine, message.Project, append(sequences,
 			"stateId", message.StateID, "cursorStateId", logValue(attempt.cursor.stateID))...)
 	case outcomeReleased:
-		slog.Info(writeReleasedLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "stateId", message.StateID},
+		in.logger().Info(writeReleasedLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "stateId", message.StateID},
 			sequences...)...)
 	case outcomeCrowded:
 		in.reportEvery(crowdedLine, message.Project, append(sequences, "reason", attempt.reason)...)
@@ -612,8 +622,8 @@ func (in *Intake) untilDone(ctx context.Context, msg *natsgo.Msg, project string
 		if ctx.Err() != nil {
 			break
 		}
-		slog.Warn("legion intake: a database step failed; trying it again", "project", project, "retry_in", wait, "error", err)
-		inProgress(msg)
+		in.logger().Warn("legion intake: a database step failed; trying it again", "project", project, "retry_in", wait, "error", err)
+		in.inProgress(msg)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -627,12 +637,12 @@ func (in *Intake) untilDone(ctx context.Context, msg *natsgo.Msg, project string
 
 // inProgress tells NATS a message is still in hand, which restarts its ack wait. nil is work that
 // holds no message.
-func inProgress(msg *natsgo.Msg) {
+func (in *Intake) inProgress(msg *natsgo.Msg) {
 	if msg == nil {
 		return
 	}
 	if err := msg.InProgress(); err != nil {
-		slog.Warn("legion intake: tell NATS a state message is still in hand", "subject", msg.Subject, "error", err)
+		in.logger().Warn("legion intake: tell NATS a state message is still in hand", "subject", msg.Subject, "error", err)
 	}
 }
 
@@ -652,7 +662,16 @@ func (in *Intake) reportEvery(line, project string, attributes ...any) {
 	maps.DeleteFunc(in.reported, func(_ reportKey, last time.Time) bool { return now.Sub(last) >= dropLogEvery })
 	in.reported[key] = now
 	in.mu.Unlock()
-	slog.Info(line, append([]any{"project", project}, attributes...)...)
+	in.logger().Info(line, append([]any{"project", project}, attributes...)...)
+}
+
+// logger is where the intake writes its lines: log, or slog.Default() as it is when the line is
+// written, where log is nil.
+func (in *Intake) logger() *slog.Logger {
+	if in.log != nil {
+		return in.log
+	}
+	return slog.Default()
 }
 
 // logValue is *value as a log line's attribute, or "none" for nil, which a text handler would
@@ -676,8 +695,8 @@ func (in *Intake) pruneHourly(ctx context.Context) {
 	in.pruned = now
 	in.mu.Unlock()
 	if pruned, err := PruneReads(ctx, in.pool); err != nil {
-		slog.Warn("legion intake: prune the Legion state reads", "error", err)
+		in.logger().Warn("legion intake: prune the Legion state reads", "error", err)
 	} else if pruned > 0 {
-		slog.Info("legion intake: pruned Legion state reads", "rows", pruned)
+		in.logger().Info("legion intake: pruned Legion state reads", "rows", pruned)
 	}
 }

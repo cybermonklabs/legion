@@ -858,13 +858,23 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/envoy/internal/dispatch/legion`, the Legion state intake, took 489 s alone on an issue
-pod's two shared CPUs, and ran go test's ten minutes out with another test run beside it. Its
-seeded test of the read rule
-(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`)
-takes 226 s of that: where a row ends with a message handed back with a delay, the row waits in
-real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
-92 s).
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes: the
+whole package used 2 % of one core over the 913 s it took alone on a four-CPU CI runner
+(`/usr/bin/time -v`, job 140689032400). Its seeded test of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`) was
+508 s of that, because a row that ends with a message handed back with a delay waits in real time
+for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a parallel subtest,
+`storetest.DefaultParallel` of them at once (the package's `TestMain` calls
+`storetest.SetDefaultParallel`), and the test takes about as long as its longest seed alone.
+
+A seed holds a rig of its own: its own database (`storetest.Open`), its own NATS account
+(`testnats.URL`), its own fake daemons and its own intake, whose clock, logger and client window
+are the rig's. The intake writes its lines to `Intake.log` and calls its daemons with
+`Intake.stateOptions`, both the rig's, so no test of this package replaces the process's default
+logger or `http.DefaultTransport`, which every test of the process shares. The package's other
+tests run one at a time, before the seeds, as a test that calls no `t.Parallel` does; a new test
+that holds a wall-clock bound or writes something the process shares keeps it that way.
+
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
 and a command that runs the whole package passes the same:
 
