@@ -570,7 +570,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.RefuseOpenForeignChildren {
 		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
 		// which writeHandlerError answers with the children it names that the caller sees.
-		if err := refuseOpenForeignChildren(ctx, tx, who, key, before.Project, callerProject); err != nil {
+		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project, callerProject); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
