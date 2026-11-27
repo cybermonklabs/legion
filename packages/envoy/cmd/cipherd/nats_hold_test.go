@@ -17,7 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
-	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -209,7 +209,7 @@ func TestTheBrokerStartsWithNoVerifiedRow(t *testing.T) {
 	}
 
 	t.Log("--- the secrets broker serves a pod its grant meanwhile")
-	pods := ciphertest.Pods{T: t, Base: base, Token: ciphertest.IssuerTokens(t, issuer, signer, podAudience)}
+	pods := podclient.Pods{T: t, Base: base, Token: podclient.IssuerTokens(t, issuer, signer, podAudience)}
 	pod := pods.Enroll(pods.LogIn(service, loginAccount), "pod-a", podAccount)
 	reply := pods.Ask(pod, secretName)
 	if reply.State != "granted" || reply.GrantID == nil {

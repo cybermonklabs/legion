@@ -5,6 +5,10 @@
 // drive a genuine broker end to end rather than a hand-rolled fake. It is the extraction
 // api_test.go's own newTestServer names as its reference pattern. Every consumer of a full
 // real-broker rig imports this package instead of duplicating the wiring.
+//
+// The client that drives a running broker binary as a service and its pods do is not here: it is
+// internal/cipher/ciphertest/podclient, so that the requestseed command built from it links no
+// testcontainers, which this package links through storetest.
 package ciphertest
 
 import (

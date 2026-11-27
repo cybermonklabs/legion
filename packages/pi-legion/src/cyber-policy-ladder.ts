@@ -36,7 +36,7 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  *
  * Why this runs inside the turn. The daemon reads a prompt's outcome from Oh My Pi's
  * `prompt_result`, which the host writes at the first `agent_end` it marks `yielded`
- * (`modes/rpc/rpc-prompt-results.ts:159-170` at v18.18.6-sami.20261126-222037). A `session_stop`
+ * (`modes/rpc/rpc-prompt-results.ts:159-170` at v18.18.6-sami.20261127-010836). A `session_stop`
  * handler that answers a continuation makes the host end the run with `willContinue`, which it
  * marks as not yielded (`session/agent-session.ts:6493-6494, 7096-7102`), so the prompt stays open
  * across every rung and its result is the last rung's. The host stops waiting for a

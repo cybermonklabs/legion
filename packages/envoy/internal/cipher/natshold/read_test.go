@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // testPool is a pool on a migrated schema of the test's own, and that schema's name, which the
@@ -23,7 +24,7 @@ func testPool(t *testing.T) (*pgxpool.Pool, string) {
 		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
 		t.Fatal("the test database's URL does not parse")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

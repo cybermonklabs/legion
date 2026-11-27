@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // holdSigner is the operator's hold signing key as a test holds it: the private half signs each
@@ -282,7 +283,10 @@ func schemaOf(t *testing.T, dsn string) string {
 func holdPool(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	dsn := storetest.URL(t)
-	return openPool(t, dsn), schemaOf(t, dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool, schemaOf(t, dsn)
 }
 
 // proxiedHoldPool is holdPool behind a TCP relay the test cuts and restores (testnats.Proxy), as
@@ -292,7 +296,10 @@ func proxiedHoldPool(t *testing.T) (proxied, direct *pgxpool.Pool, proxy *testna
 	t.Helper()
 	dsn := storetest.URL(t)
 	proxy = testnats.StartProxy(t, dsn)
-	return openPool(t, proxy.URL()+"&pool_max_conns=2"), openPool(t, dsn), proxy, schemaOf(t, dsn)
+	direct, err := testpool.NewPool(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(direct.Close)
+	return openPool(t, proxy.URL()+"&pool_max_conns=2"), direct, proxy, schemaOf(t, dsn)
 }
 
 // holdTable writes the hold row on a test Postgres: the operator's signed writes, as the broker's
