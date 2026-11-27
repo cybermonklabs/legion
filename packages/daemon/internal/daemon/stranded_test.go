@@ -535,9 +535,13 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Pool().Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
-		step_task, step_place) values ($1, 'tester', $2, '', 0, 0, '', '', 'a', 2)
-		on conflict (issue, role) do update set claim = excluded.claim, step_task = excluded.step_task, step_place = excluded.step_place`,
+	// The tester's one row takes the keyed agent's claim and its step, or is written where none
+	// stands: the primary key of phases holds the step (20261125114500), so an upsert keyed on it
+	// would add a second tester row beside one of no step rather than move that one to the step.
+	if _, err := st.Pool().Exec(ctx, `with moved as (update phases set claim = $2, step_task = 'a', step_place = 2
+		where issue = $1 and role = 'tester' returning 1)
+		insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary, step_task, step_place)
+		select $1, 'tester', $2, '', 0, 0, '', '', 'a', 2 where not exists (select 1 from moved)`,
 		issue, string(keyed.Token)); err != nil {
 		t.Fatalf("name the keyed agent on the tester's step: %v", err)
 	}

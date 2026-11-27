@@ -469,12 +469,12 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the check's first look to the claim that works the tester's step,
-  in its session, or to the tester in a fresh one where the task had no tester step. Every other
-  claim of a child is retired. A root's are suspended with the rest of its tree for the linger,
-  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
-  every claim of the child and releases its pod, and a root's close suspends every claim of its
-  tree for the linger. The loader refuses any other value,
+  With `tester`, the merge hands the check's first look to the claim that works the tester's step
+  that started last, in its session, or to the tester in a fresh one where the task had no tester
+  step. Every other claim of a child is retired. A root's are suspended with the rest of its tree
+  for the linger, and retired when the linger ends. With `off`, no check opens at all: a child's
+  close retires every claim of the child and releases its pod, and a root's close suspends every
+  claim of its tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.

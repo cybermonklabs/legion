@@ -266,3 +266,148 @@ func TestAHeldStartOfAKeyedAgentStoppedSinceIsFinished(t *testing.T) {
 		t.Fatalf("the held start of the tester's step stands, want it finished: key a's agent %s was stopped after it", keyed)
 	}
 }
+
+// A held start is weighed against the claim it names, the claim it was queued for and the one the
+// outbox acts on, never against the claim the role's row names by then. The tester's row of
+// `implementer:a tester:a reviewer` names key a's claim `…-implementer`, stopped after the start was
+// written. A start that names key b, an agent of the tester's role at another step, is no start of
+// key a's: the repair keeps it, and the outbox's own fence decides it. Before, the repair weighed
+// every held start against the claim the row names and finished key b's start for key a's stop.
+// The controls: the same start naming key a is finished, and so is a start the release before
+// wrote, which names no claim and is weighed against the claim of the row, as before.
+func TestAHeldStartIsWeighedAgainstTheClaimItNames(t *testing.T) {
+	const key = "LEGION-312"
+	for _, tc := range []struct {
+		name     string
+		named    string
+		finished bool
+	}{
+		{"a start of key b, named reviewer, while the row names key a, stopped since", "reviewer", false},
+		{"the control: a start naming key a", "implementer", true},
+		{"a start the release before wrote, naming no claim", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedSlottedInPhase(t, pool, testProject, key, "A", phase.Testing, nil)
+			keyed := keyedToken(t, key, "implementer")
+			start := record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+				Task: "Test the widget.", NeedsSlot: true}
+			if tc.named != "" {
+				start.Claim = keyedToken(t, key, claim.Agent(tc.named))
+			}
+			inTx(t, pool, func(tx pgx.Tx) {
+				if err := record.NewStore().PutPhase(context.Background(), tx,
+					record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 2}); err != nil {
+					t.Fatalf("seed the tester's row: %v", err)
+				}
+				if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, start, fixedNow); err != nil {
+					t.Fatalf("queue the tester's held start: %v", err)
+				}
+			})
+			seedStoredClaim(t, pool, key, key, keyed, claim.RoleTester, "retired", "")
+			if _, err := pool.Exec(context.Background(), `update claims set retired_at_write_mark = (select max(write_mark) + 1 from outbox) where token = $1`,
+				string(keyed)); err != nil {
+				t.Fatalf("mark the stop after the held start: %v", err)
+			}
+			admission := newAdmission(t, 1, nil)
+
+			// Applied through the mirror, as the daemon applies a Dispatch fact, whose write of the
+			// issue's row is the record the pass runs for (Admission.Apply's pass rule).
+			applyMirrored(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
+				Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}, workflow.New(record.NewStore(), workflow.Config{Project: testProject,
+				Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil))
+
+			var after int
+			if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'supervise' and issue = $1 and payload->>'role' = 'tester'`,
+				key).Scan(&after); err != nil {
+				t.Fatalf("read the held starts of %s: %v", key, err)
+			}
+			if finished := after == 0; finished != tc.finished {
+				t.Fatalf("the held start naming %q: finished %t, want %t; key a's agent %s was stopped after it", start.Claim, finished, tc.finished, keyed)
+			}
+		})
+	}
+}
+
+// A member held at step 3 of `implementer:a reviewer:b implementer:b`, the step of key b, named
+// reviewer, is re-admitted with its tree, and its held phase is retried: step 3's work reaches key
+// b alone. The member keeps its generation, its plan and its task's place through the re-admission,
+// so its rows keep the steps they ran (record.Store.ClearTreeGeneration) and every reader of the
+// implementer's worker reads key b off step 3's row (record.WorkerClaim), the claim the retry's
+// start names (workflow's restart). Before, the clear folded the implementer's rows into one of no
+// step, which every reader took for the role's own token, key a's: the admission pass then read key
+// a as behind step 3's entry and sent it that work beside the retry's start for key b, so two
+// agents worked one step in one working copy.
+func TestARetriedHeldMemberOfAReadmittedTreeSendsItsStepToItsOwnAgentAlone(t *testing.T) {
+	pool := migratedPool(t)
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	admission := newAdmission(t, 3, quiet)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, quiet)
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root",
+		Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
+	putIssue(t, pool, root)
+	parentKey := root.Key
+	const member = "LEGION-209"
+	putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Title: "held child", Tree: root.Key, Parent: &parentKey, Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1,
+		Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
+	keyA, keyB := keyedToken(t, member, "implementer"), keyedToken(t, member, "reviewer")
+	inTx(t, pool, func(tx pgx.Tx) {
+		ctx, records := context.Background(), record.NewStore()
+		v := record.PlanVersion{Issue: member, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: keyedToken(t, root.Key, claim.Agent(claim.RoleArchitect)), GivenAt: fixedNow}
+		task := record.PlanTask{Issue: member, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: member, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
+			{Issue: member, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review", AgentKey: "b", Agent: "reviewer"},
+			{Issue: member, Generation: 1, Task: "a", Position: 3, Role: "implementer", Type: "implementation", AgentKey: "b", Agent: "reviewer"},
+		}
+		for _, put := range []error{
+			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
+			records.MoveTask(ctx, tx, member, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning),
+			records.PutPhase(ctx, tx, record.PhaseRow{Issue: member, Role: claim.RoleImplementer, Claim: keyA, StepTask: "a", StepPlace: 1, Entry: 1,
+				EntryRaisedAt: fixedNow.Add(-3 * time.Hour)}),
+			records.PutPhase(ctx, tx, record.PhaseRow{Issue: member, Role: claim.RoleReviewer, Claim: keyB, StepTask: "a", StepPlace: 2, Entry: 2,
+				EntryRaisedAt: fixedNow.Add(-2 * time.Hour)}),
+			records.PutPhase(ctx, tx, record.PhaseRow{Issue: member, Role: claim.RoleImplementer, Claim: keyB, StepTask: "a", StepPlace: 3, Entry: 3,
+				EntryTask: "Implement it again. Issue: LEGION-209. Phase: implementing.", EntryRaisedAt: fixedNow.Add(-time.Hour)}),
+		} {
+			if put != nil {
+				t.Fatalf("seed %s held at step 3: %v", member, put)
+			}
+		}
+	})
+	seedStoredClaim(t, pool, root.Key, member, keyA, claim.RoleImplementer, "ready", "")
+	seedStoredClaim(t, pool, root.Key, member, keyB, claim.RoleImplementer, "ready", "")
+
+	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
+		Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
+	if got := issue(t, pool, member); got.Phase != phase.Held || got.Generation != 1 {
+		t.Fatalf("%s after its tree's re-admission stands in %s at generation %d, want held at generation 1", member, got.Phase, got.Generation)
+	}
+	result, err := intake.ApplyFact(context.Background(), pool, "api", "retry-held-step-3",
+		intake.RetryOrEscalate{Issue: member, Decision: intake.RetryDecision, Reason: "try again"}, engine, admission)
+	if err != nil || result.Refusal != nil {
+		t.Fatalf("the retry of %s's held step 3 = %+v, %v; want it taken", member, result.Refusal, err)
+	}
+	if got := issue(t, pool, member); got.Phase != phase.Implementing {
+		t.Fatalf("%s after the retry stands in %s, want implementing", member, got.Phase)
+	}
+
+	// A start that carries a task is work; the promotion brings each stored claim back with none.
+	work := map[claim.Token][]record.SuperviseRequest{}
+	for token, starts := range startsReaching(t, pool, member) {
+		for _, start := range starts {
+			if start.Role == claim.RoleImplementer && start.Task != "" {
+				work[token] = append(work[token], start)
+			}
+		}
+	}
+	if got := work[keyB]; len(got) != 1 || got[0].Claim != keyB || got[0].Entry != 3 {
+		t.Errorf("the implementer's work that reaches key b %s = %+v, want the retry's one start of step 3 at entry 3", keyB, got)
+	}
+	if got := work[keyA]; len(got) != 0 {
+		t.Errorf("the implementer's work that reaches key a %s = %+v, want none: step 3 is key b's", keyA, got)
+	}
+}

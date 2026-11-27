@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +23,19 @@ func refusalCode(result intake.Result) string {
 		return ""
 	}
 	return result.Refusal.Code
+}
+
+// jsonLogLines is each line of logged, an engine's log written by slog's JSON handler, that match
+// accepts, decoded, in the order logged; a line that is no JSON object is passed over.
+func jsonLogLines(logged *bytes.Buffer, match func(entry map[string]any) bool) []map[string]any {
+	var lines []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) == nil && match(entry) {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
 }
 
 // A review the review App submits decides a round only when the Legion footer it was written

@@ -234,11 +234,12 @@ you. Your acceptance comes before it where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
-role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
-handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
-where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
-is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
-carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
+role. You then read `dispatch results --issue <issue>` at the head that step passed, the handoff of
+each tester step that comes before yours, and the reviewer's approval of the head by SHA where a
+reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it is still
+in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
+carries every needed child's merge, `skill://legion-architect`, section 4). A task with no
+`acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
 you: Legion holds it before its retro while what refuses its sign-off still holds
@@ -262,7 +263,10 @@ step) or send it back with `request_backward_move` (`issue`, `to` the phase of a
 the task, and `reason`), a parent whose pass names an older base commit, or none, to `testing`
 (`implementing` where no tester step comes before acceptance); a parent's code fix goes to a child.
 `request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where
-two do, name `return_to`. Your acceptance comment names each check with its result.
+two do, name `return_to`. A move back to another phase that two earlier steps run as goes to the
+later of them, as a move from `accepting` to `reviewing` goes to step 4 of
+`implementer reviewer tester:c reviewer:c acceptance:owner`; name `return_to` to reach the earlier
+one. Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's

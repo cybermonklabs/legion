@@ -124,9 +124,9 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 
 // Two claims of one issue can hold one role: the agent of a key on the tester's step, beside the
 // tester's own claim of an earlier version of the plan. The daemon publishes the session of each,
-// with the claim it holds the role by and whether that claim works the role's step, and Dispatch
-// stores both: each session holds the role, the set reads back with both, and a later set that
-// names one of them leaves the other's session with no role.
+// with the claim it holds the role by and whether that claim works the role's step that started
+// last, and Dispatch stores both: each session holds the role, the set reads back with both, and a
+// later set that names one of them leaves the other's session with no role.
 func TestTwoClaimsOfOneRoleBothHoldIt(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})

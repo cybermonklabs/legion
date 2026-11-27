@@ -254,7 +254,7 @@ func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, i
 // children would hold because the role of that phase stands on an entry a move out of retro or
 // merging raised (acceptedEntry), and answers that role's phases row.
 func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.PhaseRow, bool, error) {
-	entry, err := e.phaseRow(ctx, tx, issue.Key, issue.RoleAt(issue.Phase))
+	entry, err := e.phaseRow(ctx, tx, issue, issue.RoleAt(issue.Phase))
 	if err != nil {
 		return record.PhaseRow{}, false, err
 	}
@@ -440,7 +440,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil {
 			return false, err
 		}
-		report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
+		report, err := e.phaseRowOn(ctx, tx, issue, w, accepted)
 		if err != nil {
 			return false, err
 		}
@@ -629,7 +629,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		if err != nil {
 			return err
 		}
-		if work, err = e.returnTask(ctx, tx, held, back, at, pr, rebuilt); err != nil {
+		if work, err = e.returnTask(ctx, tx, held, back, w, at, pr, rebuilt); err != nil {
 			return err
 		}
 	}
@@ -648,7 +648,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	}
 	e.logOnCommit(ctx, "workflow: a parent's open children are finished, so it goes back to the step its return takes", "issue", issue.Key,
 		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
-	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, back, w, role); err != nil {
 		return err
 	}
 	if err := e.start(ctx, tx, back, w, role, func(Standing) string { return work }, phase.AwaitingChildren, true); err != nil {
@@ -679,8 +679,9 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 // start goes back on the task it held, which carries the reason its transition wrote. Either task
 // names the children of held that merged during the wait (mergedChildren).
 // at is the standing of the work in the phase back stands in (standingPart), which a task built
-// here carries as every start's task does.
-func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.ChildrenWait, back record.Issue, at Standing, pr *record.PullRequest,
+// here carries as every start's task does, and w the walk of back's run after the return moved its
+// task, on which the implementer's row is read (phaseRowOn).
+func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.ChildrenWait, back record.Issue, w Walk, at Standing, pr *record.PullRequest,
 	rebuilt bool,
 ) (string, error) {
 	merged, err := e.mergedChildren(ctx, tx, back.Key, held.Children)
@@ -694,7 +695,7 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 		}
 		return work, nil
 	}
-	implementer, err := e.phaseRow(ctx, tx, back.Key, claim.RoleImplementer)
+	implementer, err := e.phaseRowOn(ctx, tx, back, w, claim.RoleImplementer)
 	if err != nil {
 		return "", err
 	}

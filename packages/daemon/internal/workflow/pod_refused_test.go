@@ -17,8 +17,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// refusedTesterTask is the task the tester's phases row holds for its entry 3 in these tests.
-const refusedTesterTask = "Test the change. Issue: LEGION-209. Phase: testing."
+// refusedTesterTask is the task the tester's phases row holds for its entry 3 in these tests, and
+// refusedTesterClaim the claim of the tester's step whose launch the pod refused: the tester's own,
+// since these issues hold no plan rows.
+const (
+	refusedTesterTask              = "Test the change. Issue: LEGION-209. Phase: testing."
+	refusedTesterClaim claim.Token = "legion-legion-legion-209-tester"
+)
 
 // reportRefusal applies one report of a launch of claim, the tester's, that LEGION-209's pod pod-1
 // refused, under event id.
@@ -68,15 +73,15 @@ func queueStart(t *testing.T, pool *pgxpool.Pool, start record.SuperviseRequest)
 	})
 }
 
-// wantOwedEntryStart fails t unless start is the tester's owed entry 3 of testing: the task its
-// phases row stores, marked as a resend of that entry, and marked with pod, the pod whose refusal
-// queued it (record.SuperviseRequest.RefusedPod).
+// wantOwedEntryStart fails t unless start is the tester's owed entry 3 of testing, naming the
+// tester's claim: the task its phases row stores, marked as a resend of that entry, and marked with
+// pod, the pod whose refusal queued it (record.SuperviseRequest.RefusedPod).
 func wantOwedEntryStart(t *testing.T, start record.SuperviseRequest, pod string) {
 	t.Helper()
-	if start.Role != claim.RoleTester || start.Phase != phase.Testing || start.Entry != 3 || !strings.HasPrefix(start.Task, refusedTesterTask) || !start.ResendEntry ||
-		start.RefusedPod != pod {
-		t.Fatalf("the queued start is %+v, want the tester's owed entry 3 of testing, its stored task %q, marked as a resend of that entry and with the refused pod %s",
-			start, refusedTesterTask, pod)
+	if start.Role != claim.RoleTester || start.Claim != refusedTesterClaim || start.Phase != phase.Testing || start.Entry != 3 ||
+		!strings.HasPrefix(start.Task, refusedTesterTask) || !start.ResendEntry || start.RefusedPod != pod {
+		t.Fatalf("the queued start is %+v, want the tester's owed entry 3 of testing naming %s, its stored task %q, marked as a resend of that entry and with the refused pod %s",
+			start, refusedTesterClaim, refusedTesterTask, pod)
 	}
 }
 
@@ -277,6 +282,52 @@ func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testi
 				t.Fatalf("the controller was told %v, want one %s notice", kinds, record.PodWaitHeldNotice)
 			}
 		})
+	}
+}
+
+// A refused launch's start names the claim the refusal is of, whichever claim the role's row names.
+// In `implementer:a tester:b implementer:b`, standing at step 3, key b's: a refusal of key b's claim
+// queues step 3's owed entry naming key b, the entry and the task its row holds, as a resend; one
+// of key a's claim, which works no step the task stands at, queues a start of no phase naming key
+// a, which resumes it with whatever it holds.
+func TestARefusedLaunchQueuesTheStartOfTheClaimItIsOf(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b")
+	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1, "head")
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
+	third := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[3]
+	if third.Claim != keyB || third.Entry == 0 || third.EntryTask == "" {
+		t.Fatalf("premise: step 3's row = %+v, want key b's, raised, with its task", third)
+	}
+	// The outbox ran the transitions' starts, so no start stands behind a refused launch, the case
+	// the report asks a start for; a finished row leaves the outbox.
+	if _, err := pool.Exec(t.Context(), `delete from outbox where issue = $1 and kind = 'supervise'`, root.Key); err != nil {
+		t.Fatalf("finish the transitions' starts: %v", err)
+	}
+	refusedStart := func(id string, token claim.Token) record.SuperviseRequest {
+		t.Helper()
+		before := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
+		if _, err := intake.ApplyFact(t.Context(), pool, "supervise", id, intake.PodRefusedLaunch{Issue: root.Key, Role: claim.RoleImplementer,
+			Claim: token, Pod: "pod-1", Detail: "the pod pod-1 of LEGION-208 was built without that slot"}, engine, admissionStub{}); err != nil {
+			t.Fatalf("apply the refusal of %s: %v", token, err)
+		}
+		starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
+		if len(starts) != before+1 {
+			t.Fatalf("the refusal of %s queued %d starts, want one", token, len(starts)-before)
+		}
+		return starts[len(starts)-1]
+	}
+	if s := refusedStart("pod-refused:key-b", keyB); s.Claim != keyB || s.Phase != phase.Implementing || s.Entry != third.Entry ||
+		!strings.HasPrefix(s.Task, third.EntryTask) || !s.ResendEntry {
+		t.Fatalf("the start a refusal of key b queued = %+v, want step 3's owed entry %d naming %s, its task, as a resend", s, third.Entry, keyB)
+	}
+	if s := refusedStart("pod-refused:key-a", keyA); s.Claim != keyA || s.Phase != "" || s.Entry != 0 || s.ResendEntry {
+		t.Fatalf("the start a refusal of key a queued = %+v, want a start of no phase naming %s", s, keyA)
 	}
 }
 

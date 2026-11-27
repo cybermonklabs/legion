@@ -67,23 +67,25 @@ type roleForReader struct {
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
 // every phase but step to the readers this list holds (record.Issue.RoleAt), or reads the phase a
 // held issue's retry restores only past the refusal of a plan's own hold, which is the one hold an
-// issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or never reads
-// admitted at all because a check before it refuses that phase, which is what each named test
-// holds it to. A parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320)
-// is of the last kind: each of its readers runs only past record.OpenChildHolds, which refuses
-// admitted, or on the start a hold kept, which is never admitted's. Where one reads accepting's
-// architect it starts no phase worker: the return of a parent whose pull request merged during
-// the wait starts what a move into accepting starts, a child's failed architect again and the
-// accepting step's run (ReturnFromChildren, through start and startStandingStep in
-// internal/workflow's effects.go), and the stop holds accepting with no role told
-// (StopForChildren), since the architect's notice tells it. The return reads the role of the step
-// at the place it returns to on a task with plan rows (Walk.RoleAt), so a return to a step of a
-// role the deployment defines starts that role. The release of a hold reads the held phase's role
-// for the restart (retryPhase), and a held phase is never admitted. The entry the phase's role
-// stands on is read for R9's exemption of a move out of retro or merging (samePhaseExempt) only
-// past record.OpenChildHolds, by the stop and by the guard on a start of the phase the issue
-// stands in, so it reads accepting's architect at most and never admitted's. The owner walk reads
-// no role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or reads the
+// roles of the retro and the merge alone, the places that stand after every step, and gives a task
+// at no act, as at admitted, its role's first place (record.RolePlace), or never reads admitted at
+// all because a check before it refuses that phase, which is what each named test holds it to. A
+// parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320) is of the last
+// kind: each of its readers runs only past record.OpenChildHolds, which refuses admitted, or on the
+// start a hold kept, which is never admitted's. Where one reads accepting's architect it starts no
+// phase worker: the return of a parent whose pull request merged during the wait starts what a move
+// into accepting starts, a child's failed architect again and the accepting step's run
+// (ReturnFromChildren, through start and startStandingStep in internal/workflow's effects.go), and
+// the stop holds accepting with no role told (StopForChildren), since the architect's notice tells
+// it. The return reads the role of the step at the place it returns to on a task with plan rows
+// (Walk.RoleAt), so a return to a step of a role the deployment defines starts that role. The
+// release of a hold reads the held phase's role for the restart (retryPhase), and a held phase is
+// never admitted. The entry the phase's role stands on is read for R9's exemption of a move out of
+// retro or merging (samePhaseExempt) only past record.OpenChildHolds, by the stop and by the guard
+// on a start of the phase the issue stands in, so it reads accepting's architect at most and never
+// admitted's. The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -103,6 +105,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}: {calls: 1, tests: []string{"TestArchitectUnchangedByItsCompletionAtAdmitted"}},
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
+	// The retro's role and the merge's, each compared with the role whose place it reads; a task at
+	// no act reads the role's first place.
+	{file: "internal/record/phase_rows.go", fn: "RolePlace"}: {calls: 2, tests: []string{
+		"TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands", "TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},

@@ -1,15 +1,15 @@
 # The merge gate: review and the production check
 
-Read it when you review or approve, or work a look of a closed issue's production check.
-Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
+Read it to review or approve, or to work a look of a closed issue's production check.
+Your role prompt gives the review submission, footer, thread rule, CI read and forward-merge confirmation; this page gives the rest.
 The merger's steps are all in its role prompt.
 
 ## The reviewer
 
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
-2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own.
+2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change, or, for a merge of the base, the merge's resolution (`git show --remerge-diff <merge>`) and this change's own commits since that commit.
-   The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
+   The daemon writes your task's last two sentences, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, and any `Commit another agent's review read: <sha>.` before them; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
    Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
@@ -41,7 +41,7 @@ A read GitHub refuses leaves the required set unknown: report it to the architec
   `--paginate` runs `--jq` per page, so choose over the merged list.
 
 - A required check run `queued`, `requested`, `waiting`, `pending` or `in_progress`, or such a status `pending`: wait, unapproved.
-  A run waiting on an environment's approval, another App's check run, or a status left `pending` has no bound: once it outlasts its usual CI time, tell the architect and wait.
+  A run waiting on an environment's approval, another App's check run, or a status left `pending` has no bound: past its usual CI time, tell the architect and wait.
 
 - A check the base does not require holds no approval: a red one is a finding if its log shows the change breaks something, else name it in the review body.
 

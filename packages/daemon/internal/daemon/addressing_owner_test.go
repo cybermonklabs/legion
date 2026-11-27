@@ -134,7 +134,7 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 		"step 1 of task a (implementer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
 		"step 2 of task a (tester) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
 		"step 3 of task a (reviewer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-reviewer`",
-		"your topic with the trailing `-<role>` replaced reaches the agent named for that role",
+		"your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above.",
 	} {
 		if !strings.Contains(told, want) {
 			t.Errorf("the reviewer is told %q; want it naming %q", told, want)

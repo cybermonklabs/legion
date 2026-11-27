@@ -81,10 +81,10 @@ export function isStepRole(role: string): boolean {
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `awaiting_person`, `awaiting_children`, `done`, `held`, `unrecorded` — has none, and so has any
  * value that is not a phase; `admitted` and `accepting` are the architect's, and `retro` is the
- * implementer's second turn on the issue it developed. `step` has none either, since the role at
- * work there is the issue's `stepRole`, the role of its running step, which no phase names. The one
- * reader here, the phase reminder, runs for a phase worker alone, so the architect's two phases
- * never remind anyone.
+ * implementer's turn on the issue it developed after the task's last step, however many steps it
+ * worked. `step` has none either, since the role at work there is the issue's `stepRole`, the role
+ * of its running step, which no phase names. The one reader here, the phase reminder, runs for a
+ * phase worker alone, so the architect's two phases never remind anyone.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {

@@ -294,12 +294,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if queuedRowCovers(run, *root, issue.Phase) {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	row, err := e.phaseRow(ctx, tx, *issue, role)
 	if err != nil {
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.SendOwedEntry(ctx, tx, *issue, role, token, row); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
@@ -310,7 +310,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: token,
 		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}

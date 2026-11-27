@@ -501,9 +501,10 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 // naming the pause, the claim's token, role, tree and generation, and a reason the stopped claim's
 // log line carries, keyed as StopKey keys it. The row names the claim by its token
 // (record.SuperviseRequest.Claim): two claims of one issue can hold one role — the agent of a key
-// on a step of another role, beside that role's own claim of an earlier version of the plan — so
-// the issue and the role do not name the claim the stop is for. The pause's transaction builds its
-// rows with it, and so do the daemon's catch-up after a pause and its boot's pass while paused
+// on a step of another role, beside that role's own claim of an earlier version of the plan, or two
+// agents at two steps of the role — so the issue and the role do not name the claim the stop is
+// for. The pause's transaction builds its rows with it, and so do the daemon's catch-up after a
+// pause and its boot's pass while paused
 // (store.Store.AskPauseStops, AskLivePauseStops), so every stop of a pause is one row of one
 // shape. A row keyed by the project names the claim's issue in its payload
 // (record.SuperviseRequest.Issue), which the executor's lines name, and from which it reads the

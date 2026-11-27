@@ -790,10 +790,10 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 // step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
 // serving the current generation: the one shape of claim a phase reminder is armed in. Two claims
 // of one issue can hold that role — the agent of a key on its step, beside the role's own claim
-// of an earlier version of the plan — and only the claim the record gives the role's step works
-// the phase (record.WorkerClaim over the role's phases row, pods.IdleView.Phases): the claim the
-// row names while it runs a step, and the role's own token otherwise. A reminder due on the other
-// holds no pod.
+// of an earlier version of the plan, or two agents at two steps of the role — and only the claim
+// the record gives the role's step works the phase (record.WorkerClaim over the role's phases row
+// now, pods.IdleView.Phases): the claim the row names while it runs a step, and the role's own
+// token otherwise. A reminder due on the other holds no pod.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
 	role := OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole})
 	if role != c.Role || c.ServingGeneration != view.Generation {

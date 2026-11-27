@@ -71,15 +71,9 @@ func statusWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.Statu
 // handover of issue from source, the one message admission logs its own under.
 func personHandoverLines(t *testing.T, logged *bytes.Buffer, issue, source string) int {
 	t.Helper()
-	lines := 0
-	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "admission: queued a person's handover" &&
-			entry["issue"] == issue && entry["source"] == source {
-			lines++
-		}
-	}
-	return lines
+	return len(jsonLogLines(logged, func(entry map[string]any) bool {
+		return entry["msg"] == "admission: queued a person's handover" && entry["issue"] == issue && entry["source"] == source
+	}))
 }
 
 // A person's approval of the primary document of a parked labelled root the daemon has no record

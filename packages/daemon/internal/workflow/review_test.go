@@ -1892,9 +1892,13 @@ func TestAKeyedAgentOnTheReviewersStepDecidesTheRoundByTheSessionOfItsOwnClaim(t
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
-			row := reviewerRow(t, pool)
-			row.StepTask, row.Claim = "a", keyedReviewClaim
-			seedPhase(t, pool, row)
+			// The entry of the reviewer's step writes the row of that step, task a at place 3, with
+			// the keyed agent's claim: the fixtures' reviewer row moves to the step, as a phases row
+			// is keyed by its step and a put at another step would stand beside it.
+			if _, err := pool.Exec(t.Context(), "update phases set step_task = 'a', step_place = 3, claim = $1 where issue = 'LEGION-208' and role = $2",
+				string(keyedReviewClaim), string(claim.RoleReviewer)); err != nil {
+				t.Fatalf("move the reviewer's row to its step: %v", err)
+			}
 			seedClaimSession(t, pool, keyedReviewClaim, "ses-key-a")
 			var logs bytes.Buffer
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))

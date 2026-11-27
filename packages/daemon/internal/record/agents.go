@@ -122,10 +122,10 @@ type UnnamedAgent struct {
 // that has no name, with the name it would have taken — a key's newest earlier name, and
 // otherwise its role's (RoleName) — and the key that holds that name: the key of the agent of
 // named that holds it, and otherwise the key whose earlier row, or the lasting record, holds it
-// (keyNamesHeld). This release runs one agent of each role for an issue, and a name a key held is
-// that key's alone, so a version with one is refused before any write. held is required, as it is
-// of NameAgents: a caller with no history passes none of its own, and one that forgets it would
-// read the names from the rows alone.
+// (keyNamesHeld). This release names each agent of an issue for a role and gives each name to one
+// agent, and a name a key held is that key's alone, so a version with one is refused before any
+// write. held is required, as it is of NameAgents: a caller with no history passes none of its
+// own, and one that forgets it would read the names from the rows alone.
 func UnnamedAgents(earlier, named []PlanStep, held []KeyName) []UnnamedAgent {
 	keyNames, holders := keyNamesHeld(earlier, held)
 	var unnamed []UnnamedAgent

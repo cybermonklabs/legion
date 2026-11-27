@@ -483,6 +483,32 @@ func TestACompletionFromAClaimThatDoesNotWorkTheStepIsRefused(t *testing.T) {
 	}
 }
 
+// The step-worker check comes before the entry fence. The tester's row names key a's agent on
+// step 2 at entry 2, and the tester's own claim completes entry 1, which no row of the role stands
+// on, at a commit the pull request has left: it is refused HANDOFF_NOT_THE_STEPS_WORKER, unspent,
+// and the row stays key a's, unreported. Asked after the fence, the completion would be refused
+// HANDOFF_STALE_ENTRY, whose words promise the claim the task of entry 2, which goes to key a.
+func TestAnotherClaimsCompletionBehindTheStepsEntryIsNotTheStepsWorkers(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
+		HeadSHA: "head", Failing: []string{}})
+	const keyed, own = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-tester")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 2})
+	result, err := intake.ApplyFact(ctx, pool, "api", "own-behind", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester,
+		Claim: own, Entry: 1, Commit: "a-commit-the-pull-request-left", Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+	if err != nil || result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_THE_STEPS_WORKER" || !result.Unspent {
+		t.Fatalf("the tester's own completion of entry 1 behind key a's entry 2 = %+v (unspent %t), %v; want HANDOFF_NOT_THE_STEPS_WORKER, unspent",
+			result.Refusal, result.Unspent, err)
+	}
+	if row := phaseRowOf(t, pool, claim.RoleTester); row.Claim != keyed || row.Completed() {
+		t.Fatalf("the tester's row = %+v, want it naming %s, unreported", row, keyed)
+	}
+}
+
 // testerCompletes seeds LEGION-208 in testing with the tester's row as row, and answers the
 // completion of the tester's report by token: the shape of a case of the step-worker fence.
 func testerCompletes(t *testing.T, row record.PhaseRow, token claim.Token) intake.Result {

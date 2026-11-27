@@ -571,23 +571,21 @@ const (
 // pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
 // reports. A held issue stands where no role works, so no role has left its phase there
 // (leftItsPhase), but a hold of an owner's plan, which stands where its issue stands: a parent held
-// for its children at its retro, and a stopped task at the step the stop ended, whose own role's
-// report is the run the stop ended and is no left phase's, so a run of a left phase is never also
-// that run.
-// A left phase is reported only if its row holds this run's started task (ranUnreported), not
-// merely a claim that may have been created to look at a production check.
-func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
-	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
+// for its children at its retro, and a stopped task at the step the stop ended, whose report of
+// that step's run is the run the stop ended and is no left phase's, so a run of a left phase is
+// never also that run. A left phase is reported only if its row holds this run's started task
+// (ranUnreported), not merely a claim that may have been created to look at a production check.
+// w is the walk of issue's run and row the role's row of the run the completion reports
+// (Walk.completionRow).
+func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fact intake.HandoffComplete, reported phase.Phase,
+	row record.PhaseRow) (pastReport, error) {
+	left, err := e.leftItsPhase(ctx, tx, issue, w, fact.Role, fact.Claim, reported, row)
 	switch {
 	case err != nil:
 		return noRunReported, err
 	case left:
 		return leftPhaseReported, nil
-	case record.HeldFor(issue, record.HoldTaskStopped) && issue.Hold.From == reported:
-		w, err := e.walk(ctx, tx, issue)
-		if err != nil || !planHold(issue, w.Stored) {
-			return noRunReported, err
-		}
+	case record.HeldFor(issue, record.HoldTaskStopped) && issue.Hold.From == reported && planHold(issue, w.Stored):
 		return stoppedStepReported, nil
 	}
 	return noRunReported, nil
@@ -595,50 +593,46 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and a stop of its task ended the run the report is of. past is
-// the run the report is of (pastReportOf). The report of the phase a stop holds the issue from is
-// late only where its row still holds this run's started task (ranUnreported); its first sentence
-// is the reason the task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
+// the run the report is of (pastReportOf), and row the role's row of that run
+// (Walk.completionRow). The report of the phase a stop holds the issue from is late only where
+// row still holds this run's started task (ranUnreported); its first sentence is the reason the
+// task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
 // event ended, whatever step the task stands at now, which handoff takes as it takes one on an
 // issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
 // gone; one of the retro or the merge; one of a task whose issue left the workflow
 // (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
 // writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
 // handoff record (spendLateHandoff).
-func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
-	if past != stoppedStepReported {
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fact intake.HandoffComplete, reported phase.Phase, past pastReport,
+	row record.PhaseRow) (*intake.Refusal, error) {
+	if past != stoppedStepReported || !w.Stored {
 		return nil, nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
-		return nil, err
-	}
-	// The report is of the role's own step, so of two steps that run as step, only the one the stop
-	// ended (the task keeps its place at its stop) is late.
-	at, ok := w.placeOfRole(fact.Role)
+	// The report is of the step whose run row holds, so of two steps that run as step, or two
+	// steps of one role, only the one the stop ended (the task keeps its place at its stop) is
+	// late.
+	at, ok := w.runPlace(row, reported)
 	if !ok || at != w.Place || at.Kind != record.PlaceStep {
 		return nil, nil
 	}
-	ran, err := e.ranUnreported(ctx, tx, issue, fact.Role, fact.Claim)
+	ran, err := e.ranUnreported(ctx, tx, issue, fact.Role, fact.Claim, row)
 	if err != nil || !ran {
 		return nil, err
 	}
 	return intake.LateReportOfStoppedTask(issue.Key, w.Task, w.StoppedReason, at.Position, w.Steps[at.Position-1].Role, fact.HandoffRecord != ""), nil
 }
 
-// spendLateHandoff keeps the handoff record fact names, a late report lateReport refused, as its
-// role's last one (record.PhaseRow.LastHandoff), and writes nothing else: the issue, its task and
-// the rest of the row stand as they were, and no movement is marked. The record counts as used, so
-// the step's next run is refused it (HANDOFF_NOT_NEW) and writes a handoff of its own, as the
-// refusal tells the agent. A report that names no record writes nothing.
-func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) error {
-	if fact.HandoffRecord == "" {
+// spendLateHandoff keeps handoff, the record a late report lateReport refused names, as its role's
+// last one on row, the role's row of the run the report is of (record.PhaseRow.LastHandoff), and
+// writes nothing else: the issue, its task and the rest of the row stand as they were, and no
+// movement is marked. The record counts as used, so the step's next run is refused it
+// (HANDOFF_NOT_NEW) and writes a handoff of its own, as the refusal tells the agent. A report that
+// names no record writes nothing.
+func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, row record.PhaseRow, handoff string) error {
+	if handoff == "" || row.LastHandoff == handoff {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
-	if err != nil || row.LastHandoff == fact.HandoffRecord {
-		return err
-	}
-	row.LastHandoff = fact.HandoffRecord
+	row.LastHandoff = handoff
 	return e.store.PutPhase(ctx, tx, row)
 }
 

@@ -882,9 +882,9 @@ type Issue struct {
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (the stranded
 	// token's entry, strandedTokenContract). Two claims of one issue can hold one role — the
-	// agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan — and `workers` holds one
-	// entry per role, so a reader finds the other one here, by its token (ClaimView.Token).
+	// agent of a key on a step of another role, beside that role's own claim of an earlier
+	// version of the plan, or two agents at two steps of the role — and `workers` holds one entry
+	// per role, so a reader finds the other one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`

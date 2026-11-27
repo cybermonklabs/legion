@@ -146,6 +146,56 @@ func (w Walk) placeIn(p phase.Phase) (record.TaskPlace, bool) {
 	return w.Place, true
 }
 
+// rowRead is the task and the place of w a role's row is read at (record.PhaseRowAt): w's task
+// and place, or, for a stored task at no act whose issue stands in standsIn, the first place of
+// standsIn on its line (PlaceOf), as placeIn reads it. A walk with no plan rows reads no task, so
+// each role reads its one row (record.PhaseRowOf).
+func (w Walk) rowRead(standsIn phase.Phase) (string, record.TaskPlace) {
+	if !w.Stored {
+		return "", record.TaskPlace{}
+	}
+	if w.Place.Kind == "" {
+		at, _ := w.PlaceOf(standsIn)
+		return w.Task, at
+	}
+	return w.Task, w.Place
+}
+
+// completionRow is the row of rows of the run role's completion serving entry reports
+// (record.CompletionRow), read where w's task stands (rowRead): where role works that place
+// (works), its row there; otherwise the row of the entry it serves, else role's row now.
+func (w Walk) completionRow(rows []record.PhaseRow, role claim.Role, entry int64, works bool, standsIn phase.Phase) record.PhaseRow {
+	task, at := w.rowRead(standsIn)
+	return record.CompletionRow(rows, role, entry, works, task, at, w.Steps)
+}
+
+// runPlace is the place on w of the run row holds, a run of reported: the retro and the merge at
+// their places, and a step at the step the row ran (record.PhaseRow.StepPlace), so a report of a
+// role that stands at two steps is the report of the step whose run it is, whichever place the
+// task stands at now. A row of no step, one a new generation cleared or the release before wrote,
+// is the role's one row, at its place nearest where the task stands (record.RunPlace). ok is
+// false for a row of another task, and for a step w's line no longer runs as reported with the
+// row's role there, as after a later version of the plan took it away. A walk with no plan rows
+// holds each phase once (PlaceOf).
+func (w Walk) runPlace(row record.PhaseRow, reported phase.Phase) (record.TaskPlace, bool) {
+	if !w.Stored {
+		return w.PlaceOf(reported)
+	}
+	switch {
+	case row.StepTask != "" && row.StepTask != w.Task:
+		return record.TaskPlace{}, false
+	case reported == phase.Retro:
+		return record.TaskPlace{Kind: record.PlaceRetro}, true
+	case reported == phase.Merging:
+		return record.TaskPlace{Kind: record.PlaceMerge}, true
+	}
+	place := record.RunPlace(row, w.Place, w.Steps)
+	if place < 1 || place > len(w.Steps) || w.Line[place-1] != reported || claim.Role(w.Steps[place-1].Role) != row.Role {
+		return record.TaskPlace{}, false
+	}
+	return record.TaskPlace{Kind: record.PlaceStep, Position: place}, true
+}
+
 // steps is the part of the line each step runs: all of it but the retro and the merge.
 func (w Walk) steps() []phase.Phase {
 	if len(w.Line) < 2 {
@@ -155,9 +205,9 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // MovesBack says whether row moves w's task back by the task's own order. A stored walk compares
-// the row's two places (record.TaskPlace.Rank): an earlier step by its place, every step before
-// the retro, the retro before the merge, so a move from step 3 back to step 2 goes back though both
-// run as step.
+// the row's two places (record.TaskPlace.Rank): an earlier step by its place, every step before the
+// retro, the retro before the merge, so a move from step 3 back to step 2 goes back though both run
+// as step.
 // A run with no plan rows walks today's line, so this is phase.MovesBack of the row's two phases
 // for it. A task in another order than today's so counts its move back from testing to reviewing
 // (the steps `implementer reviewer tester`), and not the review's approval from reviewing to
@@ -174,8 +224,9 @@ func (w Walk) MovesBack(row Row) bool {
 // the reviewer's review an issue past it stands on. It compares places (record.TaskPlace.Rank), so
 // it reads a task whose steps of roles the deployment defines all run as step as the stored table
 // does (MovesBack). A phase the line does not hold, and an issue that stands at no place of the
-// line, passed nothing. Where two steps run as p it reads the first (PlaceOf); its readers ask of
-// implementing and reviewing, which each stand once in a line.
+// line, passed nothing. Where two steps run as p it reads the first (PlaceOf), which is what its
+// readers ask of implementing and reviewing, either of which can stand at two steps: whether any
+// such step stands behind the place the task stands at.
 func (w Walk) passedStep(at, p phase.Phase) bool {
 	here, standing := w.placeIn(at)
 	there, held := w.PlaceOf(p)
@@ -518,24 +569,16 @@ func (w Walk) endingRole(from phase.Phase) claim.Role {
 	return phase.RoleFor(from)
 }
 
-// placeOfRole is the place of the step of w's task whose role is role, ok false where none is: a
-// role runs at most one step of a task.
-func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {
-	for i, step := range w.Steps {
-		if claim.Role(step.Role) == role {
-			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}, true
-		}
-	}
-	return record.TaskPlace{}, false
-}
-
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
-// once (PlaceOf); for a stored walk the one place before w.Place whose step, retro or merge runs
-// as to. Where no earlier place runs as to, or more than one does (two steps that run as step), no
-// backward row serves the move. Where to is step and two or more places before w.Place run as
-// step, its third answer is the two of them nearest w.Place, the lower first, which the move's
-// refusal names (backwardRefusal); it is nil in every other case.
+// once (PlaceOf); for a stored walk the place before w.Place whose step, retro or merge runs as to,
+// the nearest of them where a role that stands at two steps runs to at two places before w.Place.
+// A failed step's work does not go to the nearest: it returns to the first step of the type
+// implementation before it (returnTarget). Where no earlier place runs as to, no backward row
+// serves the move. Where to is step and two or more places before w.Place run as step, they are
+// steps of roles the move does not tell apart, and its third answer is the two of them nearest
+// w.Place, the lower first, which the move's refusal names (backwardRefusal); it is nil in every
+// other case.
 func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.TaskPlace) {
 	if !w.Stored {
 		place, ok := w.PlaceOf(to)
@@ -548,10 +591,10 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 		}
 	}
 	switch {
-	case len(found) == 1:
-		return found[0], true, nil
 	case len(found) >= 2 && to == phase.Step:
 		return record.TaskPlace{}, false, found[len(found)-2:]
+	case len(found) >= 1:
+		return found[len(found)-1], true, nil
 	}
 	return record.TaskPlace{}, false, nil
 }

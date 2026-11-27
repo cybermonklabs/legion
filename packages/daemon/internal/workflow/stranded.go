@@ -168,8 +168,8 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 	}
 	// The worker of a role's step is the claim the record gives it (record.WorkerClaimOf over the
 	// issues' phases rows, read once here): two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — and
-	// only the worker is one a start of the phase brings back.
+	// step of another role, beside that role's own claim of an earlier version of the plan, or two
+	// agents at two steps of the role — and only the worker is one a start of the phase brings back.
 	var keys []string
 	seen := make(map[string]bool, len(claims))
 	for _, c := range claims {

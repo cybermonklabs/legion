@@ -990,8 +990,9 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 // implementerOfAnotherAgent seeds and restores a second claim of the implementer's role on the
 // rig's issue: the claim of the agent named agent, in state, suspended by by where it is
 // suspended, as quiet as the rest of the pod. Two claims can hold one role: the agent of a key
-// works a step of another role than its name, beside that role's own claim of an earlier version
-// of the plan. A live one gets a locator of its own, as a launch gives it.
+// works a step of another role than its name, beside that role's own claim, which works another
+// step of the role in the same plan or worked one in an earlier version of the plan. A live one
+// gets a locator of its own, as a launch gives it.
 func (r *idleRig) implementerOfAnotherAgent(t *testing.T, agent claim.Agent, state supervise.ClaimState, by supervise.SuspendSource) *supervise.Machine {
 	t.Helper()
 	ctx := context.Background()

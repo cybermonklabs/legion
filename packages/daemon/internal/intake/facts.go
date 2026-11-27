@@ -1278,8 +1278,9 @@ type BackwardMove struct {
 	// ReturnTo is the step of the issue's running task the move names as the one it returns to:
 	// its place in the task, 1 for its first. A move that names one goes to that place, judged as
 	// a failed step's returnTo is (workflow's returnStep), and its To must be the phase that step
-	// runs as. 0 names none, and the move goes to the one earlier place of its task that runs as
-	// To.
+	// runs as. 0 names none, and the move goes to the nearest earlier place of its task that runs
+	// as To (workflow's backwardPlace); where To is step and two earlier places run as step, it is
+	// refused, since it does not say which.
 	ReturnTo int
 	// PhaseEntry is, for a phase worker's move, the entry of the requester's phases row its claim
 	// serves (supervise.Claim.ServingEntry, the entry of the task its turn is on), which the route
@@ -2140,15 +2141,16 @@ func RunningTaskChanged(task string) plan.Refusal {
 // would take name — the name its key held in an earlier version, or its role's — which holder holds:
 // the key of another agent of the plan that holds the name, or the key whose rows held it in an
 // earlier version, "" for an agent with no key (record.NameAgents, record.UnnamedAgents). A name a
-// key held is that key's alone, and this release runs one agent of each role for an issue, so such
-// a version is refused as a plan before anything is written, never as an error of the write.
+// key held is that key's alone, and this release names each agent of an issue for a role and gives
+// each name to one agent, so such a version is refused as a plan before anything is written, never
+// as an error of the write.
 func AgentUnnamed(task string, place int, name, holder string) plan.Refusal {
 	held := "another agent of this plan, with no key,"
 	if holder != "" {
 		held = "key " + holder + ", from this version or an earlier one,"
 	}
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and %s holds the name %s, which this step's agent would take; "+
-		"a name a key held is that key's alone, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, held, name)}
+		"a name a key held is that key's alone, and this release names each agent of an issue for a role and gives each name to one agent. This release of Legion does not carry it out yet.", place, task, held, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2425,10 +2427,15 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // row: the completion route on its read, before the fact (api's answerCompletion), which is the
 // early refusal, and the workflow's handoff on the row the fact's own transaction reads (workflow's
 // Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
-// the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
-// row names (record.PhaseRow.Entry), and movedBack whether the move that raised it was a move back
-// (record.PhaseRow.EntryMovedBack); issue is the record as the same read holds it, pr the pull
-// request it holds, and pending the claim's queued task, which only the route reads.
+// the entry the claim's worker is on (HandoffComplete.Entry), and row the role's phases row of the
+// run the completion is of (record.CompletionRow, or the workflow's own read of it): its entry,
+// current here (record.PhaseRow.Entry), whether the move that raised it was a move back
+// (record.PhaseRow.EntryMovedBack), and holder, the claim it names (record.PhaseRow.Claim, read
+// raw: a row naming no claim is no other agent's turn, below). otherSteps is the highest entry
+// another row of the role holds, the row of another of its steps or the implementer's retro row
+// (record.OtherStepsEntry), 0 where the role has no other row; served is the claim the role's row
+// on the served entry names (record.ServedClaim); issue is the record as the same read holds it,
+// pr the pull request it holds, and pending the claim's queued task, which only the route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2472,9 +2479,21 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name, and a row's
-// entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
-// takes it.
-func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, commit string, pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+// entry only rises.
+//
+// An entry behind the row's whose run is another agent's is a turn of that agent
+// (AnotherAgentsStep): two agents of one role keep a row each, as `implementer:a tester:b
+// implementer:b` does once a move back returns the task to key a's step 1 while key b's turn
+// of step 3 is still open. served, the claim the role's row on the served entry names, is then not
+// holder, the claim of the row the task stands at, whose entry's task goes to holder alone, so
+// StaleEntry's words, which tell the worker that task comes to it, would have it wait for nothing.
+// An entry no row of the role stands on any longer (a run of the same step the role was handed
+// again) and either row naming no claim (one the release before wrote) are no such turn.
+//
+// Every other entry behind the row's is refused (StaleEntry) unless BehindEntryClause takes it.
+func EntryFence(issue record.Issue, role claim.Role, served claim.Token, entry int64, row record.PhaseRow, otherSteps int64, commit string,
+	pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+	current, holder := row.Entry, row.Claim
 	if entry == 0 || current == 0 || entry == current {
 		return nil
 	}
@@ -2485,12 +2504,51 @@ func EntryFence(issue record.Issue, role claim.Role, entry, current int64, moved
 	if entry > current {
 		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
 	}
+	if served != "" && holder != "" && served != holder {
+		return AnotherAgentsStep(issue.Key, role, p, current, entry, holder)
+	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
-	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack); clause != "" {
+	if clause := BehindEntryClause(recordBacked, commit, pr, row.EntryMovedBack, entry <= otherSteps); clause != "" {
 		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
 	}
 	return nil
+}
+
+// StepsWorkerFence is the 409 HANDOFF_NOT_THE_STEPS_WORKER refusal of a completion by token, a
+// claim of role on issue, of a step whose run's row, row, names another claim on a step of the plan,
+// and nil where token works the step. Two claims of one issue can hold one role — the agent of a
+// key on a step of another role, beside that role's own claim of an earlier version of the plan, or
+// two agents at two steps of the role — and the row names the one that works its step
+// (record.WorkerClaim), so a completion from the other is no report of the step. A row that names
+// no agent of its own (record.NamesItsAgent) names no worker here, and a completion that names no
+// claim, from a route before the claim was carried, is judged by its role. A completion of an
+// entry token's own claim served (served, record.ServedClaim) is the entry fence's to answer: a
+// step token ran that the task has since left for another agent's step, which EntryFence refuses
+// naming that agent (AnotherAgentsStep).
+//
+// Both judges ask it before EntryFence: the completion route on its read, where the role works the
+// issue's phase, and the workflow's handoff on its own. Asked after, the fence would refuse such a
+// completion HANDOFF_STALE_ENTRY, whose words promise the claim the task of the entry the phase is
+// on, and that task goes to the row's claim alone.
+func StepsWorkerFence(issue string, role claim.Role, token, served claim.Token, row record.PhaseRow) *Refusal {
+	if !record.NamesItsAgent(row) || token == "" || token == row.Claim || served == token {
+		return nil
+	}
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_THE_STEPS_WORKER", Message: fmt.Sprintf(
+		"%s is a claim of the %s of %s, and %s works its step: only that claim's completion reports the step; this completion changed nothing",
+		token, role, issue, row.Claim)}
+}
+
+// AnotherAgentsStep is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion of entry serving
+// of role's phase p of issue, behind the entry current that the role's row where the task stands
+// is on, whose step is the work of another agent's claim, holder (EntryFence). The code is the one
+// every worker's prompt names for a completion of work it no longer has (NotCurrentPhase): the
+// completing claim has no step of the task to do, and nothing of holder's step comes to it.
+func AnotherAgentsStep(issue string, role claim.Role, p phase.Phase, current, serving int64, holder claim.Token) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf(
+		"the %s step of %s that the task stands at, in phase %s, is the work of another agent's claim, %s, on entry %d; this completion is of entry %d, a step this claim ran that the task has left, so no task of that step comes to this claim: do not wait for one and do not complete again; this completion changed nothing",
+		role, issue, p, holder, current, serving)}
 }
 
 // unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases
@@ -2556,11 +2614,26 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // transition that raised it, so the rule reads the move rather than guessing at it from the heads
 // (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 //
+// Unless the entry the completion serves is of another of the role's steps or its retro, or of an
+// earlier run of this step that the task left for one of them (otherStep). A role can stand at two
+// steps of a task, one agent doing both or one agent each, and a forward move enters the later
+// one: the reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer
+// step 3 at the head step 1 left, while the agent's turn of step 1 can still be open. The two steps
+// ask for different work, so the same head is not the same work between them, and the first entry
+// of the role's other step asks for work no verdict of an earlier step answers, as a move back's
+// entry does. A row holds only the entry it stands on, and a step's start raises its entry above
+// every row of its role (workflow's enter), so the caller says it from the rows: the served entry
+// is at or below the entry another step's row of the role holds (EntryFence's otherSteps). That
+// also refuses an earlier entry of this same step that the role left for another step and came
+// back from, a turn that outlived a step the task stood at since.
+//
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
 // the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
-// that the entry the phase stands on was raised by a move back, which is what refuses this
-// completion whatever those two heads read.
-func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack bool) string {
+// that the entry the phase stands on was raised by a move back, and where otherStep, that the entry
+// served is of another of the role's steps or its retro, or of a run of this step that the task
+// left for one of them, each of which refuses this completion whatever those two
+// heads read.
+func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack, otherStep bool) string {
 	if !recordBacked {
 		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
 	}
@@ -2568,7 +2641,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	if pr != nil {
 		head = pr.HeadSHA
 	}
-	if !movedBack && commit != "" && commit == head {
+	if !movedBack && !otherStep && commit != "" && commit == head {
 		return ""
 	}
 	gave := "this completion names no commit"
@@ -2582,6 +2655,9 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	clause := gave + " while " + holds
 	if movedBack {
 		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
+	}
+	if otherStep {
+		clause += ", and the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them, whose work is not the work the task stands at now, so no verdict on either head answers for it"
 	}
 	return clause
 }

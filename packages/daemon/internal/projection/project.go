@@ -172,8 +172,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
 	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
 	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — so
-	// the issue and the role do not name the claim, and the worker's token does.
+	// step of another role, beside that role's own claim of an earlier version of the plan, or two
+	// agents at two steps of the role — so the issue and the role do not name the claim, and the
+	// worker's token does.
 	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
 		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
@@ -288,13 +289,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
-		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
-		// and role): the round's decision is read from it, and so is what the round waits on from
-		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
-		var reviewer record.PhaseRow
+		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
+		// stands at two steps of a task has a row for each, and its worker is served from the row of
+		// the step it works now or worked last, the row the admission pass weighs it against. The
+		// reviewer's row now is the round's: its decision is read from it, and so is what the round
+		// waits on from GitHub (mergeWaitView). The zero row is an issue whose reviewer has never
+		// had one.
+		reviewer := record.PhaseRowOf(phases, claim.RoleReviewer)
 		for _, item := range phases {
-			if item.Role == claim.RoleReviewer {
-				reviewer = item
+			if now := record.PhaseRowOf(phases, item.Role); now.StepTask != item.StepTask || now.StepPlace != item.StepPlace {
+				continue
 			}
 			claimView, live := claimViews[item.Claim]
 			if !live {

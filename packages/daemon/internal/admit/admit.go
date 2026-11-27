@@ -3479,7 +3479,9 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 //
 // The claims are each stored claim of the member (record.Store.IssueClaims), a keyed agent's and a
 // role of the deployment's among them, and the phase's owner is the agent of the step the member
-// stands in, read with the member (record.Issue.RoleAt, workflow's PromotedWorkerClaim).
+// stands in: its role read with the member (record.Issue.RoleAt), its claim read off the role's
+// phases row (record.WorkerClaim), which the re-admission leaves on the step the member stands at
+// (record.Store.ClearTreeGeneration).
 //
 // A member at admitted is passed over: its first phase is the waiting line's to start. R9
 // (dispatch://INFRA-3320) holds a mid-phase member's start at the root's promotion or at the pass
@@ -3585,13 +3587,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner, carriedSlot: carried}
-		// The phase's owner is the claim the promotion's start reaches (PromotedWorkerClaim): the
-		// agent of the step the member stands in, which can be a keyed agent on a step of another
-		// role. Its token's refusal stays the fact's, as it was: the phase's own role is the
-		// member's work rather than a session brought back.
+		// The phase's owner is the claim the promotion's start reaches: the agent of the step the
+		// member stands in, which can be a keyed agent on a step of another role, read as every
+		// reader of a role's worker reads it (record.WorkerClaim), off the row the step's entry
+		// wrote it on. The member keeps its generation and its rows keep their steps through the
+		// re-admission, so it is the claim the start names (workflow.Engine.StartPromotedWorker).
+		// Its token's refusal stays the fact's, as it was: the phase's own role is the member's
+		// work rather than a session brought back.
 		var ownerToken claim.Token
 		if owner != "" {
-			token, err := a.engine.PromotedWorkerClaim(ctx, tx, member, owner)
+			rows, err := a.store.Phases(ctx, tx, member.Key)
+			if err != nil {
+				return err
+			}
+			token, err := record.WorkerClaim(project, member.Key, owner, rows)
 			if err != nil {
 				return err
 			}
@@ -3697,13 +3706,15 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
-// role of, or the root whose own architect it is, the phases row the work and the entry are read
-// from, how the pass sends that work (Send), and the entry that role's claim was last given, which
-// only the log line of the send reads. It stays unexported: the shape of this selection is this
-// package's, and the one question another package asks of it is OwesEntryWork's yes or no.
+// role of, or the root whose own architect it is, the claim the rule weighed (Token), which the
+// work is sent to, the phases row the work and the entry are read from, how the pass sends that
+// work (Send), and the entry that role's claim was last given, which only the log line of the send
+// reads. It stays unexported: the shape of this selection is this package's, and the one question
+// another package asks of it is OwesEntryWork's yes or no.
 type owedEntryRole struct {
 	Issue record.Issue
 	Role  claim.Role
+	Token claim.Token
 	Row   record.PhaseRow
 	Send  entrySend
 	Given int64
@@ -4118,7 +4129,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
 		row := record.PhaseRowOf(rows, held.role)
-		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Send: send, Given: workflow.GivenEntry(run)})
+		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Token: held.token, Row: row, Send: send, Given: workflow.GivenEntry(run)})
 	}
 	return owed, nil
 }
@@ -4276,7 +4287,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			startedArchitect(role.Issue.Key)
 			store.OnCommit(ctx, behind)
 		case sendPhaseEntry:
-			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Token, role.Row); err != nil {
 				return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 			}
 			store.OnCommit(ctx, behind)
@@ -4334,9 +4345,11 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
 // the stopped worker again the moment a slot came (stopOutlivedStart). The claim a row would
-// start is the claim of its role's worker (record.WorkerClaimOf). The second read is one batched
-// PhaseEntries call and one batched RoleClaims call over the rows the fences kept, and no read at
-// all when they kept none: the rule reads nothing of the queued rows beside those claims.
+// start is the claim it names (record.OwedStart.Claim), the claim it was queued for, which the
+// outbox acts on; a row the release before wrote names none, and starts the claim of its role's
+// worker (record.WorkerClaimOf). The second read is one batched PhaseEntries call, made only for
+// rows that name no claim, and one batched RoleClaims call over the rows the fences kept, and no
+// read at all when they kept none: the rule reads nothing of the queued rows beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -4386,24 +4399,31 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	if len(kept) == 0 {
 		return finished, nil
 	}
-	// The claim each kept row would start is the claim of its role's worker
-	// (record.WorkerClaimOf), read from the rows' phases rows in one statement: a keyed agent on a
-	// step of another role is that step's worker. A row whose issue and role yield no claim token
-	// has no run to read, as the slot repair's holders have none (resumeSlottedWorkers): it stays
-	// owed and the rule passes over it rather than failing the whole fact.
-	owedIssues := make([]string, 0, len(kept))
+	// The claim each kept row would start is the claim it names, and for a row that names none
+	// the claim of its role's worker (record.WorkerClaimOf), read from those rows' phases rows in
+	// one statement: a keyed agent on a step of another role is that step's worker. A row whose
+	// issue and role yield no claim token has no run to read, as the slot repair's holders have
+	// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than failing
+	// the whole fact.
+	var unnamed []string
 	for _, keptRow := range kept {
-		owedIssues = append(owedIssues, keptRow.owed.Issue)
+		if keptRow.owed.Claim == "" {
+			unnamed = append(unnamed, keptRow.owed.Issue)
+		}
 	}
-	entries, err := a.store.PhaseEntries(ctx, tx, owedIssues)
-	if err != nil {
-		return finished, fmt.Errorf("read the phases rows of %d held starts: %w", len(owedIssues), err)
+	var entries map[record.PhaseRole]record.PhaseEntry
+	if len(unnamed) > 0 {
+		if entries, err = a.store.PhaseEntries(ctx, tx, unnamed); err != nil {
+			return finished, fmt.Errorf("read the phases rows of %d held starts: %w", len(unnamed), err)
+		}
 	}
 	weighed := kept[:0]
 	for _, keptRow := range kept {
-		token, err := record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries)
-		if err != nil {
-			continue
+		token := keptRow.owed.Claim
+		if token == "" {
+			if token, err = record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries); err != nil {
+				continue
+			}
 		}
 		keptRow.token = token
 		weighed = append(weighed, keptRow)

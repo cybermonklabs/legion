@@ -40,12 +40,43 @@ var upgradeMarks = []record.ArchitectStallArm{record.ArchitectSlowBeforeGate, re
 // carries every migration already, so the fill ran once over an empty record: each case seeds the
 // shape the release before this one leaves and runs the fill over it, which is what the upgrade
 // does, and what the case then reads is the migration's own writing rather than a fixture's copy
-// of it.
+// of it. The fill runs as it ran in history, on the key phases had then, (issue, role), which its
+// upsert names as its conflict target: the way back of the later key by step (phaseStepKeyVersion)
+// writes that key again before it, and Migrate writes the key by step again after it.
 func applyArchitectUpgrade(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), embeddedMigration(t, architectUpgradeVersion)); err != nil {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, phaseStepKeyWayBack(t), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("write the key phases had before migration %d: %v", phaseStepKeyVersion, err)
+	}
+	if _, err := pool.Exec(ctx, embeddedMigration(t, architectUpgradeVersion)); err != nil {
 		t.Fatalf("run the fill of migration %d: %v", architectUpgradeVersion, err)
 	}
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the record store: %v", err)
+	}
+	defer st.Close()
+	if applied, err := st.Migrate(ctx); err != nil || applied != 1 {
+		t.Fatalf("migrate the key by step again after the fill: applied %d, %v; want migration %d alone", applied, err, phaseStepKeyVersion)
+	}
+}
+
+// phaseStepKeyVersion is the migration that keys a phases row by its step
+// (internal/store/migrations/20261125114500_phase_step_key.up.sql), whose version stands above
+// every migration these tests run, so a rollback past any of them runs its way back first.
+const phaseStepKeyVersion = 20261125114500
+
+// phaseStepKeyWayBack is the way back the header of phaseStepKeyVersion carries
+// (migrations.WayBack): it keeps the row of each role with the highest entry, writes the key
+// (issue, role) again and deletes the migration's version row.
+func phaseStepKeyWayBack(t *testing.T) string {
+	t.Helper()
+	block, err := migrations.WayBack(phaseStepKeyVersion)
+	if err != nil {
+		t.Fatalf("read the way back of migration %d: %v", phaseStepKeyVersion, err)
+	}
+	return block
 }
 
 // upgradedRoot is a root as the release before this one left it: at admitted, in the workflow,
@@ -496,11 +527,11 @@ const (
 	entryVerbatimVersion  = 20261114061900
 )
 
-// wayBackVersions is every version the two ways back delete: this migration's block deletes its
-// own, the marks' table's, the handshake's and the mark's, and the phase entry's block deletes its
-// own. Written here, not read from the blocks' text, so a block that stops deleting one of them
-// fails the test rather than moving what it expects.
-var wayBackVersions = []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
+// wayBackVersions is every version the three ways back delete: the key by step's block deletes its
+// own, this migration's block deletes its own, the marks' table's, the handshake's and the mark's,
+// and the phase entry's block deletes its own. Written here, not read from the blocks' text, so a
+// block that stops deleting one of them fails the test rather than moving what it expects.
+var wayBackVersions = []int{phaseStepKeyVersion, architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
 
 // leftStanding is every version the schema_version table records once the ways back have run,
 // ascending: each embedded migration but wayBackVersions. It is computed from the migrations the
@@ -536,12 +567,14 @@ func versionsNotIn(a, b []int) []int {
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
-// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
-// one transaction its header carries (headerWayBack): this migration's first, which the headers
-// of 20261113181500, 20261114020537 and 20261114061900 carry as well, and the phase entry's after
-// it. This migration's block drops the phases row's mark and deletes 20261114061900's version
-// row, drops the claim's four handshake columns and deletes 20261114020537's version row, deletes
-// its own and 20261113181500's, and drops the marks' table and the architect wakes still unsent,
+// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, newest first,
+// each as the one transaction its header carries: the key by step's (phaseStepKeyWayBack), which
+// writes the key (issue, role) again that this migration's fill upserts by; this migration's
+// (headerWayBack), which the headers of 20261113181500, 20261114020537 and 20261114061900 carry
+// as well; and the phase entry's after it. This migration's block drops the phases row's mark and
+// deletes 20261114061900's version row, drops the claim's four handshake columns and deletes
+// 20261114020537's version row, deletes its own and 20261113181500's, and drops the marks' table
+// and the architect wakes still unsent,
 // so the roll-forward makes the table and the columns again and runs this fill again after the
 // phase entry's. Then the first pass prompts no architect and wakes the controller for no arm,
 // each root is marked again at the run it stands at, each architect claim holds no handshake, and
@@ -600,6 +633,11 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("queue the unsent architect wake of %s: %v", settled, err)
 				}
 			})
+			// A rollback undoes the newest migration first: the key by step's way back writes the key
+			// (issue, role) again, which this migration's fill upserts by at the roll forward.
+			if _, err := pool.Exec(ctx, phaseStepKeyWayBack(t), pgx.QueryExecModeSimpleProtocol); err != nil {
+				t.Fatalf("run the way back of migration %d as its one transaction: %v", phaseStepKeyVersion, err)
+			}
 			if tc.rearmed {
 				if _, err := pool.Exec(ctx, wayBack, pgx.QueryExecModeSimpleProtocol); err != nil {
 					t.Fatalf("run this migration's way back as its one transaction: %v", err)
@@ -678,9 +716,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			if err != nil {
 				t.Fatalf("roll forward onto the record the older release left: %v", err)
 			}
-			want := 1
+			want := 2
 			if tc.rearmed {
-				want = 5
+				want = 6
 			}
 			if applied != want {
 				t.Fatalf("the roll-forward applied %d migrations, want %d: each way back re-arms its own migrations and no other", applied, want)

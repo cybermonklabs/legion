@@ -4,8 +4,9 @@
 -- (store.PodWakeBackstop.Claim): the worker of the issue's open phase when it was armed, the claim
 -- the record gives the open role's step (workflow.OpenWorker). Two claims can hold one role of an
 -- issue: the agent of a key works a step of another role than its name, beside that role's own
--- claim of an earlier version of the plan. A backstop keyed by its role alone was each of those
--- claims': a wake of the other claim (store.PodRecords.TakePodWake) or a `suspend` row that stopped
+-- claim of an earlier version of the plan, or two agents work two steps of the role. A backstop
+-- keyed by its role alone was each of those claims': a wake of the other claim
+-- (store.PodRecords.TakePodWake) or a `suspend` row that stopped
 -- it (internal/daemon's takeOverRelease) dropped the worker's backstop, so a worker waiting on a
 -- deploy run had nothing left to bring it back, and of two claims of one role a pause stopped, the
 -- second arm was dropped on this table's one open backstop per role.

@@ -265,7 +265,8 @@ func assertMidPhaseChildrenAreNotStranded(t *testing.T, pool *pgxpool.Pool, root
 	})
 }
 
-// entryOf is the phase entry role's phases row of issue is on and the work that entry names.
+// entryOf is the phase entry role's phases row of issue is on and the work that entry names. The
+// issues it reads hold no plan rows, so each role has one row there.
 func entryOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) (int64, string) {
 	t.Helper()
 	var entry int64

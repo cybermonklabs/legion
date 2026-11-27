@@ -712,8 +712,9 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 //
 // workers is the agent of each step of the plan c's issue runs (specs.stepWorkers). Two claims of
 // one issue can hold one role — the agent of a key works a step of another role than its name —
-// so a topic spelled from a role reaches the agent named for that role, which need not be the one
-// that works the role's step: the sentence names the topic of each step's agent, and says what a
+// and a role can stand at two steps, so a topic spelled from a role reaches the agent named for
+// that role, which need not be the one that works the step of that role the reader means: the
+// sentence names the topic of each step's agent, and says what a
 // role's own topic reaches. An issue with no plan rows names no step, and keeps the rule that
 // spells a sibling's topic from its role, saying the case it holds in: with no plan rows, each role
 // of the issue is its own agent. The line is written at the launch, and the issue can run a plan
@@ -746,7 +747,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			steps[i] = fmt.Sprintf("step %d of task %s (%s) `%s%s`", w.position, w.task, w.role, notify.RoleTopicPrefix, w.token)
 		}
 		siblings = "the agent of each step of your issue's plan is on its topic: " + strings.Join(steps, ", ") +
-			"; your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works that role's step."
+			"; your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above."
 	}
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; the project's controller is `%s%s`; %s",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project), siblings)

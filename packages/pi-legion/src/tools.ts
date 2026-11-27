@@ -650,11 +650,11 @@ function toolSchema(pi: PiApi): unknown {
       .optional(),
     // A claim's token (the stranded token's contract entry), for fresh_session and compact: two
     // claims of one issue can hold one role, and issue and role reach the one that works the
-    // role's step.
+    // role's step that started last.
     claim: z
       .string()
       .describe(
-        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does"
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role other than the one that works the role's step that started last; leave it out to reach that claim"
       )
       .optional(),
     // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
@@ -932,10 +932,9 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's register_gate
     // basis, its retry_or_escalate, its register_plan and stop_task, its sign_off and the
-    // controller's operations: the text tools.test.ts pins, stop_task's and sign_off's by their
-    // terms and the rest exactly, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule, and
-    // the sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // controller's operations. tools.test.ts holds stop_task's and sign_off's parts to their terms.
+    // The rules for ending a child are the words of the daemon's record.EndChildRule, and the
+    // sentence after them is the daemon's record.StatusNotTakenYet (both in
     // packages/daemon/internal/record/project.go). These tests hold the copies together: the
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
@@ -960,7 +959,10 @@ export function createLegionTool(deps: {
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
         "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
-        "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
+        "the deployment defines, no two of the task's agents starting with one role, though one role can stand at two steps, one " +
+        "key's agent at both or the agent of either step starting with another role (`implementer:a reviewer implementer:a`, " +
+        "`implementer reviewer:a implementer:a` or `implementer:a reviewer:a tester reviewer`), with `implementer` in it, its first " +
+        "`implementer` step before each `tester`, `reviewer` or `acceptance:owner` " +
         "step and after each other step of the type implementation; a step may carry a key after its role: acceptance carries `owner` " +
         "and no other, any other role any key but `owner` or none, and the steps of one key run as one agent in one claim and one " +
         "session (`implementer:a tester:a`); a " +
@@ -1083,7 +1085,8 @@ export function createLegionTool(deps: {
         "opens a round. " +
         "fresh_session (issue, role, and optionally claim) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. " +
-        "issue and role reach the agent that works the role's step; two claims of one issue can hold one role, so name the " +
+        "issue and role reach the agent that works the role's step that started last (the step the task stands at, where it is " +
+        "that role's); two claims of one issue can hold one role, so name the " +
         "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
         "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

@@ -2702,19 +2702,22 @@ const (
 //     as, the role names which step: a start of one step's role that waited on its row's backoff
 //     while the task went on or back to another step of the phase reads the same phase, generation
 //     and entry, since that move raises no entry on the earlier step's row, and only the step's
-//     role says it is no longer the work. A start that brings a role back and hands it nothing
-//     (record.SuperviseRequest.BringsBack, the promotion's start of a mid-phase member's other
-//     roles) is held to the phase alone, as at every other phase: it comes back and is told
-//     nothing wherever the member's task stands.
+//     role says it is no longer the work. Two steps of one role read the same here: the entry
+//     fence below tells them apart, for a start that carries an entry (record.StartLeft). A start
+//     that brings a role back and hands it nothing (record.SuperviseRequest.BringsBack, the
+//     promotion's start of a mid-phase member's other roles) is held to the phase alone, as at
+//     every other phase: it comes back and is told nothing wherever the member's task stands.
 //   - A start of a phase entry (record.SuperviseRequest.Entry) is of no entry below the one its
 //     role's phases row names now (record.PhaseRow.Entry). A row below that number carries work a
 //     later entry of the same phase has superseded, whose own start carries that entry's task, so
 //     finishing it is what lets a start row be a message with no state of its own: a row that
-//     outlives its entry is harmless rather than something to rewrite. Only a row that carries an
-//     entry and names a phase is held to it: every start of no entry is held to the generation
-//     alone, and so is a root architect's start, which carries an entry and names no phase, since
-//     that architect serves every phase of its tree; the claim's own rule keeps one entry to one
-//     task for it (supervise.Claim.GivenEntry).
+//     outlives its entry is harmless rather than something to rewrite. Each entry rises above
+//     every row of the issue (workflow's enter), so the role's row now holds the highest entry of
+//     the role: a start of another step is below it, another agent's step of the role included
+//     (record.StartLeft). Only a row that carries an entry and names a phase is held to it: every
+//     start of no entry is held to the generation alone, and so is a root architect's start, which
+//     carries an entry and names no phase, since that architect serves every phase of its tree;
+//     the claim's own rule keeps one entry to one task for it (supervise.Claim.GivenEntry).
 //
 // rows reads the issue's phases rows, and is called for the entry fence alone, the one that reads
 // them.
@@ -2732,7 +2735,7 @@ func startFenceOf(issue record.Issue, payload record.SuperviseRequest, rows func
 	if err != nil {
 		return fenceHolds, err
 	}
-	if payload.Entry < record.PhaseRowOf(read, payload.Role).Entry {
+	if _, left := record.StartLeft(read, payload.Role, payload.Entry); left {
 		return fenceEntry, nil
 	}
 	return fenceHolds, nil
@@ -2876,16 +2879,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-				"phase", payload.Phase, "entry", payload.Entry, "current", record.PhaseRowOf(read, payload.Role).Entry, "role", payload.Role)
+				"phase", payload.Phase, "entry", payload.Entry, "current", record.PhaseRowOf(read, payload.Role).Entry, "role", payload.Role, "claim", payload.Claim)
 			return nil
 		}
 	}
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	// The claim the row acts on is the one it names, a row that stands for one stored claim of the
-	// issue, and otherwise the claim of the worker on its role's step (record.WorkerClaim), which
-	// can be the claim of a key's agent that started on an earlier step of another role.
+	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
+	// for, or the one stored claim a row of another op stands for. A row that names none, one the
+	// release before wrote, acts on the claim of the worker on its role's step (record.WorkerClaim),
+	// which can be the claim of a key's agent that started on an earlier step of another role.
 	token := payload.Claim
 	if token == "" {
 		read, err := phaseRows()
@@ -3701,8 +3705,9 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // until its machine is available, and otherwise finishes without acting. The claim is the one the
 // row names, else the claim of the worker on the role's step (workerToken), as reservedTreeClose
 // reads it: two claims of one issue can hold one role — the agent of a key on a step of another
-// role, beside that role's own claim of an earlier version of the plan — so the role's own token
-// could stop the other one, or wait for its machine, and leave this claim running in the old tree.
+// role, beside that role's own claim of an earlier version of the plan, or two agents at two steps
+// of the role — so the role's own token could stop the other one, or wait for its machine, and
+// leave this claim running in the old tree.
 // This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
 // tree's close rows; this row releases no tree resources itself.

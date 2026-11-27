@@ -151,7 +151,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 				})
 				return pool, strings.TrimSuffix(row.EntryTask, reviewedPartOf(commitNamed(row))+reviewEntryPartOf(row.Entry))
 			},
@@ -192,7 +192,8 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+					return engine.repairSilence(ctx, tx, *issue, *issue, reviewClaim,
+						record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 						intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 						reviewTestedAt.Add(2*time.Hour))
 				})
@@ -223,7 +224,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				}
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 				})
 				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
 			},
@@ -352,7 +353,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 			}
 			outboxRan(t, pool)
 			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 			})
 			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
 				t.Fatalf("the owed entry is delivered as %q, want the stored task %q word for word: the row's commit moved to %s since", delivered, stored, tc.moved)

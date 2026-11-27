@@ -277,10 +277,12 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester,
+			Claim: keyedToken(t, "LEGION-209", "tester"), Generation: 1, Phase: phase.Testing,
 			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer,
+			Claim: keyedToken(t, "LEGION-211", "implementer"), Generation: 1, Phase: phase.Retro,
 			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Working copy: branch legion/LEGION-211. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
 	})
@@ -314,7 +316,8 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger,
+			Claim: keyedToken(t, "LEGION-209", "merger"), Generation: 1, Phase: phase.Merging,
 			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -362,7 +365,8 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger,
+			Claim: keyedToken(t, "LEGION-209", "merger"), Generation: 1, Phase: phase.Merging,
 			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -767,7 +771,9 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "merged", CheckedHead: "merged", Failing: []string{}}); err != nil {
 			t.Fatalf("seed pull request: %v", err)
 		}
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
+		// The key LEGION-LINGER names no claims (claim.IsIssueKey), so its rows name none: a row
+		// names its claim by an agent's claim token or not at all (record's namedClaim).
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
 			t.Fatalf("seed implementer: %v", err)
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleMerger, Claim: "merger", Summary: "READY #85 at gen1 (approved at gen1) for " + child}); err != nil {
@@ -802,14 +808,16 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 		}
 	})
 
+	// The completions name no claim either: LEGION-LINGER names no claims, and a completion that
+	// names none is judged by its role (workflow's HANDOFF_NOT_THE_STEPS_WORKER rule passes it).
 	for _, step := range []struct {
 		id   string
 		fact intake.Fact
 	}{
 		{id: "gen2-register", fact: intake.GateRegistered{Issue: key, ArtifactID: artifact, Version: 1}},
 		{id: "gen2-approved", fact: intake.DispatchArtifact{Key: key, ArtifactID: artifact, Kind: intake.DispatchArtifactApproved, Version: 1}},
-		{id: "gen2-plan", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Claim: "planner", Summary: "planned", HandoffRecord: "gen2-plan", HandoffVersion: 1}},
-		{id: "gen2-implement", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "gen2-handoff", HandoffRecord: "gen2-implement", HandoffVersion: 4}},
+		{id: "gen2-plan", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Summary: "planned", HandoffRecord: "gen2-plan", HandoffVersion: 1}},
+		{id: "gen2-implement", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Summary: "implemented", Commit: "gen2-handoff", HandoffRecord: "gen2-implement", HandoffVersion: 4}},
 	} {
 		if result, err := intake.ApplyFact(context.Background(), pool, "api", step.id, step.fact, engine, admission); err != nil || result.Refusal != nil || result.Duplicate {
 			t.Fatalf("%s = %#v, %v", step.id, result, err)

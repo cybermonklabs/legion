@@ -607,7 +607,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+			return engine.repairSilence(ctx, tx, *issue, *issue, reviewClaim,
+				record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))
 		})

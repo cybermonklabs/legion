@@ -261,12 +261,17 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
 		return false, fmt.Errorf("start the held retro of %s: task %s stands at %+v of the line %v, not at its retro", parent.Key, w.Task, w.Place, w.Line)
 	}
-	// The report of the task's last step is on the row of that step's role, whatever runs it: one of
-	// Legion's roles or a role the deployment defines, whose phase (step) names no role of its own.
-	last, err := e.phaseRow(ctx, tx, parent.Key, claim.Role(w.Steps[len(w.Steps)-1].Role))
+	// The report of the task's last step is on the row of that step's role at that step's own place,
+	// whatever runs it: one of Legion's roles or a role the deployment defines, whose phase (step)
+	// names no role of its own. The task stands at its retro, the implementer's place 0, so the
+	// engine's row of the implementer where the task stands is the retro's own, which no start has
+	// raised yet: a last step of the implementer's would give the retro no report.
+	rows, err := e.store.Phases(ctx, tx, parent.Key)
 	if err != nil {
 		return false, err
 	}
+	last := record.PhaseRowAt(rows, claim.Role(w.Steps[len(w.Steps)-1].Role), w.Task,
+		record.TaskPlace{Kind: record.PlaceStep, Position: len(w.Steps)}, w.Steps)
 	pr, err := e.store.PullRequestRow(ctx, tx, parent.Key)
 	if err != nil {
 		return false, err
@@ -293,7 +298,7 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return false, err
 	}
 	role := phase.RoleFor(phase.Retro)
-	if err := e.clearHandoff(ctx, tx, parent.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, parent, w, role); err != nil {
 		return false, err
 	}
 	if err := e.start(ctx, tx, parent, w, role, func(at Standing) string {

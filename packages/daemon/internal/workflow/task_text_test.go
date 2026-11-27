@@ -33,17 +33,11 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 }
 
 // completes applies role's completion of its step of LEGION-208 with the handoff record word-n at
-// version n, through the completion route (intake.ApplyFact), which writes the role's phases row.
+// version n, through the completion route (intake.ApplyFact), which writes the role's phases row,
+// under the claim of the step's worker (workerOr), as completesAs applies it.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")),
-		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
-	if role == claim.RoleTester {
-		fact.Verdict = "pass"
-	}
-	if result := applyFacts(t, pool, engine)(string(role)+"-"+word+"-"+string(rune('0'+n)), fact); result.Refusal != nil {
-		t.Fatalf("the %s's completion %s version %d was refused: %+v", role, word, n, result.Refusal)
-	}
+	completesAs(t, pool, engine, role, workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")), word, n, "head")
 }
 
 // hasPrefix fails the test unless the task starts with want.
@@ -364,7 +358,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {
-			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer)
+			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer, nil)
 			if !strings.HasSuffix(told, round) {
 				t.Fatalf("the reviewer's task %q does not end with the daemon's round %q", told, round)
 			}

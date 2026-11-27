@@ -168,9 +168,9 @@ you send by message alone comes back to you as a request to write it there.
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and
 the acceptance is yours (`skill://legion-architect`, section 6): read
-`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
-tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
-step comes before yours
+`dispatch results --issue <issue>` at the head that step passed, the handoff of each tester step
+that comes before yours, and the reviewer's approval of the head by SHA where a reviewer step
+comes before yours
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed
 child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
@@ -188,7 +188,10 @@ acceptance is its last step, or send it back with
 parent whose pass names an older base commit, or none, to `testing` (`implementing` where no tester
 step comes before acceptance); a parent's code fix goes to a child.
 `request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where
-two do, name `return_to`.
+two do, name `return_to`. A move back to another phase that two earlier steps run as goes to the
+later of them, as a move from `accepting` to `reviewing` goes to step 4 of
+`implementer reviewer tester:c reviewer:c acceptance:owner`; name `return_to` to reach the earlier
+one.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
@@ -251,4 +254,4 @@ role — yours with the trailing `-<role>` replaced, or one the `roleToken` help
 `@legion/contracts` computes (`legion-<project>-<key>-<role>` with the issue key lower-cased; for
 example, project `acme`, issue `LEGION-41`, role `architect` encodes to
 `legion-acme-legion-41-architect`) — reaches the agent named for that role, which need not be the
-one that works that role's step.
+one that works the step of that role you mean: write to that step's agent on its own topic.

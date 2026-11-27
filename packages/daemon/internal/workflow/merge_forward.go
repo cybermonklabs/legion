@@ -256,10 +256,11 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
 // reviewer, the merger or, at step, the role of the running step (mergeForwardWorker,
 // record.MergeForwardReaches) - is told the old head and the new one and to read what the merge
-// changed before it goes on (record.MergeForwardLanded). An issue whose task's reviewer step
-// already ran - that step stands before the place the issue stands at on the walk's line
-// (Walk.passedStep) - stands on a review of the old head, so the reviewer is asked to read the
-// merge and approve the new head or request changes (record.MergeForwardReview), and the record
+// changed before it goes on (record.MergeForwardLanded). An issue where a reviewer step of its
+// task already ran - its first reviewer step stands before the place the issue stands at on the
+// walk's line (Walk.passedStep) - stands on a review of the old head, so the reviewer of the step
+// that started last (addressRoles) is asked to read the merge and approve the new head or request
+// changes (record.MergeForwardReview), and the record
 // keeps that the review was asked for (ReviewAsked), which the merger's task (task) and the
 // landed the merger is told in merging (record.MergeForwardMessage.Message) read. In the default
 // steps that is an issue in accepting, retro or merging. A reviewer step still to come reviews

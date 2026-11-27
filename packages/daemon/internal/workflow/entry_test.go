@@ -335,8 +335,9 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 				Entry: seededEntry, EntryTask: held, EntryRaisedAt: seededRaisedAt}
 			seedPhase(t, pool, merger)
 
+			owner := claim.Token(treeRoleToken(t, entryIssue, claim.RoleMerger))
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, merger)
+				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, owner, merger)
 			})
 
 			starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -344,9 +345,9 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 				t.Fatalf("the send queued %+v, want the one start it writes", starts)
 			}
 			start := starts[0]
-			if start.Entry != seededEntry || start.Task != want {
-				t.Fatalf("the start sent = entry %d carrying %q, want entry %d carrying %q: a claim behind the entry is owed that entry's own work",
-					start.Entry, start.Task, seededEntry, want)
+			if start.Entry != seededEntry || start.Task != want || start.Claim != owner {
+				t.Fatalf("the start sent = entry %d carrying %q for %q, want entry %d carrying %q for %q: a claim behind the entry is owed that entry's own work",
+					start.Entry, start.Task, start.Claim, seededEntry, want, owner)
 			}
 			row := entryRow(t, pool, claim.RoleMerger)
 			if row.Entry != seededEntry || row.EntryTask != held || !row.EntryRaisedAt.Equal(seededRaisedAt) {

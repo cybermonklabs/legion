@@ -178,12 +178,10 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 		}
 		return
 	}
-	commit := ""
-	for _, row := range rows {
-		if row.Role == claim.RoleImplementer {
-			commit = row.HandoffCommit
-		}
-	}
+	// The implementer's row now (record.PhaseRowOf): an implementer that stands at two steps of a
+	// task has a row for each, and the commit an earlier step reported is no completion of the
+	// step that runs, which this read tells of.
+	commit := record.PhaseRowOf(rows, claim.RoleImplementer).HandoffCommit
 	if commit == "" {
 		return
 	}

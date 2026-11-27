@@ -57,6 +57,7 @@ const (
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
+	planStepAgentMigrationFile           = "internal/store/migrations/20261124213820_plan_step_agent.up.sql"
 	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
 	// copy of contract 146's, are read from this package's own directory, where each file sits
 	// beside the code it is about and needs no declared read of its own.
@@ -363,12 +364,17 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	t.Helper()
 	ctx := context.Background()
 	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
-	// the reviewed commit's migration (docs/kubernetes.md, the migrations recorded above this
-	// one): it deletes the key this release writes on a reviewer's start row (`roundNamed`),
-	// which the release before decodes strictly and would refuse.
-	newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, reviewedHeadMigrationFile), "\n"), "\n")
-	if _, err := pool.Exec(ctx, strings.Join(newer[1:len(newer)-1], "\n"), pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v", reviewedHeadMigrationFile, err)
+	// each migration recorded above it, newest first (docs/kubernetes.md). Two of them strip a key
+	// this release writes on a start row, which the release before decodes strictly and would
+	// refuse: the way back of the plan step's agent takes `claim` off every queued row, the claim
+	// each phase worker's start names (record.SuperviseRequest.Claim), and the way back of the
+	// reviewed commit's migration deletes `roundNamed`, the key a reviewer's start carries. That
+	// rollback's own steps are what make the rows readable to the release before.
+	for _, file := range []string{planStepAgentMigrationFile, reviewedHeadMigrationFile} {
+		newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, file), "\n"), "\n")
+		if _, err := pool.Exec(ctx, strings.Join(newer[1:len(newer)-1], "\n"), pgx.QueryExecModeSimpleProtocol); err != nil {
+			t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v", file, err)
+		}
 	}
 	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t, phaseEntryMigrationFile))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
@@ -508,10 +514,11 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	// The two deletes are the phase entry block's and the reviewed commit's way back, run before it.
-	if recorded != len(all)-2 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the two ways back each delete one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-2)
+	// The three deletes are the phase entry block's and the two ways back run before it, the plan
+	// step's agent's and the reviewed commit's.
+	if recorded != len(all)-3 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the three ways back each delete one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-3)
 	}
 }
 
@@ -595,8 +602,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	if err != nil {
 		t.Fatalf("roll forward onto the record the older daemon left: %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
+	if applied != 3 {
+		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration, the reviewed commit's and the plan step's agent's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
 			applied)
 	}
 	var entry int64
@@ -656,7 +663,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // that release's decoder knows every key this struct knows and freshSession besides, so a
 // payload this one accepts it accepts. A row this branch's release queued can carry `claim`
 // besides, which the way back of 20261124213820_plan_step_agent takes off before this rollback
-// runs (its header), so no payload this shape judges carries it.
+// runs (its header, and upgradeRecoveryReadsAnswer runs it), so no payload this shape judges
+// carries it.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`
 	Tree          string                `json:"tree"`

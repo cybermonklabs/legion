@@ -1091,8 +1091,9 @@ type releasedRole struct {
 // stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
 // stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
 // order. Two claims can hold one role — a keyed agent on a step of another role, beside that
-// role's own claim from an earlier version of the plan — and only the ones the release suspended
-// are its to resume: another claim of the role an earlier release left released is not.
+// role's own claim from an earlier version of the plan, or two agents at two steps of the role —
+// and only the ones the release suspended are its to resume: another claim of the role an earlier
+// release left released is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
@@ -1231,7 +1232,11 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
-	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
+	// A role that stands at two steps of a task keeps a row for each, and the view holds one row of
+	// a role, the row now (record.PhaseRowOf): read in the ascending order of that rule, the row now
+	// of each role is the last one the loop writes.
+	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1
+		order by entry, step_task, step_place`, issue)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}

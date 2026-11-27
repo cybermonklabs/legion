@@ -238,7 +238,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		// askMergeState).
 		return intake.Result{}, nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 	if err != nil || !row.Completed() {
 		return intake.Result{}, err
 	}
@@ -267,8 +267,8 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 //
 // A head that moves off the one a merge forward was asked of is that merge landing, in whatever
 // phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
-// head as the merge's, and the phase's worker and, where the task's reviewer step already ran, the
-// reviewer are told. It is
+// head as the merge's, and the phase's worker and, where a reviewer step of the task already ran,
+// the reviewer of the step that started last are told. It is
 // recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
@@ -324,7 +324,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		}
 		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 	case phase.Implementing:
-		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+		row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
 			return intake.Result{}, err
 		}
@@ -397,7 +397,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if issue.Phase != phase.Reviewing {
 		return nil
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -764,7 +764,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || issue == nil || issue.Phase != phase.Implementing {
 		return intake.Result{}, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}

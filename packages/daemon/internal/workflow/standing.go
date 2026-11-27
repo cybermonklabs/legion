@@ -132,22 +132,30 @@ func stepsLine(words []string) string {
 }
 
 // reportsBefore is one ` Step <j> (<step>) reported: <word> version <v>.` for each step of w's
-// task before the step at place whose role's phases row holds a handoff record: the record that
-// role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
-// reads. Each step is named as its plan writes it, its word of words (plan.Words). A role runs at
-// most one step of an issue, so its row holds that step's facts, and each step before a running
-// one completed in the run that led to it: a step that runs again after a return writes its new
-// record on the row before the step after it starts. A step whose role writes no handoff (the
-// owner's acceptance, and a role of the deployment, whose verdict only the task of the step after
-// it names) has no line.
+// task before the step at place whose row holds a handoff record: the record that role's
+// completion of that step named, which `dispatch handoff-read --issue <issue> --phase <word>
+// --version <v>` reads. Each step is named as its plan writes it, its word of words (plan.Words).
+// Each step's run keeps a row of its own, the row of its role at its task and place
+// (record.PhaseRowAt, which reads a role's row of no step, one that ran before the plan's rows,
+// as its step's until the step's own row stands), so a role that stands at two steps names the
+// report of each under its own place, and each step before a running one completed in the run
+// that led to it: a step that runs again after a return writes its new record on its row before
+// the step after it starts. A step whose role writes no handoff has no line: the owner's
+// acceptance, whose row holds no record, and a step of a role the deployment defines, whose
+// verdict only the task of the step after it names, which runs as step, a phase phase.RoleFor
+// names no role for. Step ends with no handoff record (phase.Handoff), the completion route
+// refuses a completion of it that names one (api's HANDOFF_RECORD_MISMATCH), and the engine
+// writes onto a row only the record the completion names (handoff), so no row of such a step
+// holds a record for this to name.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {
 		role := phase.RoleFor(w.Line[j-1])
-		for _, row := range rows {
-			if row.Role == role && row.HandoffRecord != "" {
-				fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, words[j-1], reportedLabel, handoffWord(role), row.HandoffVersion)
-			}
+		if role == "" {
+			continue
+		}
+		if row := record.PhaseRowAt(rows, role, w.Task, record.TaskPlace{Kind: record.PlaceStep, Position: j}, w.Steps); row.HandoffRecord != "" {
+			fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, words[j-1], reportedLabel, handoffWord(role), row.HandoffVersion)
 		}
 	}
 	return text.String()

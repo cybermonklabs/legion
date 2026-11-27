@@ -1054,6 +1054,201 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 	})
 }
 
+// A role can stand at two steps of a task, and each step has a row of its own: the phases row is
+// keyed by the issue, the role and the step, so a later step of the role leaves the earlier one's
+// report standing for the task text that names it. An issue with no plan rows keeps one row for
+// each role, at no step, as before.
+func TestTwoStepsOfOneRoleKeepTwoRows(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-292")
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "a", StepTask: "t", StepPlace: 3,
+			HandoffRecord: "implement-record-3", HandoffVersion: 2, Entry: 3}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "a", StepTask: "t", StepPlace: 1,
+			HandoffRecord: "implement-record-1", HandoffVersion: 1, Entry: 1}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Claim: "r", StepTask: "t", StepPlace: 2,
+			HandoffRecord: "review-record", HandoffVersion: 1, Entry: 2}))
+		// The second write of the row at place 1 updates that row alone.
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "a", StepTask: "t", StepPlace: 1,
+			HandoffRecord: "implement-record-1", HandoffVersion: 1, Entry: 1, Verdict: "pass"}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := records.Phases(ctx, tx, issue.Key)
+		must(t, err)
+		type step struct {
+			role    claim.Role
+			place   int
+			record  string
+			verdict string
+		}
+		var got []step
+		for _, row := range rows {
+			got = append(got, step{row.Role, row.StepPlace, row.HandoffRecord, row.Verdict})
+		}
+		want := []step{{claim.RoleImplementer, 1, "implement-record-1", "pass"}, {claim.RoleImplementer, 3, "implement-record-3", ""},
+			{claim.RoleReviewer, 2, "review-record", ""}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("phases = %+v, want %+v: one row for each step, in the order of role, task and place", got, want)
+		}
+	})
+}
+
+// A new generation clears the step each row ran, so the rows of one role's steps would share one
+// key: the clear folds them first, keeping the row whose entry is the highest, which is the number
+// the claim's next entry rises from, and then clears it as before. The other rows are the last
+// generation's steps, whose reports go with the generation. A tree's new generation folds its
+// root's rows the same way: the re-admission raises the generation of the root alone.
+func TestANewGenerationFoldsTheRowsOfARole(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		key   string
+		clear func(tx pgx.Tx, issue Issue) error
+	}{
+		{"a new generation of the issue", "LEGION-293", func(tx pgx.Tx, issue Issue) error {
+			return NewStore().ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
+		}},
+		{"a new generation of the tree", "LEGION-294", func(tx pgx.Tx, issue Issue) error {
+			return NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			records := NewStore()
+			issue := issueFixture(tc.key)
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutIssue(ctx, tx, issue))
+				for _, row := range []PhaseRow{
+					{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "a", StepTask: "t", StepPlace: 1, HandoffRecord: "implement-1", Entry: 1},
+					{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "a", StepTask: "t", StepPlace: 3, HandoffRecord: "implement-3", Entry: 3},
+					{Issue: issue.Key, Role: claim.RoleReviewer, Claim: "r", StepTask: "t", StepPlace: 2, HandoffRecord: "review", Entry: 2},
+				} {
+					must(t, records.PutPhase(ctx, tx, row))
+				}
+				must(t, tc.clear(tx, issue))
+			})
+			inTx(t, st, func(tx pgx.Tx) {
+				rows, err := records.Phases(ctx, tx, issue.Key)
+				must(t, err)
+				entries := map[claim.Role][]int64{}
+				for _, row := range rows {
+					if row.StepTask != "" || row.StepPlace != 0 || row.HandoffRecord != "" {
+						t.Fatalf("the %s row after the clear = %#v, want no step and no report", row.Role, row)
+					}
+					entries[row.Role] = append(entries[row.Role], row.Entry)
+				}
+				if want := map[claim.Role][]int64{claim.RoleImplementer: {3}, claim.RoleReviewer: {2}}; !reflect.DeepEqual(entries, want) {
+					t.Fatalf("the entries after the clear = %v, want %v: one row of each role, at its highest entry", entries, want)
+				}
+			})
+		})
+	}
+}
+
+// A tree's new generation raises its root's generation alone, so a member keeps its generation,
+// its plan and its task's place, and the clear leaves its rows on the steps they ran: in
+// `implementer:a reviewer:b implementer:b` held at step 3, the implementer keeps step 1's row of
+// key a and step 3's of key b, each at its entry and naming its claim, so the claim of the role's
+// worker is still step 3's agent, key b (WorkerClaim), the claim a retry of the step names. Only
+// the reports go, with the rest of the generation. The root beside it folds and clears as before.
+// Before, the clear folded the member's rows into step 3's and cleared its step, so the role's
+// worker read as the implementer's own token, key a's, while the step was key b's.
+func TestATreesNewGenerationKeepsTheStepsOfAMemberWhoseGenerationStands(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-296")
+	member := issueFixture("LEGION-297")
+	member.Tree = root.Key
+	const keyA, keyB claim.Token = "legion-legion-legion-297-implementer", "legion-legion-legion-297-reviewer"
+	stepRows := func(issue string, a, b claim.Token) []PhaseRow {
+		return []PhaseRow{
+			{Issue: issue, Role: claim.RoleImplementer, Claim: a, StepTask: "a", StepPlace: 1, HandoffRecord: "implement-1", Entry: 1},
+			{Issue: issue, Role: claim.RoleReviewer, Claim: b, StepTask: "a", StepPlace: 2, HandoffRecord: "review-1", Entry: 2},
+			{Issue: issue, Role: claim.RoleImplementer, Claim: b, StepTask: "a", StepPlace: 3, HandoffRecord: "implement-2", Entry: 3},
+		}
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, records.PutIssue(ctx, tx, member))
+		for _, row := range append(stepRows(root.Key, "root-a", "root-b"), stepRows(member.Key, keyA, keyB)...) {
+			must(t, records.PutPhase(ctx, tx, row))
+		}
+		must(t, records.ClearTreeGeneration(ctx, tx, root.Tree, time.Now().UTC()))
+	})
+	type step struct {
+		role   claim.Role
+		claim  claim.Token
+		task   string
+		place  int
+		entry  int64
+		report string
+	}
+	stepsOf := func(issue string) ([]step, []PhaseRow) {
+		var rows []PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			rows, err = records.Phases(ctx, tx, issue)
+			must(t, err)
+		})
+		var got []step
+		for _, row := range rows {
+			got = append(got, step{row.Role, row.Claim, row.StepTask, row.StepPlace, row.Entry, row.HandoffRecord})
+		}
+		return got, rows
+	}
+	got, rows := stepsOf(member.Key)
+	want := []step{{claim.RoleImplementer, keyA, "a", 1, 1, ""}, {claim.RoleImplementer, keyB, "a", 3, 3, ""}, {claim.RoleReviewer, keyB, "a", 2, 2, ""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the member's rows after its tree's new generation = %+v, want %+v: each step's row kept, its report gone", got, want)
+	}
+	if worker, err := WorkerClaim("legion", member.Key, claim.RoleImplementer, rows); err != nil || worker != keyB {
+		t.Fatalf("the member's implementer after its tree's new generation is %q, %v; want step 3's agent, key b %q", worker, err, keyB)
+	}
+	got, _ = stepsOf(root.Key)
+	want = []step{{claim.RoleImplementer, "root-b", "", 0, 3, ""}, {claim.RoleReviewer, "root-b", "", 0, 2, ""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the root's rows after its new generation = %+v, want %+v: one row of each role at its highest entry, on no step", got, want)
+	}
+}
+
+// A pass over many issues reads each role's row as PhaseRowOf reads it from one issue's rows: the
+// row with the highest entry. After a return to step 1 of `implementer:a reviewer:b
+// implementer:b` that is step 1's row, whose entry the return raised above step 3's, and the claim
+// of the role's worker is step 1's agent's (WorkerClaimOf), whichever row the statement reads last.
+func TestPhaseEntriesReadARolesRowNow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-295")
+	const first, second claim.Token = "legion-legion-legion-295-implementer", "legion-legion-legion-295-reviewer"
+	for _, order := range [][]int{{1, 3}, {3, 1}} {
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.PutIssue(ctx, tx, issue))
+			for _, place := range order {
+				row := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: first, StepTask: "t", StepPlace: 1, Entry: 4}
+				if place == 3 {
+					row = PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: second, StepTask: "t", StepPlace: 3, Entry: 3}
+				}
+				must(t, records.PutPhase(ctx, tx, row))
+			}
+			entries, err := records.PhaseEntries(ctx, tx, []string{issue.Key})
+			must(t, err)
+			if got := entries[PhaseRole{Issue: issue.Key, Role: claim.RoleImplementer}]; got.Entry != 4 || got.Claim != first {
+				t.Fatalf("written in place order %v, PhaseEntries(implementer) = %+v, want step 1's row at entry 4", order, got)
+			}
+			if got, err := WorkerClaimOf("legion", issue.Key, claim.RoleImplementer, entries); err != nil || got != first {
+				t.Fatalf("written in place order %v, WorkerClaimOf(implementer) = %q, %v, want %q", order, got, err, first)
+			}
+			_, err = tx.Exec(ctx, "delete from phases where issue = $1", issue.Key)
+			must(t, err)
+		})
+	}
+}
+
 // A new generation clears each role's handoff of its current phase — the commit it reported and the
 // Dispatch handoff record it named — so no role of the new generation reads as having completed,
 // and keeps the record each role last named, which a completion naming it again is refused against.

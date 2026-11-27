@@ -693,11 +693,11 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 //  2. the claim stops: one `release` supervise row per live claim, each naming that claim
 //     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
 //     can hold one role — a keyed agent on a step of another role, beside that role's own claim
-//     from an earlier version of the plan — so a stop names its claim rather than a role. The
-//     first of them is the release's boundary — the stop of the first claim process of the pod —
-//     which is what R4's cancel is read against, so a delivery queued while the check ran is still
-//     below it and cancels the whole release, save a start that waits for its pod, which the next
-//     pod serves;
+//     from an earlier version of the plan, or two agents at two steps of the role — so a stop
+//     names its claim rather than a role. The first of them is the release's boundary — the stop
+//     of the first claim process of the pod — which is what R4's cancel is read against, so a
+//     delivery queued while the check ran is still below it and cancels the whole release, save a
+//     start that waits for its pod, which the next pod serves;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release. A Sandbox that owns the issue's kept volume stays, Suspended, with
 //     that volume: its pod and its Secrets go (runtime.IssueReleaser).

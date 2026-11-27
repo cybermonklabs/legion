@@ -5,11 +5,12 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
+Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits and pod release; this skill adds the rest.
 
 ## Every phase
 
-1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`).
+1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (below).
+   Where your task has no such line, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
    Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
    A record beats your memory.
 
@@ -20,7 +21,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 4. Before you run a check, read `skill://legion-worker/references/results.md`, "Where a check runs".
 
-5. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
+5. A codebase-wide rename or deletion leaves history (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
@@ -35,7 +36,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
   - retro on the architect's answer to a defect it reported;
 
-  - a pushing role whose second push still did not carry the pull request onto its commit.
+  - a pushing role whose second push still left the pull request off its commit.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
@@ -50,7 +51,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
-- When another role's topic answers 404, read its handoff with `dispatch handoff-read`, or its runs (step 1).
+- Another role's topic answers 404: read that step's report or runs (item 1).
 
 ## Commits and pushes
 
@@ -68,7 +69,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  A later phase that pushes uses that branch, and a later phase that edits a pull request edits that one.
+  A later phase pushes only to that branch and edits only that pull request.
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.

@@ -14,11 +14,11 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 Only a task whose steps name `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where a tester step comes before your acceptance, the handoff of each such step: `dispatch handoff-read --issue <issue> --phase test` (*Two steps of one role* in acceptance-steps.md);
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head;
+3. where a reviewer step comes before your acceptance, the approval of the last such step, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim in the review of each such step, against the code at that head (*Two steps of one role* in acceptance-steps.md);
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
@@ -57,11 +57,8 @@ The last round merges the base only on a trigger every pull request has: GitHub 
 
 A child's merge while the parent waits needs no move of its own:
 the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
-If the pull request merged before its last round, move nothing back. Once the children close:
-
-1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
-2. Read each `ci_check` result in `dispatch results`.
-3. Post the results in the acceptance comment, then `sign_off`.
+If the pull request merged before its last round, move nothing back.
+Once the children close, take the steps of "The last round's close" in acceptance-steps.md.
 
 ## After your sign-off
 
@@ -91,7 +88,7 @@ and a check the base's newer code breaks is the merger's to fix in that merge to
 When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
+Where a reviewer step of the task already ran, the daemon asks the agent of the reviewer step that started last to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
 A task with no reviewer step has no review to await.

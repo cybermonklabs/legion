@@ -55,11 +55,11 @@ export const legionStepRole = z.string().refine(isStepRole, {
  *
  * `claim` (the stranded token's contract entry) names the claim by its token, as a notice of
  * provider errors names it: two claims of one issue can hold one role — the agent of a key on a
- * step of another role,
- * beside that role's own claim of an earlier version of the plan — and `issue` and `role` alone
- * reach the one that works the role's step. The daemon refuses a token that is no claim of
- * `issue` (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`). Leave it
- * out for the step's worker: a daemon below that entry refuses the member as unknown.
+ * step of another role, beside that role's own claim of an earlier version of the plan, or two
+ * agents at two steps of the role — and `issue` and `role` alone reach the one that works the
+ * role's step that started last. The daemon refuses a token that is no claim of `issue`
+ * (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`). Leave it out for
+ * the step's worker: a daemon below that entry refuses the member as unknown.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

@@ -115,10 +115,10 @@ type DesignGateDocument struct {
 // session that holds it, Claim the token of the claim that session runs, and WorksStep whether that
 // claim is the worker on the role's step as the record gives it (record.WorkerClaim). Two claims of
 // one issue can hold one role — the agent of a key on a step of another role, beside that role's
-// own claim of an earlier version of the plan — so a role can be named for several sessions, each
-// by its own claim; Dispatch keeps the session of the step's worker where its way back folds a
-// role to one session. The role is a string here rather than claim.Role, because this package
-// names Dispatch's wire shapes.
+// own claim of an earlier version of the plan, or two agents at two steps of the role — so a role
+// can be named for several sessions, each by its own claim; Dispatch keeps the session of the
+// step's worker where its way back folds a role to one session. The role is a string here rather
+// than claim.Role, because this package names Dispatch's wire shapes.
 type RoleHolder struct {
 	Role      string `json:"role"`
 	Session   string `json:"session"`

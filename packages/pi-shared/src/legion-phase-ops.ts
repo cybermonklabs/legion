@@ -345,7 +345,8 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
-    "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. ",
+    "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. " +
+    "A move to another phase that two earlier steps run as goes to the later of them, unless `return_to` names the earlier one. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -418,11 +419,11 @@ export function legionToolDescription(host: {
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
     "completing), " +
-    "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+    "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row of the step the task stands at names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
-    "nothing, so fix what it names and complete again. " +
+    "nothing, so fix what it names and complete again, unless it says to end this turn without completing or not to complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
     "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +

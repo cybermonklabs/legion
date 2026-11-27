@@ -556,10 +556,11 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // claim the record gives the step of the open phase's role (OpenRoleOf, which at step is the role
 // of the running step, read with the issue), through record.ReadWorkerClaim over the issue's
 // phases rows, read in tx. That claim can be a keyed agent's, whose token names another role,
-// beside the role's own claim of an earlier version of the plan, so a role does not name it. It
-// answers which claim a pause's stop and a release arm a backstop for — an architect gets none,
-// because nothing of its own is due and a sub-architect woken for nothing would hold a pod open for
-// the backstop period — and project is the project's token, as record.WorkerClaim takes it.
+// beside the role's own claim of an earlier version of the plan, or beside the agent of the role's
+// other step, so a role does not name it. It answers which claim a pause's stop and a release arm
+// a backstop for — an architect gets none, because nothing of its own is due and a sub-architect
+// woken for nothing would hold a pod open for the backstop period — and project is the project's
+// token, as record.WorkerClaim takes it.
 func OpenWorker(ctx context.Context, phases record.PhaseReader, tx pgx.Tx, project string, issue record.Issue) (claim.Token, error) {
 	role := OpenRoleOf(issue)
 	if role == "" {

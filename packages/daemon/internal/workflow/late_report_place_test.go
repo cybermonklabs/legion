@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -27,7 +28,7 @@ import (
 //
 // (c) lateReport itself, asked of each role as a report of the step the stop ended
 // (stoppedStepReported), refuses the checker's and answers nil for the linter's: the linter's own
-// place, step 2, is not where the task stopped (Walk.placeOfRole against Walk.Place).
+// place, step 2, is not where the task stopped (Walk.runPlace of the linter's row against Walk.Place).
 func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -85,8 +86,16 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				refusal, err = engine.lateReport(ctx, tx, *issue, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
-					phase.Step, stoppedStepReported)
+				w, err := engine.walk(ctx, tx, *issue)
+				if err != nil {
+					return err
+				}
+				rows, err := engine.store.Phases(ctx, tx, root.Key)
+				if err != nil {
+					return err
+				}
+				refusal, err = engine.lateReport(ctx, tx, *issue, w, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
+					phase.Step, stoppedStepReported, w.completionRow(rows, role, 0, false, record.StandsAt(*issue)))
 				return err
 			})
 			return refusal
@@ -106,5 +115,84 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 		if late := lateOf("linter", linter); late != nil {
 			t.Fatalf("lateReport of the linter's report = %+v, want nil: the linter's step 2 is not step 3, where the task stopped", late)
 		}
+	})
+}
+
+// A role that works two steps reports each by the step whose run it was, not by its role: in
+// `implementer:a reviewer:r implementer:a reviewer:r`, the approving review moves the task on from
+// step 2 before the reviewer completes, and the owner stops the task at step 4, the reviewer's
+// later step.
+//
+// (a) The reviewer's report of step 2, the run the approval ended with no report, is taken onto
+// step 2's row and written onto step 2's record, moving nothing: the role works the step the task
+// stands at, but the run is step 2's, which the task has left (leftItsPhase). Before, the role
+// alone decided, so the report was read as one of the stopped step, which lateReport passes for a
+// run at another place, and it was refused HANDOFF_NOT_CURRENT_PHASE: step 2's findings were lost.
+//
+// (b) The reviewer's report of step 4, the run the stop ended, is refused TASK_STOPPED as before.
+func TestARolesReportOfItsEarlierStepIsTakenAfterAStopAtItsLaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:r", "implementer:a", "reviewer:r")
+	implementer := agentToken(t, "implementer")
+	reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+	reviewApprovedNow(t, pool, engine, root.Key)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
+	rows := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)
+	if rows[2].Completed() || rows[4].Completed() || rows[2].Entry >= rows[4].Entry {
+		t.Fatalf("premise: the reviewer's rows are step 2 %+v and step 4 %+v, want both runs unreported, step 2's entry below step 4's", rows[2], rows[4])
+	}
+	second, fourth := rows[2].Entry, rows[4].Entry
+	apply := applyFacts(t, pool, engine)
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+	}
+	stopped := record.Hold{From: phase.Reviewing, Reason: record.HoldTaskStopped}
+	if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped {
+		t.Fatalf("premise: %s after the stop stands in %s with hold %+v, want held %+v", root.Key, held.Phase, held.Hold, stopped)
+	}
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.Place != stepPlace(4) {
+		t.Fatalf("premise: task a = %s at %+v, want stopped at step 4", task.State, task.Place)
+	}
+
+	t.Run("a: the report of step 2 is taken on step 2", func(t *testing.T) {
+		issue, task := issueOf(t, pool, engine, root.Key), taskOf(t, pool, engine, root.Key)
+		report := reportOf(claim.RoleReviewer, reviewer, "review-1")
+		report.Entry = second
+		if result := apply("reviewer-late-step-2", report); result.Refusal != nil {
+			t.Fatalf("the reviewer's report of step 2 at its entry %d after the stop at step 4 = %d %s %q, want it taken on step 2",
+				second, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		}
+		rows := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)
+		if rows[2].HandoffRecord != "review-1" || !rows[2].Completed() || rows[4].HandoffRecord != "" || rows[4].Completed() {
+			t.Fatalf("the reviewer's rows after its report of step 2: step 2 %+v, step 4 %+v; want review-1 on step 2 and step 4 unreported", rows[2], rows[4])
+		}
+		if got := reportsAt(t, pool, root.Key, 2); !slices.Equal(got, []string{"a:review-1"}) {
+			t.Fatalf("the reports of step 2 = %v, want the late report a:review-1", got)
+		}
+		if got := reportsAt(t, pool, root.Key, 4); len(got) != 0 {
+			t.Fatalf("the reports of step 4 = %v, want none", got)
+		}
+		if after := issueOf(t, pool, engine, root.Key); after.Phase != issue.Phase || !reflect.DeepEqual(after.Hold, issue.Hold) {
+			t.Fatalf("the reviewer's report of step 2 moved %s to %s with hold %+v, want it as it stood: %s with hold %+v",
+				root.Key, after.Phase, after.Hold, issue.Phase, issue.Hold)
+		}
+		if after := taskOf(t, pool, engine, root.Key); !reflect.DeepEqual(after, task) {
+			t.Fatalf("task a after the reviewer's report of step 2 = %+v, want %+v as it stood", after, task)
+		}
+	})
+
+	t.Run("b: the report of step 4, the run the stop ended, is refused", func(t *testing.T) {
+		before := reportedOf(t, pool, engine, root.Key, claim.RoleReviewer, true)
+		report := reportOf(claim.RoleReviewer, reviewer, "review-2")
+		report.Entry = fourth
+		assertLateReport(t, pool, engine, claim.RoleReviewer, apply("reviewer-late-step-4", report), "TASK_STOPPED",
+			"task a of LEGION-208 was stopped by its owner. Step 4 (reviewer) has ended. This report moved nothing. dispatch steps --issue LEGION-208 shows how that run ended."+usedTail,
+			"review-2", before)
 	})
 }

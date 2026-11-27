@@ -3703,8 +3703,11 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue st
 	return s.Store.ClearGeneration(ctx, tx, issue, now)
 }
 
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
+// ClearTreeGeneration empties the generation-scoped facts of every issue of tree, as
+// ClearGeneration does for one issue, and folds the phases rows and clears the steps of the root
+// alone, the issue whose generation a re-admission raises (record.Postgres.ClearTreeGeneration).
+// Each issue of tree is of tree's project: a record takes its root's project when the workflow
+// writes it.
 func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
 		return nil

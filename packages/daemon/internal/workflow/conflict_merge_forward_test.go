@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -126,7 +126,15 @@ func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
-			seedPhase(t, pool, tc.row)
+			// The row replaces the tester's row the seed wrote: each step's run keeps a row of its
+			// own (record.PhaseRow.StepPlace), so written beside it the step's row would be a second
+			// row of the tester, not the one the case names.
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(t.Context(), "delete from phases where issue = $1 and role = $2", tc.row.Issue, string(tc.row.Role)); err != nil {
+					return err
+				}
+				return record.NewStore().PutPhase(t.Context(), tx, tc.row)
+			})
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			got := mergeForwardMessages(t, pool)
 			if len(got) != 2 || got[0].Role != claim.RoleImplementer || got[1].Role != claim.RoleTester {
@@ -264,13 +272,9 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 			t.Fatalf("after the mergeable read the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}
 		assertNothingActed(t, pool, phase.Testing)
-		var released []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-			var entry map[string]any
-			if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "workflow: a second read did not confirm the conflict" {
-				released = append(released, entry)
-			}
-		}
+		released := jsonLogLines(&logged, func(entry map[string]any) bool {
+			return entry["msg"] == "workflow: a second read did not confirm the conflict"
+		})
 		loggedAt := func(field string, want time.Time) bool {
 			text, _ := released[0][field].(string)
 			at, err := time.Parse(time.RFC3339Nano, text)

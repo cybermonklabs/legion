@@ -496,8 +496,9 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // worker of the pod's open phase, the claim the record gives the step of the open phase's role
 // (workflow.OpenWorker, read in a transaction of its own), where that claim stands released
-// serving the issue's run. That claim can be a keyed agent's, whose token names another role,
-// beside the role's own claim of an earlier version of the plan, which works no step and gets none.
+// serving the issue's run. That claim can be a keyed agent's, whose token names another role, and
+// the role's other claims — its own claim of an earlier version of the plan, or the agent of its
+// other step — work no step now and get none.
 // An architect gets none — nothing of its own is due, and a sub-architect woken for nothing would
 // hold a pod open for the backstop period — and neither does an issue whose phase no role works.
 //

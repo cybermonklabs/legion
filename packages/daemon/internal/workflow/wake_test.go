@@ -99,12 +99,18 @@ func wakeToken(t *testing.T, role claim.Role) claim.Token {
 // the source `released`, its session kept and the generation it was serving recorded.
 func seedReleasedClaim(t *testing.T, pool *pgxpool.Pool, role claim.Role, session string) {
 	t.Helper()
-	token := wakeToken(t, role)
+	seedReleasedToken(t, pool, wakeToken(t, role), role, session, wakeIssueGeneration)
+}
+
+// seedReleasedToken is seedReleasedClaim's write for the claim token, working role, which can be
+// the claim of a key rather than of role's own token, serving generation serving.
+func seedReleasedToken(t *testing.T, pool *pgxpool.Pool, token claim.Token, role claim.Role, session string, serving uint64) {
+	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
 		session, session_file, state, suspended_by, serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
 		values ($1, $5, 'LEGION-208', 'LEGION-208', $2, 1, $3, '', 'suspended', 'released', $4, 0, 0, 0, 0)`,
-		string(token), string(role), session, int64(wakeIssueGeneration), wakeProjectToken(t)); err != nil {
-		t.Fatalf("seed the released %s claim: %v", role, err)
+		string(token), string(role), session, int64(serving), wakeProjectToken(t)); err != nil {
+		t.Fatalf("seed the released claim %s as the %s: %v", token, role, err)
 	}
 }
 

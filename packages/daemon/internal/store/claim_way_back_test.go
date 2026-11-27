@@ -39,7 +39,7 @@ func headerWayBackOf(t *testing.T, file string) string {
 	if header == "" {
 		t.Fatalf("the embedded migrations hold no %s", file)
 	}
-	const opener, terminator = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'", "SQL"
+	const opener, terminator = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'", "SQL"
 	var lines []string
 	indent, open := "", false
 	for _, line := range strings.Split(header, "\n") {
