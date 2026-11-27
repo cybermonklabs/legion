@@ -371,6 +371,7 @@ export const PHASE_OP_SENTENCES = {
     "(DEFECT_CALLER_NOT_ALLOWED), with no text, one too long or one holding a decision block (DEFECT_TEXT_REQUIRED, DEFECT_TEXT_TOO_LONG, " +
     "DEFECT_TEXT_DECISION_BLOCK), with no head or one that is no full lower-case commit (DEFECT_HEAD_REQUIRED), with a check that is no block id " +
     "(DEFECT_CHECK_INVALID), on an issue that closed (DEFECT_ISSUE_CLOSED), in a tree that lingers after it left the workflow (TREE_LINGERING), " +
+    "on an issue that already holds twenty open reported defects (DEFECT_LIMIT_REACHED: withdraw one or fold this into one that stands), " +
     "for a key that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND); each refusal records nothing. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +

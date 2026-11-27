@@ -16,8 +16,8 @@ import (
 
 // maxOpenDefects is the most open reported defects an issue holds (record.DefectKindDefect): each
 // is rendered whole into close-wait.md, which Dispatch holds to a megabyte, and carried by the
-// next change, so a role that finds more has found work the change must be planned for, which its
-// owner asks for in a person's request rather than one defect at a time.
+// next change, so neither may grow without end, and a role that finds more than this has found
+// work its owning architect should weigh as one, not carry as twenty separate reports.
 const maxOpenDefects = 20
 
 // defectReport applies a role's report_defect (intake.DefectReport, D8 of
@@ -29,9 +29,10 @@ const maxOpenDefects = 20
 // there (DEFECT_CALLER_NOT_ALLOWED, mayReportDefect). A report whose text, trimmed with its white
 // space folded, is an open reported defect's of the issue is that defect, and one naming a check
 // that is already a reason of the issue joins that reason: either answers that defect's id and
-// records nothing. Otherwise it records the defect at the issue's generation, writes it into the
-// stored wait that close-wait.md renders (waitNamesDefects), and tells the owning architect where
-// another role reported it (defect-reported).
+// records nothing. Past those, a report on an issue that holds maxOpenDefects open reported
+// defects is refused DEFECT_LIMIT_REACHED. Otherwise it records the defect at the issue's
+// generation, writes it into the stored wait that close-wait.md renders (waitNamesDefects), and
+// tells the owning architect where another role reported it (defect-reported).
 //
 // It moves no phase and completes nothing: the role goes on with its step. Only the next change
 // turns a defect into work (StartNextChange, Tasks 6 and 7), which this report does not start.
@@ -89,6 +90,17 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 				return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectJoined, NextChange: carrier(defect)}}, nil
 			}
 		}
+	}
+	reported := 0
+	for _, defect := range open {
+		if defect.Kind == record.DefectKindDefect {
+			reported++
+		}
+	}
+	if reported >= maxOpenDefects {
+		return refused("DEFECT_LIMIT_REACHED", fmt.Sprintf(
+			"%s holds %d open reported defects, the most an issue holds: withdraw one that is no defect, or fold this one into one that stands. This report recorded nothing.",
+			issue.Key, reported)), nil
 	}
 	id, err := e.store.PutDefect(ctx, tx, record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindDefect,
 		Text: strings.TrimSpace(fact.Text), Role: fact.Role, Head: fact.Head, Check: fact.Check, ReportedAt: e.now()})

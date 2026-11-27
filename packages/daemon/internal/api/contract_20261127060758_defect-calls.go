@@ -20,8 +20,9 @@ package api
 // bounds of a message, as a backward move's reason is), `400 DEFECT_HEAD_REQUIRED`,
 // `400 DEFECT_CHECK_INVALID` (a `check` that is no block id of a Dispatch document: over 256 bytes
 // or holding a control character), `409 DEFECT_ISSUE_CLOSED`, `409 TREE_LINGERING`,
-// `400 INVALID_ISSUE` and `404 ISSUE_NOT_FOUND`, and records nothing. The merger reports in
-// verifying while its completion of the merged generation is still owed
+// `409 DEFECT_LIMIT_REACHED` (an issue that holds twenty open reported defects, past a report that
+// is one of them), `400 INVALID_ISSUE` and `404 ISSUE_NOT_FOUND`, and records nothing. The merger
+// reports in verifying while its completion of the merged generation is still owed
 // (record.Issue.MergerCompletionOwed, which the merge sets and that completion clears), and is
 // refused `DEFECT_CALLER_NOT_ALLOWED` there once it has landed; the refusal's own sentence names
 // that window.
