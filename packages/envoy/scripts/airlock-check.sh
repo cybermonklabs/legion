@@ -758,9 +758,9 @@ check_k1() {
 	# The token reaches curl on standard input, in no command line.
 	proxy_status="$(printf 'Authorization: Bearer %s' "$proxy_token" | curl -sS -o /dev/null -w '%{http_code}' -H @- "$AIRLOCK_GITHUB_URL/repos/acme-org/k1")"
 	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S, $(shape "$proxy_token"), answered $proxy_status"
-	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
+	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" = 200 ] && echo 0 || echo 1)" \
 		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
-		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
+		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 200 is live and anything else (401 a token GitHub no longer knows, 000 no answer) is not"
 
 	# The negative control: the same two runs for names no profile has a proxy block for. A
 	# plain stored value no profile names is served by its own name, so the control adds one to
@@ -862,7 +862,7 @@ check_k2() {
 
 	judge "$([ "$values_keys" = "[]" ] && echo 0 || echo 1)" \
 		"the answer leaves the name out of values" "values keys are $values_keys"
-	judge "$([ -n "$name_value" ] && ! contains "$demo_value" "$RELEASE_JSON" && echo 0 || echo 1)" \
+	judge "$([ -n "$name_value" ] && contains "agent-secrets-placeholder" "$name_value" && ! contains "$demo_value" "$RELEASE_JSON" && echo 0 || echo 1)" \
 		"the answer carries the placeholder in its new field and no real value anywhere" \
 		"airlock.names.AIRLOCK_DEMO_TOKEN.value is $(shape "$name_value"); the stored value's bytes are not in the answer"
 	judge "$(printf '%s' "$RELEASE_JSON" | jq -e '.airlock.ca_certificate | startswith("-----BEGIN CERTIFICATE-----")' >/dev/null && echo 0 || echo 1)" \
@@ -1019,7 +1019,7 @@ EOF
 		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the five requests that carry a placeholder left after the swap"
 	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[postbody_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
 		"POST /read with the placeholder in its header and in its body, and GET /other, get an error that names the rule, and S records neither" \
-		"the header POST answered ${K3[post]}, the body POST ${K3[postbody]} and GET /other ${K3[other]}, each with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
+		"the header POST answered ${K3[post]} saying '${K3[post_error]}', the body POST ${K3[postbody]} saying '${K3[postbody_error]}' and GET /other ${K3[other]} saying '${K3[other_error]}'; S recorded $post_records POST and $other_records /other"
 	judge "$(contains "agent-secrets-placeholder" "$t_ph" && [ "$(printf '%s' "$t_recs" | jq length)" = 1 ] && echo 0 || echo 1)" \
 		"T records the placeholder, and only the one call to T reaches it" \
 		"T recorded $(printf '%s' "$t_recs" | jq length) request(s) (want 1), its Authorization $(shape "$t_ph"), the grant's placeholder: the two mismatch requests reach it not"
@@ -1183,7 +1183,7 @@ EOF
 	judge "$([ "$t_leaf" = "$t_own" ] && contains "the-bytes-the-command-sent" "$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')" && echo 0 || echo 1)" \
 		"T presents its own certificate and gets the bytes the command sent" \
 		"T's leaf is its own certificate file, and its record holds the bytes the command POSTed"
-	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && ! contains "Proxy response" "${K4[go10]}" && echo 0 || echo 1)" \
+	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && contains "curl:" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && contains "curl:" "${K4[curl10]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && contains "error after" "${K4[go10]}" && echo 0 || echo 1)" \
 		"the .svc and .ts.net calls and the 10.x calls of curl and of a Go program do not reach the proxy port" \
 		".svc reached this run's own stand-in directly; .ts.net, curl's 10.x and Go's 10.x failed to connect or resolve with no answer from a proxy"
 	judge "$(contains "Proxy response (403)" "${K4[node10]}" && contains "private" "${K4[private]}" && echo 0 || echo 1)" \
@@ -1699,7 +1699,7 @@ check_k6() {
 	observe "the Resource Manager calls az made, one per run, and their Authorization headers: $(for h in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do printf '%s; ' "$(shape "$h")"; done)"
 	observe "the brokers' own logs of calls to a bound host, which is how many each process served: $K6_AZ_SERVED"
 
-	judge "$([ "$K6_AZ_EXCHANGES" -gt 0 ] && contains "$federated" "$K6_AZ_ASSERTION" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AZ_EXCHANGES" -gt 0 ] && [ -n "$federated" ] && contains "$federated" "$K6_AZ_ASSERTION" && echo 0 || echo 1)" \
 		"the stand-in token endpoint gets the real federated token" \
 		"its client_assertion is the stack's own federated token by SHA-256 and length ($(shape "$K6_AZ_ASSERTION")), over $K6_AZ_EXCHANGES exchanges"
 
@@ -2028,7 +2028,7 @@ check_k7() {
 	swapped="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
 	observe "$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
-	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
+	judge "$([ "$logged" -ge 10 ] && [ "$swapped" = "$logged" ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
 	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
@@ -2037,6 +2037,10 @@ check_k7() {
 	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
 	local kms_calls
 	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	# The absence of "application protocol" is the property, not a weak anchor: a broker that broke
+	# HTTP/2 would make the gRPC client fail ALPN with an "application protocol" error before it
+	# ever reached Cloud KMS. Its absence, with the positive "unauthenticated" and a logged call,
+	# is how the check reads that HTTP/2 was negotiated end to end.
 	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
 		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
 		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
@@ -2288,6 +2292,7 @@ check_k8() {
 	k8_reread "$name"
 	ok=0
 	case "$K8_ANSWERS" in "" | *unsigned* | *served=false*) ok=1 ;; esac
+	printf '%s' "$K8_ANSWERS" | tr ';' '\n' | grep -qv 'served=true' && ok=1
 	control "the same key retagged with a judge of 900 seconds, after a reread: the brokers answered [$K8_ANSWERS]"
 	judge "$ok" "negative control: the same policy load with a judge tag of 900 seconds refuses nothing" \
 		"rereads [$K8_ANSWERS], where at 1800 they answered [$over_answers]"
@@ -2500,7 +2505,7 @@ check_k9() {
 	local still_up=0
 	kill -0 "$stopped" 2>/dev/null && still_up=1
 	observe "with broker $stopped stopped while it carried a connection: that connection answered $(cat "$WORK_DIR/k9/stopped.json" | tr -d '\n ') and the four calls after it answered$after_stop (the stopped process is still up: $still_up)"
-	judge "$([ "$ok" -gt 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$ok" -gt 0 ] && [ -z "$(jq -r '.second // ""' "$WORK_DIR/k9/stopped.json")" ] && [ -n "$(jq -r '.second_error // .error // ""' "$WORK_DIR/k9/stopped.json")" ] && echo 0 || echo 1)" \
 		"the stream on the stopped process ends after the drain, and the next call succeeds" \
 		"the connection on the stopped process ended $(jq -r 'if .second then "with its second event answering " + (.second|tostring) else "with " + (.second_error // .error // "no answer") end' "$WORK_DIR/k9/stopped.json"), and $ok of the four calls after it answered 200 ($after_stop); the ones that did not are the connections the front still handed to the stopped process, which it keeps in its backends file with no health check of its own"
 
@@ -2517,7 +2522,7 @@ check_k9() {
 	local control_second
 	control_second="$(jq -r '.second // ""' "$WORK_DIR/k9/control-gap.json")"
 	control "with --idle-seconds 60 the same answer with a 90-second gap in it: $(cat "$WORK_DIR/k9/control-gap.json" | tr -d '\n ')"
-	judge "$([ -z "$control_second" ] && echo 0 || echo 1)" \
+	judge "$([ -s "$WORK_DIR/k9/control-gap.json" ] && [ -z "$control_second" ] && [ -n "$(jq -r '.second_error // .error // ""' "$WORK_DIR/k9/control-gap.json")" ] && echo 0 || echo 1)" \
 		"negative control: with the idle limit at 60 seconds the answer with the 90-second gap is cut" \
 		"its second event $(jq -r 'if .second then "answered " + (.second|tostring) else "did not arrive: " + (.second_error // .error // "no answer") end' "$WORK_DIR/k9/control-gap.json")"
 
@@ -3052,7 +3057,7 @@ check_k47() {
 	fresh_api="$(k47_api "$d/api-fresh.json" "$d/tokens.json" "$n_svac")"
 	fresh_tokens="$(curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" | jq --argjson n "${tokens_before:-0}" --arg s "$n_svac" '[.[$n:][] | select(.service_account_id == $s and .expires_in == 3601)] | length')"
 	observe "after the exchange answered $(jq -c . "$d/answer-3601.json" 2>/dev/null): the new grant's GET ${K47OUT[get]:-not made}; the exchange answered $fresh_tokens token(s) of 3601 seconds for $n_svac after the switch; the broker's lines: $fresh_lines (earlier grants of N: $n_grants); the stand: $fresh_api"
-	judge "$([ -e "$d/ready-fresh" ] && [ "$fresh_tokens" -ge 1 ] 2>/dev/null && [ "$(k47_code get)" != 200 ] && [ -n "$(k47_code get)" ] && [ "$(k47_field "$fresh_api" records)" = 0 ] && echo 0 || echo 1)" \
+	judge "$([ -e "$d/ready-fresh" ] && [ "$fresh_tokens" -ge 1 ] 2>/dev/null && [ "$(k47_code get)" = 403 ] && [ "$(k47_field "$fresh_api" records)" = 0 ] && echo 0 || echo 1)" \
 		"the request after the exchange answers an expires_in of 3601 is refused, and the stand-in API records nothing for it" \
 		"the command reached its call: $([ -e "$d/ready-fresh" ] && echo yes || echo no); a fresh mint met the 3601 answer ($fresh_tokens token(s)); the GET answered ${K47OUT[get]:-nothing}; the stand recorded $(k47_field "$fresh_api" records) request(s)"
 
