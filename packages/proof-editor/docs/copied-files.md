@@ -98,6 +98,23 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 31. Single-block editors (the `element` option, decision 544).
     `src/lib.ts`'s `CreateProofEditorOptions` gains `element?: Y.XmlElement`.
     When `element` is given, `createProofEditor` refuses a document-level node (`XmlFragment` or `doc`), wraps `serializerCtx` before `.use(listener)` so a non-`doc` root serializes inside `doc`, sets `editorStateOptionsCtx` and `schema.topNodeType` to the element's own node type and attributes, and binds `collabService` to `opts.element` instead of `opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror')` (the one rewritten line).
+    The `element` change in `t17` added 47 lines and rewrote one line in `src/lib.ts`.
+
+    Decision 551's rebind adds 34 lines and rewrites two in `src/lib.ts` (`+36 / −2` against `f885e9ba`):
+
+    | Lines after the rebind change | Count | Change |
+    | --- | ---: | --- |
+    | 39 | 1 added | Import `editorStateCtx`. |
+    | 63 | 1 added | Import `EditorState` to replace the state in the kept view. |
+    | 243–244 | 2 added | Declare `ProofEditorHandle.rebindElement`. |
+    | 341 | 1 added | Default `rememberAwareness` to `true` in the cursor installer. |
+    | 366 | 1 rewritten | Set the collaboration service's awareness only when `rememberAwareness` is true. |
+    | 614 | 1 added | Hold the bind generation, initially `0`. |
+    | 632 | 1 rewritten | Guard the initial cursor install by that generation and preserve the service's awareness for an editor made without `element`. |
+    | 657–669 | 13 added | Validate the target, construct its root with its own attributes, and advance the generation. |
+    | 670–684 | 15 added | Copy the live state plugins into Milkdown, disconnect, switch the root and state, and connect to the new element. Install cursors with the new generation and leave the view's own plugins untouched. |
+
+    `src/tests/element-option.test.ts` exercises the target's type and `blockId`, both places a host installs plugins, the old cursor install, and the refusal to rebind a full-document editor.
 
 32. A `block[]` attribute's `items`, the item kinds its values may point at besides a block of a document - an issue's ask, comment or message, a block of one, or an issue - with their `item_versions`, and the `parent` attribute.
     In `src/block-schema.ts`: the import of `PARENT_ATTRIBUTE` and `pointerItemKind` from `@legion/contracts`; `creatableValue` reading `item_versions` for each item a `block[]` value points at; `validateBlockSchema` refusing `items` on any other kind, an item kind `ITEM_KINDS` does not name or one named twice, and a `parent` attribute of any kind but `block[]`; and `parseAttribute`'s `block[]` case passing `attribute.items` to `parseBlockPointers`.

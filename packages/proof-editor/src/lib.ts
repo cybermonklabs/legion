@@ -36,6 +36,7 @@ import {
   Editor,
   rootCtx,
   defaultValueCtx,
+  editorStateCtx,
   editorStateOptionsCtx,
   editorViewCtx,
   parserCtx,
@@ -59,6 +60,7 @@ import { yCursorPluginKey, ySyncPluginKey } from 'y-prosemirror';
 import { collabCursorPlugin } from './collab-cursor-plugin';
 import type { Awareness } from 'y-protocols/awareness';
 import type * as Y from 'yjs';
+import { EditorState } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { Ctx, MilkdownPlugin } from '@milkdown/ctx';
@@ -238,6 +240,8 @@ export interface CreateProofEditorOptions {
  */
 export interface ProofEditorHandle extends TypedBlockCommands {
   view: EditorView;
+  /** Rebind a kept block editor to a live block in the host's room. */
+  rebindElement(element: Y.XmlElement, awareness?: Awareness | null): void;
   /** Serialize the current document to markdown via the configured serializer. */
   getMarkdown(): string;
   /** Replace the current document with parsed markdown. An editor with `'edit'` access writes
@@ -334,6 +338,7 @@ function installCollabCursorsWhenReady(
   collabService: CollabService,
   awareness: Awareness,
   isAlive: () => boolean,
+  rememberAwareness = true,
 ): void {
   const hasCursorPlugin = () => view.state.plugins.some((plugin) => plugin.spec.key === yCursorPluginKey);
 
@@ -358,7 +363,7 @@ function installCollabCursorsWhenReady(
     }
 
     try {
-      collabService.setAwareness(awareness);
+      if (rememberAwareness) collabService.setAwareness(awareness);
     } catch {
       // ignore; cursor plugin can still work with direct awareness reference
     }
@@ -606,6 +611,7 @@ export async function createProofEditor(
   // connecting without it: y-prosemirror's cursor plugin can throw (nodeSize
   // on undefined) if it evaluates awareness state before the ySync plugin's
   // mapping is populated.
+  let bindGeneration = 0;
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
     // Before the shared document renders: an ask or a decision two collaborators left off its
@@ -623,7 +629,7 @@ export async function createProofEditor(
       // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
       // `awareness.getStates().get(clientId).user`.
       opts.awareness.setLocalStateField('user', opts.user);
-      installCollabCursorsWhenReady(view, ctx, collabService, opts.awareness, () => alive);
+      installCollabCursorsWhenReady(view, ctx, collabService, opts.awareness, () => alive && bindGeneration === 0, opts.element === undefined);
     }
   });
 
@@ -648,6 +654,34 @@ export async function createProofEditor(
 
   return {
     view,
+    rebindElement(element, awareness = null): void {
+      if (!alive || view.isDestroyed) return;
+      if (opts.element === undefined) throw new Error('Only a block editor can be rebound.');
+      if (element.doc === null || (awareness !== null && awareness.doc !== element.doc)) {
+        throw new Error('The block and its awareness must belong to the same room.');
+      }
+      const schema = view.state.schema;
+      const nodeType = schema.nodes[element.nodeName];
+      if (!nodeType?.isBlock || nodeType.name === 'doc') throw new Error('The editor needs a block root.');
+      const doc = nodeType.createAndFill(element.getAttributes());
+      if (doc === null) throw new Error('The editor could not create the block root.');
+      const generation = ++bindGeneration;
+      editor.action((ctx) => {
+        const service = ctx.get(collabServiceCtx);
+        ctx.set(prosePluginsCtx, [...view.state.plugins]);
+        service.disconnect();
+        Object.assign(schema, { topNodeType: nodeType });
+        const state = EditorState.create({ doc, plugins: view.state.plugins });
+        ctx.set(editorStateCtx, state);
+        view.updateState(state);
+        service.bindXmlFragment(element);
+        service.connect();
+        if (awareness !== null) {
+          awareness.setLocalStateField('user', opts.user);
+          installCollabCursorsWhenReady(view, ctx, service, awareness, () => alive && bindGeneration === generation, false);
+        }
+      });
+    },
     insertTypedBlock(typeName, attrs) {
       return view.isDestroyed ? false : typedBlockCommands.insertTypedBlock(typeName, attrs);
     },
