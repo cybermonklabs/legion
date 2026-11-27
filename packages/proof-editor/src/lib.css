@@ -941,6 +941,15 @@ span[data-dispatch="ask"] {
   right: 1px;
 }
 
+/*
+ * In an editor whose root is one block, a collaborator's caret label over a caret on the block's
+ * first line would pass the top of the block's own box, so it hangs below the caret's line
+ * instead (see ../collab-cursor-plugin.ts). Two classes, as above.
+ */
+.proof-collab-cursor__label.proof-collab-cursor__label--below {
+  top: 100%;
+}
+
 /* A title whose target opens no page - a person, whom no page shows - is drawn as a span, no
    link, and points like the words around it. */
 span.dispatch-reference {

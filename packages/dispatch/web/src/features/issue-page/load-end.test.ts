@@ -29,7 +29,9 @@ function pendingLoad(longTasks: boolean) {
   const starts: string[] = [];
   const marks: string[] = [];
   const at = Date.now();
-  const now = () => Date.now() - at;
+  // How far the page's clock reads behind the timers' (`clockBehind`).
+  let behind = 0;
+  const now = () => Date.now() - at - behind;
   const changed = () => {
     for (const listener of listeners) listener();
   };
@@ -62,6 +64,9 @@ function pendingLoad(longTasks: boolean) {
     fontsLoaded() {
       fontStatus = "loaded";
       changed();
+    },
+    clockBehind(ms: number) {
+      behind = ms;
     },
     entry(type: "longtask" | "resource", end = now()) {
       observers.get(type)?.(end);
@@ -199,5 +204,17 @@ test("once the work starts, neither another act nor a later load end starts it a
     f.entry("longtask");
     f.load.startNow();
     await tick(2_000);
+    startedOnce(f);
+  }));
+
+// A browser's timer can run a fraction of a millisecond before `performance.now()` reads its due
+// time; the wait then goes on to the end it counts, rather than stopping for good.
+test("a timer that runs before the page's clock reads the end waits on and still starts", () =>
+  onLoad(async (f) => {
+    f.rowsDrawn();
+    f.fontsLoaded();
+    f.clockBehind(1);
+    await tick(1_500);
+    await tick(10);
     startedOnce(f);
   }));

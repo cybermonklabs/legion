@@ -1129,6 +1129,9 @@ html:has([data-issue-page]) {
 [data-block-editor] .milkdown .editor {
   min-height: 0;
   line-height: inherit;
+  /* The editable carries the theme's `prose`, which holds a whole document's text to 65
+     characters (650 px at 15 px): the row's words run the row's whole width. */
+  max-width: none;
 }
 
 [data-block-editor] .milkdown :where(p, ul, ol, pre, blockquote, table) {
@@ -1157,6 +1160,68 @@ html:has([data-issue-page]) {
 
 [data-block-editor] .milkdown .editor > :last-child {
   margin-bottom: 0;
+}
+
+/* On a phone a row's words wrap around the margin's float, and every other part of the row's
+   content clears it (`NodeRow.tsx`'s `NODE_ROW_LAYOUT.content`, a utility, which a rule in no
+   layer outranks): the editor's box stands where the words stood, so its lines wrap around the
+   float as theirs did, and nothing under it moves. The box clips sideways, which makes no box
+   of its own that a float would push, so a collaborator's caret label near a line's end hangs
+   back inside it (`@legion/proof-editor`'s `collab-cursor-plugin.ts`, which turns a label inward
+   in the nearest box that clips it), and the box never scrolls sideways. */
+[data-block-editor] {
+  clear: none;
+  overflow-x: clip;
+}
+
+/* The box of a block that takes typing draws the 1 px rule in the page's ink just inside its edge
+   while the caret is in it, as the whole document's editor's box does
+   (`.dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):focus-within`, above): the
+   kept editor's editable, or the early caret's stand-in in the same box (`early-caret.ts`). The
+   kept editor bound read-only draws no `contenteditable="true"`, so its box draws none. */
+[data-issue-page]
+  [data-block-editor]:has(
+    [contenteditable="true"],
+    [contenteditable="plaintext-only"]
+  ):focus-within {
+  outline: 1px solid var(--color-page-ink);
+  outline-offset: -1px;
+}
+
+/* The editor's words break where nothing else lets them, and a reference drawn as its issue's
+   title (`.dispatch-reference`, one line of up to 24em) is no wider than the box, as the whole
+   document's editor holds them in a row (`StagedDocument.tsx`'s box), so the box is never wider
+   than the row: at 390 px a title of 384 px stood past a box of 350. */
+[data-block-editor] .milkdown .editor.ProseMirror {
+  overflow-wrap: anywhere;
+}
+
+[data-block-editor] .dispatch-reference {
+  max-width: min(24em, 100%);
+}
+
+/* A wide block the bound block holds - a table of many columns, a long line of code - scrolls
+   sideways inside itself, as it does in the document's editor (`.dispatch-doc .milkdown table`,
+   above), so the editor's box, held to the row's width, never does; its cells are drawn as
+   there. */
+[data-block-editor] .milkdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+[data-block-editor] .milkdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+[data-block-editor] .milkdown :is(th, td) {
+  border: 1px solid #cad5e2; /* slate-300 */
+  padding: 0.375rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 /* A block or a document a node's words cite is a chip in place, named as a tie's chip is

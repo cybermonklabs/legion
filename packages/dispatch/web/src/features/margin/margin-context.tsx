@@ -239,6 +239,7 @@ interface MarginContextValue {
    *  makes is given. A newer anchor leaves it behind. */
   anchorRefusal: AnchorRefusal | undefined;
   blockFilterId: string | undefined;
+  blockFilterGroup?: { readonly id: string; readonly ids: ReadonlySet<string> };
   blockPlacements: ReadonlyMap<string, MarkPlacement>;
   /** Ends the compose `seq` on the document `artifact`, unsaved, if it is still open there: its
    *  mark leaves the document and the editor's promise rejects. */
@@ -250,6 +251,8 @@ interface MarginContextValue {
   composes: ReadonlyMap<string, DocumentCompose>;
   documentBridge: DocumentBridge | undefined;
   filterToBlock(blockId: string): void;
+  /** Filters the new issue page's margin to the bound block and its descendants. */
+  filterToBlocks(blockId: string, ids: ReadonlySet<string>): void;
   focusBlock(blockId: string): void;
   focusItemForMark(markId: string): void;
   focusRequest: { markId: string; seq: number } | undefined;
@@ -294,6 +297,7 @@ const MarginContext = createContext<MarginContextValue>({
   composes: new Map(),
   documentBridge: undefined,
   filterToBlock: unavailableMargin,
+  filterToBlocks: unavailableMargin,
   focusBlock: unavailableMargin,
   focusItemForMark: unavailableMargin,
   focusRequest: undefined,
@@ -332,6 +336,8 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   const store = heldSends(queryClient);
   const unsent = unsentDraftsOf(queryClient);
   const [blockFilterId, setBlockFilterId] = useState<string>();
+  const [blockFilterGroup, setBlockFilterGroup] =
+    useState<MarginContextValue["blockFilterGroup"]>();
   const [blockPlacements, setBlockPlacements] = useState<ReadonlyMap<string, MarkPlacement>>(
     () => new Map()
   );
@@ -715,14 +721,21 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   }, []);
   const filterToBlock = useCallback((blockId: string) => {
     setBlockFilterId(blockId);
+    setBlockFilterGroup(undefined);
+  }, []);
+  const filterToBlocks = useCallback((id: string, ids: ReadonlySet<string>) => {
+    setBlockFilterId(undefined);
+    setBlockFilterGroup({ id, ids });
   }, []);
   const clearBlockFilter = useCallback(() => {
     setBlockFilterId(undefined);
+    setBlockFilterGroup(undefined);
   }, []);
   const value = useMemo<MarginContextValue>(
     () => ({
       anchorRefusal,
       blockFilterId,
+      blockFilterGroup,
       blockPlacements,
       cancelCompose,
       clearBlockFilter,
@@ -730,6 +743,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       composes,
       documentBridge,
       filterToBlock,
+      filterToBlocks,
       focusBlock,
       focusItemForMark,
       focusRequest,
@@ -753,6 +767,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
     [
       anchorRefusal,
       blockFilterId,
+      blockFilterGroup,
       blockPlacements,
       cancelCompose,
       clearBlockFilter,
@@ -760,6 +775,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       composes,
       documentBridge,
       filterToBlock,
+      filterToBlocks,
       focusBlock,
       focusItemForMark,
       focusRequest,

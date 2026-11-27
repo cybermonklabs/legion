@@ -419,3 +419,46 @@ await test("a full-document editor made without element refuses rebindElement", 
     room.destroy();
   }
 });
+
+// A single-block editor whose root is a paragraph or a heading holds its text in the root itself,
+// which the reference plugin reads as it reads every text block of a document: the title of a
+// reference the block's words hold is drawn over it, as the document's editor draws it.
+for (const kind of ["paragraph", "heading"] as const) {
+  await test(`a ${kind} root draws the title of a reference its words hold`, async () => {
+    const room = await seededRoom();
+    const element = new Y.XmlElement(kind);
+    element.setAttribute("blockId", kind);
+    if (kind === "heading") {
+      (element as Y.XmlElement<Record<string, string | number>>).setAttribute("level", 2);
+    }
+    element.insert(0, [new Y.XmlText("See dispatch://CORE-1 first.")]);
+    room.getXmlFragment("prosemirror").insert(0, [element]);
+    try {
+      await withEditor(room, { element }, (handle) => {
+        handle.setReferences({
+          mentions: new Map(),
+          onKeys: () => {},
+          scan: (text) =>
+            Array.from(text.matchAll(/dispatch:\/\/[A-Z]+-\d+/g), (match) => ({
+              end: match.index + match[0].length,
+              key: match[0],
+              start: match.index,
+            })),
+          targets: new Map([
+            [
+              "dispatch://CORE-1",
+              { href: "dispatch://CORE-1", title: "CORE-1 Fix the thing", titleKey: "CORE-1" },
+            ],
+          ]),
+        });
+        const title = handle.view.dom.querySelector("a.dispatch-reference");
+        assert(
+          title?.textContent === "CORE-1 Fix the thing",
+          `the ${kind} root draws no title for its reference: ${handle.view.dom.innerHTML}`
+        );
+      });
+    } finally {
+      room.destroy();
+    }
+  });
+}

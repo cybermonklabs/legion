@@ -95,7 +95,14 @@ export function watchLoadEnd({
   };
   const ended = () => {
     check();
-    if (quietFrom !== undefined && now() >= quietFrom + QUIET_MS + AFTER_QUIET_MS) startNow();
+    if (quietFrom === undefined) return;
+    if (now() < quietFrom + QUIET_MS + AFTER_QUIET_MS) {
+      // A timer can run a fraction of a millisecond before `now` reads its due time (measured in
+      // Chromium: the wait then stood still for good, with the load quiet), so it waits on.
+      arm();
+      return;
+    }
+    startNow();
   };
   const stop = () => {
     done = true;

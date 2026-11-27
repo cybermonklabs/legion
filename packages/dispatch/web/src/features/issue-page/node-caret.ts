@@ -555,6 +555,35 @@ function keepsToBlock(
   );
 }
 
+/**
+ * Whether `transaction`, one of the kept block editor's own in `state` (`block-editor.tsx`),
+ * keeps the block that editor is bound to. That editor's root is the block itself, so no edit
+ * reaches past it, and its selection is always inside it; but the blocks inside it are its
+ * structure, which the rule `holdEditsToBlock` holds the whole document's editor to keeps here
+ * too: the root keeps its type and attributes, its headings take no more line breaks, and each
+ * block inside it the transaction leaves standing is of the type and the attributes it was
+ * (`innerBlocksKept`). So Backspace at a decision's heading takes it no level down, and two lines
+ * pasted at its start make it no heading of two lines.
+ *
+ * And it changes something a reader reads: a transaction that changes nothing but the `id` of
+ * headings (`attributesAsRead`) is Milkdown's own (`syncHeadingIdPlugin`), which writes every
+ * heading's id it derives from the words of the one document it holds, at each change of that
+ * document, a bind included. The kept editor holds one block, so the ids it would derive are the
+ * block's alone, not the document's, which numbers a repeated heading's id; and a bind is no edit.
+ * So the kept editor writes nothing to the room but what the reader edits.
+ */
+export function keepsBoundBlock(transaction: Transaction, state: EditorState): boolean {
+  const root = state.doc;
+  const kept = transaction.doc;
+  return (
+    kept.hasMarkup(root.type, attributesAsRead(root, kept), root.marks) &&
+    !sameReading(root.content, kept.content) &&
+    headingBreaks(kept) <= headingBreaks(root) &&
+    // The root's content starts at 0, one past where a block's own start would stand.
+    innerBlocksKept(transaction, root, -1)
+  );
+}
+
 /** Whether every block inside `block`, which starts at `from` in the document before
  *  `transaction`, that the transaction leaves standing is still a block of the type and the
  *  attributes it was (`ownAttributes`): the block that holds the place where its content started,
@@ -773,6 +802,23 @@ export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined
   };
   place();
   return refocusWhenSettled(place, editable ?? undefined);
+}
+
+/**
+ * Holds the box of the page's kept block editor (`block-editor.tsx`), bound in `row`, by the
+ * rule `holdEditorAtBlock` holds a document's editor's box by, so a row that edits a block is no
+ * taller than the window either: a block taller than the room the row leaves its box scrolls
+ * inside that box. A box that fits is left as it stands, so nothing the row drew moves, and the
+ * page is not scrolled: the editor stands where the row's words stood (R7). Only a box held
+ * shorter than its block scrolls, since a box that scrolls makes a box of its own that a float
+ * beside the words would push (`styles.css`'s `[data-block-editor]`).
+ */
+export function holdBlockEditorBox(row: HTMLElement): void {
+  const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (box === null) return;
+  const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
+  holdBoxInRow(row, box, LEAST_BOX_LINES * lineHeightOf(editable ?? box), false);
+  if (box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
 }
 
 /** The fewest of the editor's lines a row's box is held to, however tall the body under it

@@ -26,8 +26,14 @@ import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "./page-structure";
  */
 
 /** The mark of the box the block editor is drawn in, beside its `EDITOR_BOX_ATTRIBUTE`, which
- *  `styles.css` draws the editor's text by. */
-const BLOCK_EDITOR_ATTRIBUTE = "data-block-editor";
+ *  `styles.css` draws the editor's text and lays the box out by: the early caret's stand-in box
+ *  carries it too (`early-caret.ts`), the box the editor moves into at the bind. */
+export const BLOCK_EDITOR_ATTRIBUTE = "data-block-editor";
+
+/** Whether the bound block takes no typing, on the editor's own element inside its box, as the
+ *  document's own editor marks its article inside the box (`StagedDocument.tsx`'s
+ *  `READ_ONLY_ATTRIBUTE`); the box itself takes no focus, which would draw the browser's ring. */
+const READ_ONLY_ATTRIBUTE = "data-read-only";
 
 /** Where a row draws its node's words (`NodeRow.tsx`, `spec-filter/SpecFilterBody.tsx`), which
  *  the editor's box stands in place of while the row's block is bound. */
@@ -49,6 +55,8 @@ export interface BlockEditorView<At> {
   /** The element moved between the hidden box and a row: the editor's own root, which holds its
    *  editable. */
   readonly view: { readonly dom: HTMLElement };
+  /** Defaults to `view.dom` when the editor is not wrapped. */
+  focusElement?(): HTMLElement;
   /** Binds the editor to `element`, a block of the room, with that block's own type and
    *  attributes (`rebindElement`). */
   rebindElement(element: XmlElement): void;
@@ -61,8 +69,13 @@ export interface BlockEditorView<At> {
   /** Draws a collaborator's cursor the room reports in the block, for an editor that does not
    *  read the room's awareness itself. */
   remoteCursor?(id: string): void;
-  /** Lets the editor take typing, or stops it, as the room admits the page. */
-  setEditable?(editable: boolean): void;
+  /** What the editor allows: typing and comments, quote comments alone, or selection alone
+   *  (decision 572, matching `ProofDocument.tsx`'s `editorAccess`). */
+  setAccess?(access: "edit" | "comment" | "read"): void;
+  /** The editor stands in `box`, a row's, bound to `element`. */
+  placed?(box: HTMLElement, element: XmlElement): void;
+  /** The editor went back to the hidden box, bound to no row. */
+  parked?(): void;
 }
 
 /** One row's bind: the row, its drawn words, its block in the room and where its caret goes. */
@@ -73,6 +86,11 @@ export interface BlockEditorTarget<At> {
   readonly at: At;
   /** The early caret's box, still in the row after its editable steps aside. */
   readonly existingBox?: HTMLElement;
+  /** The row takes no typing - a closed issue's block, or one the page's own rules keep from
+   *  typing - so the block is bound read-only whatever the room admits (decision 572). */
+  readonly readOnly?: boolean;
+  /** Closed issues allow quote comments even though their rooms are read-only. */
+  readonly issueClosed?: () => boolean;
 }
 
 export interface BlockEditorOptions<At> {
@@ -89,18 +107,25 @@ export interface BlockEditorOptions<At> {
 export interface BlockEditorBinding<At> {
   /** Moves the editor into `target.row` where its words stood, bound to its block, and lets
    *  the row bound before have its words back. Answers what lets this bind go, which does
-   *  nothing once another bind or the editor's end has. */
-  bind(target: BlockEditorTarget<At>): () => void;
+   *  nothing once another bind or the editor's end has. Let go with `onLateRemoval`, where the
+   *  row left the page before the room's change that removed its block reached it, it still
+   *  hears that removal, until the next bind, and says it in `onLateRemoval` as the editor's
+   *  own end would (`report`). */
+  bind(target: BlockEditorTarget<At>): (onLateRemoval?: (line: string) => void) => void;
   /** Takes a key pressed in the editor: Escape ends the bind and gives the row the focus, and
    *  the comment chord and `Mod-z` run where the editor answers them outside its own keys.
    *  Answers whether a block is bound to take it: no key goes into a block once the bind ends. */
   keydown(event: KeyboardEvent): boolean;
-  /** Notes text typed in the block that the room has not acknowledged yet. */
-  noteUnacknowledgedEdit(text: string): void;
+  /** Notes text typed in the block that the room has not acknowledged yet: a run of its own, or,
+   *  with `extendsLast`, the run last noted as it reads now that a key typed or took a letter
+   *  inside it, so a noted run is what the room holds where it kept the typing. */
+  noteUnacknowledgedEdit(text: string, extendsLast?: boolean): void;
   /** The room has acknowledged every edit: no noted text is in flight. */
   noteAcknowledged(): void;
   /** What the room admits the page to now: a reconnect that admits it to write keeps the bound
-   *  block writable, with nothing said; a read-only one stops its typing. */
+   *  block writable, with nothing said; a read-only one stops its typing. A bind holds what the
+   *  room admits as it is made, so a block of a room that admits the page read-only is bound
+   *  read-only (decision 572). */
   admissionChanged(readOnly: boolean): void;
   /** A collaborator's cursor the room reports in the bound block. */
   receiveCursor(id: string): void;
@@ -116,8 +141,14 @@ interface Placed {
 
 /** The bind in force. */
 interface Bound {
+  /** The block's id as bound: a merge another writer makes can write the merged block into this
+   *  element, which then takes that block's id (`gone`). */
+  readonly blockId: unknown;
   readonly box: HTMLElement;
   readonly element: XmlElement;
+  readonly issueClosed?: () => boolean;
+  /** The row takes no typing (`BlockEditorTarget.readOnly`). */
+  readonly readOnly: boolean;
   readonly row: HTMLElement;
   /** The room's fragment the block stands in, read for typed text after the block is gone. */
   readonly room: Placed;
@@ -134,10 +165,14 @@ interface Bound {
  * row. Its box takes the words' place and their classes; the words stay where they are, hidden,
  * so whatever draws them keeps them, and they show again as the bind ends.
  *
- * Another writer deleting the bound block, or merging it into another and deleting it, ends the
- * bind: the editor goes back to the hidden box, the row takes the focus where the editor held
- * it, so no key typed after goes into another block, and the report says the block was removed,
- * or that typed text was not saved where the room holds a noted text nowhere now.
+ * Another writer deleting the bound block, or merging it into another, ends the bind: the editor
+ * goes back to the hidden box, the row takes the focus where the editor held it, so no key typed
+ * after goes into another block, and the report says the block was removed, or that typed text
+ * was not saved where the room holds a noted text nowhere now. A merge is the block's element
+ * deleted, or written over with the merged block, whose id it then takes (`gone`): the server
+ * writes a new document into the room's children by place (`pmdoc/update.go`'s
+ * `updateChildren`), so the held block's element can take the next block's id and words, and
+ * the typing in flight stays in the room there.
  */
 export function bindBlockEditor<At>({
   hidden,
@@ -145,8 +180,12 @@ export function bindBlockEditor<At>({
   report,
 }: BlockEditorOptions<At>): BlockEditorBinding<At> {
   let bound: Bound | undefined;
-  let readOnly = false;
+  // What the room admits the page to (`admissionChanged`), and the access the editor holds now.
+  let roomReadOnly = false;
+  let currentAccess: "edit" | "comment" | "read" = "edit";
   let alive = true;
+  // Stops hearing the removal of a block whose row left the page first (`bind`'s release).
+  let stopLingering: (() => void) | undefined;
 
   const park = (held: Bound) => {
     held.element.doc?.off("afterTransaction", held.watch);
@@ -154,28 +193,53 @@ export function bindBlockEditor<At>({
     hidden.append(editor.view.dom);
     held.box.remove();
     held.words.hidden = held.wordsHidden;
+    editor.parked?.();
+  };
+
+  /** The line the end of `held` says: its block removed, and whether text typed in it is held
+   *  nowhere in the room now. */
+  const removalLine = (held: Bound) => {
+    const room = held.room.toString();
+    return held.unsaved.some((text) => !room.includes(text))
+      ? KEY_REPORTS.editor_text_not_saved
+      : KEY_REPORTS.editor_block_removed;
   };
 
   const end = (held: Bound) => {
-    const room = held.room.toString();
-    const lost = held.unsaved.some((text) => !room.includes(text));
+    const line = removalLine(held);
     const focused = held.box.contains(held.row.ownerDocument.activeElement);
     park(held);
     if (focused) held.row.focus({ preventScroll: true });
-    report(lost ? KEY_REPORTS.editor_text_not_saved : KEY_REPORTS.editor_block_removed);
+    report(line);
+  };
+
+  /** Lets the editor take typing where the room admits the page to write and `held`'s row takes
+   *  typing, comments alone on a closed issue's block, and neither where the room admits the
+   *  page read-only (`ProofDocument.tsx`'s `editorAccess`, decision 572). Marks the editor's
+   *  element `data-read-only` as the document's own editor marks its article, and makes a
+   *  read-only editor focusable (`tabIndex = -1`) so a reader selecting in it holds the focus
+   *  and the comment-on-selection chord reaches the editor. */
+  const access = (held: Bound) => {
+    const next = held.issueClosed?.() ? "comment" : roomReadOnly || held.readOnly ? "read" : "edit";
+    const readOnly = next !== "edit";
+    editor.view.dom.setAttribute(READ_ONLY_ATTRIBUTE, String(readOnly));
+    const focus = editor.focusElement?.() ?? editor.view.dom;
+    if (readOnly) focus.tabIndex = -1;
+    else focus.removeAttribute("tabindex");
+    if (next === currentAccess) return;
+    currentAccess = next;
+    editor.setAccess?.(next);
   };
 
   return {
-    bind({ row, words, element, at, existingBox }) {
+    bind({ row, words, element, at, existingBox, readOnly = false, issueClosed }) {
       if (!alive) return () => {};
       const doc = element.doc;
       if (doc === null) throw new Error("A block editor binds a block of a room.");
+      stopLingering?.();
+      stopLingering = undefined;
       if (bound !== undefined) park(bound);
       editor.rebindElement(element);
-      if (readOnly) {
-        readOnly = false;
-        editor.setEditable?.(true);
-      }
       const box = existingBox ?? row.ownerDocument.createElement("div");
       box.className = words.className;
       box.setAttribute(EDITOR_BOX_ATTRIBUTE, "");
@@ -186,22 +250,44 @@ export function bindBlockEditor<At>({
       words.hidden = true;
       box.append(editor.view.dom);
       const held: Bound = {
+        blockId: element.getAttribute("blockId"),
         box,
         element,
+        issueClosed,
+        readOnly,
         room: roomOf(element),
         row,
         unsaved: [],
         watch: () => {
-          if (bound === held && removed(element)) end(held);
+          if (bound === held && gone(held)) end(held);
         },
         words,
         wordsHidden,
       };
       doc.on("afterTransaction", held.watch);
       bound = held;
+      access(held);
+      editor.placed?.(box, element);
       editor.setCaret?.(at, row);
-      return () => {
-        if (bound === held) park(held);
+      return (onLateRemoval) => {
+        if (bound !== held) return;
+        park(held);
+        if (onLateRemoval === undefined) return;
+        if (gone(held)) {
+          onLateRemoval(removalLine(held));
+          return;
+        }
+        // The row left the page before the room's change that removed its block reached this
+        // page: a read that drops the row can answer first. That change, where it comes, says
+        // what was typed in the block is lost, as the editor's own end would.
+        const late = () => {
+          if (!gone(held)) return;
+          stopLingering?.();
+          stopLingering = undefined;
+          onLateRemoval(removalLine(held));
+        };
+        doc.on("afterTransaction", late);
+        stopLingering = () => doc.off("afterTransaction", late);
       };
     },
     keydown(event) {
@@ -218,29 +304,34 @@ export function bindBlockEditor<At>({
         park(held);
         held.row.focus();
       } else if (comment) {
-        if (editor.commentOnSelection?.() === true) event.preventDefault();
-      } else if (undo && editor.undo !== undefined) {
+        if (currentAccess !== "read" && editor.commentOnSelection?.() === true) {
+          event.preventDefault();
+        }
+      } else if (currentAccess === "edit" && undo && editor.undo !== undefined) {
         event.preventDefault();
         editor.undo();
       }
       return true;
     },
-    noteUnacknowledgedEdit(text) {
-      if (text !== "") bound?.unsaved.push(text);
+    noteUnacknowledgedEdit(text, extendsLast = false) {
+      const unsaved = bound?.unsaved;
+      if (unsaved === undefined) return;
+      if (extendsLast && unsaved.length > 0) unsaved[unsaved.length - 1] = text;
+      else if (text !== "") unsaved.push(text);
     },
     noteAcknowledged() {
       bound?.unsaved.splice(0);
     },
     admissionChanged(next) {
-      if (next === readOnly) return;
-      readOnly = next;
-      editor.setEditable?.(!next);
+      roomReadOnly = next;
+      if (bound !== undefined) access(bound);
     },
     receiveCursor(id) {
       if (bound !== undefined) editor.remoteCursor?.(id);
     },
     destroy() {
       alive = false;
+      stopLingering?.();
       if (bound !== undefined) park(bound);
     },
   };
@@ -252,6 +343,12 @@ function removed(element: Placed): boolean {
     if (type._item?.deleted === true) return true;
   }
   return false;
+}
+
+/** Whether the block `held` binds is gone from its room: its element deleted, or written over
+ *  with another block, whose id it now holds (`bindBlockEditor`). */
+function gone(held: Bound): boolean {
+  return removed(held.element) || held.element.getAttribute("blockId") !== held.blockId;
 }
 
 /** The fragment of the room `element` stands in. */
@@ -304,21 +401,14 @@ function keptBlockEditor(room: RefObject<BlockRoom<EditorHandle> | null>): KeptB
       }
       let release: (() => void) | undefined;
       let cancelled = false;
-      let stopWaiting: (() => void) | undefined;
       const cancel = held.requestBind(
         { id: request.artifact.id, fragment: fragmentOf(request.artifact) },
         {
           onBind: (target) => {
-            // The room may readmit the page read-only while the stand-in is still composing.
-            stopWaiting = target.watchAdmission((readOnly) => {
-              if (!readOnly || cancelled) return;
-              cancelled = true;
-              stopWaiting?.();
-              request.onEnd(KEY_REPORTS.editor_closed);
-            });
+            // The room may readmit the page read-only while the stand-in is still composing:
+            // the bind reads what the room admits as it is made (`bindRow`).
             request.beforeBind((box) => {
               if (cancelled) return;
-              stopWaiting?.();
               release = bindRow(target, request, box);
               if (release !== undefined) request.onBound(target.editor.view);
             });
@@ -329,7 +419,6 @@ function keptBlockEditor(room: RefObject<BlockRoom<EditorHandle> | null>): KeptB
       return () => {
         // Park this row before asking the room to drain any later bind.
         cancelled = true;
-        stopWaiting?.();
         release?.();
         cancel();
       };
@@ -338,20 +427,61 @@ function keptBlockEditor(room: RefObject<BlockRoom<EditorHandle> | null>): KeptB
 }
 
 /** The binding of one kept editor, which every view's rows share: the row bound now, which the
- *  editor's caret and its end are told to, and that row's room's awareness. */
+ *  editor's caret and its end are told to, that row's room's awareness, and the document of the
+ *  block bound. */
 interface KeptBinding {
   readonly binding: BlockEditorBinding<undefined>;
+  artifactId: string | undefined;
   awareness: Awareness | null;
   row: RowBind | undefined;
 }
 
 const KEPT_BINDINGS = new WeakMap<EditorHandle, KeptBinding>();
 
+/** One bind of the kept editor, as its watchers hear it (`watchKeptBinds`). */
+export interface KeptBind {
+  /** The document the bound block is a block of. */
+  readonly artifactId: string;
+  /** The row's box the editor stands in, where the row's words stood. */
+  readonly box: HTMLElement;
+  /** The bound block, the room's own. */
+  readonly element: XmlElement;
+}
+
+/** What hears each bind of a kept editor and each time it goes back to the hidden box. */
+export interface KeptBindWatch {
+  bound(bind: KeptBind): void;
+  parked(): void;
+}
+
+const KEPT_WATCHES = new WeakMap<EditorHandle, Set<KeptBindWatch>>();
+
+/** The bind in force of each kept editor, which a watcher that starts after it hears first. */
+const KEPT_BOUND = new WeakMap<EditorHandle, KeptBind>();
+
+/** Has `watch` hear each bind of the kept editor `handle` and each park, for what the issue page
+ *  draws and registers beside the bound block (`block-room.ts`'s `IssueBlockRoom`): the bind in
+ *  force at once, if any, since the first bind can come in the task the editor is built in,
+ *  before the page has drawn what watches it, and every bind and park from then on. Answers what
+ *  stops it. */
+export function watchKeptBinds(handle: EditorHandle, watch: KeptBindWatch): () => void {
+  let watches = KEPT_WATCHES.get(handle);
+  if (watches === undefined) {
+    watches = new Set();
+    KEPT_WATCHES.set(handle, watches);
+  }
+  watches.add(watch);
+  const current = KEPT_BOUND.get(handle);
+  if (current !== undefined) watch.bound(current);
+  return () => watches.delete(watch);
+}
+
 function keptBindingOf(target: BindTarget<EditorHandle>): KeptBinding {
   const known = KEPT_BINDINGS.get(target.editor);
   if (known !== undefined) return known;
   const handle = target.editor;
   const kept: KeptBinding = {
+    artifactId: undefined,
     awareness: null,
     row: undefined,
     binding: bindBlockEditor<undefined>({
@@ -366,7 +496,19 @@ function keptBindingOf(target: BindTarget<EditorHandle>): KeptBinding {
           handle.view.dom.setAttribute(BLOCK_ID_ATTRIBUTE, String(element.getAttribute("blockId")));
         },
         commentOnSelection: () => handle.commentOnSelection(),
-        setEditable: (editable) => handle.setAccess(editable ? "edit" : "read"),
+        focusElement: () => handle.view.dom,
+        setAccess: (next) => handle.setAccess(next),
+        placed(box, element) {
+          const artifactId = kept.artifactId;
+          if (artifactId === undefined) return;
+          const bind = { artifactId, box, element };
+          KEPT_BOUND.set(handle, bind);
+          for (const watch of KEPT_WATCHES.get(handle) ?? []) watch.bound(bind);
+        },
+        parked() {
+          KEPT_BOUND.delete(handle);
+          for (const watch of KEPT_WATCHES.get(handle) ?? []) watch.parked();
+        },
       },
       report: (line) => kept.row?.onEnd(line),
     }),
@@ -399,10 +541,21 @@ function bindRow(
   }
   const kept = keptBindingOf(target);
   kept.awareness = target.connection.awareness ?? null;
+  kept.artifactId = target.artifact.id;
   kept.row = request;
-  let unbind: () => void;
+  // What the room admits the page to as the bind is made: a room that admits it read-only binds
+  // the block read-only, as does a row that takes no typing (decision 572).
+  kept.binding.admissionChanged(target.readOnly);
+  let unbind: (onLateRemoval?: (line: string) => void) => void;
   try {
-    unbind = kept.binding.bind({ row: request.row, words, element, at: undefined, existingBox });
+    unbind = kept.binding.bind({
+      row: request.row,
+      words,
+      element,
+      at: undefined,
+      existingBox,
+      issueClosed: target.issueClosed,
+    });
   } catch (error) {
     // A block the editor's schema holds no block type for: `rebindElement` refuses it, and the
     // editor stays where it was, bound to no row.
@@ -416,12 +569,15 @@ function bindRow(
     target.watchPending((state) => {
       if (state.count === 0) kept.binding.noteAcknowledged();
     }),
-    watchTyping(element, (text) => kept.binding.noteUnacknowledgedEdit(text)),
+    watchTyping(element, (text, extendsLast) =>
+      kept.binding.noteUnacknowledgedEdit(text, extendsLast)
+    ),
   ];
   return () => {
     for (const stop of stops) stop();
     if (kept.row === request) kept.row = undefined;
-    unbind();
+    // A row the page took out before its block went from the room still says that removal.
+    unbind(request.row.isConnected ? undefined : request.onEnd);
   };
 }
 
@@ -437,14 +593,51 @@ function blockOf(parent: XmlFragment, blockId: string): XmlElement | undefined {
   return undefined;
 }
 
-/** Tells `note` each text this page types in `element`: the room's own changes are another
- *  writer's, and a sync's. */
-function watchTyping(element: XmlElement, note: (text: string) => void): () => void {
+/**
+ * Tells `note` each run of text this page types in `element`, as the run reads now; the room's
+ * own changes are another writer's, and a sync's. A key types one letter, so each is noted as
+ * part of its run: a letter typed at the last run's end or inside it, or one taken from inside
+ * it, extends that run, and a letter typed anywhere else starts a run of its own. So the room
+ * is read for what the reader typed, never for one letter of it, which most rooms hold anyway.
+ */
+function watchTyping(
+  element: XmlElement,
+  note: (text: string, extendsLast: boolean) => void
+): () => void {
+  let run: { readonly text: AbstractType<unknown>; start: number; value: string } | undefined;
   const typed = (events: YEvent<AbstractType<unknown>>[], transaction: Transaction) => {
     if (!transaction.local) return;
     for (const event of events) {
+      let at = 0;
       for (const change of event.delta) {
-        if (typeof change.insert === "string") note(change.insert);
+        const held = run?.text === event.target ? run : undefined;
+        if (change.retain !== undefined) {
+          at += change.retain;
+        } else if (typeof change.insert === "string") {
+          if (held !== undefined && at >= held.start && at <= held.start + held.value.length) {
+            const into = at - held.start;
+            held.value = held.value.slice(0, into) + change.insert + held.value.slice(into);
+            note(held.value, true);
+          } else {
+            run = { text: event.target, start: at, value: change.insert };
+            note(change.insert, false);
+          }
+          at += change.insert.length;
+        } else if (change.insert !== undefined) {
+          at += Array.isArray(change.insert) ? change.insert.length : 1;
+        } else if (change.delete !== undefined && held !== undefined) {
+          const from = at - held.start;
+          const to = from + change.delete;
+          if (to <= 0) {
+            held.start -= change.delete;
+          } else if (from >= 0 && to <= held.value.length) {
+            held.value = held.value.slice(0, from) + held.value.slice(to);
+            note(held.value, true);
+          } else {
+            // A deletion across the run's edge leaves it no one text the room could hold.
+            run = undefined;
+          }
+        }
       }
     }
   };

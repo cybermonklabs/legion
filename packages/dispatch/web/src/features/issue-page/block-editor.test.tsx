@@ -1,17 +1,22 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { QueryClient } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
+import type { ReactNode } from "react";
 import * as Y from "yjs";
 
 import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import type { ConnectionCallbacks } from "../doc/connection";
-import { bindBlockEditor } from "./block-editor";
+import type { EditorHandle } from "../doc/editor";
+import { bindBlockEditor, IssueBlockRoomContext } from "./block-editor";
 import { createBlockRoom } from "./block-room";
+import { artifact, node } from "./decisions-filter/decisions-fixtures";
 import { openEarlyCaret } from "./early-caret";
 import { watchLoadEnd } from "./load-end";
 import { KEY_REPORTS } from "./page-structure";
 import { splitSync } from "./sync-parts";
+import { useNodeEditing } from "./useNodeEditing";
 
 function capture(): Uint8Array {
   const stored: unknown = JSON.parse(
@@ -56,7 +61,11 @@ function setup() {
   const host = document.body.appendChild(document.createElement("div"));
   const row = host.appendChild(document.createElement("div"));
   row.tabIndex = 0;
+  row.setAttribute("data-node-row", "");
+  row.setAttribute("data-row-key", "r1");
+  row.setAttribute("data-editable", "");
   const words = row.appendChild(document.createElement("p"));
+  words.setAttribute("data-node-words", "");
   words.textContent = WORDS;
   const hidden = host.appendChild(document.createElement("div"));
   const editorDom = hidden.appendChild(document.createElement("div"));
@@ -77,6 +86,22 @@ function setup() {
       editorDom.focus();
     },
   };
+  const keptView = document.createElement("div");
+  keptView.contentEditable = "true";
+  const kept = {
+    view: { dom: keptView, editable: true },
+    destroy() {},
+    rebindElement(element: Y.XmlElement) {
+      keptView.textContent = element
+        .toArray()
+        .map((child) => child.toString())
+        .join("");
+    },
+    setAccess(access: "edit" | "comment" | "read") {
+      kept.view.editable = access === "edit";
+      keptView.contentEditable = String(kept.view.editable);
+    },
+  };
   const room = createBlockRoom({
     spec,
     converted: true,
@@ -89,7 +114,10 @@ function setup() {
     },
     loadEditor: async () => {},
     loadStyles: async () => {},
-    buildEditor: async () => editor,
+    buildEditor: async (_, { root }) => {
+      root.append(keptView);
+      return kept as unknown as EditorHandle;
+    },
     schedule: (run: () => void) => {
       queue.push(run);
     },
@@ -126,6 +154,7 @@ function setup() {
     opened,
     reports,
     row,
+    host,
     words,
     editorDom,
     binding,
@@ -133,9 +162,9 @@ function setup() {
     start,
     load,
     caret: () => caret,
-    sync() {
+    sync(readOnly = false) {
       if (!callbacks) throw new Error("the page did not open a document socket");
-      callbacks.onAdmission(false);
+      callbacks.onAdmission(readOnly);
       callbacks.onSynced();
     },
     destroy() {
@@ -235,6 +264,61 @@ test("keys typed before the bind are applied in order, composition included", ()
       held.destroy();
     }
   }));
+
+for (const typed of [false, true]) {
+  test(`a waiting Enter binds read-only ${typed ? "with" : "without"} held text`, () =>
+    withPage(async (page) => {
+      const room = { current: page.room };
+      const container = { current: page.host };
+      const artifacts = new Map([["spec", artifact(spec.id, "spec", true)]]);
+      const wholeEditors: string[] = [];
+      const hook = renderHook(
+        () =>
+          useNodeEditing({
+            artifacts,
+            container,
+            onEditing: (id) => {
+              if (id !== undefined) wholeEditors.push(id);
+            },
+            onReport: (line) => page.reports.push(line),
+          }),
+        {
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <IssueBlockRoomContext.Provider value={room}>{children}</IssueBlockRoomContext.Provider>
+          ),
+        }
+      );
+      try {
+        page.row.focus();
+        act(() => hook.result.current.edit("r1", node({ id: "spec#b-r1", type: "requirement" })));
+        const standIn = page.row.querySelector('[contenteditable="plaintext-only"]');
+        expect(standIn).toBe(document.activeElement);
+        if (standIn === null) throw new Error("Expected a stand-in before admission");
+        if (typed) {
+          standIn.textContent = `Unsaved ${WORDS}`;
+          standIn.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        }
+        await act(async () => {
+          await page.drain();
+          page.sync(true);
+          await page.drain();
+        });
+        const box = page.row.querySelector("[data-editor-box]");
+        if (box === null) throw new Error("The read-only admission did not bind the block");
+        expect(
+          box.querySelector('[data-read-only="true"] [contenteditable="false"]')
+        ).not.toBeNull();
+        expect(box.querySelector('[contenteditable="plaintext-only"]')).toBeNull();
+        expect(page.text.toString()).toBe(WORDS);
+        expect(box.textContent).toBe(WORDS);
+        expect(page.reports).toEqual(typed ? [KEY_REPORTS.editor_text_not_saved] : []);
+        expect(wholeEditors).toEqual([]);
+        expect(page.keys).toEqual([]);
+      } finally {
+        hook.unmount();
+      }
+    }));
+}
 
 function editorSelection(editor: HTMLElement, at: number) {
   const contents = editor.firstChild;

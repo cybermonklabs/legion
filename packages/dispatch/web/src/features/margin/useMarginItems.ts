@@ -200,6 +200,16 @@ export function anchoredThreadComments(
   return comments.filter((comment) => rootOf(byId, comment).anchor?.artifact_id === artifactId);
 }
 
+/** Selects matching comment threads without dropping their replies. The query cache keeps
+ *  the full comment list, as it does when today's margin filters a single block. */
+function commentsOnBlocks(comments: Comment[], blockIds: ReadonlySet<string>): Comment[] {
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  return comments.filter((comment) => {
+    const anchor = rootOf(byId, comment).anchor;
+    return anchor?.block_id != null && !anchor.orphaned && blockIds.has(anchor.block_id);
+  });
+}
+
 function commentThreads(comments: Comment[]): Thread[] {
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const threads = new Map<string, { replies: Comment[]; root: Comment }>();
@@ -333,11 +343,14 @@ export function useMarginItems(
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
   {
+    blockFilterIds,
     documentShown = false,
     documentUp = false,
     held = NO_THREADS,
     issue,
   }: {
+    /** The set selected by a kept-editor references button, never a whole editor. */
+    readonly blockFilterIds?: ReadonlySet<string>;
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
@@ -382,6 +395,11 @@ export function useMarginItems(
   // Every page but the new issue page reads the comments as it always has: only that page's
   // shell hands the margin its Details drawer, which `freshness` is read from too.
   const commentsShown = freshness === undefined || documentUp;
+  const selectComments = useCallback(
+    (records: Comment[]) =>
+      blockFilterIds === undefined ? records : commentsOnBlocks(records, blockFilterIds),
+    [blockFilterIds]
+  );
   const comments = useQuery({
     enabled: owner !== undefined && commentsShown,
     queryKey: commentsShown ? commentsQueryKey : ["comments", undefined],
@@ -393,6 +411,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    ...(blockFilterIds === undefined ? {} : { select: selectComments }),
     ...freshness,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });

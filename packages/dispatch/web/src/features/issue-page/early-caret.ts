@@ -2,6 +2,7 @@ import type { Selection, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 
 import { inputMethodKey } from "../../lib/input-method-key";
+import { BLOCK_EDITOR_ATTRIBUTE } from "./block-editor";
 import { type CaretAt, EDITOR_BOX_ATTRIBUTE, textOffsetAt } from "./node-caret";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "./page-structure";
 import { pressedWord, wordUnits } from "./spec-filter/pressed-words";
@@ -51,7 +52,9 @@ export interface EarlyCaretHold {
   handover(bind: (box?: HTMLElement) => void, reuseBox?: boolean): void;
   owns(target: EventTarget | null): boolean;
   leave(): boolean;
-  refuse(): void;
+  /** Ends the stand-in with no bind: the row's words show again, and where it took typing, that
+   *  typing is reported lost. Answers whether it took any. */
+  refuse(): boolean;
   destroy(): void;
 }
 
@@ -67,7 +70,7 @@ export function openEarlyCaret({
   onEscape,
 }: EarlyCaretOptions): EarlyCaretHold | undefined {
   if (!editable) {
-    report(KEY_REPORTS.no_text);
+    start?.();
     return undefined;
   }
 
@@ -84,6 +87,9 @@ export function openEarlyCaret({
   const box = doc.createElement("div");
   box.className = words.className;
   box.setAttribute(EDITOR_BOX_ATTRIBUTE, "");
+  // The box the kept editor moves into at the bind, laid out as that editor's is from the start
+  // (`styles.css`'s `[data-block-editor]`), so nothing moves as the editor takes its place.
+  box.setAttribute(BLOCK_EDITOR_ATTRIBUTE, "");
   box.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
   const input = doc.createElement("div");
   input.setAttribute("contenteditable", "plaintext-only");
@@ -294,14 +300,18 @@ export function openEarlyCaret({
       apply(editorFor(view, drawn, pressed, caret, takeFocus, end));
     },
     refuse() {
-      if (finished) return;
+      if (finished) return false;
       const focused = takeFocus || input === doc.activeElement;
       finished = true;
       waiting = undefined;
       cancelReplay?.();
       detach();
       if (focused) row.focus({ preventScroll: true });
-      report(KEY_REPORTS.editor_text_not_saved);
+      // Only typing the stand-in took is lost: one that took none has nothing to say.
+      const typed =
+        snapshot.text !== drawn.text || held.some(({ snapshot }) => snapshot.text !== drawn.text);
+      if (typed) report(KEY_REPORTS.editor_text_not_saved);
+      return typed;
     },
     destroy() {
       finished = true;

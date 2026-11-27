@@ -265,6 +265,12 @@ function candidatesBetween(
   references: EditorReferences
 ): Decoration[] {
   const found: Decoration[] = [];
+  // A single-block editor's root can be the text block itself, a paragraph or a heading
+  // (`createProofEditor`'s `element`), which `nodesBetween` visits no text block of: its content
+  // starts at 0, and it is read whole, as one text block of a document is.
+  if (doc.isTextblock) {
+    return doc.type.spec.code === true ? found : blockCandidates(doc, 0, references);
+  }
   doc.nodesBetween(from, to, (node, pos) => {
     if (!node.isTextblock) return true;
     if (node.type.spec.code !== true) found.push(...blockCandidates(node, pos + 1, references));
@@ -344,6 +350,8 @@ function nextCandidates(
   references: EditorReferences
 ): DecorationSet {
   const { doc } = transaction;
+  // A text-block root is one text block, which every edit touches: it is read again whole.
+  if (doc.isTextblock) return allCandidates(doc, references);
   const ranges = changedRanges(transaction);
   if (ranges === undefined) {
     return allCandidates(doc, references);

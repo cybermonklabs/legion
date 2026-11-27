@@ -10,6 +10,9 @@ import type { Awareness } from "y-protocols/awareness";
 /** The class `lib.css` hangs a peer's caret label with back from the caret, toward the line's
  *  start. */
 const INWARD_LABEL_CLASS = "proof-collab-cursor__label--inward";
+/** The class `lib.css` hangs a peer's caret label with below its caret's line, in an editor whose
+ *  root is one block (`labelPlacement`). */
+const BELOW_LABEL_CLASS = "proof-collab-cursor__label--below";
 
 /**
  * y-prosemirror's peer-cursor plugin, except that a peer's caret is not drawn while it sits exactly
@@ -85,6 +88,12 @@ function peerDecorationsAwayFromCaret(state: EditorState): DecorationSet | undef
  * label, and after the editor or a label's box resizes: every read first, in one layout the
  * frame needs anyway, then every class write. An editor no peer's caret is in reads nothing.
  * prosemirror-view ignores what changes inside a widget, so the class is no edit.
+ *
+ * An editor whose root is one block, not a document - the host's single-block editor
+ * (`createProofEditor`'s `element`) - stands in a box of that block's own height, so a label over
+ * a caret on the block's first line would pass the box's top. Such a label takes
+ * `BELOW_LABEL_CLASS` and hangs below its caret's line instead. An editor of a whole document
+ * places every label as before.
  */
 function labelPlacement(view: EditorView): { schedule(): void; destroy(): void } {
   const editorWindow = view.dom.ownerDocument.defaultView;
@@ -96,7 +105,14 @@ function labelPlacement(view: EditorView): { schedule(): void; destroy(): void }
     if (view.isDestroyed) return;
     const labels = view.dom.querySelectorAll<HTMLElement>(".proof-collab-cursor__label");
     const placed = Array.from(labels, (label) => ({ label, ...labelFit(label, editorWindow) }));
+    const blockRoot = view.state.doc.type.name !== "doc";
+    const editableTop = view.dom.getBoundingClientRect().top;
+    const hung = Array.from(labels, (label) => ({
+      below: blockRoot && hangsAbove(label, editableTop),
+      label,
+    }));
     for (const { inward, label } of placed) label.classList.toggle(INWARD_LABEL_CLASS, inward);
+    for (const { below, label } of hung) label.classList.toggle(BELOW_LABEL_CLASS, below);
     const boxes = new Set<Element>();
     for (const { box } of placed) if (box !== null && box !== view.dom) boxes.add(box);
     for (const box of watched) if (!boxes.has(box)) resizes.unobserve(box);
@@ -137,6 +153,14 @@ function labelFit(
   const at = bar.left + bar.width / 2;
   const { width } = label.getBoundingClientRect();
   return { box, inward: at + width > end && at - width >= start };
+}
+
+/** Whether `label`, hung over its caret as upstream hangs it, would stand above `top`: where it
+ *  hangs is read from the caret and the label's own height, which no class of its changes. */
+function hangsAbove(label: HTMLElement, top: number): boolean {
+  const caret = label.parentElement;
+  if (caret === null) return false;
+  return caret.getBoundingClientRect().top - label.getBoundingClientRect().height < top;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { createElement, type ReactNode, useEffect, useRef } from "react";
+import { createElement, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc, XmlElement } from "yjs";
 
@@ -8,19 +8,21 @@ import { issueTreeKey, whoAmIQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { type ConnectionCallbacks, colorForLogin, loadDocumentTransport } from "../doc/connection";
 import { createBlockEditor, type EditorHandle } from "../doc/editor";
-import { composerKindFor } from "../doc/marks";
+import { composerKindFor, selectionBarKindFor } from "../doc/marks";
 import type { PendingState } from "../doc/pending-sync";
 import { createPendingWaiter } from "../doc/pending-waiter";
+import type { QuoteAnchor } from "../doc/quote-anchor";
 import { fragmentOf } from "../doc/roots";
 import { compiledBlockSchema, compiledSchemaCreatable, editorBlockSchema } from "../doc/schema";
 import { useMargin } from "../margin/margin-context";
 import { watchPicturePath } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { importWhenOnline } from "../shell/DeploymentResilience";
-import { IssueBlockRoomContext } from "./block-editor";
+import { IssueBlockRoomContext, type KeptBind, watchKeptBinds } from "./block-editor";
 import { useReportAdmission } from "./document-admission";
 import { askForTask } from "./drawn-in-slices";
 import { useOwnedIssueTree } from "./issue-tree-owner";
+import { KeptEditorParts, type ReferencesPress } from "./kept-editor-parts";
 import {
   BLOCK_EDITOR_START_MARK,
   observeEntryEnds,
@@ -65,6 +67,9 @@ export interface BindTarget<Editor> {
    *  alone, which the next change of plugins would put back here. */
   readonly root: HTMLElement;
   readonly scratch: XmlElement;
+  /** The admission when handed over; `watchAdmission` reports later changes. */
+  readonly readOnly: boolean;
+  readonly issueClosed: () => boolean;
   watchAdmission(listener: (readOnly: boolean) => void): () => void;
   watchPending(listener: (state: PendingState) => void): () => void;
   whenSent(timeoutMs: number): Promise<void>;
@@ -85,6 +90,9 @@ interface BuildContext {
   readonly root: HTMLElement;
   readonly queryClient: QueryClient;
   readonly boundArtifact: () => RoomArtifact | undefined;
+  /** Answers once this browser's edits of the bound block's room have reached the server, and
+   *  at `timeoutMs` whatever it reports. */
+  readonly whenSent: (timeoutMs: number) => Promise<void>;
 }
 
 interface RoomOptions<Editor extends KeptEditor> {
@@ -92,6 +100,7 @@ interface RoomOptions<Editor extends KeptEditor> {
   readonly converted: boolean | (() => boolean);
   readonly queryClient: QueryClient;
   readonly host: HTMLElement;
+  readonly issueClosed?: () => boolean;
   readonly loadTransport: () => Promise<Connect>;
   readonly loadEditor: () => Promise<unknown>;
   readonly loadStyles: () => Promise<unknown>;
@@ -142,6 +151,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
   converted,
   queryClient,
   host,
+  issueClosed = () => false,
   loadTransport,
   loadEditor,
   loadStyles,
@@ -165,6 +175,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
   let editor: Editor | undefined;
   let building = false;
   let currentArtifact: RoomArtifact | undefined;
+  let currentSession: Session | undefined;
 
   function runTask<T>(run: () => T | PromiseLike<T>): Promise<T | undefined> {
     const task = Promise.withResolvers<T | undefined>();
@@ -203,11 +214,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
       const next = waiting[0];
       if (next === undefined) return;
       const { artifact, request, session } = next;
-      if (session.readOnly) {
-        waiting.shift();
-        request.onBindRefused(KEY_REPORTS.editor_closed);
-        continue;
-      }
+      // A room that admits the page read-only still binds the block, read-only (decision 572).
       if (
         !session.synced ||
         session.connection === undefined ||
@@ -220,6 +227,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
       }
       waiting.shift();
       currentArtifact = artifact;
+      currentSession = session;
       request.onBind({
         artifact,
         connection: session.connection,
@@ -227,6 +235,10 @@ export function createBlockRoom<Editor extends KeptEditor>({
         hidden: box,
         root: editorRoot,
         scratch: scratchBlock,
+        get readOnly() {
+          return session.readOnly;
+        },
+        issueClosed,
         watchAdmission(listener) {
           session.admissions.add(listener);
           return () => session.admissions.delete(listener);
@@ -264,6 +276,10 @@ export function createBlockRoom<Editor extends KeptEditor>({
               boundArtifact: () => currentArtifact,
               queryClient,
               root,
+              whenSent: (timeoutMs) =>
+                currentSession === undefined
+                  ? Promise.resolve()
+                  : pendingWaiter.whenSent(currentSession.artifactId, timeoutMs),
             }),
             hidden,
             paragraph,
@@ -329,7 +345,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
             session.readOnly = readOnly;
             onAdmission?.(artifact.id, readOnly);
             for (const listener of session.admissions) listener(readOnly);
-            if (readOnly) refuse((bind) => bind.session === session);
+            // A bind waiting on a read-only admission is made read-only (`drainBinds`).
             drainBinds();
           },
           onOutsideSchema: () => failed(true),
@@ -444,6 +460,10 @@ export function IssueBlockRoom({
   const marginRef = useRef(margin);
   marginRef.current = margin;
   const reportAdmission = useReportAdmission();
+  // The kept editor once it is built, for what the page draws beside the block it binds
+  // (`KeptEditorParts`), and what a press on a block's references button there does.
+  const [keptEditor, setKeptEditor] = useState<EditorHandle | undefined>(undefined);
+  const referencesPress = useRef<ReferencesPress>(() => {});
   const latest = useRef({ issue, root: tree.root });
   latest.current = { issue, root: tree.root };
   const { key } = issue;
@@ -460,11 +480,25 @@ export function IssueBlockRoom({
       marked.add(name);
       performance.mark(name);
     };
+    let alive = true;
+    // The margin draws a document's threads, and the composer a comment on a selection opens,
+    // only while a document's editor is registered with it (`registerDocument`, which the whole
+    // document's editor does as it binds, `ProofDocument.tsx`). The kept editor registers itself
+    // once the reader asks for one of them - a comment on its selection, a block's references -
+    // so a bind reads nothing more, and takes itself back as it leaves the row.
+    let registered = false;
+    const unregister = () => {
+      if (!registered) return;
+      registered = false;
+      marginRef.current.registerDocument(undefined);
+    };
+    let showDocument = (_artifactId: string) => {};
     const room = createBlockRoom({
       spec: { id: specId, fragment: specFragment },
       converted: () => heldTree(queryClient, key)?.converted === true,
       queryClient,
       host: document.body,
+      issueClosed: () => latest.current.issue.closed_at !== null,
       onAdmission(artifactId, readOnly) {
         if (latest.current.issue.closed_at !== null) return;
         if (heldTree(queryClient, key)?.converted === true) {
@@ -494,10 +528,16 @@ export function IssueBlockRoom({
           Promise.all([import("@legion/proof-editor"), import("../doc/ask-block")])
         ),
       loadStyles: () => importWhenOnline(() => import("@legion/proof-editor/style.css")),
-      buildEditor: (element, { boundArtifact, queryClient: client, root }) => {
+      buildEditor: async (element, { boundArtifact, queryClient: client, root, whenSent }) => {
         const login = client.getQueryData(whoAmIQuery().queryKey)?.login;
         if (login === undefined) throw new Error("The issue has no signed-in reader.");
-        return createBlockEditor(root, {
+        const plugins = importWhenOnline(() => import("./block-editor-plugins"));
+        // A build that fails first leaves this load's own failure, if any, unread.
+        plugins.catch(() => undefined);
+        let bound: KeptBind | undefined;
+        let quoteForSelection: (from: number, to: number) => QuoteAnchor | undefined = () =>
+          undefined;
+        const handle = await createBlockEditor(root, {
           askStateOf(blockId) {
             const id = boundArtifact()?.id;
             const artifact = latest.current.issue.artifacts?.find((entry) => entry.id === id);
@@ -510,7 +550,17 @@ export function IssueBlockRoom({
           onMarkAction(action) {
             const artifact = boundArtifact()?.id;
             if (artifact === undefined) return;
+            if (action.kind === "quote-comment") {
+              const anchor = quoteForSelection(action.from, action.to);
+              if (anchor === undefined) return;
+              showDocument(artifact);
+              return marginRef.current.composeForMark({
+                anchor: { artifact, ...anchor },
+                kind: "comment",
+              });
+            }
             if (action.kind === "comment" || action.kind === "ask" || action.kind === "suggest") {
+              showDocument(artifact);
               return marginRef.current.composeForMark({
                 anchor: {
                   artifact,
@@ -530,6 +580,51 @@ export function IssueBlockRoom({
           user: { name: login, color: colorForLogin(login) },
           watchPicture: (route, onPicture) => watchPicturePath(client, route, onPicture),
         });
+        // The page's own plugins of the kept editor, loaded with the editor's code and put on
+        // before its first bind (`block-editor-plugins.ts`).
+        try {
+          const { boundQuoteAnchor, installKeptEditorPlugins } = await plugins;
+          installKeptEditorPlugins(handle.view);
+          quoteForSelection = (from, to) =>
+            bound === undefined
+              ? undefined
+              : boundQuoteAnchor(handle.view.state.schema, bound.element, from, to);
+        } catch (error) {
+          void handle.destroy();
+          throw error;
+        }
+        showDocument = (artifactId) => {
+          registered = true;
+          marginRef.current.registerDocument({
+            artifactId,
+            focusBlock: (blockId) => handle.focusBlock(blockId),
+            focusMark: (markId) => handle.focusMark(markId),
+            removeMark: (markId) => handle.removeMark(markId),
+            remarkMark: (markId, kind, quote, placement) =>
+              handle.remarkMark(markId, selectionBarKindFor(kind), quote, placement ?? null),
+            retypeMark: (markId, kind) => handle.retypeMark(markId, selectionBarKindFor(kind)),
+            setActiveBlocks: (blockIds) => handle.setActiveBlocks(blockIds),
+            setActiveMarks: (markIds) => handle.setActiveMarks(markIds),
+            whenSent,
+          });
+        };
+        watchKeptBinds(handle, {
+          bound: (next) => {
+            bound = next;
+          },
+          parked: () => {
+            bound = undefined;
+            unregister();
+          },
+        });
+        referencesPress.current = (artifactId, blockId, blocks) => {
+          showDocument(artifactId);
+          marginRef.current.filterToBlocks(blockId, blocks);
+          // The block is the view's root; focusBlock searches below it.
+          handle.view.dom.focus({ preventScroll: true });
+        };
+        if (alive) setKeptEditor(handle);
+        return handle;
       },
       mark,
     });
@@ -544,10 +639,26 @@ export function IssueBlockRoom({
       start: room.start,
     });
     return () => {
+      alive = false;
       roomRef.current = null;
       load.destroy();
       room.destroy();
+      unregister();
+      referencesPress.current = () => {};
+      setKeptEditor(undefined);
     };
   }, [documentRef, key, queryClient, reportAdmission, specFragment, specId]);
-  return createElement(IssueBlockRoomContext.Provider, { value: roomRef }, children);
+  return createElement(
+    IssueBlockRoomContext.Provider,
+    { value: roomRef },
+    children,
+    keptEditor === undefined
+      ? null
+      : createElement(KeptEditorParts, {
+          editor: keptEditor,
+          issueKey: key,
+          onReferencesPress: (...args: Parameters<ReferencesPress>) =>
+            referencesPress.current(...args),
+        })
+  );
 }

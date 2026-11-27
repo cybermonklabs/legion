@@ -116,6 +116,14 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 
     `src/tests/element-option.test.ts` exercises the target's type and `blockId`, both places a host installs plugins, the old cursor install, and the refusal to rebind a full-document editor.
 
+    A collaborator's caret label in a single-block editor hangs below its caret's line where it would pass the top of the editable, since the host draws that editor in a box of the block's own height (the issue page's row, R7); an editor whose root is `doc` places every label as before.
+    `src/lib.css` adds 9 lines: the `.proof-collab-cursor__label--below` rule, `top: 100%`, with its comment.
+    `src/collab-cursor-plugin.ts`, Dispatch's own file beside the copies, adds 24 lines and rewrites none: the class's name, the doc comment's paragraph, the read of each label's place before any class is written (`hangsAbove`, read from the caret and the label's own height, so the class it sets does not change what it reads), and the class's write, for an editor whose root is no `doc` alone.
+
+    A single-block editor whose root is a paragraph or a heading draws the titles of the references its words hold, as a document's text block does.
+    `src/reference-decorations.ts`, Dispatch's own file, adds 8 lines and rewrites none: `candidatesBetween` reads such a root as the one text block it is, from 0, where `nodesBetween` visits no text block, and `nextCandidates` reads it again whole at each edit; an editor whose root is `doc` reads as before.
+    `src/tests/element-option.test.ts` holds the case for a paragraph root and a heading root.
+
 32. A `block[]` attribute's `items`, the item kinds its values may point at besides a block of a document - an issue's ask, comment or message, a block of one, or an issue - with their `item_versions`, and the `parent` attribute.
     In `src/block-schema.ts`: the import of `PARENT_ATTRIBUTE` and `pointerItemKind` from `@legion/contracts`; `creatableValue` reading `item_versions` for each item a `block[]` value points at; `validateBlockSchema` refusing `items` on any other kind, an item kind `ITEM_KINDS` does not name or one named twice, and a `parent` attribute of any kind but `block[]`; and `parseAttribute`'s `block[]` case passing `attribute.items` to `parseBlockPointers`.
     In `src/typed-block-commands.ts`: the import of `parentProblem` from `./block-pointers`, and `validateValue`'s `block[]` case passing `attribute.items` to `blockPointersProblem` and refusing what `parentProblem` refuses.

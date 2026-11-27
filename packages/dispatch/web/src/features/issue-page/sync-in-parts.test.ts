@@ -346,7 +346,7 @@ test("pending restore sends the saved edit after the parts and stores no part", 
   return runCase(
     async (r) => {
       // Use the matching base of the stored edit for this row, not an unrelated captured client.
-      const base = serverWith(71);
+      const base = serverWith("", 71);
       try {
         r.first.receive(syncStep2Frame(Y.encodeStateAsUpdate(base), r.id));
         r.first.receive(authenticatedFrame("read-write", r.id));
@@ -354,13 +354,15 @@ test("pending restore sends the saved edit after the parts and stores no part", 
         await waitFor(() => expect(r.marks).toEqual(["synced"]));
         expect(await rowsOf(r.id)).toHaveLength(1);
         const sent = sentSync(r.first, 2);
+        if (saved === undefined)
+          throw new Error("the stored edit was saved before the page loaded");
         expect(sent).toContainEqual(saved);
       } finally {
         base.destroy();
       }
     },
     async (id) => {
-      const base = serverWith(71);
+      const base = serverWith("", 71);
       try {
         saved = await savedEdit(id, base, " restored");
       } finally {
@@ -384,6 +386,7 @@ test("a schema switch after sync holds the same Y.Doc and block objects", () =>
     const root = doc.getXmlFragment(name);
     const element = root.toArray().find((child) => child instanceof Y.XmlElement);
     expect(element).toBeDefined();
+    if (element === undefined) throw new Error("the real capture must hold a block element");
     r.first.close(DOCUMENT_SCHEMA_CLOSE_CODE);
     const next = await r.socketAt(1);
     next.receive(authenticatedFrame("read-write", r.id));

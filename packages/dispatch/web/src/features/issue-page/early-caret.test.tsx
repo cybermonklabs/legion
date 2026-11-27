@@ -270,12 +270,31 @@ early(
 );
 
 early(
-  "a row that cannot take typing reports no text and draws no stand-in",
+  "a row that cannot take typing starts the work without a stand-in or a refusal",
   (f) => {
     expect(f.input()).toBeNull();
-    expect(f.starts).toEqual([]);
-    expect(f.reports).toEqual([KEY_REPORTS.no_text]);
+    expect(f.starts).toEqual(["work"]);
+    expect(f.reports).toEqual([]);
   },
   0,
   false
 );
+
+for (const typed of [false, true]) {
+  early(
+    `read-only handover discards the stand-in ${typed ? "after typing" : "without typing"}`,
+    (f) => {
+      if (typed) f.write(`lost${TEXT}`, 4);
+      let reused: HTMLElement | undefined;
+      f.hold?.handover((box) => {
+        reused = box;
+        box?.append(document.createTextNode(TEXT));
+        f.hold?.refuse();
+      });
+      expect(f.input()).toBeNull();
+      expect(reused?.textContent).toBe(TEXT);
+      expect(f.replay).toEqual([]);
+      expect(f.reports).toEqual(typed ? [KEY_REPORTS.editor_text_not_saved] : []);
+    }
+  );
+}

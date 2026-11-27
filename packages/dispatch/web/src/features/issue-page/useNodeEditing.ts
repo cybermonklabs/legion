@@ -17,6 +17,7 @@ import {
   drawsBlock,
   EDITOR_BOX_ATTRIBUTE,
   type HoldParts,
+  holdBlockEditorBox,
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
@@ -55,6 +56,9 @@ export interface EditedRow {
    *  where the row's words stood (`block-editor.tsx`), rather than in its document's whole
    *  editor, which the row draws on its stage in place of its words (`document-stage.tsx`). */
   readonly kept?: true;
+  /** Whether the kept editor binds the block read-only: the row takes no typing - a closed
+   *  issue's block, or one of a document its room admits read-only (decision 572). */
+  readonly readOnly?: true;
   readonly row: string;
 }
 
@@ -131,9 +135,12 @@ export function nodeEditable(
  * where the row's words stood (`block-editor.tsx`), once its work is done, and no document's
  * whole editor is drawn. Everything below holds for it as for the whole document's editor - the
  * caret placed once the editor stands in the row, the keys, the presses, Tab and Escape - but
- * the hold, which is on as the editor is bound, and the box, which is the block's own size and
- * is neither held to the window nor scrolled. Elsewhere, and on an issue with no primary spec,
- * the row takes its document's whole editor, as follows.
+ * the hold, which is on as the editor is bound, and the box, which is the block's own size, held
+ * no taller than the room the row leaves it as a document's editor's box is
+ * (`holdBlockEditorBox`), and never scrolled to the block. A row that takes no typing - a closed
+ * issue's block, or one of a document the room admits read-only - binds the editor read-only
+ * (decision 572): no caret, no stand-in, and the reader can select the block. Elsewhere, on an
+ * issue with no primary spec, the row takes its document's whole editor, as follows.
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
@@ -248,14 +255,14 @@ export function useNodeEditing({
         onReport(KEY_REPORTS.no_text);
         return;
       }
+      // A row that takes no typing - a closed issue's block, or one of a document the room
+      // admits read-only - binds the kept editor read-only (decision 572): the reader can select
+      // the block, and the page sends no read for it, as the whole document's editor would.
       const kept = keptEditor?.available() === true;
-      if (
+      const readOnly =
         kept &&
-        !container.current?.querySelector(rowSelectorOf(row))?.hasAttribute("data-editable")
-      ) {
-        onReport(KEY_REPORTS.no_text);
-        return;
-      }
+        container.current?.querySelector(rowSelectorOf(row))?.hasAttribute("data-editable") !==
+          true;
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
       // look for the caret under way.
       if (editing?.row === row && hold.current !== "on") return;
@@ -264,6 +271,7 @@ export function useNodeEditing({
         at,
         blockId: place.blockId,
         ...(kept ? { kept: true } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
         row,
       });
     },
@@ -284,6 +292,7 @@ export function useNodeEditing({
   // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
   const editingRow = editing?.row;
   const editingKept = editing?.kept === true;
+  const editingReadOnly = editing?.readOnly === true;
   // The issue's artifacts as the bind of a row's block reads them, so a read of the issue that
   // answers while the row is bound binds nothing again.
   const artifactsHeld = useRef(artifacts);
@@ -400,31 +409,45 @@ export function useNodeEditing({
         if (active) {
           editorView.current = view;
           hold.current = "on";
+          // A block taller than the room the row leaves its box scrolls inside the box, so the
+          // row that edits it is no taller than the window, as a document's editor's row is.
+          holdBlockEditorBox(row);
         }
         if (early !== undefined) {
-          if (active) replayedCaret.current = true;
-          try {
-            early.replay(view, dispose);
-          } catch (error) {
-            console.error("Could not replay typing in the block editor", error);
+          if (!view.editable) {
+            // Bound read-only, as the room admits the page (decision 572): what the stand-in
+            // took goes nowhere, and it says so where it took any.
             early.refuse();
-            dispose();
-            if (active) setEditing(undefined);
-            return;
+          } else {
+            if (active) replayedCaret.current = true;
+            try {
+              early.replay(view, dispose);
+            } catch (error) {
+              console.error("Could not replay typing in the block editor", error);
+              early.refuse();
+              dispose();
+              if (active) setEditing(undefined);
+              return;
+            }
           }
           if (earlyCaret.current === early) earlyCaret.current = undefined;
+        }
+        if (active && !view.editable && document.activeElement === row) {
+          view.dom.focus({ preventScroll: true });
         }
         if (active) holdChanged.current?.();
       },
       onEnd(line) {
         refused = true;
-        if (!bound && early !== undefined) early.refuse();
-        else if (box?.contains(document.activeElement) === true) report.current(line);
+        // A stand-in that took typing says it is lost; else the row says why the bind ended.
+        const said = !bound && early !== undefined && early.refuse();
+        if (!said && box?.contains(document.activeElement) === true) report.current(line);
         if (active) setEditing(undefined);
         else dispose();
       },
     });
-    if (!bound && !refused && words !== null) {
+    // A block bound read-only takes no typing, so no stand-in takes keys for it.
+    if (!bound && !refused && !editingReadOnly && words !== null) {
       early = openEarlyCaret({
         row,
         words,
@@ -448,7 +471,16 @@ export function useNodeEditing({
       }
       dispose();
     };
-  }, [container, editingArtifact, editingBlock, editingKept, editingRow, keptEditor, stopEditing]);
+  }, [
+    container,
+    editingArtifact,
+    editingBlock,
+    editingKept,
+    editingReadOnly,
+    editingRow,
+    keptEditor,
+    stopEditing,
+  ]);
 
   useLayoutEffect(() => {
     const pending = pendingReleases.current;

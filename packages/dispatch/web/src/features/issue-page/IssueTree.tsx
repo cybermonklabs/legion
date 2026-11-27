@@ -282,6 +282,9 @@ export function IssueTree({
   // it, so the reader reads it where they are, and the next key, move or leaving the tree lets
   // it go. `row` is undefined where the key was pressed with no row focused.
   const [report, setReport] = useState<{ readonly line: string; readonly row?: string }>();
+  // The report as this render holds it, for a read that drops its row (below).
+  const reportNow = useRef(report);
+  reportNow.current = report;
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const takeRequest = useTakeOutlineRequest();
@@ -1178,7 +1181,15 @@ export function IssueTree({
         const key = order[Math.min(held.index, order.length - 1)];
         const nearest =
           key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
-        if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+        // What was reported at the dropped row is not yet read: the block a row's editor held
+        // removed by another writer (`block-editor.tsx`) takes the row with it as the read
+        // answers, after the row said so. The move here is the page's, not the reader's going on,
+        // so the report goes with the focus to the row that takes it.
+        const carried = reportNow.current?.row === held.key ? reportNow.current.line : undefined;
+        if (nearest !== null && nearest !== undefined && key !== undefined) {
+          moveToRow(nearest);
+          if (carried !== undefined) setReport({ line: carried, row: key });
+        }
       }
     }
     const focusedKey = focusedRowIn(tree)?.dataset.rowKey;

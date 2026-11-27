@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { Schema } from "@milkdown/kit/prose/model";
 import * as Y from "yjs";
 
 import { bindBlockEditor } from "./block-editor";
+import { boundQuoteAnchor } from "./block-editor-plugins";
 import { KEY_REPORTS } from "./page-structure";
 
 function paragraph(id: string, text: string) {
@@ -42,7 +44,10 @@ function setup() {
   const reports: string[] = [];
   const cursorEvents: string[] = [];
   const comments: string[] = [];
+  const quoted: string[] = [];
   const writes: string[] = [];
+  // Each access the binding sets on the editor (`"edit"`, `"comment"`, `"read"`).
+  const access: ("edit" | "comment" | "read")[] = [];
   const disposers: (() => void)[] = [];
   let caret = -1;
   let current: Y.XmlElement | undefined;
@@ -68,6 +73,7 @@ function setup() {
     },
     commentOnSelection() {
       comments.push(current?.getAttribute("blockId") ?? "missing id");
+      if (access.at(-1) === "comment") quoted.push(document.getSelection()?.toString() ?? "");
       return true;
     },
     undo() {
@@ -75,6 +81,10 @@ function setup() {
     },
     remoteCursor(id: string) {
       cursorEvents.push(id);
+    },
+    setAccess(next: "edit" | "comment" | "read") {
+      access.push(next);
+      dom.contentEditable = String(next === "edit");
     },
   };
   const controller = bindBlockEditor({
@@ -96,10 +106,11 @@ function setup() {
     if (!(held instanceof Y.XmlText)) throw new Error(`Block ${id} has no text`);
     doc.transact(() => held.insert(0, text), ownEdit);
   }
-  function bind(id: string, at = 0) {
+  dom.addEventListener("keydown", (event) => controller.keydown(event));
+  function bind(id: string, at = 0, closed = false) {
     const row = rows.find((entry) => entry.id === id);
     if (!row) throw new Error(`No row ${id}`);
-    controller.bind({ ...row, element: find(room, id), at });
+    controller.bind({ ...row, element: find(room, id), at, issueClosed: () => closed });
     return row;
   }
   function remove(id: string, merge = false) {
@@ -121,7 +132,9 @@ function setup() {
     reports,
     cursorEvents,
     comments,
+    quoted,
     writes,
+    access,
     rows,
     caret: () => caret,
     find,
@@ -266,4 +279,112 @@ row("the converted room also edits the Verification fragment on the kept editor"
   expect(f.peer.getXmlFragment("verification").toString()).toContain("revised check");
   expect(f.peer.getXmlFragment("spec").toString()).toBe(before);
   expect(f.bound).toEqual(["a", "c"]);
+});
+
+// Decision 572: a row that takes no typing - a closed issue's block - binds its block read-only,
+// and so does every bind while the room admits the page read-only; the editor's element in the
+// row's box says which.
+row(
+  "a row that takes no typing, or a room that admits the page read-only, binds read-only",
+  (f) => {
+    const readOnlyIn = (id: string) => {
+      const row = f.rows.find((entry) => entry.id === id)?.row;
+      return row?.contains(f.dom) === true ? f.dom.getAttribute("data-read-only") : "not bound";
+    };
+    f.bind("a", 0, true);
+    expect(readOnlyIn("a")).toBe("true");
+    expect(f.access).toEqual(["comment"]);
+    f.controller.admissionChanged(true);
+    f.controller.admissionChanged(false);
+    expect(readOnlyIn("a")).toBe("true");
+    expect(f.dom.getAttribute("contenteditable")).toBe("false");
+    expect(f.access).toEqual(["comment"]);
+    f.bind("b");
+    expect(readOnlyIn("b")).toBe("false");
+    expect(f.access).toEqual(["comment", "edit"]);
+    f.controller.admissionChanged(true);
+    expect(readOnlyIn("b")).toBe("true");
+    expect(f.dom.getAttribute("contenteditable")).toBe("false");
+    f.bind("a");
+    expect(readOnlyIn("a")).toBe("true");
+    expect(f.access).toEqual(["comment", "edit", "read"]);
+    f.controller.admissionChanged(false);
+    expect(readOnlyIn("a")).toBe("false");
+    expect(f.dom.getAttribute("contenteditable")).toBe("true");
+    expect(f.access).toEqual(["comment", "edit", "read", "edit"]);
+  }
+);
+
+// Decision 572: a block bound read-only on a closed issue takes focus and a selection, and the
+// comment-on-selection chord reaches the margin; one bound read-only because the room admits the
+// page read-only keeps the chord from commenting.
+row(
+  "a read-only bind takes focus and a selection, and the comment chord follows the base access",
+  (f) => {
+    // The server admits even a compatible schema read-only when the issue is closed.
+    f.controller.admissionChanged(true);
+    const { row } = f.bind("a", 0, true);
+    row.focus();
+    expect(f.dom.getAttribute("contenteditable")).toBe("false");
+    expect(f.dom.getAttribute("tabindex")).toBe("-1");
+    f.dom.focus();
+    expect(document.activeElement).toBe(f.dom);
+    const range = document.createRange();
+    range.selectNodeContents(f.dom);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    expect(selection?.toString()).toContain("First line.");
+    // Closed-issue access allows comments; the chord reaches the editor's comment handler.
+    expect(f.access).toEqual(["comment"]);
+    const closedChord = new KeyboardEvent("keydown", {
+      key: "m",
+      code: "KeyM",
+      ctrlKey: true,
+      altKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    f.dom.dispatchEvent(closedChord);
+    expect(closedChord.defaultPrevented).toBe(true);
+    expect(f.comments).toEqual(["a"]);
+    expect(f.quoted).toEqual([selection?.toString() ?? ""]);
+
+    // On an open issue, read-only admission indicates a schema mismatch, not comment access.
+    f.bind("b");
+    expect(f.access).toEqual(["comment", "read"]);
+    const readOnlyChord = new KeyboardEvent("keydown", {
+      key: "m",
+      code: "KeyM",
+      ctrlKey: true,
+      altKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    f.dom.dispatchEvent(readOnlyChord);
+    expect(readOnlyChord.defaultPrevented).toBe(false);
+    expect(f.comments).toEqual(["a"]);
+  }
+);
+
+test("a quote from a closed issue's bound block keeps its occurrence in the full document", () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      paragraph: { attrs: { blockId: { default: null } }, content: "text*" },
+      text: {},
+    },
+  });
+  const room = new Y.Doc();
+  try {
+    const first = paragraph("a", "Repeated words.");
+    const bound = paragraph("b", "Repeated words.");
+    room.getXmlFragment("spec").insert(0, [first, bound]);
+    expect(boundQuoteAnchor(schema, bound, 0, 14)).toEqual({
+      quote: "Repeated words",
+      occurrence: 1,
+    });
+  } finally {
+    room.destroy();
+  }
 });

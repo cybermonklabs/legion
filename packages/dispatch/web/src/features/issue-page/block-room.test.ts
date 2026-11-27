@@ -137,7 +137,8 @@ function setup(converted = true) {
     },
     bind(id: string, artifact = spec) {
       room.requestBind(artifact, {
-        onBind: () => bound.push(id),
+        // A bind made while the room admits the page read-only is read-only (decision 572).
+        onBind: (target) => bound.push(target.readOnly ? `${id} read-only` : id),
         onBindRefused: () => refused.push(id),
       });
     },
@@ -244,12 +245,26 @@ caseOf("leaving the issue destroys the connection and the kept editor", async (f
   expect(f.destroyed.sort()).toEqual(["editor", spec.id]);
 });
 
-caseOf("a read-only admission refuses a waiting edit", async (f) => {
+caseOf("a read-only admission binds a waiting edit, read-only", async (f) => {
   f.bind("waiting");
   await f.drain();
   await f.admission(true);
+  expect(f.bound).toEqual(["waiting read-only"]);
+  expect(f.refused).toEqual([]);
+});
+
+caseOf("read-only admission does not hand over an unsynced block or refuse the bind", async (f) => {
+  f.bind("waiting");
+  await f.drain();
+  f.opened[0].callbacks.onAdmission(true);
+  await f.drain();
   expect(f.bound).toEqual([]);
-  expect(f.refused).toEqual(["waiting"]);
+  expect(f.refused).toEqual([]);
+  f.opened[0].callbacks.onSynced();
+  await f.drain();
+  expect(f.bound).toEqual(["waiting read-only"]);
+  expect(f.refused).toEqual([]);
+  expect(f.queryKeys).toEqual([]);
 });
 
 caseOf("the room makes no document query while opening or binding", async (f) => {
