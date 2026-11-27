@@ -3,6 +3,7 @@
 package hooktest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -47,7 +48,7 @@ func newHeldConsumer(t *testing.T) *heldConsumer {
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -72,11 +73,11 @@ func newHeldConsumer(t *testing.T) *heldConsumer {
 // ackNext fetches C's next message and acks it, waiting for the server to take the ack.
 func (c *heldConsumer) ackNext(t *testing.T) {
 	t.Helper()
-	msgs, err := c.sub.Fetch(1, natsgo.MaxWait(5*time.Second))
+	msgs, err := c.sub.Fetch(1, natsgo.Context(testwait.Context(t)))
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("fetch C's next message: %d messages, %v", len(msgs), err)
 	}
-	if err := msgs[0].AckSync(natsgo.AckWait(5 * time.Second)); err != nil {
+	if err := msgs[0].AckSync(natsgo.Context(testwait.Context(t))); err != nil {
 		t.Fatalf("ack C's message: %v", err)
 	}
 }
@@ -190,23 +191,40 @@ func TestForcedOrderHoldsAFlushWithItsStateEncoded(t *testing.T) {
 	c.awaitFloor(t, "o.dat", 2)
 }
 
-// answer runs request on a goroutine of its own and hands back its error.
+// answer runs request on a goroutine of its own and hands back its error. A held request carries
+// no timer of its own but the test's deadline (testwait.Context, testnats.MaxWait): a request
+// bounded by a span of its own times out at the client while its hold still holds once the test
+// runs late, and that timeout comes back here like an answer.
 func answer(request func() error) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- request() }()
 	return done
 }
 
-// answered fails t unless done answers nil within reachWithin.
+// timedOut reports whether err is the client giving up on its request, not the server answering
+// it: a held request's one bound is the test's deadline, so this is the test running out of time
+// while the hold held, and a row says so rather than call it an answer.
+func timedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, natsgo.ErrTimeout)
+}
+
+// answeredWhileHeld fails t for err, which a held request's channel gave while the row required
+// no answer: as an answer, or as the client giving up with no answer (timedOut), which with the
+// request bounded by the test's deadline means the test ran out of time while the hold held.
+func answeredWhileHeld(t *testing.T, what string, err error) {
+	t.Helper()
+	if timedOut(err) {
+		t.Fatalf("%s: the client gave up on it while held, with no answer from the server (%v)", what, err)
+	}
+	t.Fatalf("%s answered while held (%v)", what, err)
+}
+
+// answered fails t unless done answers nil. It waits for the answer until the test binary's
+// deadline (testwait.Receive).
 func answered(t *testing.T, done <-chan error, what string) {
 	t.Helper()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	case <-time.After(reachWithin):
-		t.Fatalf("%s: no answer within %s", what, reachWithin)
+	if err := testwait.Receive(t, what, done); err != nil {
+		t.Fatalf("%s: %v", what, err)
 	}
 }
 
@@ -215,19 +233,20 @@ func unanswered(t *testing.T, done <-chan error, what string) {
 	t.Helper()
 	select {
 	case err := <-done:
-		t.Fatalf("%s answered while held (%v)", what, err)
+		answeredWhileHeld(t, what, err)
 	case <-time.After(held):
 	}
 }
 
-// heldStream is a lone server with the stream HOLD, and a JetStream client of it.
+// heldStream is a lone server with the stream HOLD, and a JetStream client of it whose requests
+// wait until the test's deadline (testnats.MaxWait), so a held one never times out short of it.
 func heldStream(t *testing.T) (*testnats.Server, *testnats.Hooks, *natsgo.Conn, natsgo.JetStreamContext) {
 	t.Helper()
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -259,8 +278,9 @@ func TestForcedOrderHoldsAnAPIRequestBeforeItIsServed(t *testing.T) {
 	srv, hooks, conn, _ := heldStream(t)
 	const subject = "$JS.API.STREAM.INFO.HOLD"
 	info := func() <-chan error {
+		ctx := testwait.Context(t)
 		return answer(func() error {
-			_, err := conn.Request(subject, nil, reachWithin)
+			_, err := conn.RequestWithContext(ctx, subject, nil)
 			return err
 		})
 	}
@@ -290,8 +310,9 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 	srv, hooks, conn, _ := heldStream(t)
 	const subject = "$JS.API.STREAM.INFO.HOLD"
 	request := func(conn *natsgo.Conn) <-chan error {
+		ctx := testwait.Context(t)
 		return answer(func() error {
-			_, err := conn.Request(subject, nil, reachWithin)
+			_, err := conn.RequestWithContext(ctx, subject, nil)
 			return err
 		})
 	}
@@ -314,11 +335,15 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 		t.Fatal("the Stop returned and the hold is not released")
 	}
 	hooks.Await(t, testnats.ServerDown, testnats.OnServer(srv))
-	select {
-	case err := <-done:
+	// The stop ends the held request: nats.go answers it with an error when the server closes the
+	// connection ("nats: connection closed" on v2.15.1). A request the stop left waiting is ended by
+	// whichever comes first of two ends at the same moment, the test's deadline less testwait's
+	// margin: Receive gives up there and fails the row naming this wait, or the request's own context
+	// (testwait.Context) ends and the row fails below as a timeout. Either way the row fails.
+	if err := testwait.Receive(t, "the held request to end with the stop", done); timedOut(err) {
+		t.Fatalf("the held request did not end with the stop: it timed out at the test's deadline (%v)", err)
+	} else {
 		t.Logf("the held request ended with the stop: %v", err)
-	case <-time.After(reachWithin):
-		t.Fatalf("the held request did not end within %s of the stop", reachWithin)
 	}
 
 	// The server is down, so the hook parks its goroutines again once it is started.
@@ -423,8 +448,9 @@ func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 	t.Cleanup(conn.Close)
 	const subject = "$JS.API.INFO"
 	hold := hooks.Hold(testnats.APIWorker, testnats.Subject(subject))
+	ctx := testwait.Context(t)
 	done := answer(func() error {
-		_, err := conn.Request(subject, nil, reachWithin)
+		_, err := conn.RequestWithContext(ctx, subject, nil)
 		return err
 	})
 	// The request reaches api.worker either way; with the store left stopping it is answered
@@ -432,6 +458,9 @@ func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 	hooks.Await(t, testnats.APIWorker, testnats.Subject(subject))
 	select {
 	case err := <-done:
+		if timedOut(err) {
+			answeredWhileHeld(t, "the request on the restarted server", err)
+		}
 		t.Fatalf("the restarted server answered through the armed hold (%v): a late server.shutdown of the ended run left its store stopping", err)
 	case <-time.After(held):
 	}
@@ -630,8 +659,9 @@ func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 		t.Fatalf("the held publish was delivered (%q) while held", got)
 	}
 	hold.Release()
-	if got, err := receive(reachWithin); err != nil || got != "second" {
-		t.Fatalf("the released publish delivered %q, %v; want second", got, err)
+	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	if err != nil || string(msg.Data) != "second" {
+		t.Fatalf("the released publish delivered %v, %v; want second, by the test's deadline", msg, err)
 	}
 }
 
@@ -642,7 +672,7 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -665,19 +695,40 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	for _, hold := range holds {
 		t.Logf("held %s", hold.Reached(t))
 	}
-	unanswered(t, done, "the create of N")
+	// No member may answer the create while each is parked before it applies the assignment. No
+	// fact orders that answer against a read here: each member applies the meta layer's entries in
+	// order, so a later request on the same path (another consumer's create) waits behind the held
+	// one and cannot serve as a barrier. So the row gives the answer a window it must not win,
+	// assignedWindow. A hold that holds answers never, and the create's one bound is the test's
+	// deadline (testnats.MaxWait above), so a correct run fails here only when that deadline comes
+	// inside the window, and then as the client's timeout, not as an answer (answeredWhileHeld).
+	// The window's cost is to miss a broken hold that answers later than it. A read of the channel
+	// once, with no window, missed such a hold every time: a hook that reports each point reached
+	// and parks nothing let the answer through after the read.
+	select {
+	case err := <-done:
+		answeredWhileHeld(t, "the create of N", err)
+	case <-time.After(assignedWindow):
+	}
 	for _, hold := range holds {
 		hold.Release()
 	}
 	answered(t, done, "the create of N")
 }
 
+// assignedWindow is how long TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt watches
+// for an answer to the held create. Timed on a build Job of six CPUs, five runs each, the create is
+// answered 57 to 59 ms after the holds are released, and, with a hook that parks nothing, 57 to
+// 62 ms after the third hold is reached, so 5 s is about 80 times the longest; a CI runner is
+// slower than that Job.
+const assignedWindow = 5 * time.Second
+
 func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -719,8 +770,8 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 		}
 	case err := <-ack.Err():
 		t.Fatalf("the released publish failed: %v", err)
-	case <-time.After(reachWithin):
-		t.Fatalf("the released publish was not acknowledged within %s", reachWithin)
+	case <-testwait.Context(t).Done():
+		t.Fatal("the released publish was not acknowledged by the test's deadline")
 	}
 }
 
@@ -743,8 +794,9 @@ func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
 	const subject = "$JS.API.STREAM.MSG.GET.HOLD"
 	body := []byte(fmt.Sprintf(`{"start_time":%q}`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)))
 	get := func() <-chan error {
+		ctx := testwait.Context(t)
 		return answer(func() error {
-			_, err := conn.Request(subject, body, reachWithin)
+			_, err := conn.RequestWithContext(ctx, subject, body)
 			return err
 		})
 	}

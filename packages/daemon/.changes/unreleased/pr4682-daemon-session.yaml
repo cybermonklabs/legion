@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4682
+body: |-
+  Under `dispatch_token_broker` every Dispatch write of the daemon names the session its broker
+  token proves, `legion-daemon:<its own project>`, on an issue of any project. The daemon reads
+  its own writes by that session. With the setting off every write is as before.

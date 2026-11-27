@@ -41,7 +41,7 @@ const fallbackClaim = time.Minute
 // unanswered role:X is a lane of its own, keyed by its string (mentionSend.lane, one FIFO lane
 // per recipient and mentionSendLanes = 8 of them sending at once), so the comment's send waits
 // out every send queued ahead of it there, each bounded by the listener client's own 5 s window
-// (defaultTimeout in internal/dispatch/envoy/client.go), and the sender holds up to
+// (CallWindow in internal/dispatch/envoy/client.go), and the sender holds up to
 // maxQueuedMentionSends = 4096 sends queued: the pathological burst owes that one lane hours. A
 // copy that waits holds its key, so the holder of the role receives nothing further of the
 // issue while the forward waits (planChains), which is the starvation this bounds.
@@ -1252,31 +1252,20 @@ type fallbackEvent struct {
 }
 
 // fallbackRecord is what a fallback pass came to for one row: settled, and published when it
-// published the copy; failed when its decision or publish failed, which counts an attempt on the
-// row and backs it off (failedFallbackCopy). A record neither settled nor failed releases the
-// row's claim for a later pass, counting no attempt, and delay is how long the row waits before
-// it is due again: mentionPendingDelay while its mention is still being sent, retry.BaseDelay
-// while NATS is unreachable, and none at all when the publisher hold's deadline fenced the send
-// or the process is stopping, where whatever pass runs next takes the row at once.
+// published the copy. A copy NATS refused for good (bus.ErrRefused) is settled unpublished: no
+// pass could ever send it, and no host has it. failed is a decision or a publish that failed,
+// which counts an attempt on the row and backs it off, logged at the dead-letter threshold
+// (failedAttempt). A record neither settled nor failed releases the row's claim for a later pass,
+// counting no attempt, and delay is how long the row waits before it is due again:
+// mentionPendingDelay while its mention is still being sent, retry.BaseDelay while NATS is
+// unreachable, and none at all when the publisher hold's deadline fenced the send or the process
+// is stopping, where whatever pass runs next takes the row at once.
 type fallbackRecord struct {
 	held      fallbackCopy
 	settled   bool
 	published bool
 	failed    bool
 	delay     time.Duration
-}
-
-// failedFallbackCopy is the record of a row whose decision or publish failed: one more attempt
-// counted on it, and its next attempt retry.Delay of that count away, the schedule an event backs
-// off by (backOff). Nothing about a publish failing is permanent, so the row is never given up:
-// the attempt that brings its count to retry.DeadLetterAttempts, the threshold the event scan logs
-// at, is logged at Error, and the row is retried on the same schedule after it.
-func failedFallbackCopy(held fallbackCopy) fallbackRecord {
-	if attempts := held.attempts + 1; attempts == retry.DeadLetterAttempts {
-		slog.Error("dispatch outbox: fallback copy reached dead-letter threshold",
-			"comment_id", held.commentID, "destination", held.destination, "attempts", attempts)
-	}
-	return fallbackRecord{held: held, failed: true}
 }
 
 // publishFallbackCopies is the fallback pass. This is the one description of how a mentioned
@@ -1341,7 +1330,9 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // owes a send the row's session may take (copyHolder; the row waits as for a
 // pending attempt until then), carrying the dedupe key of the failed attempt's send
 // (mentionDeliveries.fallbackKeys for a session, targetFallbackKeys for a target), and the row is
-// marked published. A row whose
+// marked published. A copy NATS refuses the same way however often it is sent (bus.ErrRefused) is
+// logged and counted once, and its row is settled unpublished with no attempt counted, since no
+// pass could send it. A row whose
 // destination is a role topic is not published there - the stream captures no role subject - but
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
@@ -1365,7 +1356,7 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // on the row (attempt_count) and moves its next_attempt_at out by retry.Delay of that count, the
 // schedule an event backs off by, so it is decided again once that passes; nothing about a publish
 // failing is permanent, so the row is never given up, and the attempt that brings the count to
-// retry.DeadLetterAttempts is logged at Error (failedFallbackCopy). One cut short by NATS being
+// retry.DeadLetterAttempts is logged at Error (failedAttempt). One cut short by NATS being
 // unreachable counts nothing - the outage is no fault of the row, as it is none of an event whose
 // send met the connection (settleEvent) - and releases the claim for retry.BaseDelay, the wait a
 // scan that failed is tried again after: the holder gives the hold up for NATS lost, and the
@@ -1407,7 +1398,15 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // good (the listener down after the restart), gives the host that mention and then the copy under
 // the mention's own dedupe key, which the host drops. The API's failed settle appends a
 // comment.delivery receipt, an event insert that wakes the holder, and the pass runs on the scan
-// that wake starts.
+// that wake starts. The author's delete of the comment marks it deleted, fails its pending
+// attempts and settles its unsettled rows with nothing published, in one commit (deleteComment in
+// internal/dispatch/api), so a pass that claimed a row before that commit and read the attempts
+// after it finds them failed, the state in which it publishes; and a batch that read the attempts
+// before the delete can hold a row after it, which the delete never settled. So the last read of
+// a decision to publish is whether the comment is deleted (fallbackCopyWithdrawn): a copy of a
+// deleted comment is withdrawn, its row settled with nothing sent (fallbackWithdrawn). Only a pass
+// that decided before the delete committed and publishes after it sends the copy as recorded, a
+// send in flight.
 //
 // It reports what the holder does next, as a batch reports it (Outbox.scan): full, the claim
 // filled its batch, so rows it did not reach are due now and the holder scans and passes again
@@ -1465,7 +1464,8 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			release(held, 0)
 			return
 		}
-		records = append(records, failedFallbackCopy(held))
+		failedAttempt(held.attempts+1, "fallback copy", "comment_id", held.commentID, "destination", held.destination)
+		records = append(records, fallbackRecord{held: held, failed: true})
 	}
 	events, err := loadFallbackEvents(ctx, deps, copies)
 	if err != nil {
@@ -1508,6 +1508,13 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			sent = append(sent, sentCopy{held: held, out: out, answer: out.send(ctx, deps, sender, handed)})
 		case decision == fallbackSettles:
 			records = append(records, fallbackRecord{held: held, settled: true})
+		case decision == fallbackWithdrawn:
+			// The author deleted the comment (fallbackCopyWithdrawn): the copy is withdrawn. Its
+			// row is settled with nothing sent, so that it is not claimed again; a row the delete
+			// settled already is not written (recordFallbackCopies).
+			records = append(records, fallbackRecord{held: held, settled: true})
+			slog.Info("dispatch outbox: a fallback copy of a deleted comment is withdrawn, so nothing is sent",
+				"comment_id", held.commentID, "destination", held.destination)
 		case decision == fallbackWaitsForAnEarlierEvent:
 			// An earlier event of the comment's owner still owes a send the row's session may
 			// take: the row waits for it as for a mention still being sent, counted and, past
@@ -1522,54 +1529,27 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		}
 	}
 	for _, item := range sent {
-		var err error
-		// An answer already in is read before ctx is: a stopping process records what NATS
-		// accepted.
-		select {
-		case err = <-item.answer:
-		default:
-			select {
-			case err = <-item.answer:
-			case <-ctx.Done():
-				err = ctx.Err()
-			}
-		}
-		switch {
-		case err == nil:
-		case errors.Is(err, bus.ErrRefused):
-			deps.countPublishFailure("refused")
-			slog.Error("dispatch outbox: fallback copy refused", "comment_id", item.held.commentID, "destination", item.held.destination, "error", err)
-		case errors.Is(err, bus.ErrWindowDeadline):
-			// The hold's deadline refused the send: it never left this process, so it is no
-			// failure of the row and counts nothing. The row is released due at once, which the
-			// record writes while the publisher hold is still this process's on the database's
-			// clock - the deadline is the margin ahead of that - and leaves to whoever holds it
-			// otherwise (recordFallbackCopies): either way the next pass to claim it decides it.
-			release(item.held, 0)
+		err := awaitAnswer(ctx, item.answer)
+		// A send's answer is read, counted and logged by the one rule both passes share
+		// (judgeSend). A role forward its holder's resolution held pending sent nothing at all
+		// and is counted under that holder.
+		verdict := judgeSend(ctx, deps, err, item.out.forward, "fallback copy",
+			"comment_id", item.held.commentID, "destination", item.held.destination)
+		switch verdict.outcome {
+		case sendReached:
+		case sendRefused:
+			// Refused the same way however often it is sent, so the row is settled with nothing
+			// published and no pass sends it again.
+			records = append(records, fallbackRecord{held: item.held, settled: true})
+			continue
+		case sendReleased:
+			// The record writes the release while the publisher hold is still this process's on
+			// the database's clock, and leaves it to whoever holds it otherwise
+			// (recordFallbackCopies): either way the next pass to claim it decides it.
+			release(item.held, verdict.delay)
 			continue
 		default:
-			// Counted as a batch counts a destination that did not reach NATS, by the batch's
-			// own rule (sendChains, forwardUnanswered): a role forward its holder's resolution
-			// held pending sent nothing at all and is counted under that holder, a forward the
-			// stream never acknowledged is unanswered, and a send the server refused under this
-			// connection's own publish permissions is a denial. An answer a stopping process
-			// stopped waiting for says nothing of NATS and counts nothing.
-			switch forward := item.out.forward; {
-			case errors.Is(err, bus.ErrPublishDenied):
-				deps.countPublishFailure("denied")
-			case forward != nil && forward.err != nil:
-				deps.countPublishFailure("holder")
-			case forwardUnanswered(forward != nil, err):
-				deps.countPublishFailure("unanswered")
-			case !lostToContextEnd(ctx, err):
-				deps.countPublishFailure("failed")
-			}
-			slog.Error("dispatch outbox: publish fallback copy", "comment_id", item.held.commentID, "destination", item.held.destination, "error", err)
-			if errors.Is(err, bus.ErrUnavailable) {
-				release(item.held, retry.BaseDelay)
-			} else {
-				fail(item.held)
-			}
+			fail(item.held)
 			continue
 		}
 		records = append(records, fallbackRecord{held: item.held, settled: true, published: true})
@@ -1592,6 +1572,9 @@ const (
 	// comment's owner still owes a send the copy's session may take (copyHolder, which the send's
 	// heldBy names); the row waits for a later pass.
 	fallbackWaitsForAnEarlierEvent
+	// fallbackWithdrawn: the copy would be published, but the author has deleted the comment
+	// (fallbackCopyWithdrawn); the row is settled with nothing sent.
+	fallbackWithdrawn
 )
 
 // fallbackSend is the copy a pass publishes for one row: the envelope, whose dedupe key is the
@@ -1758,7 +1741,40 @@ func decideFallbackCopy(
 	} else if by != nil {
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil
 	}
+	// Last, after every read the decision made: the comment must not be deleted. The delete marks
+	// the comment deleted and fails its mention in one commit, so a decision that read the mention
+	// failed by that delete finds the comment deleted here, and publishes nothing of the text the
+	// delete withdrew (fallbackCopyWithdrawn).
+	if withdrawn, err := fallbackCopyWithdrawn(ctx, deps, held); err != nil {
+		return 0, fallbackSend{}, err
+	} else if withdrawn {
+		return fallbackWithdrawn, fallbackSend{}, nil
+	}
 	return fallbackPublishes, fallbackSend{item: item, forward: forward}, nil
+}
+
+// fallbackWithdrawnQuery is fallbackCopyWithdrawn's one statement, named as fallbackClaimQuery is.
+const fallbackWithdrawnQuery = `
+		select exists (select 1 from comments where id = $1 and deleted_at is not null)
+	`
+
+// fallbackCopyWithdrawn reports whether the author has deleted held's comment, which withdraws
+// every copy of it the outbox holds. The delete (deleteComment in internal/dispatch/api) marks the
+// comment deleted, fails its pending mention attempts and settles its unsettled rows with nothing
+// published, in one commit. A pass that claimed a row before that commit can read the attempts
+// after it, and find the mention failed: the state in which it publishes. decideFallbackCopy
+// reads this after every other read of its decision, the attempts' among them, so a delete that
+// one of those reads saw is a commit this later statement sees too. It reads the comment and not
+// the row: a batch that read the mention before the delete can hold the row after it
+// (holdFallbackCopy), a row the delete never settled. A delete that commits after this read finds
+// the pass's decision made: the copy is a send in flight and goes as recorded, while the row
+// reads published = false, since the pass's record writes no settled row (recordFallbackCopies).
+func fallbackCopyWithdrawn(ctx context.Context, deps Deps, held fallbackCopy) (bool, error) {
+	var withdrawn bool
+	if err := deps.Store.Pool.QueryRow(ctx, fallbackWithdrawnQuery, held.commentID).Scan(&withdrawn); err != nil {
+		return false, fmt.Errorf("read whether comment %q is deleted: %w", held.commentID, err)
+	}
+	return withdrawn, nil
 }
 
 // fallbackCopyKey is the key of the session a row's copy reaches, as destination.key names it for
@@ -1941,7 +1957,7 @@ const fallbackRecordAnswer = `
 
 // recordFallbackCopies writes what a fallback pass came to, in one statement: each row settled is
 // marked so, published when it published the copy; each failed row counts one more attempt and
-// waits retry.Delay of its new count from now (failedFallbackCopy); and each row left for a later
+// waits retry.Delay of its new count from now (failedAttempt); and each row left for a later
 // pass has its claim replaced by the wait it was released with, which counts no attempt, or
 // cleared when that wait is none (fallbackRecord). It reports whether instance, the process the
 // pass ran in (Outbox.serve), holds the publisher hold still.

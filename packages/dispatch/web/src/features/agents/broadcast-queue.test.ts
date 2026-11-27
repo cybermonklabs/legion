@@ -1,10 +1,11 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { countEngineParses, displayTree, type EngineParses } from "../../__tests__/display-trees";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted, memoryFiles } from "../../__tests__/kept-sends-harness";
 import { ApiError, api } from "../../api/client";
@@ -14,10 +15,22 @@ import type {
   Message,
   MessageDelivery,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { FIRST_BACKOFF_MS, SendExpiredError } from "../writes/keyed-write";
 import { Writes } from "../writes/write-store";
 import { BroadcastSends } from "./BroadcastSends";
-import { type BroadcastSend, broadcastRows, enqueueBroadcast } from "./broadcast-queue";
+import {
+  type BroadcastSend,
+  type BroadcastSendRow,
+  broadcastRows,
+  enqueueBroadcast,
+} from "./broadcast-queue";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A press of Send: `body` to the Planner, under `key`. */
 function press(body: string, key: string): BroadcastSend {
@@ -340,4 +353,75 @@ test("a broadcast whose key has run out says so, with Retry and Discard", async 
       createBroadcast.mockRestore();
     }
   });
+});
+
+// A made broadcast's row draws the body Dispatch stored, from the answer the write landed with,
+// beside the reading the server made of it (`body_tree`), so the page parses nothing of it. The
+// tree here reads differently from the body beside it, so a row drawn from a parse would read
+// `Made one.` and count a parse. A send Dispatch refused has no stored text: its row draws the
+// draft it holds, which the page parses.
+test("a made broadcast's row draws its answer's tree, and a refused one draws its draft", async () => {
+  await warmMarkdownRenderer();
+  const tree = displayTree("Made **one**, as stored.");
+  const createBroadcast = spyOn(api, "createBroadcast")
+    .mockImplementationOnce(async (input) => ({ ...created(input), body_tree: tree }))
+    .mockRejectedValueOnce(new ApiError(400, { code: "BROADCAST_INPUT", error: "too long" }));
+  const getBroadcast = spyOn(api, "getBroadcast").mockImplementation(async () => ({
+    ...created(press("Made **one**.", "key-1").input),
+    body_tree: tree,
+  }));
+  const client = signedIn();
+  const writes = new Writes(client, keptTab().page(), memoryFiles());
+  const strip = (row: BroadcastSendRow | undefined) =>
+    render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(BroadcastSends, {
+            onDiscard: () => {},
+            onRestore: () => {},
+            onRetry: () => {},
+            onStop: () => {},
+            restoreRefusal: null,
+            rows: row === undefined ? [] : [row],
+          })
+        )
+      )
+    );
+  let parses: EngineParses | undefined;
+  try {
+    enqueueBroadcast(writes, press("Made **one**.", "key-1"));
+    enqueueBroadcast(writes, press("Refused **two**.", "key-2"));
+    await waitFor(() =>
+      expect(broadcastRows(writes.rows()).map((row) => row.status)).toEqual(["failed", "sent"])
+    );
+    const [refused, made] = broadcastRows(writes.rows());
+    parses = countEngineParses();
+    const madeView = strip(made);
+    try {
+      const preview = madeView.container.querySelector("[data-markdown-preview]");
+      await waitFor(() => expect(preview?.textContent).toBe("Made one, as stored."));
+      expect(preview?.querySelector("strong")?.textContent).toBe("one");
+      await waitFor(() => expect(preview?.getAttribute("title")).toBe("Made one, as stored."));
+      expect(parses.count()).toBe(0);
+    } finally {
+      madeView.unmount();
+    }
+    const refusedView = strip(refused);
+    try {
+      const preview = refusedView.container.querySelector("[data-markdown-preview]");
+      await waitFor(() => expect(preview?.textContent).toBe("Refused two."));
+      expect(preview?.querySelector("strong")?.textContent).toBe("two");
+      expect(parses.count()).toBeGreaterThan(0);
+    } finally {
+      refusedView.unmount();
+    }
+  } finally {
+    parses?.restore();
+    createBroadcast.mockRestore();
+    getBroadcast.mockRestore();
+  }
 });

@@ -25,17 +25,19 @@ type addressedRole struct {
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded): the claim token of each recipient, in the
-// order given and each token once, so a role named twice - the implementer that also holds the
-// phase - is told once. A recipient with no role is a phase no worker holds, and is nobody.
+// tellGateMoved, mergeForward, mergeForwardLanded, awaitChildren): the claim token of each
+// recipient, in the order given and each token once, so a role named twice - the implementer that
+// also holds the phase - is told once. A recipient with no role is a phase no worker holds, and is
+// nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
-// four senders choose of how the collection runs: nil ends the collection with that error, and so
+// five senders choose of how the collection runs: nil ends the collection with that error, and so
 // the fact's transaction, while a function is given the recipient and the error and may answer nil
-// to leave that one untold and address the rest. tellChecks, mergeForward and mergeForwardLanded
-// pass nil, so a holder they cannot name rolls their fact back. tellGateMoved, whose message is
-// secondary to the record the transaction writes, passes a function that logs (logUnnamable),
-// since aborting would roll the gate's move back for a name the daemon could not spell.
+// to leave that one untold and address the rest. tellChecks, mergeForward, mergeForwardLanded and
+// awaitChildren pass nil, so a holder they cannot name rolls their fact back. tellGateMoved, whose
+// message is secondary to the record the transaction writes, passes a function that logs
+// (logUnnamable), since aborting would roll the gate's move back for a name the daemon could not
+// spell.
 func (e *Engine) addressRoles(project string, recipients []roleRecipient, unnamable func(roleRecipient, error) error) ([]addressedRole, error) {
 	projectToken, err := claim.ProjectToken(project)
 	if err != nil {

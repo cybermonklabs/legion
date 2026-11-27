@@ -1,14 +1,21 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { ApiError, api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import type { HeldSends } from "./held-sends";
 import { agentKey, agentSend, heldOf, request, verdict } from "./held-sends-fixture";
 import { requestFor, type SentRequest } from "./send-request";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The held-send store's rows about the address a refused or stopped send's draft lives at: its
 // Retry goes there alone, and the reader's own move takes it along (`HeldSends.carry`,
@@ -140,7 +147,7 @@ test("a refused comment on a document is retried to that document alone", async 
 // An edited draft is still the one written for that address: a press from a composer its host
 // moved off the reply is refused, and back on the reply it sends the edited words there.
 test("an edited reply refused once is retried as a reply to the same comment alone", async () => {
-  const edited = { body: "Held, and then some", mentions: [], replacement: "" };
+  const edited = { body: "Held, and then some", replacement: "" };
   const { away, reached } = await retriedFrom(replySend("comment-1"), { replyTo: null }, edited);
   expect(reached).toEqual(["issue CORE-1, reply to comment-1", "issue CORE-1, reply to comment-1"]);
   expect(away).toBe(false);

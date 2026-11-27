@@ -28,6 +28,7 @@ import (
 // after it, as the operator's replay of both in stream order does, the approval must queue no
 // handover: the person parked the root after approving it.
 func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-755"
 	person := dispatch.Actor{Kind: "user", ID: "sami"}
 	approved := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)

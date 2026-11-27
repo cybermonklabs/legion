@@ -17,7 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // fingerprints is the fingerprint list a process holding setting (DISPATCH_SIGNING_KEY's form)
 // registers with.
@@ -109,6 +114,7 @@ func rowExists(t *testing.T, database *store.Store, id string) bool {
 // A registered process is live and reads back as it registered: its build, its dashboard and its
 // key fingerprints, current first.
 func TestRegisterRecordsTheProcessAsLive(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K1 K0")
 
@@ -149,6 +155,8 @@ func liveProcess(t *testing.T, database *store.Store, id string) Process {
 // read and write, its embedder's identity and whether it stores files in a bucket - read back as
 // the process registered them, and again after a heartbeat writes a pruned row back.
 func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration, err := Register(context.Background(), database.Pool, Instance{
@@ -178,6 +186,8 @@ func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
 // rather than the ones the process registered with. A refresh to the numbers it last wrote writes
 // nothing: the process's own record of its row is what it compares with, not the row.
 func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -221,6 +231,7 @@ func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
 // default: it reads as a process that predates them, with no schema numbers, no embedder identity
 // and no file store.
 func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -238,6 +249,8 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 // Live is measured on the database's clock: a heartbeat 14 seconds before the database's now() is
 // live, one 16 seconds before it is not, whatever this process's clock says.
 func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	database := storetest.Open(t)
 	fresh := mustRegister(t, database, "c1", "K0")
@@ -253,6 +266,8 @@ func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T
 // The heartbeat keeps a registered process live: a row the database dates past the live window
 // is live again within a heartbeat, since no live process disagrees with its key set.
 func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
@@ -270,6 +285,8 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 // Deregister deletes the row and stops the heartbeat, so the process is neither live nor written
 // again.
 func TestDeregisterDeletesTheRow(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
@@ -288,6 +305,8 @@ func TestDeregisterDeletesTheRow(t *testing.T) {
 // The prune loop deletes the rows whose heartbeat the database dates more than ten minutes ago,
 // and keeps every newer one, live or not.
 func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and PruneInterval
+	// (setInterval), which every registration's heartbeat and every prune loop read.
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	setInterval(t, &PruneInterval, 200*time.Millisecond)
 	database := storetest.Open(t)
@@ -329,6 +348,8 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 // live process shares when the only other row is a process gone. A peer that refuses heartbeats
 // throughout, so its refusal stands through Register's wait for it to lapse.
 func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
+	// Not parallel: its rows write the package variables HeartbeatInterval and LiveWindow
+	// (setInterval, quickRegistry), which every registration reads.
 	for _, c := range []struct {
 		name, peer, mine string
 		stale            bool
@@ -392,6 +413,8 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
@@ -412,9 +435,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 			_, results[i] = register(t, database, "c1", setting)
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d registrations queued behind the held registry within 10 s, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}
@@ -443,6 +464,8 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	var dead string
@@ -460,6 +483,8 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 // Beside a peer that keeps heartbeating, Register's wait ends in the refusal: the peer's row stays
 // live past LiveWindow and one HeartbeatInterval after the first refusal, and nothing is recorded.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	peer := mustRegister(t, database, "c1", "K9")
@@ -481,6 +506,8 @@ func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T
 // Register's wait ends with its context: a process stopped (SIGTERM) while it waits for a refusing
 // peer to lapse stops then, registered nowhere, not once the wait is over.
 func TestRegistersWaitEndsWithItsContext(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
 	database := storetest.Open(t)
 	peer := mustRegister(t, database, "c1", "K9")
@@ -606,6 +633,8 @@ func requireRefusal(t *testing.T, database *store.Store, registration *Registrat
 // not share is refused by its next heartbeat, which reports it (Lost) and records nothing; beside a
 // process that shares its keys it rejoins, and its row is the one it registered.
 func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	for _, c := range []struct {
 		name, peer string
@@ -650,6 +679,8 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 // live process disagrees with its key set; beside one that does, the heartbeat reports the refusal
 // and writes nothing.
 func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	t.Run("no live peer disagrees", func(t *testing.T) {
 		database := storetest.Open(t)
@@ -690,6 +721,8 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 // registered, and every process registered since checked its own against them. A peer that
 // disagrees, written past Register's check, refuses nothing while this process's row stays live.
 func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K1 K0")
@@ -731,6 +764,8 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 // reads the numbers, which it calls under the lock, and the heartbeat is started and given the
 // pool's connection before the refresh is let go.
 func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
@@ -811,6 +846,8 @@ func waitForConnectionHeld(t *testing.T, registration *Registration) {
 // would fire owner_lock_legacy_registration and put every owner lock of the database beside an
 // earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
 func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration, err := Register(context.Background(), database.Pool, Instance{Commit: "c1", SigningKeys: fingerprints(t, "K0")})
@@ -847,8 +884,59 @@ func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
 // after its last heartbeat, which its documents state as until the row is pruned: the two are one
 // duration, declared in two packages only because the store cannot import this one.
 func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
+	t.Parallel()
 	if store.OwnerLockLegacyWindow != PruneAge {
 		t.Errorf("store.OwnerLockLegacyWindow is %s and PruneAge %s; want them equal, so a row of an earlier build counts in the owner lock's fleet until it is pruned",
 			store.OwnerLockLegacyWindow, PruneAge)
+	}
+}
+
+// A process registers at this build's Legion state intake (LegionStateIntake), which no Instance
+// carries, so a fleet of this build alone holds no earlier one. A row of a build before it names
+// no legion_state_intake and reads the column's default, 0: EarlierLegionIntake counts it while its
+// heartbeat is within store.OwnerLockLegacyWindow of the database's now(), the window the owner
+// lock counts an earlier build's row in, and not once its heartbeat is older.
+func TestEarlierLegionIntakeCountsARowOfAnEarlierBuildUntilItIsPruned(t *testing.T) {
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	earlier := func(what string) bool {
+		t.Helper()
+		found, err := EarlierLegionIntake(context.Background(), database.Pool)
+		if err != nil {
+			t.Fatalf("%s: read the fleet's Legion intakes: %v", what, err)
+		}
+		return found
+	}
+	var intake int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select legion_state_intake from server_processes where instance = $1`, registration.ID).Scan(&intake); err != nil {
+		t.Fatalf("read the registered row's Legion state intake: %v", err)
+	}
+	if intake != LegionStateIntake {
+		t.Errorf("the registered row's legion_state_intake is %d, want this build's %d", intake, LegionStateIntake)
+	}
+	if earlier("a fleet of this build alone") {
+		t.Error("a fleet of this build alone holds an earlier Legion intake, want none")
+	}
+
+	// A process of the build before this one: it writes the owner lock protocol, and no Legion
+	// state intake.
+	var id string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
+		values (gen_random_uuid(), 'c0', 'build-c0', $1, 1)
+		returning instance::text`, fingerprints(t, "K0")).Scan(&id); err != nil {
+		t.Fatalf("insert a row as the build before this one writes it: %v", err)
+	}
+	if !earlier("a live row of an earlier build") {
+		t.Error("a live row of an earlier build is not an earlier Legion intake, want it to be")
+	}
+	ageHeartbeat(t, database, id, store.OwnerLockLegacyWindow-time.Minute)
+	if !earlier("a row of an earlier build that stopped heartbeating inside the window") {
+		t.Errorf("a row of an earlier build silent for %s is not an earlier Legion intake, want it counted until %s", store.OwnerLockLegacyWindow-time.Minute, store.OwnerLockLegacyWindow)
+	}
+	ageHeartbeat(t, database, id, store.OwnerLockLegacyWindow+time.Minute)
+	if earlier("a row of an earlier build silent past the window") {
+		t.Errorf("a row of an earlier build silent for %s is an earlier Legion intake, want none past %s", store.OwnerLockLegacyWindow+time.Minute, store.OwnerLockLegacyWindow)
 	}
 }

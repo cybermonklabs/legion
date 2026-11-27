@@ -28,6 +28,8 @@ import (
 // This file holds only what the rig had before its daemon end read each connection's opening
 // (newFleetDialed, acceptRole, the fleet's listener), so the same case runs against that rig.
 func TestARolesRedialIsTakenPastTheConnectionsAheadOfIt(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleetDialed), which parallel tests
+	// read.
 	pod := newFleetDialed(t, 2*time.Second, podRoles...)
 	for _, role := range podRoles {
 		pod.role(role).acknowledge()

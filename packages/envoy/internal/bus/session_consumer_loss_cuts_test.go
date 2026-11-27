@@ -99,19 +99,15 @@ func runLossCut(t *testing.T, cut lossCut) {
 	if cut.whole {
 		keep = func(int64) int64 { return 0 }
 	}
+	ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 	size, kept := srv.CutStream(t, Stream, keep)
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
+	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+		return fmt.Sprint(err), err == nil
+	})
 	lost := state.lastSeq
 	t.Logf("after the cut the stream's last sequence is %d, where it was %d", lost, before+cut.acked)
 	if cut.whole && lost != 0 {

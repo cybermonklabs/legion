@@ -50,8 +50,8 @@ export const POST_MARK_WORDS = Object.freeze({
 /** The deleted line's words as plain text, for a place that holds only a string: `Deleted by
  *  <name>`, the actor named by `text.label` (`useAgentText`'s, or `actorLabelText` where no
  *  registry is read), or `Deleted` for a payload that names nobody. The time stays the visible
- *  line's. It lives here rather than beside `DeletedBody` because `PostBody.tsx` imports
- *  `MarkdownBody`, whose reference links draw these words too. */
+ *  line's. It lives here rather than beside `DeletedBody` because the post's renderer
+ *  (`PostBody.tsx`) imports `MarkdownBody`, whose reference links draw these words too. */
 export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "label">): string {
   return deleted.by === null
     ? POST_MARK_WORDS.deleted

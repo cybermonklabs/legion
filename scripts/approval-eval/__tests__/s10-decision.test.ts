@@ -83,6 +83,24 @@ async function claimChanged(directory: string, from: string, to: string): Promis
   return after;
 }
 
+/**
+ * A directory holding this checkout's preload and its `claim.ts` with no record that ended the
+ * reserve, as `claim.ts` was while the reserve held: the checkout's own records the owner's
+ * release, under which every child exits before it decides.
+ */
+async function heldBeside(name: string): Promise<string> {
+  const beside = await directory(name);
+  await cp(join(HERE, DECISION_PRELOAD_FILE), join(beside, DECISION_PRELOAD_FILE));
+  const claim = await readFile(join(HERE, RESERVE_ASK_REGISTRATION), "utf8");
+  const held = claim.replace(
+    /export const RESERVE_ENDED: string \| null =[^;]*;/,
+    "export const RESERVE_ENDED: string | null = null;"
+  );
+  expect(held).not.toBe(claim);
+  await writeFile(join(beside, RESERVE_ASK_REGISTRATION), held, "utf8");
+  return beside;
+}
+
 /** What a refusal of the decision at `entry` says before its reason. */
 function refusalOf(entry: string): string {
   return `${entry} is not the decision the claim names, reserve-ask.ts at 651db8d5: `;
@@ -240,9 +258,10 @@ const ENV = {
 
 describe("the decision's children", () => {
   test("each runs outside the read, and an error the child does not catch is no hold", async () => {
-    const stub = join(await directory("stub"), "decide.ts");
+    const beside = await heldBeside("stub");
+    const stub = join(beside, "decide.ts");
     await writeFile(stub, STUB, "utf8");
-    const decide = spawnDecision(stub, join(HERE, DECISION_PRELOAD_FILE), ENV);
+    const decide = spawnDecision(stub, join(beside, DECISION_PRELOAD_FILE), ENV);
     const verdicts: ReserveVerdict[] = [];
     for (const askId of ["kept", "held", "error", "uncaught"]) verdicts.push(await decide(askId));
     // Bun alone exits 1 on an uncaught error, which would read as held; the preload makes it 70.
@@ -250,14 +269,11 @@ describe("the decision's children", () => {
   });
 
   test("a child whose own claim.ts records that the reserve ended decides nothing, whenever it runs", async () => {
-    const beside = await directory("preload");
-    for (const name of [DECISION_PRELOAD_FILE, RESERVE_ASK_REGISTRATION]) {
-      await cp(join(HERE, name), join(beside, name));
-    }
+    const beside = await heldBeside("preload");
     const stub = join(beside, "decide.ts");
     await writeFile(stub, STUB, "utf8");
     const decide = spawnDecision(stub, join(beside, DECISION_PRELOAD_FILE), ENV);
-    // The copy of this checkout's claim.ts holds, so the stub's exit 0 is the verdict.
+    // The claim.ts beside it holds, so the stub's exit 0 is the verdict.
     expect(await decide("kept")).toBe("kept");
     // The same decision, after its claim.ts records an end: the preload exits 71 before the stub.
     await claimChanged(
@@ -265,6 +281,13 @@ describe("the decision's children", () => {
       "RESERVE_ENDED: string | null = null;",
       `RESERVE_ENDED: string | null = "${ENDED}";`
     );
+    expect(await decide("kept")).toBe("error");
+  });
+
+  test("a child of this checkout's preload decides nothing, since its claim.ts records the release", async () => {
+    const stub = join(await directory("released"), "decide.ts");
+    await writeFile(stub, STUB, "utf8");
+    const decide = spawnDecision(stub, join(HERE, DECISION_PRELOAD_FILE), ENV);
     expect(await decide("kept")).toBe("error");
   });
 

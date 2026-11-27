@@ -10,6 +10,7 @@ import (
 // first boot catch-up after the deploy replays nothing; one recorded after it starts at 0, which
 // the catch-up reads from the root's last handout. A cursor is never negative.
 func TestTheCatchUpCursorIsNullForIssuesRecordedBeforeIt(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 57)

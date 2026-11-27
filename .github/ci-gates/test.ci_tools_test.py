@@ -4,5 +4,5 @@
 # tool-fallback job (main's #3576 gave that rig a harness of its own).
 GATE = harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
     (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
-    (".github/ci-tools.yaml", "ci-tools.test.sh:1278-1287 reads every row of this repository's own manifest"),
+    (".github/ci-tools.yaml", "`.github/scripts/ci-tools.test.sh#real_rows` reads every row of this repository's own manifest"),
 ])

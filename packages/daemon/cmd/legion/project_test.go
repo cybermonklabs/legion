@@ -67,6 +67,12 @@ func (s pauseState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 	return state, claims, err
 }
 
+// ObservedState answers the empty state for the observed view: the pause commands read the whole
+// state.
+func (pauseState) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
+}
+
 // pauseCommandDaemon is a daemon of project LEGION as `legion project` and `legion state` reach it:
 // the real api.NewServer with the real pause service (internal/pause) over a database of the
 // test's own, on a loopback port.
@@ -153,6 +159,7 @@ func stateLines(out, prefix string) []string {
 // ended it while it runs; and `legion config check` names each setting under which a daemon cannot
 // hold a pause.
 func TestPauseCommands(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	t.Run("pause, state, resume, state", func(t *testing.T) {
 		d := newPauseCommandDaemon(t)
 		// A live role of the project, whose stop the pause asks and waits on.
@@ -273,4 +280,34 @@ func TestPauseCommands(t *testing.T) {
 			})
 		}
 	})
+}
+
+// The pause lines of `legion state` and of the pause commands' answers show a pause's reason and
+// the controller's session as terminalText: the controller or the operator wrote them, so an ESC
+// or a BEL in them can neither set the window title nor ring.
+func TestThePauseLinesShowAReasonAsTerminalText(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	ended := since.Add(20 * time.Minute)
+	const reason = "\x1b]0;x\x07"
+	by := api.PauseActorView{Kind: "controller", Session: "ses-\x07"}
+	const words = `pause 7 since 2026-11-16T09:00:00Z by the controller (session ses-\a): \x1b]0;x\a`
+	for _, tc := range []struct {
+		name, got, want string
+	}{
+		{name: "an open pause", got: pausedSummary(&api.PausedView{ID: 7, Since: since, By: by, Reason: reason}),
+			want: "paused: " + words + "; waits on no role"},
+		{name: "the last pause", got: lastPauseSummary(&api.PauseView{ID: 7, Since: since, By: by, Reason: reason,
+			EndedAt: &ended, EndedBy: &api.PauseActorView{Kind: "operator"}}),
+			want: "last pause: " + words + "; ended 2026-11-16T09:20:00Z by the operator"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("the line = %q, want %q", tc.got, tc.want)
+			}
+			if strings.ContainsAny(tc.got, "\x1b\x07") {
+				t.Fatalf("the line = %q, which holds a raw ESC or BEL", tc.got)
+			}
+		})
+	}
 }

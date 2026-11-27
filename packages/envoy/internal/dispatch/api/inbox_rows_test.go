@@ -184,6 +184,26 @@ func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
 	}
 }
 
+// An Agent row's subject and its reply's first line are cut where no reference crosses the cut,
+// as a Reply row's are (refs.FirstLine): a key or an address the 160-rune bound falls inside is
+// left out whole, rather than shown as `CORE-12`, a working link to another issue.
+func TestInboxAgentRowCutsNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
+	handler, _, _, _, _ := directConversationFrom(t, "alice")
+	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
+	lead := strings.Repeat("x", 151) + " "
+	root, _ := agentThread(t, handler, "btw", lead+"CORE-1234 ships tonight.\nMore.", lead+"dispatch://CORE-1/spec holds it.")
+
+	row := replyRow(t, getMyReplies(t, handler, "alice", "?kind=agent"), root.ID)
+	want := strings.Repeat("x", 151) + "…"
+	if row.Subject != want {
+		t.Fatalf("agent row's subject = %q, want %q: the key the cut falls inside left out whole", row.Subject, want)
+	}
+	if row.Reply.FirstLine != want {
+		t.Fatalf("agent row's reply = %q, want %q: the address the cut falls inside left out whole", row.Reply.FirstLine, want)
+	}
+}
+
 // The Agents page's New replies N badge counts an accepted Send's unread reply exactly as before:
 // the Inbox's narrowing is in its own query, not in unreadDirectRepliesCTE, which the badge and
 // the conversation window share.

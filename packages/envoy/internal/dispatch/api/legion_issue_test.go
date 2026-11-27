@@ -291,6 +291,8 @@ func requireLegionIssueNotFound(t *testing.T, handler http.Handler, key string) 
 // what both show (R1: "the card and the answer agree on the phase, the roles in a turn and the
 // slot"), one sentence each, none where they agree. The card's roles are the roles in a turn,
 // sorted by name, so they are held to the answer's roles whose state is `working` in that order.
+// Both name the issues the admission block holds this one on (legion.Admission.BlockersOf), so
+// the two lists must be one list in one order.
 func legionCardDisagreements(card legionBoardCard, answer wireLegionIssue) []string {
 	state := answer.State
 	if state == nil {
@@ -314,15 +316,19 @@ func legionCardDisagreements(card legionBoardCard, answer wireLegionIssue) []str
 		disagreements = append(disagreements, fmt.Sprintf("%s's card holds slot %s, its answer slot %s",
 			card.Key, showLegionValue(card.Slot), showLegionValue(state.Slot)))
 	}
+	if !slices.Equal(card.BlockedBy, state.BlockedBy) {
+		disagreements = append(disagreements, fmt.Sprintf("%s's card is blocked by %v, its answer by %v", card.Key, card.BlockedBy, state.BlockedBy))
+	}
 	return disagreements
 }
 
 // TestAnIssuesLegionRead is a-c-read-route: every read row of the plan, each against literal
-// values of its seed. FULL is the full state: a daemon named, an admission row with a line of five
-// and a blocked issue, and a good newest read after an older failed one. FAILED's newest read
-// failed after a good one; NOLINE recorded no admission row; UNREAD's daemon never answered;
-// NEVERREAD's was never read at all; and NODAEMON names no daemon, though an earlier one left its
-// rows. Every answer of the first five is configured, and every one of NODAEMON is not.
+// values of its seed. FULL is the full state: a daemon named, an admission row with a line of five,
+// a blocked issue and a parent in `awaiting_children` that the block names as held by its open
+// child, and a good newest read after an older failed one. FAILED's newest read failed after a good
+// one; NOLINE recorded no admission row; UNREAD's daemon never answered; NEVERREAD's was never read
+// at all; and NODAEMON names no daemon, though an earlier one left its rows. Every answer of the
+// first five is configured, and every one of NODAEMON is not.
 func TestAnIssuesLegionRead(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -360,6 +366,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 		{16, "The second in the line", "p", ""},
 		{17, "The fourth in the line", "q", ""},
 		{18, "The fifth in the line", "r", ""},
+		{19, "The parent waiting on its open child", "s", ""},
+		{20, "The waiting parent's open child", "t", "FULL-19"},
 	} {
 		seedLegionIssue(t, database, "FULL", issue.number, issue.title, issue.rank, nil, issue.parent)
 	}
@@ -388,8 +396,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(1))
 	observe("FULL", "FULL-11", legion.FieldPhase, `null`, hour(2))
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(3))
-	// FULL-12 left the daemon's state: every field it held is written null, as the sampler
-	// writes a field the newest read no longer carries.
+	// FULL-12 left the daemon's state: every field it held is written null, as the Legion
+	// intake writes a field the newest whole read no longer carries.
 	observe("FULL", "FULL-12", legion.FieldPhase, `"reviewing"`, hour(1))
 	observe("FULL", "FULL-12", claim+"reviewer", `"working"`, hour(1))
 	observe("FULL", "FULL-12", legion.FieldPhase, `null`, hour(2))
@@ -401,13 +409,17 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	for _, key := range []string{"FULL-16", "FULL-17", "FULL-18"} {
 		observe("FULL", key, legion.FieldPhase, `"admitted"`, hour(1))
 	}
+	observe("FULL", "FULL-19", legion.FieldPhase, `"awaiting_children"`, hour(1))
+	observe("FULL", "FULL-20", legion.FieldPhase, `"admitted"`, hour(1))
 	// The blockers in an order that is not their sorted one, so a read that sorted them is told
-	// from one that keeps the daemon's order.
+	// from one that keeps the daemon's order. The daemon lists a parent in awaiting_children as
+	// blocked on its open children, and in neither the active nor the waiting list, since it keeps
+	// no slot (dispatch://INFRA-3320, R11).
 	observe("FULL", legion.AdmissionKey, legion.FieldAdmission, `{
 		"cap": 4,
 		"active": ["FULL-1", "FULL-3", "FULL-15"],
 		"waiting": ["FULL-3", "FULL-16", "FULL-2", "FULL-17", "FULL-18"],
-		"blocked": [{"issue": "FULL-4", "blockedBy": ["FULL-9", "FULL-7"]}]
+		"blocked": [{"issue": "FULL-4", "blockedBy": ["FULL-9", "FULL-7"]}, {"issue": "FULL-19", "blockedBy": ["FULL-20"]}]
 	}`, hour(1))
 	seedLegionRead(t, database, "FULL", hour(0), "the Legion daemon could not be read: connect: connection refused")
 	seedLegionRead(t, database, "FULL", hour(10), "")
@@ -551,6 +563,11 @@ func TestAnIssuesLegionRead(t *testing.T) {
 			phase: "implementing", since: hour(1),
 			roles:     []wireLegionRole{{"architect", "retired"}, {"implementer", "working"}, {"auditor", "idle"}},
 			blockedBy: []string{},
+		})
+	})
+	t.Run("R-19 a parent in awaiting_children names its open child as what holds it, with no slot and no place in the line", func(t *testing.T) {
+		requireLegionState(t, "FULL-19", legionIssueOf(t, handler, "FULL-19"), legionIssueWant{
+			phase: "awaiting_children", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{"FULL-20"},
 		})
 	})
 	t.Run("P-2 a failed newest read is the read, over the state the good read before it stored", func(t *testing.T) {

@@ -83,9 +83,9 @@ func (p *seedPlan) mentionText(kindIndex, nth int) string {
 }
 
 // firstParagraphBlock is the block id of the first paragraph of every latest version. Every
-// latest version is built to one shape (documentMarkdown) and the block ids are minted in
-// document order from a counter restarted for each document (blockIDs), so b1 is the heading of
-// every document and b2 its first paragraph: a mention naming `#b-b2` of a document names a
+// latest version is built to one shape (documentMarkdown) and its render mints the block ids in
+// document order from a counter of its own (renderVersion), so b1 is the heading of every
+// document and b2 its first paragraph: a mention naming `#b-b2` of a document names a
 // block that document holds. The id of a table's body row, which an anchor on a table row names,
 // is read off the rendered tree instead (renderVersion), because a table's rows carry ids the
 // renderer reports no offset for.

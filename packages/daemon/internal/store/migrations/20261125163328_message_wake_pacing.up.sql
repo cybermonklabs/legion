@@ -1,0 +1,48 @@
+-- 20261125163328_message_wake_pacing.up.sql — what the wake pacing's two queues keep in the store
+-- (dispatch://INFRA-5682): the mark of a claim whose role has an Envoy message waiting, and
+-- whether a resume's stuck clock is stopped for a launch that waits in the pacing's queue.
+--
+-- claims.message_mark_at is the moment a wake for a waiting Envoy message marked the claim, and
+-- null for none (supervise.Claim.MessageMarkAt). The transaction of the listener's report writes
+-- it, and so does the outbox before it runs a start row whose wake carried a message
+-- (store.MarkClaimMessageTx). No write of the claim itself sets it (store.PutClaim), which only
+-- clears it as the claim retires. The mark stands while it is later than last_turn_start, so the
+-- role's next turn ends it and nothing has to delete it. A paced wake of a claim whose mark stands
+-- waits in the pacing's first queue, and the boot reads the mark here to place that claim's
+-- relaunch there after a restart. Every claim the migration finds has none.
+--
+-- pod_resumes.queued is whether the resume's stuck clock is stopped: its role's launch waits in
+-- the pacing's queue, where it has no moment until the pacer lets it out (store.SetResumeQueued).
+-- The stuck warning and the stranded report pass over such a resume
+-- (podResumesWithoutAFirstTurn). The end of the wait starts the clock (store.SetResumeClock), and
+-- the next daemon's boot starts every clock the daemon before it left stopped
+-- (store.StartQueuedResumeClocks). Every resume the migration finds has a running clock.
+--
+-- This release also writes the catch-up it paces into the outbox held: next_at and the payload's
+-- paced_at stand at 2100-01-01 (record.CatchUpHeldAt), which is no due moment, until the pacer
+-- lets the row out, and the let-out writes the turns it waited into the payload as paced_turns
+-- (record.ReleaseHeldCatchUp). That changes no table, but a rollback has to undo it.
+--
+-- The migration adds two columns and changes none that an earlier release reads, and that release
+-- names its columns in every write, so its daemon runs over the migrated database. It reads
+-- neither column: it sorts no wake by a mark, and it leaves queued as it finds it, which the next
+-- boot of this release puts right. What it cannot take is the rows this release left in the
+-- outbox. A held catch-up is due in 2100 to it, so it would never publish that row, and every
+-- later notice for the row's architect waits behind it. It decodes a notice strictly, so it
+-- refuses a row that carries paced_turns. The way back below makes every held catch-up due now,
+-- as a catch-up that was never paced, and takes paced_turns out of every catch-up that carries it.
+-- It also clears every claim's mark: the earlier release clears none, so a mark left standing on
+-- a role that takes no turn under it would read, when this release is rolled forward again, as a
+-- message still waiting from before the rollback. It drops neither column and deletes no version
+-- row, so the roll forward finds both columns and applies nothing. Run it with every daemon that
+-- shares the database stopped, before the earlier release starts.
+--
+-- update outbox set next_at = now(), payload = payload - 'paced_at' - 'paced_from'
+-- where kind = 'notice' and payload->>'kind' = 'catch-up'
+--   and next_at = '2100-01-01 00:00:00+00'::timestamptz;
+-- update outbox set payload = payload - 'paced_turns'
+-- where kind = 'notice' and payload->>'kind' = 'catch-up' and payload ? 'paced_turns';
+-- update claims set message_mark_at = null where message_mark_at is not null;
+
+alter table claims add column message_mark_at timestamptz;
+alter table pod_resumes add column queued boolean not null default false;

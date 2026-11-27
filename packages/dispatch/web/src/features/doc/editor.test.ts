@@ -1,8 +1,14 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import * as Y from "yjs";
-
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { bindRemoteMarks, createEditor, editorAttributes, type StoredMark } from "./editor";
 import { compiledBlockSchema } from "./schema";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 test("editorAttributes expose the editor as a multiline textbox", () => {
   expect(editorAttributes).toEqual({
@@ -82,7 +88,7 @@ test("bindRemoteMarks keeps an accepted suggestion's text when its projection ar
     expect(text.toString()).toBe("The quick red fox");
   } finally {
     unbind();
-    handle.destroy();
+    await handle.destroy();
     root.remove();
   }
 });

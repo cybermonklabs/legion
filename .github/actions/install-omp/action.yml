@@ -5,8 +5,7 @@ description: >-
   tests that run it; they refuse on GitHub Actions without one. Needs the repository checked out.
 
   It fetches the linux-x64 archive of that release from the address GitHub serves a release asset
-  at, which is no GitHub API call, and holds it to `ARG OMP_SHA256` of
-  packages/daemon/docker/worker.Dockerfile, the digest the worker image's tools stage checks the
+  at, which is no GitHub API call, and holds it to `packages/daemon/docker/worker.Dockerfile#ARG OMP_SHA256`, the digest the worker image's tools stage checks the
   same archive against, before it unpacks anything. The action reads no token. Until 2026-11-21 it
   ran `mise install <pin>`, whose github backend reads the release through the API with the run's
   GITHUB_TOKEN; that token's hourly budget is shared by every job of this repository's CI, and

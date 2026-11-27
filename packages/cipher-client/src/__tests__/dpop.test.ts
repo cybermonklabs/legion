@@ -144,21 +144,24 @@ test.each([
       `${"-----BEGIN"} PRIVATE KEY-----\n${canary}\n${"-----END"} PRIVATE KEY-----\n`,
   ],
   ["no PEM at all", (canary: string) => `d=${canary}`],
-] as const)("a box key that does not parse, as %s, is refused naming none of it", async (_as, pem) => {
-  const canary = fixtureSecret("canary");
-  const refusal = await importDpopKey(pem(canary), "ada@example.com's box key").then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(refusal).toBeInstanceOf(Error);
-  expect(refusal?.message).toBe(
-    "read ada@example.com's box key: it does not parse as a PKCS#8 PEM private key"
-  );
-  expect(refusal?.cause).toBeUndefined();
-  expect(String(refusal)).not.toContain(canary);
-  expect(String(refusal?.cause ?? "")).not.toContain(canary);
-  expect(JSON.stringify(Object.getOwnPropertyNames(refusal))).not.toContain("cause");
-});
+] as const)(
+  "a box key that does not parse, as %s, is refused naming none of it",
+  async (_as, pem) => {
+    const canary = fixtureSecret("canary");
+    const refusal = await importDpopKey(pem(canary), "ada@example.com's box key").then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal?.message).toBe(
+      "read ada@example.com's box key: it does not parse as a PKCS#8 PEM private key"
+    );
+    expect(refusal?.cause).toBeUndefined();
+    expect(String(refusal)).not.toContain(canary);
+    expect(String(refusal?.cause ?? "")).not.toContain(canary);
+    expect(JSON.stringify(Object.getOwnPropertyNames(refusal))).not.toContain("cause");
+  }
+);
 
 /** What a connection proof's checker holds it to, beside its signature: the header and claim
  *  names, the connection's method and target, the token's hash (`ath`, its SHA-256 in base64url)

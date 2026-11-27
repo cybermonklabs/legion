@@ -28,10 +28,13 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -113,7 +116,11 @@ const (
 	// what every such secret minted before the tag existed. The names are short because the
 	// broker's AWS store keeps its annotations as AWS tags, an AWS tag value holds at most 256
 	// characters, and five full scope URLs are longer than that. The tag on a secret of any
-	// other type is refused (ReasonScopesType), since no other minter reads it.
+	// other type is refused (ReasonScopesType), since no other minter reads it. It is in the
+	// fingerprint of every name that mints at it (Secret.ProfileDigest): the secret by its own name
+	// and each profile of it with no google block of its own; so a change of it, the tag added or
+	// taken off among them, ends each grant decided under the old one, which would otherwise mint at
+	// the new scopes at its next release.
 	TagScopes = "scopes"
 	// TagAdmin marks a secret whose grant is an administrator's: "true" is the only value the
 	// loader accepts, and anything else is refused (ReasonAdminMalformed). The broker cannot tell
@@ -127,6 +134,18 @@ const (
 	// loader refuses every other value (ReasonAdminMalformed), and `agent-secrets` holds --admin
 	// to it before it writes, so the two cannot drift on what the tag says.
 	AdminTrue = "true"
+	// TagJudge makes a key one the model judge decides: whole seconds from 1 to MaxJudgeSeconds
+	// (ParseJudge), the longest grant of it the judge makes, and the lifetime a request for it
+	// that names none gets. Any other value refuses the key (ReasonJudgeOutOfRange). A key with
+	// the tag and an admin tag is no judge key: a person approves every release of an
+	// administrator's credential (Secret.PersonApprovesEveryRelease). A key without it is never
+	// the judge's.
+	TagJudge = "judge"
+	// TagGuidance is the key owner's instruction to the model judge: when to grant a request for
+	// the key. The judge shows it to its model whole, so a value longer than MaxGuidanceRunes
+	// refuses the key (ReasonGuidanceTooLong). It decides nothing a live grant may do, so it is
+	// in no policy version.
+	TagGuidance = "guidance"
 	// TagProject names the one Dispatch project the secret belongs to, by its key as written
 	// (ParseProject): a secret of a private project goes only to a credential that names that
 	// project (Evaluate, ReasonProjectNotNamed), and one whose tag names a project Dispatch does
@@ -155,6 +174,24 @@ const (
 	// profile of its name refused profile-name-taken. A broker before this tag reads no such tag and
 	// refuses that profile as before, so a deployment can add the tag first.
 	TagSupersededBy = "superseded-by"
+	// TagProxy names the kind of the profiles file's kinds (Profiles.Kinds) a secret is served
+	// behind: a secret that carries it is behind Cipher's proxy, which puts its credential into
+	// each call to its kind's hosts, and its credential is never released to a command. A tag
+	// naming no kind of the file refuses the secret (ReasonProxyKindUnknown), and so does a kind
+	// whose ways do not hold the way the secret's type takes (WayOf, ReasonProxyWay), or whose
+	// max_grant the secret's max-grant tag is absent under or above (ReasonProxyMaxGrant). It is in
+	// the secret's fingerprint (Secret.ProfileDigest), so retagging it ends the grants of its names.
+	TagProxy = "proxy"
+	// TagProxyNarrowed, set to ProxyNarrowedTrue, marks a secret whose one profile's allow narrows
+	// it at the proxy (Profile.Allow): the policy serves it through exactly one profile, and that
+	// profile has an allow, and refuses it, and every profile naming it, otherwise
+	// (ReasonProxyNarrowedProfiles). A profile with an allow is served only from a source carrying
+	// it (ReasonProfileAllowNotNarrowed), so no narrowing is in force that the store does not also
+	// hold, and taking it off takes a change of the file and a change of the tag. Any other value
+	// refuses the secret (ReasonProxyNarrowedMalformed).
+	TagProxyNarrowed = "proxy-narrowed"
+	// ProxyNarrowedTrue is TagProxyNarrowed's one value, as AdminTrue is TagAdmin's.
+	ProxyNarrowedTrue = "true"
 	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
 	// are frozen into a request, so changing or clearing the type ends every live grant.
 	typeSourcePrefix = "mint:"
@@ -177,9 +214,9 @@ const (
 	TagRollbackGuard   = "mint-service-account"
 	RollbackGuardValue = "type-secret"
 	// RequestersRollbackGuard is the entry `agent-secrets secret` writes into a secret's
-	// requesters tag beside a dispatch-project or a project-channels tag, and takes out once the
-	// secret carries neither. This broker takes it out before it reads the list
-	// (SplitRequestersGuard), so it means nothing here: a requesters tag holding it alone is no
+	// requesters tag beside a dispatch-project or a project-channels tag (WithGuards), and takes
+	// out once the secret carries neither. This broker takes it out before it reads the list
+	// (SplitGuards), so it means nothing here: a requesters tag holding it alone is no
 	// list, and a list beside it reads as it would without it. Brokers before the project tags
 	// read every requesters entry as a person's email or a registered service, and no service
 	// name holds a colon (record.ValidService, which BROKER_SERVICES is held to), so they refuse
@@ -188,6 +225,18 @@ const (
 	// it, by a console or an infra-applier, leaves that rollback open: never run a broker from
 	// before the project tags against a store holding one.
 	RequestersRollbackGuard = "rollback-guard:project-tags"
+	// KindsRollbackGuard is the entry `agent-secrets secret` writes into a secret's requesters
+	// tag beside a proxy or a proxy-narrowed tag (TagProxy, TagProxyNarrowed), after the project
+	// tags' guard where both are written (WithGuards), and takes out once the secret carries
+	// neither, as RequestersRollbackGuard is beside the project tags. This broker takes it out
+	// before it reads the list (SplitGuards), so it means nothing here.
+	// Brokers before the kinds read neither proxy tag, and would serve a secret behind the proxy
+	// by its tag alone as its value, to a command; they read the guard as a requester, which is
+	// no person's email and no registered service (it holds a colon, which record.ValidService
+	// refuses), so they refuse the secret (requesters-malformed) instead. A proxy tag written
+	// without it, by a console or an infra-applier, leaves that rollback open, and `agent-secrets
+	// secret list --json` shows such a secret.
+	KindsRollbackGuard = "rollback-guard:kinds"
 	// OwnerShared is the owner value of a secret nobody owns alone.
 	OwnerShared = "shared"
 	// TierAgent is a secret its owner's agents use without asking.
@@ -254,6 +303,31 @@ func ParseMaxGrant(raw string) (time.Duration, error) {
 		return 0, ErrMaxGrantMalformed
 	}
 	return maxGrant, nil
+}
+
+// MaxJudgeSeconds is the longest grant the model judge makes of any key, and the most a judge tag
+// may name (ParseJudge): 15 minutes, the class's bound.
+const MaxJudgeSeconds = 900
+
+// MaxGuidanceRunes is the longest guidance tag a key may carry (TagRules,
+// ReasonGuidanceTooLong). The judge shows the whole text to its model beside the request's reason
+// and what Dispatch holds of it, all within one bounded prompt, so a text past this would be cut
+// rather than read; the key is refused instead, and `agent-secrets secret` refuses the write.
+const MaxGuidanceRunes = 2000
+
+// ErrJudgeOutOfRange is a judge tag that is not a whole number of seconds from 1 to
+// MaxJudgeSeconds.
+var ErrJudgeOutOfRange = fmt.Errorf("judge is a whole number of seconds from 1 to %d", MaxJudgeSeconds)
+
+// ParseJudge reads a judge tag: decimal digits alone, no sign, unit or white space, naming whole
+// seconds from 1 to MaxJudgeSeconds, so 0 is free to mean that a key has no judge. Every other
+// value is ErrJudgeOutOfRange, which the loader answers as ReasonJudgeOutOfRange.
+func ParseJudge(raw string) (uint32, error) {
+	seconds, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || seconds < 1 || seconds > MaxJudgeSeconds {
+		return 0, ErrJudgeOutOfRange
+	}
+	return uint32(seconds), nil
 }
 
 // ErrProjectMalformed is a dispatch-project tag that is not one Dispatch project key.
@@ -431,13 +505,16 @@ type TagSet struct {
 	// MaxGrant is the secret's max-grant tag as ParseMaxGrant answered it, and 0 when it sets
 	// none.
 	MaxGrant time.Duration
+	// Guidance is the secret's guidance tag as written (TagGuidance), "" for a secret carrying
+	// none.
+	Guidance string
 }
 
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh eight values — the type, owner, tier, requesters,
-// scopes, admin and max-grant tags, and the deployment's binding of the secret to an
+// positional list because the rules weigh nine values — the type, owner, tier, requesters,
+// scopes, admin, max-grant and guidance tags, and the deployment's binding of the secret to an
 // account — which no caller could pass in order without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
@@ -460,6 +537,8 @@ type TagSet struct {
 //     account whose list names a service. The one reason is all a load answers; which of those
 //     conditions refused it is RequesterRule's fault, which `agent-secrets` reads to name the
 //     flag that fixes the write.
+//   - ReasonGuidanceTooLong: the guidance tag is longer than MaxGuidanceRunes. The judge shows it
+//     whole to its model, and a cut instruction is not the one its owner wrote.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
@@ -482,6 +561,9 @@ func TagRules(t TagSet) string {
 	if RequesterRule(t) != RequesterFaultNone {
 		return ReasonRequestersNotOwner
 	}
+	if utf8.RuneCountInString(t.Guidance) > MaxGuidanceRunes {
+		return ReasonGuidanceTooLong
+	}
 	return ""
 }
 
@@ -492,6 +574,33 @@ func TagRules(t TagSet) string {
 // release form, and both are taken apart alike behind the airlock.
 func ServesGitHubTokens(secretType string) bool {
 	return secretType == TypeGitHubApp || secretType == TypeGitHubInstallations
+}
+
+// WayOf is the way a credential of a secret of secretType goes into a call under kind, and whether
+// kind's ways hold it. A secret of no type, a stored value, is swapped in (proxyrules.WaySwap), or,
+// under a kind whose ways hold sign and not swap, signed with again (proxyrules.WaySign): that is a
+// stored AWS key pair under the aws kind, whose credential goes into no header as it is. A
+// github-app, github-installations, google-login, google-service-account or anthropic-federation
+// secret's token is minted, or taken from its stored tokens, and swapped in (proxyrules.WayMint),
+// and an azure-login secret's is exchanged at Microsoft's token endpoint
+// (proxyrules.WayExchange). A type it does not know takes no way. The policy load refuses a secret
+// whose way its kind's ways do not hold (ReasonProxyWay): its credential would go into no call.
+func WayOf(kind proxyrules.Kind, secretType string) (string, bool) {
+	var way string
+	switch secretType {
+	case "":
+		way = proxyrules.WaySwap
+		if !slices.Contains(kind.Ways, proxyrules.WaySwap) && slices.Contains(kind.Ways, proxyrules.WaySign) {
+			way = proxyrules.WaySign
+		}
+	case TypeGitHubApp, TypeGitHubInstallations, TypeGoogleLogin, TypeGoogleServiceAccount, TypeAnthropicFederation:
+		way = proxyrules.WayMint
+	case TypeAzureLogin:
+		way = proxyrules.WayExchange
+	default:
+		return "", false
+	}
+	return way, slices.Contains(kind.Ways, way)
 }
 
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
@@ -616,23 +725,53 @@ type Secret struct {
 	// ProjectChannels is the secret's project-channels tag (TagProjectChannels), ProjectChannelsSlack
 	// or "" for a secret carrying none: a private project's credential may spend such a secret only
 	// where that project's owner allows, which the airlock's proxy is what enforces, so Evaluate
-	// refuses one that is not served as a profile with a proxy block
-	// (ReasonProjectChannelsNeedAirlock). It is in Version, so the airlock proxy reads again a
-	// value it read before the tag was added.
+	// refuses one that is not served behind the proxy (ReasonProjectChannelsNeedAirlock). It is in
+	// Version, so the airlock proxy reads again a value it read before the tag was added.
 	ProjectChannels string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
 	Admin bool
-	// ProfileDigest is the fingerprint of the profile this secret is served as (Profiles.Digest),
-	// and "" for a stored secret served by its own name. A string, not a pointer, for the same
-	// reason as MaxGrant. It is in Version, so an edit of one profile's entry moves the policy
-	// version and ends the grants of that name (requests.Machine's checkRelease).
+	// Judge is the secret's judge tag as ParseJudge answers it, whole seconds from 1 to
+	// MaxJudgeSeconds, and 0 for a secret carrying none, which the model judge never decides
+	// (Set.JudgeSeconds). A value, never a pointer, for the same reason as MaxGrant. It is in
+	// Version, so a judge tag added, changed or removed makes the broker check each live judged
+	// grant of the secret again at its next release (requests' judgeStillDecides).
+	Judge uint32
+	// Guidance is the secret's guidance tag (TagGuidance) as written, "" for a secret carrying
+	// none: the instruction the model judge follows when it decides a request for the secret. It
+	// is not in Version: it tells the judge how to decide requests to come and changes nothing a
+	// live grant may do, so writing it ends no grant.
+	Guidance string
+	// ProfileDigest is the fingerprint of what a name is served as, for each name a grant of which
+	// a tag or the profiles file can widen:
+	// a profile's entry's, with the kind it is behind, its source's proxy-narrowed tag and, behind
+	// the proxy, its source's judge seconds, and its source's scopes tag where it has no google
+	// block of its own (Profiles.servedDigest); a stored secret's served by its own name behind the
+	// proxy, its proxy, proxy-narrowed and scopes tags (proxyDigest); a stored secret's served by
+	// its own name behind no proxy, its scopes tag (scopesDigest); and "" for such a secret with no
+	// scopes tag. A string, not a pointer, for the same reason as MaxGrant. A request records it
+	// (request_secrets.airlock_digest), and a release ends a grant whose name's fingerprint moved
+	// (requests.Machine's checkRelease), so an edit of one profile's entry, or a change of the
+	// proxy, proxy-narrowed, judge or scopes tag it reads, ends the grants of that name and no
+	// others, across a restart too. It is in Version.
 	ProfileDigest string
 	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
 	// served by its own name. It points into the one Profiles the boot read, which never changes,
 	// so a Secret stays comparable and two publishes of one profile hold the same pointer.
 	Profile *Profile
+	// Proxy is the kind the secret is served behind (TagProxy), and "" for a secret not behind
+	// Cipher's proxy, whose credential the release hands to an approved command. A profile is
+	// behind its source's tag's kind, or, where its source carries none, its own proxy string's
+	// (Profile.ProxyKind), until the string goes, once every source a profile names carries its
+	// own proxy tag.
+	Proxy string
+	// ProxyNarrowed is true when the secret, or a profile's source, carries proxy-narrowed: "true"
+	// (TagProxyNarrowed): the one profile it is served through narrows it at the proxy.
+	ProxyNarrowed bool
+	// Way is the way the secret's credential goes into a call under its kind (WayOf), and "" for a
+	// secret not behind the proxy.
+	Way string
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
@@ -641,6 +780,18 @@ type Secret struct {
 	// why it is not in Version: what it changes, the profile served or refused, is.
 	SupersededBy string
 	ownership    ownerKind
+}
+
+// ProxyAllow is the allow of the profile the secret is served as (Profile.Allow), which narrows its
+// kind's at the proxy, and nil for a stored secret served by its own name, which its kind's allow
+// alone bounds. A present empty list allows nothing. It is a method of the profile the Secret holds
+// rather than a field of its own, so a Secret stays comparable (Current.RefreshOne's answers): the
+// list points into the one Profiles the boot read, which never changes.
+func (secret Secret) ProxyAllow() []proxyrules.Allow {
+	if secret.Profile == nil {
+		return nil
+	}
+	return secret.Profile.Allow
 }
 
 // Type is the type the secret is served as, read back from its Source (TypeSource), or "" for a
@@ -654,11 +805,11 @@ func (secret Secret) Type() string {
 }
 
 // PersonApprovesEveryRelease reports whether a person approves every release of the secret, so
-// the model judge decides none of its requests whatever seconds the airlock rules give the name: a
-// secret tagged admin (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation,
-// read from its Source with ParseTypeSource), whose token can be an organization administrator's
-// whether or not the tag says so. Each of the judge's gates reads it (requests' judgeKey,
-// judgeStillDecides, currentPolicyAdmits and JudgePolicy).
+// the model judge decides none of its requests whatever its judge tag says: a secret tagged admin
+// (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation, read from its Source
+// with ParseTypeSource), whose token can be an organization administrator's whether or not the
+// tag says so. Each of the judge's gates reads it (requests' judgeKey, judgeStillDecides,
+// currentPolicyAdmits and JudgePolicy).
 func (secret Secret) PersonApprovesEveryRelease() bool {
 	return secret.Admin || secret.Type() == TypeAnthropicFederation
 }
@@ -699,8 +850,9 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes, admin, project and project-channels, and of the
-	// fingerprint of each profile it serves: equal versions are equal policies. A request records
+	// github-owners, requesters, scopes, admin, project, project-channels and judge, and of the
+	// fingerprint of each profile it serves and of each name it serves behind the proxy
+	// (Secret.ProfileDigest): equal versions are equal policies. A request records
 	// the version it was decided under, so a live grant is re-evaluated only once the policy
 	// changed. The project-channels tag is in it because the airlock proxy holds a grant's
 	// released values per pod and reads them again only when one of the grant's names is reread
@@ -745,6 +897,14 @@ type Set struct {
 	// published. It is in neither Version nor any digest: who is a member changes with no change
 	// of the policy's tags.
 	groups record.Directory
+	// rules is ProxyRules, built once with the set (setOf, apply), since the proxy reads it on
+	// every request and the release on every use of a grant.
+	rules proxyrules.Rules
+	// redundantProxy is each profile the set serves whose proxy string names the kind its source's
+	// proxy tag names too, in the file's order: Current's reload writes ProxyKindRedundantMessage
+	// for each, once per load. It goes with the proxy string, once every source a profile names
+	// carries its own proxy tag.
+	redundantProxy []string
 }
 
 // ProfilesOf is the names of the profiles of other names the set's profiles file makes from
@@ -753,6 +913,18 @@ type Set struct {
 // that pass, unless a profile holds that name too. It is nil for a source no profile of another
 // name uses, and for every name of a set no profiles were applied to (Profiles.apply).
 func (s *Set) ProfilesOf(source string) []string { return s.profiles.Of(source) }
+
+// ProxyRules is the airlock's rules as the set serves them: the profiles file's kinds and its
+// dpop blocks' inline bindings (Profiles.FileRules), and one binding for each name the set serves
+// behind the proxy, in name order, with its kind (Secret.Proxy), its way (Secret.Way) and its
+// profile's own allow (Secret.ProxyAllow). It is built once when the set is (a load, a reread's
+// merge, a value refusal's withhold, the profiles' apply), since the proxy reads it on every
+// request and the release on every use of a grant, so it allocates nothing here; a set built with
+// no profiles applied answers the file's kinds and the bindings of its tagged secrets all the
+// same. proxyrules.Validate accepts it for every set the policy builds from a file ParseProfiles
+// accepted. The answer is the set's own and is never changed. A set NewSet builds, outside a
+// load, has none.
+func (s *Set) ProxyRules() proxyrules.Rules { return s.rules }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
 // lists no type secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
@@ -770,8 +942,10 @@ type Refusal struct {
 	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
 	// is about (the source's own reason, the account a github block names that the source does
 	// not), or, for ReasonValueMalformed, the decoder's own words of what is wrong with the value
-	// (secrets.ParseValue, which never quotes the value), and is "" for every reason that is a
-	// secret's own tag's. RefusedMessage writes it as detail.
+	// (secrets.ParseValue, which never quotes the value), or, for a secret's proxy tags, what of
+	// its kind they do not fit (the kind its tag names that the file does not declare, the way its
+	// type takes that its kind's ways do not hold, the max_grant it is above), and is "" for every
+	// other reason that is a secret's own tag's. RefusedMessage writes it as detail.
 	Detail string
 	// SupersededBy is the refused secret's superseded-by tag (TagSupersededBy) as written, "" for
 	// none: a refused secret gives its name to the profile of that source as a served one does
@@ -793,26 +967,30 @@ type Pending struct {
 }
 
 // setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves
-// out.
-func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[string]Pending, versions map[string]string) *Set {
+// out, and the proxy rules of profiles' kinds over the secrets it serves (Profiles.proxyRules).
+func setOf(profiles Profiles, secrets map[string]Secret, refused map[string]Refusal, pending map[string]Pending, versions map[string]string) *Set {
 	set := NewSet(secrets)
 	set.Refused, set.Pending, set.versions = refused, pending, versions
+	set.rules = profiles.proxyRules(secrets)
 	return set
 }
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes, no admin, no project and no project-channels tag writes the pre-type digest bytes,
-// "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with any of
-// them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
+// scopes, no admin, no project, no project-channels and no judge tag writes the pre-type digest
+// bytes, "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with
+// any of them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
 // (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
-// "\tadmin=true", "\tproject=<KEY>" and "\tproject-channels=slack", in that order, for each of
-// those five it carries. The project and project-channels tags are written only by a secret
-// that carries one, so the secrets of a deployment that tags none write the bytes they wrote
-// before the tag existed and no deployed version shifts. A
-// secret served as a profile adds one line more, "<Name>\tprofile=<digest>\n", rather than a
-// field of the line above it, so every line a stored secret served by its own name writes is
-// byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// "\tadmin=true", "\tproject=<KEY>", "\tproject-channels=slack" and "\tjudge=<seconds>", in that
+// order, for each of those six it carries. The project, project-channels and judge tags are
+// written only by a secret that carries one, so the secrets of a deployment that tags none write
+// the bytes they wrote before the tag existed and no deployed version shifts. The guidance tag is
+// in no line (Secret.Guidance). A secret served as a profile, or by its own name behind the proxy,
+// adds one line more, "<Name>\tprofile=<digest>\n" (Secret.ProfileDigest), rather than a field of
+// the line above it, so every line a stored secret served by its own name behind no proxy writes
+// is byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Such a secret's own fingerprint, which a scopes tag gives it (scopesDigest), is written nowhere:
+// it holds the scopes tag alone, which the line above holds already.
 // Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
@@ -850,15 +1028,19 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.ProjectChannels != "" {
 			projectTags += "\tproject-channels=" + s.secret.ProjectChannels
 		}
+		judge := ""
+		if s.secret.Judge != 0 {
+			judge = fmt.Sprintf("\tjudge=%d", s.secret.Judge)
+		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && projectTags == "":
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && projectTags == "" && judge == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		}
-		if s.secret.ProfileDigest != "" {
+		if s.secret.ProfileDigest != "" && (s.secret.Profile != nil || s.secret.Proxy != "") {
 			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}
@@ -870,4 +1052,17 @@ func NewSet(secrets map[string]Secret) *Set {
 // re-checks a grant of such a name on every use rather than only once Version moves.
 func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
+}
+
+// JudgeSeconds is the longest grant the model judge may make of name, and whether its key lets the
+// judge decide it at all: the judge tag of the secret s serves as name (Secret.Judge), a profile's
+// being its source's, and (0, false) for a name s does not serve or whose secret carries no judge
+// tag. It reads the tag alone: whether a person approves every release of the secret all the same
+// (Secret.PersonApprovesEveryRelease) is each caller's to weigh, since a judged grant of a secret
+// tagged an administrator's later is ended by the release (requests' judgeStillDecides) and not
+// refused as a broken chain. Every reader of the bound goes through it, and what it answers is at
+// most MaxJudgeSeconds, since the loader refuses a judge tag above that (ReasonJudgeOutOfRange).
+func (s *Set) JudgeSeconds(name string) (uint32, bool) {
+	seconds := s.Secrets[name].Judge
+	return seconds, seconds != 0
 }

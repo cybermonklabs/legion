@@ -28,7 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 func sessionResp(s requests.Session) wire.RecordSessionResp {
@@ -64,16 +66,37 @@ func buildRecordResponse(detail requests.RecordDetail) recordResponse {
 	return resp
 }
 
-// decideBody is both approve's and deny's request body for a machine login, {"approver", "code"}.
-// approver is the deciding person's login, which Dispatch's server sets from its own session, and
-// code the login's confirmation code: machine.Service.ApplyDecision checks it on both approve and
-// deny.
+// decideBody is both approve's and deny's request body for a machine login, {"approver", "code",
+// "approver_issuer", "approver_subject", "approver_session_generation"}. approver is the deciding
+// person's login, which Dispatch's server sets from its own session, and code the login's
+// confirmation code: machine.Service.ApplyDecision checks it on both approve and deny. The two
+// approver_ account fields are the account that person signed in to Dispatch as, which an approval
+// records on the credential it mints and is refused by once that account no longer holds the
+// address; approver_session_generation is where the caller's check of that person stood, by which
+// an approval checked before a replacement is refused. Dispatch in this tree sends none of the
+// three, and its approvals record no account; the change that records accounts at Dispatch sends
+// them, and only to a broker whose GET /v1/settings says it takes them
+// (settingsResponse.ApproverFields), since a broker from before them refuses a body carrying any
+// of them 400 INVALID_DECISION.
 type decideBody struct {
 	// The login of the person deciding, which the record's rule must admit: its approver, or
 	// anyone signed in for the denial of a service's machine login.
 	Approver string `json:"approver"`
 	// The machine login's confirmation code, typed again.
 	Code *string `json:"code"`
+	// The identity provider of the account the deciding person signed in to Dispatch as, as
+	// Dispatch spells it; given with approver_subject or not at all.
+	ApproverIssuer string `json:"approver_issuer"`
+	// That account's `sub`: an approval records it on the credential it mints, and is refused
+	// 403 APPROVER_REPLACED once another account holds the approver's address.
+	ApproverSubject string `json:"approver_subject"`
+	// The approver's address's session generation at Dispatch as Dispatch's check of the approver
+	// read it (its user_sessions.generation, 0 when it holds none): an approval is refused 403
+	// APPROVER_REPLACED when a revoke recorded a replacement of the address at a greater one,
+	// since the check passed before that replacement, whichever account it names. Every approve
+	// Dispatch relays in this tree carries none, and its approval naming no account is held to a
+	// time window after a replacement instead (machine.ApprovalInFlightWindow).
+	ApproverSessionGeneration *int64 `json:"approver_session_generation"`
 }
 
 // decisionResponse is what a machine login's approval answers: wire.DecisionResponse itself,
@@ -125,9 +148,20 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	if (body.ApproverIssuer == "") != (body.ApproverSubject == "") {
+		writeError(w, http.StatusBadRequest, "APPROVER_ACCOUNT_INPUT", "approver_issuer and approver_subject name one account, so both are given or neither is")
+		return
+	}
+	// The generation is logged by value, none for a decision that carried none, so a refusal by it
+	// (machine.ErrApprovalCheckedBeforeReplacement) shows which generation the approve carried.
+	var generation any
+	if body.ApproverSessionGeneration != nil {
+		generation = *body.ApproverSessionGeneration
+	}
+	// The approver and its account are the caller's word, of any length, so the line cuts them
 	// (answer.ClipFields).
-	slog.Info("decision relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID, "approve", approve})...)
+	slog.Info("decision relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "approver_subject", body.ApproverSubject,
+		"approver_session_generation", generation, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 
@@ -200,7 +234,11 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 		writeError(w, http.StatusBadRequest, "CODE_REQUIRED", "code is required to decide a machine login")
 		return
 	}
-	_, credentialID, err := s.deps.MachineLogin.ApplyDecision(r.Context(), recordID, approve, body.Approver, *body.Code)
+	account := store.IssuerSubject{Subject: body.ApproverSubject}
+	if account.Recorded() {
+		account.Issuer = oidc.CanonicalIssuer(body.ApproverIssuer)
+	}
+	_, credentialID, err := s.deps.MachineLogin.ApplyDecision(r.Context(), recordID, approve, body.Approver, *body.Code, account, body.ApproverSessionGeneration)
 	switch {
 	case errors.Is(err, machine.ErrNotFound):
 		writeNoSuchRecord(w)
@@ -210,6 +248,9 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 		return
 	case errors.Is(err, record.ErrNotApprover):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
+		return
+	case errors.Is(err, machine.ErrApproverReplaced):
+		writeError(w, http.StatusForbidden, "APPROVER_REPLACED", err.Error())
 		return
 	case errors.Is(err, machine.ErrAlreadyDecided), errors.Is(err, machine.ErrLoginExpired):
 		writeError(w, http.StatusConflict, "RECORD_TERMINAL", err.Error())

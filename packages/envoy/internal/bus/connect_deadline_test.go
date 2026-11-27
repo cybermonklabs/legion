@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -20,7 +21,7 @@ func (deadlinePassedContext) Deadline() (time.Time, bool) { return time.Now().Ad
 // (*nats.Conn).JetStream under that test's core publish.
 func TestADialPastItsDeadlineReturnsAnError(t *testing.T) {
 	t.Parallel()
-	conn, err := connectWithContext(deadlinePassedContext{context.Background()}, "deadline-test", []string{"nats://127.0.0.1:1"}, nil, nil, nil, nil, nil, nil, nil)
+	conn, err := connectWithContext(deadlinePassedContext{context.Background()}, slog.Default(), "deadline-test", []string{"nats://127.0.0.1:1"}, nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatalf("connectWithContext past its deadline returned conn=%v and no error", conn)
 	}

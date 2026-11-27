@@ -57,7 +57,7 @@ func storeRawRow(t *testing.T, registry *store.Registry, client *bus.Client, ses
 	if _, err := interests.Put(sessionID, value); err != nil {
 		t.Fatalf("store %s's row naming %v: %v", sessionID, topics, err)
 	}
-	waitFor(t, 10*time.Second, "the registry's copy to hold "+sessionID+"'s row as stored", func() bool {
+	waitFor(t, "the registry's copy to hold "+sessionID+"'s row as stored", func() bool {
 		cached, ok := registry.Cached(sessionID)
 		return ok && !slices.ContainsFunc(topics, func(topic string) bool { return !slices.Contains(cached.Topics, topic) })
 	})
@@ -137,7 +137,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 	t.Helper()
 	own, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	received := false
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(listenerWaitBound(t))
 	for {
 		select {
 		case frame := <-standIn.frames:
@@ -164,6 +164,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 // session follows does, and still delivers nothing. Control: the same session holding the role is
 // counted and receives the notice.
 func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
+	t.Parallel()
 	t.Run("control: the session holds the role", func(t *testing.T) {
 		rig := newLostLaneRig(t)
 		const sessionID = "ses_lost_lane_held"
@@ -204,7 +205,7 @@ func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
 		// record keeps the lane exactly as a former holder's record does whenever the route's
 		// own rewrite of it did not run (TestAStoppedFormerHolderIsNoRecipientOfItsLostLane).
 		claimRoles(t, rig.harness.registry, "ses_lost_lane_new_holder", lostLaneRole)
-		waitFor(t, 10*time.Second, "the role claim view to show the role taken over", func() bool {
+		waitFor(t, "the role claim view to show the role taken over", func() bool {
 			held, err := rig.harness.registry.RolesHeldBy(sessionID)
 			return err == nil && !slices.Contains(held, lostLaneRole)
 		})
@@ -229,6 +230,7 @@ func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
 // every publish on the lane counted it for those 30 days. Control: while its claim still stands it
 // is counted, stopped and not running, since its filter keeps the lane when it returns.
 func TestAStoppedFormerHolderIsNoRecipientOfItsLostLane(t *testing.T) {
+	t.Parallel()
 	for _, takenOver := range []bool{false, true} {
 		name := "control: its claim still stands"
 		if takenOver {
@@ -267,6 +269,7 @@ func TestAStoppedFormerHolderIsNoRecipientOfItsLostLane(t *testing.T) {
 // to a heartbeat (90 s) later, or until its relay restarted, and received the new holder's notices
 // in that window. Control: with no takeover the holder receives the notice.
 func TestATakeoverNarrowsTheFormerHoldersFilterAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, takenOver := range []bool{false, true} {
 		name := "control: no takeover"
 		if takenOver {
@@ -324,6 +327,8 @@ func TestATakeoverNarrowsTheFormerHoldersFilterAtOnce(t *testing.T) {
 // failed narrowing said nothing that named the role or the lane. Control: with the lock free the
 // same takeover narrows the filter and logs no such line.
 func TestATakeoverThatLeavesTheFormerHoldersFilterSaysSo(t *testing.T) {
+	// Not parallel: it requires the claim to answer within 1 s past sendRequestBudget (3.5 s),
+	// the budget its narrowing waits out on the former holder's lock.
 	const message = "listener role takeover left the former holder's consumer filter unnarrowed; the role's notice lane may reach that session until its next registration or relay restart"
 	for _, held := range []bool{false, true} {
 		name := "control: the former holder's lock is free"

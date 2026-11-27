@@ -10,6 +10,7 @@ import (
 // column takes the empty value, which reads as "no push onto the base recorded", and the daemon
 // reads that pull request again at its issue's next event, its next handoff or the next start.
 func TestAPullRequestRecordedBefore20261029120400HasNoMovedBase(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120300)

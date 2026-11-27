@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch` command the plugin bundles says in its help that a `--priority` of 0 needs the
+  `p0` scope, and prints the refusal's code and scope when Dispatch refuses a write of priority 0
+  for want of it.
+time: 2026-11-26T02:21:32Z
+custom:
+    Issue: pr5616

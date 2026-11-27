@@ -272,6 +272,7 @@ type coverageScalePoint struct {
 // starts `coverage-scale:` and names every number the verdict rests on, with the index builds'
 // times and sizes, so a reader of the Job's log judges it from its end.
 func TestCoverageStatementScale(t *testing.T) {
+	// Not parallel: it times statements, and its verdict rests on those times.
 	server := os.Getenv(coverageScaleURLEnv)
 	if server == "" {
 		t.Skip(coverageScaleURLEnv + " is unset: it must name a Postgres server this test may create and drop " +

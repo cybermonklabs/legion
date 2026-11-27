@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// rulesVersion is the version of the event rules versionRules holds, which the fill writes in the
+// RulesVersion is the version of the event rules versionRules holds, which the fill writes in the
 // cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
 // version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
 // that wrote the rows up to the cursor. Version 1 read issues, primary documents, the creates,
@@ -26,7 +26,7 @@ import (
 // than this one's; and only that pass raises the column, once it has read everything. Only a
 // build with these rules writes an event of the three types, so every one in the log was written
 // by the roll that brought them or later, and a read of them all up to the cursor misses none.
-const rulesVersion = 2
+const RulesVersion = 2
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
 // writes: the event's payload, whole, which is also where a deleted post's empty body comes from
@@ -97,6 +97,7 @@ var unchangingTypes = map[string]string{
 	"issue.released":                            "an issue's claim is its state, not its text",
 	"issue.deployed":                            "an issue's deploy is its state, not its text",
 	"issue.pull_request_attribution_changed":    "an issue's pull request is its state, not its text",
+	"issue.role_holders_changed":                "an issue's role holders are its state, not its text",
 	"child.added":                               "a child issue is its parent's state, not its text",
 	"child.removed":                             "a child issue is its parent's state, not its text",
 	"child.status":                              "a child's status is its parent's state, not its text",
@@ -120,12 +121,15 @@ var unchangingTypes = map[string]string{
 	"suggestion.rejected":                       "the comment's body does not change",
 	"message.delivery":                          "a message's delivery carries no text",
 	"message.accepted":                          "a message's acceptance carries no text",
+	"role.undelivered":                          "a role's delivery carries no text",
 	"block.repaired":                            "the document's own version carries the change",
 	"block.invalid":                             "the document's own version carries the change",
 	"result.recorded":                           "a result is not an issue, comment, message or ask",
 	"result.retracted":                          "a result is not an issue, comment, message or ask",
+	"deploy.recorded":                           "a deploy is not an issue, comment, message or ask",
 	"project.created":                           "a project is not an issue, comment, message or ask",
 	"project.updated":                           "a project is not an issue, comment, message or ask",
+	"project.access_changed":                    "a project's access is not an issue, comment, message or ask",
 	"settings.architecture_source.updated":      "a setting is not an issue, comment, message or ask",
 	"settings.project_default_assignee.updated": "a setting is not an issue, comment, message or ask",
 	"settings.repo_project.updated":             "a setting is not an issue, comment, message or ask",

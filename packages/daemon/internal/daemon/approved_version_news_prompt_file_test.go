@@ -27,6 +27,7 @@ import (
 // checkArm ends the run through its testing.T, so each case runs it in a child of this test
 // binary and reads whether that child failed.
 func TestTheBaseArmRefusesAPaneWhosePromptFileHoldsNoPrompt(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(promptFileChildEnv) != "" {
 		runPromptFileChild(t)
 		return

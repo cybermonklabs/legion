@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -31,10 +31,11 @@ import (
 //
 //   - the gate sentence is said of the tree root's gate rows as they stand now, so a task composed
 //     while the gate stood open and sent after a later version closed it says closed;
-//   - an item stands while the gate's row of its step still holds the document it names, approved
-//     at its To (classify.DesignApprovalStands), and the told row of its audience still holds a
-//     version below To or none it knows; every other item is dropped from the text and from the
-//     news the delivery carries, so its confirmation credits only what was told;
+//   - an item stands while the approval it names is still the person's word, as the one predicate
+//     answers it (workflow.StepApprovalStands), the tree still holds a gate row of its step, and
+//     the told row of its audience still holds a version below To or none it knows (itemStands);
+//     every other item is dropped from the text and from the news the delivery carries, so its
+//     confirmation credits only what was told;
 //   - an item or an opening told to the holder audience of a member stands only while the claim
 //     the task is held for holds that member's phase now (newsClaims.holderOf): the claim of the
 //     role its phase names, or, for a member in accepting, the architect that owns it. The
@@ -103,9 +104,9 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	if len(d.News) == 0 {
 		return d.Task, d.News, nil
 	}
-	var carried record.DeliveryNews
-	if err := json.Unmarshal(d.News, &carried); err != nil {
-		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	carried, err := heldNews(c, d.News)
+	if err != nil {
+		return "", nil, err
 	}
 	var sent renderedNews
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -124,6 +125,17 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 		return "", nil, nil
 	}
 	return sent.task, sent.news, nil
+}
+
+// heldNews is news, the news a held task of c carries (supervise.Delivery.News), decoded: the one
+// read of it every send of such a task makes before it renders or writes it again (designNews,
+// workflowRuntime.narrowedNews, workflowRuntime.workingCopy), each of which encodes its own answer.
+func heldNews(c supervise.Claim, news []byte) (record.DeliveryNews, error) {
+	var carried record.DeliveryNews
+	if err := json.Unmarshal(news, &carried); err != nil {
+		return record.DeliveryNews{}, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	}
+	return carried, nil
 }
 
 // renderedNews is a task of news as the one render says it (renderNews): its text, the news the
@@ -311,7 +323,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		}
 		for _, i := range listener.items {
 			item := carried.Items[i]
-			if !itemStands(item, tree.gates[item.Step], heard.told) {
+			if !itemStands(item, tree.gates, heard.told) {
 				continue
 			}
 			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root.Generation)
@@ -342,6 +354,13 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
+		// The holder form of an issue in accepting answers with a move back, whose phases are read
+		// from the issue's task (moveBackOf).
+		if heard.listener.audience == record.AudienceHolder && heard.issue.Phase == phase.Accepting {
+			if news.Back, err = moveBackOf(ctx, tx, records, heard.issue); err != nil {
+				return newsAtSend{}, err
+			}
+		}
 		for _, i := range heard.items {
 			change, kept, ok := recorded.carriedChange(items[i])
 			if !ok {
@@ -447,12 +466,21 @@ func readNewsTree(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 	return trees[root], nil
 }
 
-// itemStands says whether an item a delivery carries is still news its audience is owed: the gate
-// row of its step holds the document it names, approved at the version it tells
-// (classify.DesignApprovalStands), and the audience's told row holds a version of that step below
-// it, or none it knows.
-func itemStands(item record.DeliveryNewsItem, gate record.DesignGate, told record.DesignTold) bool {
-	if !classify.DesignApprovalStands(gate, item.Artifact, item.To) {
+// itemStands says whether an item a delivery carries is still news its audience is owed, read from
+// gates, the gates of the item's tree, and told, the audience's told row, in three parts:
+//
+//   - the person's word: the approval the item names is still theirs, as the one predicate
+//     answers it (workflow.StepApprovalStands);
+//   - a fact of the tree: the tree still holds a gate row of the item's step. A gate that is gone
+//     (a clear of the tree's generation deleted it) holds no approval to tell an audience of, so
+//     the item drops. This is no second rule of the person's word, which the clear leaves standing;
+//   - a fact of the audience: its told row holds a version of that step below the item's, or none
+//     it knows, so the item is still news to it.
+func itemStands(item record.DeliveryNewsItem, gates map[record.DesignStep]record.DesignGate, told record.DesignTold) bool {
+	if !workflow.StepApprovalStands(gates, item.Step, item.Artifact, item.To, true) {
+		return false
+	}
+	if _, held := gates[item.Step]; !held {
 		return false
 	}
 	took, known := told.Took(item.Step)
@@ -522,13 +550,16 @@ func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.News
 
 // memberDraft is one member of a tree as the root architect's summary reads it before the change
 // sets are read: its record, how it is told (memberTelling: its state, and the issue whose
-// architect holds it in accepting where that is not the tree root's), and, for a member owed news,
-// the items its holder is owed now (record.OwedNews) and whether its holder row owes the opening.
+// architect holds it in accepting where that is not the tree root's), for a member owed news, the
+// items its holder is owed now (record.OwedNews) and whether its holder row owes the opening, and,
+// for a member the root architect answers itself (workflow.NewsYouAnswer), the phases a move back
+// of it reaches (moveBackOf), which its line names.
 type memberDraft struct {
 	memberTelling
 	issue       record.Issue
 	owed        []record.NewsItem
 	openingOwed bool
+	back        []phase.Phase
 }
 
 // told is the member as the summary names it, given what is recorded: its owed items with their
@@ -540,7 +571,7 @@ type memberDraft struct {
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
-	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect}
+	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect, Back: m.back}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member
@@ -564,9 +595,10 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // the reconcile queues a news-only start for (holderTold). A claim that a news-only start reaches
 // but that holds such a task gets no start until a turn takes that task, so the member's news
 // waits for it (workflow.NewsWaitsForTask). Otherwise the next start of its phase tells it
-// (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, or
-// one retired, failed or suspended by an operator. A member in accepting is answered by the
-// architect that owns it (newsClaims.holderOf, the owner walk): the root architect itself
+// (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, one
+// retired or failed, or one a suspension that holds (the operator's or the controller's) is
+// over. A member in accepting is answered by the architect that owns it (newsClaims.holderOf, the
+// owner walk): the root architect itself
 // (workflow.NewsYouAnswer), or a child's architect, whose claim is told as any holder's is
 // (holderTold) and which the summary names as the one told (memberTelling.architect). Who holds
 // each member is the one answer the reconcile and the start read too (readOwedHolders).
@@ -603,9 +635,32 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 		} else {
 			draft.state = untoldReason(owed.Untold[member.Key])
 		}
+		if draft.state == workflow.NewsYouAnswer {
+			if draft.back, err = moveBackOf(ctx, tx, records, member); err != nil {
+				return nil, err
+			}
+		}
 		drafts = append(drafts, draft)
 	}
 	return drafts, nil
+}
+
+// moveBackOf is the phases a move back of issue, standing in accepting, reaches: the phases of
+// the steps of its task before the acceptance (workflow.MoveBackTargets over workflow.LineOf),
+// which the answer of its news names. It is the one reader of them for both forms that name that
+// answer, the holder form and the root architect's line for a member it answers itself. A task
+// whose line holds no step before an acceptance is an error, so no news goes out with an answer
+// that names no move back.
+func moveBackOf(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) ([]phase.Phase, error) {
+	line, err := workflow.LineOf(ctx, records, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	back, err := workflow.MoveBackTargets(line)
+	if err != nil {
+		return nil, fmt.Errorf("the answer to the news of %s in accepting: %w", issue.Key, err)
+	}
+	return back, nil
 }
 
 // memberTelling is how one member owed news is told (readMemberClaims): the state the summary
@@ -672,6 +727,8 @@ func untoldReason(reason record.UntoldReason) workflow.NewsState {
 		return workflow.NewsAwaitingPerson
 	case record.UntoldHeld:
 		return workflow.NewsStopped
+	case record.UntoldAwaitingChildren:
+		return workflow.NewsAwaitingChildren
 	}
 	return workflow.NewsGateClosed
 }

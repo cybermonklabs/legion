@@ -29,7 +29,7 @@ import (
 func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	r := newRig(t)
+	r := newHoldRig(t)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	a := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
 	page := "/approve/" + a.recordID
@@ -113,6 +113,11 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			form.Set("record", later.recordID)
 			return b.FromPage(t, "/approve", form)
 		}, http.StatusForbidden, "RECORD_NOT_PRINTED"},
+		{"a decision by an approver Dispatch holds", func(t *testing.T) ciphertest.Response {
+			r.hold(ada)
+			defer r.release(ada)
+			return b.FromPage(t, "/approve", decision(formA, "approve"))
+		}, http.StatusForbidden, "MEMBERSHIP_HELD"},
 		{"an approval of a profile the page printed otherwise", func(t *testing.T) ciphertest.Response {
 			form := decision(formA, "approve")
 			form.Add("profile_digest", a.recordID+" TEST_SECRET "+strings.Repeat("0", 64))
@@ -154,6 +159,14 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			fresh, callback := started(t, claims)
 			return fresh.Get(t, callback.String())
 		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REFUSED"},
+		{"an account another account replaced", func(t *testing.T) ciphertest.Response {
+			const replaced = "sub-replaced-" + carol
+			r.revokeSubject(t, carol, replaced, "sub-"+carol)
+			claims := person(carol)
+			claims["sub"] = replaced
+			fresh, callback := started(t, claims)
+			return fresh.Get(t, callback.String())
+		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REPLACED"},
 		{"a sign-out form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/signin/logout", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -186,8 +199,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 20 {
-		t.Fatalf("the table drove %d of the page's 20 refusals", driven)
+	if driven != 22 {
+		t.Fatalf("the table drove %d of the page's 22 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

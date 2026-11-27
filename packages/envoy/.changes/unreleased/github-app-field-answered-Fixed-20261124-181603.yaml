@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  The broker answers again the `github_app` field that an `agent-secrets` of a release before
+  `--target` sends with `--github-owner`, `--github-repo`, `--github-read-only` and
+  `--github-token`, on `POST /v1/requests` and `POST /v1/grants/{id}/values`, which this release
+  line refused `GITHUB_APP_FIELD_REMOVED` so that every such client ran nothing. The request for a
+  stored `github-app` secret is served as the profile of it that the profiles file grants the caller
+  at once and whose scope holds the narrowing, the one with the most `write` permissions, with the
+  narrowing's account and repositories as its target; where none is, the request is refused. The
+  field is answered for the services and people `BROKER_GITHUB_APP_FIELD_REQUESTERS` names, unset
+  for none, and for a person asking for their own App, and only for the stored secrets
+  `BROKER_GITHUB_APP_FIELD_SECRETS` names, unset for none, since the answer hands the token over
+  outside the airlock. A read-only body asks for each of legion-envoy-v33.7.0's read set —
+  actions, checks, contents, metadata, pull_requests and statuses — at read where the profile
+  holds it. A grant made this way releases only through
+  that field, with the same `read_only`, and no `--target` grant is released through it. The release hands over that profile's token in the
+  `installations` form under the stored secret's name, narrowed, outside the airlock, and echoes
+  `github_app`, as legion-envoy-v33.7.0 did. Each answer logs `broker: answered the github_app field of an earlier
+  agent-secrets`. `BROKER_GITHUB_APP_FIELD=off` refuses the field as before; set it once no
+  released client sends it.
+time: 2026-11-24T18:16:03Z
+custom:
+    Issue: github-app-field-answered

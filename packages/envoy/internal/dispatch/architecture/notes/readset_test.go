@@ -28,7 +28,7 @@ func TestReadSetOverTestdata(t *testing.T) {
 	t.Run("a valid set", func(t *testing.T) {
 		t.Parallel()
 		dir := testdataDir(t, "valid")
-		set, err := ReadSet(os.DirFS(dir), dir)
+		set, err := ReadSet(os.DirFS(dir), dir, IsNote)
 		if err != nil || len(set.Rejected) != 0 {
 			t.Fatalf("ReadSet(%s): rejected %v, err %v, want neither", dir, set.Rejected, err)
 		}
@@ -50,7 +50,7 @@ func TestReadSetOverTestdata(t *testing.T) {
 	t.Run("a broken note", func(t *testing.T) {
 		t.Parallel()
 		dir := testdataDir(t, "broken")
-		set, err := ReadSet(os.DirFS(dir), dir)
+		set, err := ReadSet(os.DirFS(dir), dir, IsNote)
 		if err != nil || len(set.Rejected) != 0 {
 			t.Fatalf("ReadSet(%s): rejected %v, err %v, want neither", dir, set.Rejected, err)
 		}
@@ -75,7 +75,7 @@ func TestReadSetOverTestdata(t *testing.T) {
 	t.Run("entries that are not notes", func(t *testing.T) {
 		t.Parallel()
 		dir := testdataDir(t, "mixed")
-		set, err := ReadSet(os.DirFS(dir), dir)
+		set, err := ReadSet(os.DirFS(dir), dir, IsNote)
 		if err != nil {
 			t.Fatalf("ReadSet(%s): %v", dir, err)
 		}
@@ -135,7 +135,7 @@ func TestReadSetOverMemory(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			set, err := ReadSet(row.fsys, dir)
+			set, err := ReadSet(row.fsys, dir, IsNote)
 			if err != nil {
 				t.Fatalf("ReadSet: %v", err)
 			}
@@ -168,7 +168,7 @@ func TestTheBoundRefusesTheSetBeforeAnyNoteIsRead(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "broken.md"), []byte("---\nbogus: 1\n---\nA note with an unknown key.\n"))
 
 	opened := &openRecorder{fsys: os.DirFS(dir)}
-	set, err := ReadSet(opened, dir)
+	set, err := ReadSet(opened, dir, IsNote)
 	var refused *SizeRefusal
 	if !errors.As(err, &refused) || !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("ReadSet: %v, want a *SizeRefusal of ErrFileTooLarge", err)
@@ -186,7 +186,7 @@ func TestTheBoundRefusesTheSetBeforeAnyNoteIsRead(t *testing.T) {
 func TestTheBoundRefusesANoteThatGrewAfterItsSizeWasRead(t *testing.T) {
 	t.Parallel()
 	const dir = "/checkout/.dispatch/architecture"
-	set, err := ReadSet(grownFS{fstest.MapFS{"api.md": {Data: []byte("a")}}}, dir)
+	set, err := ReadSet(grownFS{fstest.MapFS{"api.md": {Data: []byte("a")}}}, dir, IsNote)
 	var refused *SizeRefusal
 	if !errors.As(err, &refused) || !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("ReadSet: %v, want a *SizeRefusal of ErrFileTooLarge", err)
@@ -201,12 +201,38 @@ func TestTheBoundRefusesANoteThatGrewAfterItsSizeWasRead(t *testing.T) {
 func TestReadSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
 	t.Parallel()
 	const dir = "/checkout/.dispatch/architecture"
-	set, err := ReadSet(deniedFS{fstest.MapFS{"api.md": {Data: []byte("A note.\n")}}}, dir)
+	set, err := ReadSet(deniedFS{fstest.MapFS{"api.md": {Data: []byte("A note.\n")}}}, dir, IsNote)
 	if !errors.Is(err, fs.ErrPermission) || set.Files != nil {
 		t.Fatalf("ReadSet: files %q, err %v; want no files and an error of fs.ErrPermission", names(set.Files), err)
 	}
 	if want := "cannot be read: open " + dir + "/api.md: permission denied"; err.Error() != want {
 		t.Errorf("ReadSet: %q, want %q", err, want)
+	}
+}
+
+// ReadSet keeps the entries that its rule takes, and rejects each other one: the same directory
+// read with IsNote keeps the note, and read with a rule of .yaml files keeps the spec file.
+func TestReadSetKeepsTheEntriesItsRuleTakes(t *testing.T) {
+	t.Parallel()
+	const dir = "/checkout/.dispatch/spec"
+	fsys := fstest.MapFS{"api.md": {Data: []byte("A note.\n")}, "spec.yaml": {Data: []byte("---\n")}}
+	yaml := func(name string, kind Kind) bool { return kind == KindFile && strings.HasSuffix(name, ".yaml") }
+	for _, row := range []struct {
+		name     string
+		keep     func(string, Kind) bool
+		files    []string
+		rejected []Rejected
+	}{
+		{"IsNote", IsNote, []string{"api.md"}, []Rejected{{Path: dir + "/spec.yaml", Kind: KindFile}}},
+		{"a rule of .yaml files", yaml, []string{"spec.yaml"}, []Rejected{{Path: dir + "/api.md", Kind: KindFile}}},
+	} {
+		set, err := ReadSet(fsys, dir, row.keep)
+		if err != nil {
+			t.Fatalf("%s: ReadSet: %v", row.name, err)
+		}
+		if got := names(set.Files); !slices.Equal(got, row.files) || !slices.Equal(set.Rejected, row.rejected) {
+			t.Errorf("%s: files %q, rejected %v; want %q and %v", row.name, got, set.Rejected, row.files, row.rejected)
+		}
 	}
 }
 

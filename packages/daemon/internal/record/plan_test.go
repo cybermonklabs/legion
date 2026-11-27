@@ -180,7 +180,10 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row before the new generation runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
-		must(t, NewStore().ClearGeneration(ctx, tx, planIssue, planGivenAt))
+		// The clear is required to be handed a forget (KeptForget), which runs here over no
+		// decision and no queued request: the issue keeps and queues none.
+		_, err = NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
+		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
@@ -293,7 +296,7 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 		var got *StoredPlan
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			got, err = NewStore().OwnersNewestPlan(ctx, tx, issue)
+			got, err = OwnersNewestPlan(ctx, NewStore(), tx, issue)
 			must(t, err)
 		})
 		return got
@@ -373,14 +376,14 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in the tree %s = %#v, want the other tree's alone: %#v", key, planIssue, got, want)
 		}
 		alone := issue
 		alone.Tree = key
-		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, alone)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, alone)
 		must(t, err)
 		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)

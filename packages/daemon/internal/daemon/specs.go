@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -76,15 +79,30 @@ type specs struct {
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
-	// Apps.
+	// mint's owner its serving one (workflowRuntime.identity). A worker's launch asks it for its
+	// own role, and for one role of the other App when knownIdentity knows none of that App's, so
+	// one call per App, its own first (roleIdentities). nil for a daemon with no GitHub Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
-	// repository is the repository an issue works and its default branch, as every launch reads it
-	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
-	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
-	// the issue holds its workspace); nil for a daemon with no workflow, whose launches work no
-	// repository.
-	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// knownIdentity is the bot identity of role's App that the daemon already holds, read with no
+	// mint (workflowRuntime.knownIdentity), which a worker's launch reads for the other App's roles
+	// before it asks identity; nil for a daemon with no workflow and in a test whose specs literal
+	// leaves it out, whose launches read every identity through identity.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
+	// log is where a launch says what it carries less of than it would (roleIdentities); nil logs
+	// to slog.Default, as a test's specs literal does.
+	log *slog.Logger
+	// repository is what one read of an issue's record tells its launch
+	// (workflowRuntime.issueLaunchRepository, over launchRepository): the repository it works,
+	// that repository's default branch, and what a correction of its repository left on the
+	// record. For an issue the workflow does not record it is the repository Dispatch resolves the
+	// issue to, read and prepared at its first launch and kept while the issue holds its
+	// workspace, and no correction. It is a function, and one function rather than two, because
+	// the specs hold no record reader: threading the workflow's record store into every launch
+	// would tie the launch to the workflow, and two readers would read one row twice, so that a
+	// correction landing between the reads would tell the launch it left the repository it works.
+	// Nil for a daemon with no workflow, whose launches work no repository and are told of no
+	// correction.
+	repository func(ctx context.Context, issue string) (launchRepository, error)
 	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
 	// bundle holds a directory for, lowercased and sorted: the reach a worker's addressing names
 	// beside its own issue's repository, and the controller's after its design gate steps
@@ -141,12 +159,12 @@ func (s specs) ownersOf(role claim.Role) []string {
 	return s.appOwners(role)
 }
 
-// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
-// when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and the instructions of each arm the claim's unit was drawn into, each
-// file read again first (copies), so a launch carries what the operator's files hold now
-// — and its repository with that repository's default branch, whose workspace is on the daemon's
-// host by then when the runtime leaves workspaces to the daemon
+// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer, the deployment's private-name
+// rule file and the NATS nkey seed, each when the daemon has one), its prompt — the role prompt
+// parts, the addressing sentence, the deployment instructions and the instructions of each arm the
+// claim's unit was drawn into, each file read again first (copies), so a launch carries what the
+// operator's files hold now — and its repository with that repository's default branch, whose
+// workspace is on the daemon's host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
 // backend the role runs on and are told its prompt part after the role's parts (launchBackend).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
@@ -216,10 +234,17 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		Env:     map[string]string{},
 		Secrets: maps.Clone(s.secrets),
 	}
+	// One read of the record, for the repository the launch works, its default branch and the
+	// correction the next task names beside it (addressingFragment): the three are of one row,
+	// and a second read for the correction would let one that commits between the two tell the
+	// launch it left the repository it is working.
+	var corrected *RepositoryCorrection
 	if s.repository != nil {
-		if spec.Repository, spec.DefaultBranch, err = s.repository(ctx, c.Issue); err != nil {
+		read, err := s.repository(ctx, c.Issue)
+		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the repository of %s: %w", c.Token, err)
 		}
+		spec.Repository, spec.DefaultBranch, corrected = read.Repo, read.DefaultBranch, read.Corrected
 	}
 	spec.IssueTrailer = s.issueTrailer(spec.Repository, c.Issue)
 	// Every launch, not only a claim's first: a claim resumed, relaunched or recovered on this host
@@ -235,7 +260,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role), corrected)
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -262,18 +287,88 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
+	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
+	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
+	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
+	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
+	// roles share one working copy, so a commit's author may be another role's App. The table is
+	// built with the claim's own identity for its own App's roles and with one resolution of the
+	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
+	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
+	// left out keeps its author. A launch whose context ended during that resolution fails, as one
+	// whose context ended during the claim's own mint does: that is no failure of the other App.
+	// The controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}
+		identities, err := s.roleIdentities(ctx, c, spec.Repository, id)
+		if err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the role identities of %s: %w", c.Token, err)
+		}
 		spec.Env = id.Env()
+		spec.Env[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(identities)
 	}
 	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
+}
+
+// roleIdentities is the table of every role's identity a launch of c carries
+// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
+// since one App commits as one identity, and asks nothing more. The other App's roles take that
+// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
+// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
+// a failed mint of one App's lease fails no launch of the other App's role, and the push step
+// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
+// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
+// the error, and nothing is logged.
+func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
+	app := appauth.AppRoleFor(c.Role)
+	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	var others []claim.Role
+	for _, role := range claim.Roles {
+		if appauth.AppRoleFor(role) == app {
+			identities[role] = own
+		} else {
+			others = append(others, role)
+		}
+	}
+	if len(others) == 0 {
+		return identities, nil
+	}
+	other, err := s.otherAppIdentity(ctx, others[0], repository)
+	switch {
+	case err == nil:
+		for _, role := range others {
+			identities[role] = other
+		}
+	case ctx.Err() != nil:
+		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+	default:
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
+			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+	}
+	return identities, nil
+}
+
+// otherAppIdentity is the identity of role's App, the App other than the claim's own: first the
+// one the daemon already holds (knownIdentity), which costs no mint, and only when it holds none
+// a lease's (identity, which reuses that App's cached lease: workflowRuntime.identity).
+func (s specs) otherAppIdentity(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+	if s.knownIdentity != nil {
+		if id, known := s.knownIdentity(role); known {
+			return id, nil
+		}
+	}
+	return s.identity(ctx, role, repository)
 }
 
 // ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
@@ -413,7 +508,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
 	}
-	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion || s.plugins == nil {
+	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || s.plugins == nil {
 		return nil
 	}
 	install := *s.plugins
@@ -431,8 +526,9 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
 // controller was launched under and relaunches it when they change; a spec cannot set that
 // variable.
-// It has no repository and no git identity: the controller works Dispatch, never a checkout, and
-// commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
+// It has no repository and no git identity, nor the table of every role's identity
+// (runtime.RoleIdentitiesVariable): the controller works Dispatch, never a checkout, and commits
+// and pushes nothing, so it stamps no issue key into a commit either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
 // told no variant instructions whatever the modes are: an experiment's unit is a tree or an
 // issue of one, and the controller runs in neither.
@@ -490,13 +586,15 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
 // Its last parameter became the owners the role's App reaches with INFRA-2543, where it was a view
 // of the project's repositories before, so a label checked out before that change does not build
-// against a rig that passes owners.
+// against a rig that passes owners. It names no correction of the issue's repository: a
+// correction is read from the record, and it reaches only a launch the daemon builds
+// (workerSpawnSpec), which calls addressingFragment with what its one read of the record found.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, repo, defaultBranch, owners), nil
+	return addressingFragment(project, c, architect, repo, defaultBranch, owners, nil), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
@@ -522,7 +620,21 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
+//
+// corrected is what a correction of the issue's repository left on its record, and nil for an
+// issue no correction has reached. Where there is one, the issue's own repository sentence is
+// followed by the correction's three: that the daemon changed the repository, and when; that the
+// issue's branch and its pull request stay on the repository the issue left; and that the work
+// is on the new repository now. They are rendered at every launch of the issue from then on, so
+// the correction stays in the system prompt for the life of the issue, and no claim turns them
+// off: the branch and the pull request of that issue are on the old repository for ever.
+//
+// A correction that left an open pull request behind (RepositoryCorrection.PullRequest) adds two
+// more sentences, which name that pull request and the repository it is open on. They are the
+// whole of what a role is told about it: no notice is sent, and the record is where a role reads
+// the same thing (api.Issue.PullRequest, whose repository is that pull request's own).
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string,
+	corrected *RepositoryCorrection) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
@@ -561,8 +673,62 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	if repo.IsZero() {
 		return fragment
 	}
-	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
+	fragment += " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
 		repo.String(), defaultBranch, RepositoriesClause(owners))
+	// The pair is read from one row (workflowRuntime.issueLaunchRepository), so a correction
+	// never names the repository the launch works: the record writes the repository it left and
+	// the moment of the correction together, and it writes them only where the two names differ
+	// (workflow.Engine.ApplyRepositoryChange).
+	if corrected == nil {
+		return fragment
+	}
+	fragment += " " + fmt.Sprintf("The daemon changed your issue's repository from %s at %s. "+
+		"Your issue's branch and your issue's pull request are on %s. "+
+		"Your work on this issue is on %s now.",
+		corrected.Before, corrected.At.UTC().Format(time.RFC3339), corrected.Before, repo.String())
+	if corrected.PullRequest == nil {
+		return fragment
+	}
+	return fragment + " " + fmt.Sprintf("The pull request %s#%d is open on %s. "+
+		"The daemon does not apply GitHub events of that pull request to this issue.",
+		corrected.PullRequest.Repo, corrected.PullRequest.Number, corrected.PullRequest.Repo)
+}
+
+// RepositoryCorrection is what a correction of an issue's repository left on its record
+// (record.Issue.RepoCorrection: the repository the issue left and the moment the daemon applied
+// that correction) and the pull request that correction left open on a repository the issue has
+// left (PullRequest), where the record holds one. A caller holds a correction or nil, and nil is
+// an issue no correction has reached.
+type RepositoryCorrection struct {
+	record.RepositoryCorrection
+	// PullRequest is the issue's recorded pull request while it is open on a repository the
+	// issue no longer works, and nil otherwise: no pull request recorded, one that is merged or
+	// closed, or one on the repository the issue works now.
+	PullRequest *LeftPullRequest
+}
+
+// LeftPullRequest is an issue's open pull request on a repository the issue has left: the
+// repository the record holds for it (record.PullRequest.Repo) and its number. A correction
+// moves the issue's record alone, so the pull request's row keeps the repository it was opened
+// on, and the daemon matches every GitHub fact to an issue by the repository the record names
+// now (workflow's ownPullRequest and issueForBranch): no fact of this pull request reaches the
+// issue any more. That is a state a role reads — from the next task (addressingFragment) and
+// from the record (api.Issue.PullRequest beside api.Issue.RepoBefore) — rather than a loss
+// nobody sees.
+type LeftPullRequest struct {
+	Repo   string
+	Number int
+}
+
+// launchRepository is what one read of an issue's record tells a launch of its claims
+// (workflowRuntime.issueLaunchRepository): the repository it works, that repository's default
+// branch, and the correction of its repository the record holds, nil for an issue no correction
+// has reached. The three are one value because one row answers all three and a launch names
+// them together (specs.repository, workerSpawnSpec).
+type launchRepository struct {
+	Repo          ghrepo.Repository
+	DefaultBranch string
+	Corrected     *RepositoryCorrection
 }
 
 // RepositoriesClause tells an agent how far its GitHub token reaches, as a clause that ends in a
