@@ -83,8 +83,8 @@ func TestWaitingOnIssueContractIsTheContractThatAddedIt(t *testing.T) {
 	if waitingOnIssueContract != addedWaitingOnIssue {
 		t.Fatalf("waitingOnIssueContract = %d, want %d", waitingOnIssueContract, addedWaitingOnIssue)
 	}
-	if waitingOnIssueContract > DaemonAPIVersion {
-		t.Fatalf("waitingOnIssueContract = %d, above DaemonAPIVersion %d", waitingOnIssueContract, DaemonAPIVersion)
+	if waitingOnIssueContract > DaemonAPIVersion() {
+		t.Fatalf("waitingOnIssueContract = %d, above DaemonAPIVersion %d", waitingOnIssueContract, DaemonAPIVersion())
 	}
 	if waitingOnIssueContract <= whyAndLineFieldsContract {
 		t.Fatalf("waitingOnIssueContract = %d, not above whyAndLineFieldsContract %d", waitingOnIssueContract, whyAndLineFieldsContract)

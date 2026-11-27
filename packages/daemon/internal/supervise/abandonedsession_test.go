@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
@@ -52,7 +53,7 @@ func (h *harness) wantAbandonedToldBy(by, when string) {
 func (h *harness) abandonSession() string {
 	h.t.Helper()
 	h.reach(StateIdle)
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 	h.wantState(StateRetired)
 	h.must(RequestRetry{Claim: h.token, FreshSession: true})
 	return "the retry asked for a new session"
@@ -107,21 +108,27 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 }
 
 // Whoever abandons a session, the claim records which one and why in that one's own words: an
-// operator's `legion claims forget-session`, and an operator's retry in a new session, which fails
-// nothing and so has no failure to name.
+// operator's forget, from `legion claims forget-session` or its retry --fresh-session, the forget
+// of the controller's fresh session, which no operator asked for, and an operator's retry in a new
+// session, which fails nothing and so has no failure to name.
+//
+// The negative control is forgottenBy answering the operator's sentence for every asker: the
+// controller's row then records that an operator cleared the session.
 func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		event Event
 		why   string
 	}{
-		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session}, "forget-session"},
+		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
+		{"the controller's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByController},
+			"the project's controller asked for a fresh session of this agent"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
 			h.must(tc.event)
@@ -207,7 +214,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	wantSays(t, first.Message, says...)
 	h.wantAbandonedToldBy("", "at the acknowledgement")
 
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.wantAbandonedToldBy("", "after the busy answer")
 
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -217,7 +224,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
 
 	// Oh My Pi answers that prompt busy after all: the turn that confirmed it was another input's.
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the late busy answer = %+v, want the confirmation taken back", p)
 	}

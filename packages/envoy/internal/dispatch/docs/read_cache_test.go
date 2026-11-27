@@ -513,11 +513,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		_, err := service.Text(leaderCtx, artifactID)
 		leader <- err
 	}()
-	select {
-	case <-persistence.entered:
-	case <-time.After(time.Second):
-		t.Fatal("the cold fold never reached LoadDocument")
-	}
+	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.entered)
 
 	var followers sync.WaitGroup
 	results := make(chan error, 2)
@@ -535,13 +531,8 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	// Give the followers a chance to enter DoChan while the first fold is still blocked.
 	time.Sleep(20 * time.Millisecond)
 	cancel()
-	select {
-	case err := <-leader:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled leader = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the cancelled leader stayed blocked on the shared fold")
+	if err := testwait.Receive(t, "the cancelled leader to leave the shared fold", leader); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)
 	followers.Wait()
@@ -576,6 +567,8 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 }
 
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
+	// Not parallel: it writes the package variable coldReadTimeout, 20 ms here, which bounds every
+	// cold read in the process.
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")

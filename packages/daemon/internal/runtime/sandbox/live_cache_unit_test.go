@@ -16,6 +16,7 @@ import (
 // branch, is its own run's. Each run's key is one the claim token takes, and the same run always
 // gets the same key, so the run's checks and its teardown agree on the branch.
 func TestEachRunsCacheIssueNamesABranchOfItsOwn(t *testing.T) {
+	t.Parallel()
 	runs := []string{"s4a-20261019144300-4108", "s4a-20261019144300-4109", "s4a-20261019145627-1308"}
 	branches := map[string]string{}
 	for _, project := range runs {
@@ -42,6 +43,7 @@ func TestEachRunsCacheIssueNamesABranchOfItsOwn(t *testing.T) {
 // own and older than any run lives (staleRunBranchAge). A run still in flight has a younger
 // commit, so no live run's branch is taken, and nothing the harness did not write is either.
 func TestASweepTakesOnlyTheHarnessesOwnBranchesOlderThanAnyRun(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 19, 16, 0, 0, 0, time.UTC)
 	old, young := now.Add(-staleRunBranchAge-time.Minute), now.Add(-time.Hour)
 	own := func(name string) string { return runCommitMessage(name) }

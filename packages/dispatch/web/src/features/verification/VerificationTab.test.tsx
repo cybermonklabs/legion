@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -11,7 +11,14 @@ import type {
   CheckResult,
   ResultCommitStands,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { VerificationTab } from "./VerificationTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 const otherCommit = "89abcdef0123456789abcdef0123456789abcdef";
@@ -314,6 +321,25 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[0]).toContain("Dispatch read it");
   // A check that compared with nothing says why instead of showing a blank.
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
+});
+
+test("a check whose work has not merged says so", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-unmerged", [], {
+      when: "after_merge",
+      compared_nothing: "not_merged",
+      compared_with: [],
+      pass_stands: { answer: "no", reason: "no_result" },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-compared-with").textContent).toBe(
+    "The work has no merge that Dispatch knows."
+  );
 });
 
 // A basis in a repository the issue links a pull request in and does not resolve to carries that

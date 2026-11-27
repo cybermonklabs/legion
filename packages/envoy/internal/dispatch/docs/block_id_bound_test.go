@@ -159,6 +159,7 @@ func TestADocumentAlreadyHoldingABlockIDPastTheBoundIsIndexedAndLeavesOwed(t *te
 // reaches the row, and a second document of the issue holding a copy of the block shows that ask
 // and opens none. No settlement fails on an index key past its limit (SQLSTATE 54000).
 func TestAnAskBlockWhoseIDIsPastTheBoundSettles(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	service, original := newTestService(t)

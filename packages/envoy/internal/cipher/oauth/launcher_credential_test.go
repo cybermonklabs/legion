@@ -6,7 +6,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
@@ -22,10 +25,10 @@ func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 // TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the shape of a TypeScript client's
 // machine trade: a caller that wants a Dispatch access token and nothing else sends
 // launcher_credential=false and is answered one, with no launcher credential minted for it and
-// nothing in the answer naming one. Each of those clients makes a key per process and per session,
-// so a trade that asked would leave a row on the operator's machine-logins list for every
-// `dispatch` call, every hook run and every session of a long-lived process, and nothing removes
-// those rows.
+// nothing in the answer naming one. Each of those clients proves a key of one process, or a pod
+// role's own agent-secrets key, so a trade that asked would leave a row on the operator's
+// machine-logins list for every `dispatch` call, every hook run and every session of a long-lived
+// process, and nothing removes those rows.
 func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
 	f := newSignInFixture(t)
 	key := newKey(t)
@@ -174,8 +177,8 @@ func TestRevokingASignInEndsTheTokenItsTradeMinted(t *testing.T) {
 	}
 }
 
-// recordSignIn writes the person_signins row the trade's own recorder stood in for and answers
-// its id, which the revoke route takes.
+// recordSignIn writes the person_signins row the trade's own recorder stood in for, as the
+// account the fixture's person token names, and answers its id, which the revoke route takes.
 func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -184,7 +187,10 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, person, thumbprint, machine); err != nil {
+	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
+		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
+	}); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}
 	var id string
@@ -220,4 +226,107 @@ func TestALauncherCredentialValueTheBrokerCannotReadIsRefused(t *testing.T) {
 	if after := f.count(t, "launcher_credentials"); after != before {
 		t.Errorf("the refused trade left %d launcher credentials, want the %d it started with", after, before)
 	}
+}
+
+// launcherState is launcher_credentials and its audit rows as one string, each credential's id,
+// key, expiry and revocation in order and the count of audit rows a credential writes, so a test
+// can tell whether a trade left either exactly as it was.
+func (f *fixture) launcherState(t *testing.T) string {
+	t.Helper()
+	var state string
+	if err := f.pool.QueryRow(context.Background(), `select coalesce((select string_agg(id::text || ' ' || key_thumbprint || ' ' || expires_at::text
+			|| ' ' || coalesce(revoked_at::text, 'live'), ', ' order by id) from launcher_credentials), '')
+		|| ' / ' || (select count(*) from audit where kind like 'launcher_credential.%')`).Scan(&state); err != nil {
+		t.Fatalf("read launcher_credentials: %v", err)
+	}
+	return state
+}
+
+// TestAReadTradeMakesOrMovesNoLauncherCredential: a trade that asks for read makes, moves and
+// extends no launcher credential. A person's read token expires no later than the sign-in's
+// credential it names, so it has ended once that credential lapses, and an ordinary trade that
+// renews the credential later does not bring it back. Once the credential has lapsed, a read
+// trade is refused invalid_grant naming one ordinary trade; one ordinary trade renews the
+// credential, and a read trade then succeeds. A Google trade's and a person's read trade leave
+// launcher_credentials and its audit rows exactly as they were; launcher_credential=true beside
+// read is invalid_request; and a person's read trade on a sign-in that holds no credential is
+// invalid_grant naming `agent-secrets login`, and on a revoked sign-in invalid_grant.
+func TestAReadTradeMakesOrMovesNoLauncherCredential(t *testing.T) {
+	f := newNarrowingFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	signIn := narrowingRows["person-sign-in"]
+	t.Run("a read trade after the sign-in's credential lapsed is refused until an ordinary trade renews it", func(t *testing.T) {
+		box := newKey(t)
+		// The sign-in's credential expires with the identity token its ordinary trade presents,
+		// here a few seconds away, so it lapses while the test runs.
+		lapsing := f.google.Mint(t, f.googleKey, map[string]any{
+			"iss": f.google.URL(), "sub": "109" + person, "aud": deviceAudience, "iat": time.Now().Add(-time.Minute).Unix(),
+			"exp": time.Now().Add(3 * time.Second).Unix(), "email": person, "email_verified": true, "hd": signInDomain,
+		})
+		status, body := f.exchange(t, signInForm(lapsing, f.machineToken(t, signInMachine, machineAudience, true), narrowedBoxSession), box)
+		accessTokenOf(t, status, body)
+		credential, _ := body[oauthwire.ExtraCredentialID].(string)
+		lapsesAt := func() time.Time {
+			var at time.Time
+			if err := f.pool.QueryRow(ctx, `select expires_at from launcher_credentials where id = $1`, credential).Scan(&at); err != nil {
+				t.Fatal(err)
+			}
+			return at
+		}
+		lapses := lapsesAt()
+		read := func() (int, map[string]any) {
+			return f.send(t, narrowingTrade{form: f.personTrade(t, narrowedBoxSession), key: box, holder: newKey(t)}, oauthwire.ScopeRead, "")
+		}
+		status, body = read()
+		first := accessTokenOf(t, status, body)
+		if moved := lapsesAt(); !moved.Equal(lapses) {
+			t.Fatalf("the read trade moved the sign-in's credential's expiry from %s to %s, and a read trade extends no credential", lapses, moved)
+		}
+		if answer := f.introspected(t, first); answer.ExpiresAt > lapses.Unix() {
+			t.Errorf("the read token expires at %d, after the credential it names lapses at %d", answer.ExpiresAt, lapses.Unix())
+		}
+		time.Sleep(time.Until(lapses) + 100*time.Millisecond)
+		status, body = read()
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_grant", "One ordinary trade of the sign-in renews it")
+		status, body = f.exchange(t, f.personTrade(t, narrowedBoxSession), box)
+		accessTokenOf(t, status, body)
+		if renewed, _ := body[oauthwire.ExtraCredentialID].(string); renewed != credential {
+			t.Errorf("the ordinary trade answered the credential %q, want the sign-in's %q renewed", renewed, credential)
+		}
+		status, body = read()
+		accessTokenOf(t, status, body)
+	})
+	t.Run("a Google trade and a person's trade asking for read leave every credential as it was", func(t *testing.T) {
+		tr := signIn.trade(t, f)
+		before := f.launcherState(t)
+		status, body := f.send(t, tr, oauthwire.ScopeRead, "")
+		accessTokenOf(t, status, body)
+		status, body = f.send(t, narrowingRows["google-identity-no-person"].trade(t, f), oauthwire.ScopeRead, "")
+		accessTokenOf(t, status, body)
+		if after := f.launcherState(t); after != before {
+			t.Errorf("the read trades changed the launcher credentials:\nbefore: %s\nafter:  %s", before, after)
+		}
+	})
+	t.Run("launcher_credential=true beside read is refused", func(t *testing.T) {
+		tr := narrowingRows["google-identity-no-person"].trade(t, f)
+		tr.form.Set(oauthwire.FormLauncherCredential, "true")
+		before := f.launcherState(t)
+		status, body := f.send(t, tr, oauthwire.ScopeRead, "")
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.FormLauncherCredential+"=true")
+		if after := f.launcherState(t); after != before {
+			t.Errorf("the refused trade changed the launcher credentials:\nbefore: %s\nafter:  %s", before, after)
+		}
+	})
+	t.Run("a read trade on a sign-in that holds no credential is refused naming agent-secrets login", func(t *testing.T) {
+		status, body := f.send(t, narrowingTrade{form: f.personTrade(t, "ada-box-new"), key: newKey(t), holder: newKey(t)}, oauthwire.ScopeRead, "")
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_grant", "`agent-secrets login`")
+	})
+	t.Run("a read trade on a revoked sign-in is refused", func(t *testing.T) {
+		tr := signIn.trade(t, f)
+		f.revoke(t, tr.key)
+		status, body := f.send(t, tr, oauthwire.ScopeRead, "")
+		if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+			t.Fatalf("a read trade on a revoked sign-in = %d %v, want 400 invalid_grant and no access token", status, body)
+		}
+	})
 }

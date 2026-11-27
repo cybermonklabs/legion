@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -27,6 +27,12 @@ import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const results: SearchResult[] = [
   {
@@ -276,6 +282,10 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
 // when, and no edited mark beside its kind; a post nobody deleted draws its snippet and no
 // deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
+  // The standing hit's snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads,
+  // and a wait on this row's held clock can spend its budget in fake time before the engine has
+  // loaded, so the row loads it first.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const deleted: SearchResult = {
     deleted_at: "2026-10-02T00:00:00Z",
@@ -320,6 +330,10 @@ function EventFeed(): ReactNode {
 // holds (`markCorrectedPost`). The post's hit carries the edited mark once its author edits it,
 // and once they delete it the deleted line, with no word of its snippet, in both tiers' answers.
 test("a post's hit whose refetch fails after its edit and delete carries the edited mark, then the deleted line", async () => {
+  // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads, and a wait on
+  // this row's held clock can spend its budget in fake time before the engine has loaded, so the
+  // row loads it first.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const id = "f6a7b8c9-d0e1-4f2a-8b3c-4d5e6f7a8b9c";
   const hit: SearchResult = {

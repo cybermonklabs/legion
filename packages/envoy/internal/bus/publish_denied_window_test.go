@@ -4,12 +4,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two stream subjects below are the shape a notifying event has: an issue topic and an agent
@@ -31,17 +31,11 @@ func streamEnvelope(topic string) contracts.Envelope {
 }
 
 // windowAnswer is the outcome of a window's send, or a failure of the test when the send is never
-// answered. A denied JetStream send waits out the acknowledgement timeout, so the wait is well past
-// it.
+// answered. A denied JetStream send waits out the acknowledgement timeout, so the wait is bounded
+// only by the test binary's deadline (testwait.Receive).
 func windowAnswer(t *testing.T, topic string, outcome <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-outcome:
-		return err
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the send to %s was never answered", topic)
-		return nil
-	}
+	return testwait.Receive(t, "the answer to the send to "+topic, outcome)
 }
 
 // Every denied JetStream send of one publish window is answered the denial of the subject it sent.

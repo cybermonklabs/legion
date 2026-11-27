@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -17,8 +17,15 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { issue } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { useIssueComponents } from "./useIssueComponents";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The project's tree before the save: `issue` is in no component and not yet marked. */
 const unassignedTree: ArchitectureTree = {

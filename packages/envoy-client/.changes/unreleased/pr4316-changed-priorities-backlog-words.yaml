@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `dispatch priorities` heads its list of the priority work in backlog or icebox
+  `Priority work in backlog or icebox`, as the Priorities page names that tab, and each row of
+  the list says `moved to <status> <time> by <who>`, the status being the one the row stands in,
+  `backlog` or `icebox`. The answer's field `priority_work_parked`, and the result's detail of
+  the same name, are unchanged.

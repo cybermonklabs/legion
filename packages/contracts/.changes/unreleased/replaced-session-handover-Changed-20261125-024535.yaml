@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `legion-api.ts`: `LegionRegisterResponse` and `LegionControllerRegisterResponse` have an optional
+  `replaces` from daemon API contract entry 20261125170509, the session the registering session
+  replaces: the claim's session that the daemon forgot, when it is another session than the one
+  registering. The session names it as `previous_session_id` in its Envoy role claim, so the
+  listener hands that session's unread messages to it. An empty `replaces` is refused.
+  `LEGION_ANSWER_READS` names it on both answers.
+time: 2026-11-25T02:45:35Z
+custom:
+    Issue: replaced-session-handover

@@ -18,6 +18,7 @@ import (
 // store keeps text; the controller's notice names the subject as the store keeps text, since its
 // jsonb row refuses the escape a NUL becomes.
 func TestAMessageWhoseSubjectOrEventIDIsNoStorableTextIsRecordedAndGivenUp(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
 	captured := capturedIssueUpdatedEnvelope(t)

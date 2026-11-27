@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { psCommandLine, runnerFrom } from "./deadline";
+import {
+  deadlineFor,
+  isParallelWorker,
+  markRow,
+  psCommandLine,
+  runnerFrom,
+  useRowGuard,
+} from "./deadline";
 import { temporaryDirectory } from "./temporary-directories";
 
 const dir = temporaryDirectory("test-fixtures-deadline");
@@ -55,6 +62,73 @@ test("a --timeout that is not milliseconds is refused", () => {
   expect(() => runnerFrom(["bun", "test", "--timeout=soon"])).toThrow(
     'the command line\'s --timeout is "soon", not milliseconds'
   );
+});
+
+test("a plain bun test with no --timeout takes the package's declared guard", () => {
+  expect(runnerFrom(["bun", "test", "./a.test.ts"], 300_000)).toEqual({
+    inBunTest: true,
+    guardMs: 300_000,
+  });
+  // No declared guard still falls back to Bun's default.
+  expect(runnerFrom(["bun", "test", "./a.test.ts"])).toEqual({ inBunTest: true, guardMs: 5_000 });
+});
+
+test("the declared guard wins over any command-line --timeout", () => {
+  // The preload's setDefaultTimeout wins over --timeout for Bun's own kill, so the deadline the
+  // waits end by follows the declared guard too, whatever the command line carries.
+  expect(runnerFrom(["bun", "test", "--timeout", "5000", "./a.test.ts"], 300_000)).toEqual({
+    inBunTest: true,
+    guardMs: 300_000,
+  });
+});
+
+test("a --parallel worker's injected --timeout=5000 does not override the declared guard", () => {
+  const worker = [
+    "bun",
+    "test",
+    "--test-worker",
+    "--isolate",
+    "--timeout=5000",
+    "--max-concurrency=20",
+  ];
+  expect(runnerFrom(worker, 300_000)).toEqual({ inBunTest: true, guardMs: 300_000 });
+  // With no declared guard the worker's command line still gives its guard.
+  expect(runnerFrom(worker)).toEqual({ inBunTest: true, guardMs: 5_000 });
+});
+
+test("a package that declares no guard takes the command line's --timeout, unchanged", () => {
+  // test-fixtures and pi-envoy declare no guard (they run non-parallel, where a preload's
+  // setDefaultTimeout would reach only the first file), so their command's --timeout decides, as on
+  // main. Bun's default stands when the command sets none.
+  expect(runnerFrom(["bun", "test", "--timeout", "30000", "./a.test.ts"])).toEqual({
+    inBunTest: true,
+    guardMs: 30_000,
+  });
+  expect(runnerFrom(["bun", "test", "--timeout=250000"])).toEqual({
+    inBunTest: true,
+    guardMs: 250_000,
+  });
+  expect(runnerFrom(["bun", "test", "./a.test.ts"])).toEqual({ inBunTest: true, guardMs: 5_000 });
+});
+
+test("a package declares its guard only inside a --parallel worker, not a non-parallel run", () => {
+  // pi-legion's test preload calls declareGuard only where isParallelWorker is true, so a plain
+  // `bun test` (and a --parallel run of one file, whose parent takes no worker) keeps main's 5000 ms.
+  const worker = ["bun", "test", "--test-worker", "--isolate", "--timeout=5000"];
+  expect(isParallelWorker(worker)).toBe(true);
+  expect(isParallelWorker(["bun", "test", "./a.test.ts"])).toBe(false);
+  expect(isParallelWorker(["bun", "test", "--parallel=4", "./a.test.ts"])).toBe(false);
+});
+
+test("useRowGuard gives a row its own deadline; a row without it gets the command's guard", () => {
+  // deadlineFor reads live module state: the row-deadline preload's markRow reset the row guard
+  // before this row, this row sets and then forgets it, and the last mark leaves the next row bare.
+  expect(deadlineFor(performance.now(), "a bare row").source).toContain("(bun test --timeout)");
+  useRowGuard(123_456);
+  expect(deadlineFor(performance.now(), "a cold row").source).toContain("123456 ms (useRowGuard)");
+  markRow();
+  expect(deadlineFor(performance.now(), "the next row").source).toContain("(bun test --timeout)");
+  expect(() => useRowGuard(0)).toThrow("useRowGuard needs whole milliseconds above zero");
 });
 
 // `psCommandLine` is the reading of a host with no `/proc` (macOS). Here it asks a stand-in for

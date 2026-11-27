@@ -74,7 +74,7 @@ export interface UserTurnAcceptOptions {
   readonly handle: (key: string, delivery: DispatchDelivery) => void | Promise<void>;
   /** The session's Dispatch for this one call, bounded by the host's accept timeout; undefined
    *  when Dispatch is not configured, which keeps the card and says nothing. */
-  readonly dispatch: () => DispatchClient | undefined;
+  readonly dispatch: () => Promise<DispatchClient | undefined>;
   /** The id this session accepts as, read at the call so a `/clear` moves it. */
   readonly actorId: string;
   /** Where the host says why a frame kept its card. */
@@ -142,7 +142,7 @@ export async function acceptUserTurn(
   }
   await options.handle(key, delivery);
   try {
-    const dispatch = options.dispatch();
+    const dispatch = await options.dispatch();
     if (dispatch === undefined) return undefined;
     const accepted = await dispatch.acceptMessageDelivery(delivery.id, delivery.attempt, {
       actor: { id: options.actorId, kind: "session" },

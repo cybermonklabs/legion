@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -58,6 +57,7 @@ import (
 // because then its copy is one this head holds back until the attempt settles
 // (TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesThatSessionOnce).
 func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *testing.T) {
+	t.Parallel()
 	const role = "mentioned-and-held-by-nobody-this-read-can-name"
 	const author = "ses_wrote_the_thread_root"
 	const claimant = "ses_claims_the_issue"
@@ -103,7 +103,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the thread root's author, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, authorSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the thread author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the thread author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its author copy alone", author, copies, comment.ID)
@@ -152,11 +152,10 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further - its copy went, and the settled mention
 	// leaves it nothing to publish - so the comment stands at its host under two keys: this copy
 	// under the event's own, and the mention's steer under the mention's. That is the double.
-	copies = wrote.received()
+	copies = wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one author copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			author, copies, eventKey, mentionKey)
@@ -171,6 +170,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 // (TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice, whose doc holds the
 // trade, the measurements and what bounds it).
 func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.T) {
+	t.Parallel()
 	const role = "mentioned-and-held-by-nobody-this-read-can-name"
 	const follower = "ses_follows_the_ask"
 	const claimant = "ses_claims_the_issue"
@@ -211,7 +211,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the ask's follower, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, followerSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the ask follower's copy", func() bool { return len(follows.received()) > 0 })
+	waitFor(t, "the ask follower's copy", func() bool { return len(follows.received()) > 0 })
 	copies := follows.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its follower copy alone", follower, copies, comment.ID)
@@ -253,10 +253,9 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
-	copies = follows.received()
+	copies = follows.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one follower copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			follower, copies, eventKey, mentionKey)
@@ -272,6 +271,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 // copies this event has (TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice,
 // whose doc holds the trade, the measurements and what bounds it).
 func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwice(t *testing.T) {
+	t.Parallel()
 	const role = "mentioned-and-held-by-nobody-this-read-can-name"
 	const writer = "ses_wrote_the_spec"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -310,7 +310,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the session the issue's primary document credits, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, writerSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the primary document author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the primary document author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its document author copy alone", writer, copies, comment.ID)
@@ -341,10 +341,9 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
-	copies = wrote.received()
+	copies = wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one document author copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			writer, copies, eventKey, mentionKey)

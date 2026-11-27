@@ -1,6 +1,7 @@
 package pmdoc
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,7 @@ var nulPlaces = map[string]string{
 // and ParseWithSourceStarts reach as well, and each tree's own rendering is written back with the
 // replacement in it.
 func TestEveryReaderReadsNulAsReplacement(t *testing.T) {
+	t.Parallel()
 	for place, markdown := range nulPlaces {
 		for _, reader := range blockMarkdownReaders() {
 			t.Run(place+"/"+reader.name, func(t *testing.T) {
@@ -49,6 +51,7 @@ func TestEveryReaderReadsNulAsReplacement(t *testing.T) {
 // two bytes late for each U+0000 before it would cut a block's text mid-paragraph and hash the
 // wrong bytes.
 func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
+	t.Parallel()
 	markdown := "\x00\x00\x00\n\nshort\nline two of para long\n\n# heading long\n"
 	doc, starts, err := ParseWithSourceStarts(markdown)
 	if err != nil {
@@ -71,10 +74,40 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 	}
 }
 
+// RenderingOutline answers offsets into the markdown its caller wrote too, as
+// ParseWithSourceStarts does: a heading's and a typed block's offsets after a U+0000 are not two
+// bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines,
+// each heading's line starts where it does and its `#` stands where it does, past the list item's
+// indentation for one the list holds, each heading still names the typed block that holds it, and
+// where the list holding a heading ends counts each U+0000 in that list as the one byte it is.
+func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
+	const callout = ":::callout{#c kind=\"note\" title=\"\"}\n\x00 in the callout.\n\n## B\n:::"
+	const list = "- \x00 item.\n\n  ## D\n\n- Other \x00."
+	markdown := "\x00\x00 first.\n\n# A \x00\n\n" + callout + "\n\n## C\n\n" + list + "\n"
+	outline, err := RenderingOutline(markdown)
+	if err != nil {
+		t.Fatalf("RenderingOutline(%q): %v", markdown, err)
+	}
+	at := func(text string) int { return strings.Index(markdown, text) }
+	want := []OutlineHeading{
+		{LineStart: at("# A"), Start: at("# A"), Within: -1, ContainerEnd: -1},
+		{LineStart: at("## B"), Start: at("## B"), Within: 0, ContainerEnd: -1},
+		{LineStart: at("## C"), Start: at("## C"), Within: -1, ContainerEnd: -1},
+		{LineStart: at("  ## D"), Start: at("## D"), Within: -1, ContainerEnd: at(list) + len(list)},
+	}
+	start := at(callout)
+	if !slices.Equal(outline.Headings, want) ||
+		!slices.Equal(outline.TypedBlocks, []OutlineTypedBlock{{Start: start, End: start + len(callout), Within: -1}}) {
+		t.Fatalf("RenderingOutline(%q) = %+v, want headings %+v and the callout from %d to %d",
+			markdown, outline, want, start, start+len(callout))
+	}
+}
+
 // ParseInline reads the character the same way, for the places a textblock's inline markdown can
 // hold it: a leading heading marker, a fence or a table row is text there, and no block opens, so
 // the other places of nulPlaces are no inline markdown.
 func TestParseInlineReadsNulAsReplacement(t *testing.T) {
+	t.Parallel()
 	for _, place := range []string{"text", "a code span", "a link's href", "the character alone"} {
 		markdown := nulPlaces[place]
 		t.Run(place, func(t *testing.T) {

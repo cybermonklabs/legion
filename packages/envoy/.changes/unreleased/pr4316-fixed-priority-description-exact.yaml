@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A keystroke in a priority's description no longer writes the server's reading of it back over
+  the text. The priorities read and the answers of a priority's create and write carry
+  `description_tree_exact` beside `description_tree`: true where Dispatch's parser takes the
+  description whole, so a writer's editor may take its markdown, though the tree still resets the
+  attributes the server owns; false where it refuses a block of it or the whole of it, which the
+  reading draws as no write stores it. The dashboard fills a writer's editor from the markdown
+  where it is true, and draws the tree read-only, for every reader, where it is false. An editor
+  already open moves between the two only once no write of the writer's is out and none of their
+  typing is unwritten, and keeps nothing of a reading as their text. The verdict is kept by the
+  text's SHA-256, and requests that ask for one text at once share one parse, so a description is
+  parsed for it only while the process holds no verdict of it.

@@ -10,12 +10,21 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // membersOwedVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
 const membersOwedVersion = 20261123224717
+
+// issuePriorityVersion is the migration that adds issues.priority, and p0StartVersion the one that
+// adds issues.resolved_known, resolved_priority and priority_from (dispatch://INFRA-5636), each of
+// which PutIssue writes.
+const (
+	issuePriorityVersion = 20261124060500
+	p0StartVersion       = 20261125181828
+)
 
 // membersOwedRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -34,9 +43,27 @@ const membersOwedRelease = "the release that brings a re-admitted tree's members
 // members back. Its way back, the last paragraph of the migration's header, drops the column and
 // deletes the migration's version row, and the roll-forward marks the same roots again.
 func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
+	// The seed goes through this release's PutIssue, which writes issues.priority and the resolved
+	// priority's three columns, which the waiting line's issue priority (20261124060500) and the P0
+	// start (20261125181828) add above this migration. Those are applied with the seed's schema, and
+	// Migrate, which decides each migration on its own row, then applies this one; none reads or
+	// writes another's column.
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version != issuePriorityVersion && migration.Version != p0StartVersion {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
 	records := record.NewStore()
 	root := func(key, status string, generation uint64, at phase.Phase, linger *time.Time) record.Issue {
 		return record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: at, Generation: generation, Status: status,

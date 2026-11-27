@@ -111,10 +111,17 @@ const receiveChildEnv = "TESTWAIT_RECEIVE_CHILD"
 
 // Receive returns what the channel yields, the zero value of a closed one, and otherwise fails
 // once its margin before the test binary's deadline has come, before the binary's own alarm. The
-// child run waits under a -timeout of 20 s, whose margin is 5 s, and RequireGaveUp reads its
-// failure.
+// child plants a deadline (deadlineOf) and waits on a stepped clock (waitClock), so its wait gives
+// up at once, at the margin before that deadline as its clock reads it, and RequireGaveUp reads
+// its failure. The child runs under what is left of this binary's own deadline, so its alarm is
+// no end a child starved after its give-up reaches before it fails: a child that ran into its
+// alarm had a wait that did not give up.
 func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 	if os.Getenv(receiveChildEnv) == "1" {
+		c := &steppedClock{now: time.Now()}
+		onClock(t, c)
+		at := c.Now().Add(marginOf(timeoutFlag()) + 5*time.Second)
+		deadlineOf = func(*testing.T) (time.Time, bool) { return at, true }
 		Receive(t, "a value nothing sends", make(chan int))
 		return
 	}
@@ -129,7 +136,8 @@ func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 		t.Fatalf("Receive of a closed channel = %d, want 0", got)
 	}
 
-	child := exec.Command(os.Args[0], "-test.run=^TestReceiveFailsNamingWhenItGaveUp$", "-test.count=1", "-test.timeout=20s")
+	timeout := Remaining(t)
+	child := exec.Command(os.Args[0], "-test.run=^TestReceiveFailsNamingWhenItGaveUp$", "-test.count=1", "-test.timeout="+timeout.String())
 	child.Env = append(os.Environ(), receiveChildEnv+"=1")
 	out, err := child.CombinedOutput()
 	exit, failed := err.(*exec.ExitError)
@@ -139,5 +147,5 @@ func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 	case strings.Contains(string(out), "panic: test timed out"):
 		t.Fatalf("the child run ran into the binary's deadline, want the wait's own failure first; its output:\n%s", out)
 	}
-	RequireGaveUp(t, string(out), "a value nothing sends", 20*time.Second)
+	RequireGaveUp(t, string(out), "a value nothing sends", timeout)
 }

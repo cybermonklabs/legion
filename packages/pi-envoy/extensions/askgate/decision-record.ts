@@ -144,7 +144,7 @@ export interface RecordDeps {
   dispatchClient: (
     directory: string,
     signal: AbortSignal
-  ) => { readonly client: RecordClient } | undefined;
+  ) => Promise<{ readonly client: RecordClient } | undefined>;
 }
 
 /**
@@ -348,7 +348,7 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     // Inside the write, so a Dispatch configuration that refuses to resolve fails as any other
     // write does: the record is lost and the entry says why.
     const write = async (): Promise<string | undefined> => {
-      const dispatch = deps.dispatchClient(directory, stop.signal);
+      const dispatch = await deps.dispatchClient(directory, stop.signal);
       if (dispatch === undefined) return "the session has no Dispatch configuration";
       const client = dispatch.client;
       // A bearer caller names its own session or Dispatch refuses the write (ACTOR_KIND, "bearer

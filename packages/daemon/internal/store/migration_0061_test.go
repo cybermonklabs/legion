@@ -9,6 +9,7 @@ import (
 // recorded before it, its count standing, keeps its count and its mark and has no run open, so a
 // late push for its head replays nothing and takes nothing back.
 func TestAPullRequestRecordedBefore0061HasNoHeadRunOpen(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 60)

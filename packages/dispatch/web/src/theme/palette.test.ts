@@ -25,14 +25,15 @@ describe("dark-mode palette contrast", () => {
   // adding a new role to classes.ts without registering its check is the only way to skip this
   // gate, and `no-raw-colors.test.ts` guarantees a component cannot introduce a color pairing
   // that bypasses classes.ts in the first place.
-  test.each(
-    CONTRAST_CHECKS.map((check) => [check.description, check] as const)
-  )("%s meets its WCAG AA threshold in both color schemes", (_description, check) => {
-    const lightRatio = contrastRatio(check.foreground.light.oklch, check.background.light.oklch);
-    const darkRatio = contrastRatio(check.foreground.dark.oklch, check.background.dark.oklch);
-    expect(lightRatio).toBeGreaterThanOrEqual(check.minRatio);
-    expect(darkRatio).toBeGreaterThanOrEqual(check.minRatio);
-  });
+  test.each(CONTRAST_CHECKS.map((check) => [check.description, check] as const))(
+    "%s meets its WCAG AA threshold in both color schemes",
+    (_description, check) => {
+      const lightRatio = contrastRatio(check.foreground.light.oklch, check.background.light.oklch);
+      const darkRatio = contrastRatio(check.foreground.dark.oklch, check.background.dark.oklch);
+      expect(lightRatio).toBeGreaterThanOrEqual(check.minRatio);
+      expect(darkRatio).toBeGreaterThanOrEqual(check.minRatio);
+    }
+  );
 
   test("registers at least one check per callout, badge, and text role", () => {
     // A regression guard for the registration mechanism itself: if `classes.ts` stopped

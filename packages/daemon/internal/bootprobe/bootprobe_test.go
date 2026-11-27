@@ -298,16 +298,38 @@ func TestRunEndsARateLimitWaitWhenItsContextEnds(t *testing.T) {
 
 // The OK line is the wire between the image's `legion probe-image` and the daemon's probe
 // Sandbox: the session-storage mark, the extensions mark, the agent-models mark, the capabilities
-// mark, the model-fallback mark, then the contract last.
+// mark, the model-fallback mark, the omp-version mark, the omp-session-id mark, then the contract
+// last.
 func TestOKLineCarriesTheMarksAndTheContract(t *testing.T) {
-	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off daemon-api-version=3"; got != want {
+	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off omp-version=omp/18.18.6 omp-session-id=taken daemon-api-version=3"; got != want {
 		t.Errorf("OKLine = %q, want %q", got, want)
 	}
-	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackUnread), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=unread daemon-api-version=3"; got != want {
+	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackUnread, OmpVersionUnread, SessionIDFlagUnread), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=unread omp-version=unread omp-session-id=unread daemon-api-version=3"; got != want {
 		t.Errorf("OKLine = %q, want %q", got, want)
 	}
-	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsSkipped, CapabilitiesBrowserSkipped, ModelFallbackOn), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=on daemon-api-version=3"; got != want {
+	if got, want := OKLine("/opt/omp/bin/omp", 3, AgentModelsSkipped, CapabilitiesBrowserSkipped, ModelFallbackOn, "omp/18.18.6", SessionIDFlagAbsent), "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=on omp-version=omp/18.18.6 omp-session-id=absent daemon-api-version=3"; got != want {
 		t.Errorf("OKLine = %q, want %q", got, want)
+	}
+}
+
+// The omp-version mark is Oh My Pi's own words, which the line keeps as one token: a version
+// printed with spaces in it has each whitespace run written as one underscore, and an empty one is
+// written unread, so neither breaks the marks after it nor reads as a mark with no value.
+func TestOKLineKeepsTheOmpVersionOneToken(t *testing.T) {
+	for _, testCase := range []struct{ name, version, want string }{
+		{"spaces and a tab", " omp 18.18.6 \t(sami build) ", "omp_18.18.6_(sami_build)"},
+		{"empty", "", OmpVersionUnread},
+		{"only whitespace", " \t ", OmpVersionUnread},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			line := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, testCase.version, SessionIDFlagTaken)
+			if got := OmpVersion(line); got != testCase.want {
+				t.Errorf("OmpVersion(%q) = %q, want %q", line, got, testCase.want)
+			}
+			if got := SessionIDFlag(line); got != SessionIDFlagTaken {
+				t.Errorf("SessionIDFlag(%q) = %q, want the mark after the version read whole: %q", line, got, SessionIDFlagTaken)
+			}
+		})
 	}
 }
 
@@ -324,8 +346,8 @@ func TestExtensionsDiscoveredReadsTheMarkOnAnOKLine(t *testing.T) {
 		name, output string
 		want         bool
 	}{
-		{"the mark, among other output", "[legion] probe retried\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff) + "\n", true},
-		{"the mark on a build-time probe's line", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn), true},
+		{"the mark, among other output", "[legion] probe retried\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken) + "\n", true},
+		{"the mark on a build-time probe's line", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn, "omp/18.18.6", SessionIDFlagAbsent), true},
 		{"a CLI that predates the discovery-on pod lane", oldOKLine, false},
 		{"a CLI that predates the agent-model check", "probe-image: OK (/opt/omp/bin/omp) session-storage=probed daemon-api-version=5", false},
 		{"the mark on a line that is not the OK line", "[legion] extensions=discovered agent-models=resolved daemon-api-version=5", false},
@@ -347,8 +369,8 @@ func TestAgentModelsReadsTheMarkOnAnOKLine(t *testing.T) {
 	for _, testCase := range []struct {
 		name, output, want string
 	}{
-		{"resolved, among other output", "[legion] probe retried\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff) + "\n", AgentModelsResolved},
-		{"skipped", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn), AgentModelsSkipped},
+		{"resolved, among other output", "[legion] probe retried\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken) + "\n", AgentModelsResolved},
+		{"skipped", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn, "omp/18.18.6", SessionIDFlagAbsent), AgentModelsSkipped},
 		{"a CLI that predates the capability check", oldOKLine, AgentModelsResolved},
 		{"a CLI that predates the check", "probe-image: OK (/opt/omp/bin/omp) session-storage=probed daemon-api-version=5", ""},
 		{"the mark on a line that is not the OK line", "[legion] agent-models=resolved daemon-api-version=5", ""},
@@ -372,10 +394,10 @@ func TestCapabilityMarksAreReadFromTheOKLine(t *testing.T) {
 		capabilities string
 		fallback     string
 	}{
-		{"fallback off, among other output", "probe-image: capability browser: present (chromium)\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff) + "\n", CapabilitiesAll, ModelFallbackOff},
-		{"fallback on", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOn), CapabilitiesAll, ModelFallbackOn},
-		{"fallback unread", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackUnread), CapabilitiesAll, ModelFallbackUnread},
-		{"the browser row skipped", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesBrowserSkipped, ModelFallbackOn), CapabilitiesBrowserSkipped, ModelFallbackOn},
+		{"fallback off, among other output", "probe-image: capability browser: present (chromium)\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken) + "\n", CapabilitiesAll, ModelFallbackOff},
+		{"fallback on", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOn, "omp/18.18.6", SessionIDFlagTaken), CapabilitiesAll, ModelFallbackOn},
+		{"fallback unread", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackUnread, "omp/18.18.6", SessionIDFlagTaken), CapabilitiesAll, ModelFallbackUnread},
+		{"the browser row skipped", OKLine("/opt/omp/bin/omp", 5, AgentModelsSkipped, CapabilitiesBrowserSkipped, ModelFallbackOn, "omp/18.18.6", SessionIDFlagTaken), CapabilitiesBrowserSkipped, ModelFallbackOn},
 		{"a CLI that predates the capability check", oldOKLine, "", ""},
 		{"the marks on a line that is not the OK line", "[legion] capabilities=checked model-fallback=on daemon-api-version=5", "", ""},
 		{"the marks after the contract", "probe-image: OK (/opt/omp/bin/omp) daemon-api-version=5 capabilities=checked model-fallback=on", "", ""},
@@ -392,6 +414,39 @@ func TestCapabilityMarksAreReadFromTheOKLine(t *testing.T) {
 	}
 }
 
+// lineBeforeTheOmpMarks is the OK line a CLI that predates the omp-version and omp-session-id
+// marks prints: every other mark of the current line, and neither of those two.
+const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off daemon-api-version=5"
+
+// The daemon reads which Oh My Pi the image carries and whether it takes --session-id from the OK
+// line's omp-version and omp-session-id marks: each state as the line spells it, and none from a
+// CLI that predates the marks — the line of the release before them and the older line alike —
+// from a line that is not the OK line, or from marks after the contract.
+func TestOmpMarksAreReadFromTheOKLine(t *testing.T) {
+	for _, testCase := range []struct {
+		name, output       string
+		version, sessionID string
+	}{
+		{"taken, among other output", "probe-image: capability browser: present (chromium)\n" + OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken) + "\n", "omp/18.18.6", SessionIDFlagTaken},
+		{"absent", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagAbsent), "omp/18.18.6", SessionIDFlagAbsent},
+		{"both unread", OKLine("/opt/omp/bin/omp", 5, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, OmpVersionUnread, SessionIDFlagUnread), OmpVersionUnread, SessionIDFlagUnread},
+		{"a CLI that predates the marks", lineBeforeTheOmpMarks, "", ""},
+		{"a CLI that predates the capability check", oldOKLine, "", ""},
+		{"the marks on a line that is not the OK line", "[legion] omp-version=omp/18.18.6 omp-session-id=taken daemon-api-version=5", "", ""},
+		{"the marks after the contract", "probe-image: OK (/opt/omp/bin/omp) daemon-api-version=5 omp-version=omp/18.18.6 omp-session-id=taken", "", ""},
+		{"nothing", "", "", ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := OmpVersion(testCase.output); got != testCase.version {
+				t.Errorf("OmpVersion = %q, want %q", got, testCase.version)
+			}
+			if got := SessionIDFlag(testCase.output); got != testCase.sessionID {
+				t.Errorf("SessionIDFlag = %q, want %q", got, testCase.sessionID)
+			}
+		})
+	}
+}
+
 // The daemon reads the contract an image confirmed from the probe pod's log. Only an OK line that
 // ends with the contract token confirms one; a CLI that predates the contract check prints none.
 func TestConfirmedContractReadsOnlyTheContractTokenOnAnOKLine(t *testing.T) {
@@ -401,8 +456,8 @@ func TestConfirmedContractReadsOnlyTheContractTokenOnAnOKLine(t *testing.T) {
 		contract int
 		ok       bool
 	}{
-		{"the line among other output", "[legion] OMP pi.agents probe failed transiently\n" + OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff) + "\n", 3, true},
-		{"another number", OKLine("/opt/omp/bin/omp", 12, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn), 12, true},
+		{"the line among other output", "[legion] OMP pi.agents probe failed transiently\n" + OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken) + "\n", 3, true},
+		{"another number", OKLine("/opt/omp/bin/omp", 12, AgentModelsSkipped, CapabilitiesAll, ModelFallbackOn, "omp/18.18.6", SessionIDFlagAbsent), 12, true},
 		{"a CLI that predates the capability check", oldOKLine, 5, true},
 		{"a CLI that predates the contract check", "probe-image: OK (/opt/omp/bin/omp) session-storage=probed", 0, false},
 		{"a CLI that predates the session-storage probe", "probe-image: OK (/opt/omp/bin/omp)", 0, false},

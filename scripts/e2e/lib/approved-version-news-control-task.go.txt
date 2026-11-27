@@ -1,0 +1,18 @@
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no recordTaskAt, the seam
+// the head's part-one seed calls to keep a member's plan task where its recorded phase stands.
+// The base records no task place, so a record the seed writes in a phase needs no move, and this
+// recordTaskAt does nothing.
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+func recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }

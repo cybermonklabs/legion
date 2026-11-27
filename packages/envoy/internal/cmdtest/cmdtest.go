@@ -27,6 +27,13 @@ import (
 // builds is the directory Run made for this test process's binaries, empty until Run has made it.
 var builds string
 
+// processDirPrefix begins the name of each test process's directory of builds (builds), followed
+// by its pid and a dash. The process holds a flock on its directory while it runs (makeProcessDir),
+// and Run removes those of this user's directories whose lock no process holds and whose pid runs
+// nowhere here: the ones go test's alarm leaves behind, since the alarm ends the process before
+// Run can remove its own.
+const processDirPrefix = "cmdtest-"
+
 // Main runs the package's tests and then removes every binary they built. A package whose tests
 // call BuildCommand, Build or BuildStamped uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }.
@@ -36,15 +43,20 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // itself: run runs the package's tests through that Main, and Run makes the directory before it
 // and removes it after, as Main does:
 // func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return testnats.Main(m) })) }.
+// Before the tests, it removes the directories of builds that this user's ended test processes
+// left behind (removeBuildsOfEndedProcesses).
 func Run(run func() int) int {
-	dir, err := os.MkdirTemp("", "cmdtest-")
+	removeBuildsOfEndedProcesses()
+	dir, release, err := makeProcessDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cmdtest: make the directory the tests' binaries go into: %v\n", err)
 		return 1
 	}
 	builds = dir
 	code := run()
-	if err := os.RemoveAll(dir); err != nil {
+	err = os.RemoveAll(dir)
+	release()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "cmdtest: remove the tests' binaries: %v\n", err)
 		if code == 0 {
 			code = 1

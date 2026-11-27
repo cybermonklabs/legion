@@ -109,13 +109,14 @@ type podSessionResponse struct {
 // reaches this route; without this a session pod listed for its own account would register
 // itself under the name a sibling pod holds. A registrar whose own token names no pod, and one
 // registering any pod but the one it runs in, are untouched. The policy then refuses a token
-// bound to no pod (400 POD_NOT_BOUND), an account neither BROKER_EXCHANGE_ACCOUNTS nor
-// BROKER_EXCHANGE_READ_ACCOUNTS lists (403 POD_ACCOUNT_NOT_LISTED, a code of its own, since the
-// caller's own list refusing is ACCOUNT_NOT_LISTED and the two lists are two facts), an account
-// whose entry fixes a session, which every read entry does (409 SESSION_FIXED, since such a pod
-// needs no registration and registering one would say something the configuration already
-// says), and a session name no request could name back (400 SESSION_INVALID). Each refusal names
-// the account or the name it refused and repeats no token.
+// bound to no pod (400 POD_NOT_BOUND), an account none of BROKER_EXCHANGE_ACCOUNTS,
+// BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_JOB_ACCOUNTS lists (403 POD_ACCOUNT_NOT_LISTED,
+// a code of its own, since the caller's own list refusing is ACCOUNT_NOT_LISTED and the two lists
+// are two facts), an account whose entry fixes a session, which every read entry does and a job
+// entry that names a session does (409 SESSION_FIXED, since such a pod needs no registration and
+// registering one would say something the configuration already says), and a session name no
+// request could name back (400 SESSION_INVALID). Each refusal names the account or the name it
+// refused and repeats no token.
 //
 // A session name belongs, for good, to the registrar that first registered it: the row records
 // the caller's login account (registrar.Subject, never its service, which every Legion daemon

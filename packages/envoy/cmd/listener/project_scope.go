@@ -42,9 +42,10 @@ package main
 //     kept messages of those alone (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (edgeScope.hidesConfirmed).
-//   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
-//     agent routes answer only sessions, roles, topics and agents of the token's projects
-//     (edgeScope), each session shown confirmed by its stored record read from the stream's leader
+//   - Reads: the session list, the registry, the session rows' roles and topics, a session's
+//     successors (shownSuccessors) and the Legion agent routes answer only sessions, roles, topics
+//     and agents of the token's projects (edgeScope), each session shown confirmed by its stored
+//     record read from the stream's leader
 //     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server
 //     wrote at a session's key reads as no session's, and a read that did not answer is the
 //     bus-unavailable 503, whose text names no session (edgeScope.confirmUnanswered); the interest
@@ -84,12 +85,16 @@ var ErrEdgeNotAdmitted = errors.New("this edge listener does not admit the acces
 
 // EdgeAdmits is the admission: whether an edge listener serving edgeProjects admits caller, the
 // session a broker token names. It admits a token of project scope named or person whose projects
-// are all among edgeProjects, and at least one, and refuses a read-only token. nil is admitted;
-// every refusal wraps ErrEdgeNotAdmitted and names the rule and what the token carries, and never
-// a project the edge serves: the refusal reaches the token's holder (apiAuth), who may not know
-// another customer's project, so the projects served go to apiAuth's log line alone. It reads
-// nothing but its arguments. apiAuth never hands it a read-only token: the listener's verifier
-// refuses one as no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
+// are all among edgeProjects, and at least one, and refuses a read-only token and every other
+// project scope. A job's named token, which names a service, no person and exactly one project,
+// is admitted for that project as a person's named token is. A job's public token is refused,
+// whatever private projects it lists: it reaches every public project besides them, and no
+// edge's list bounds the public projects such a token reaches. nil is admitted; every refusal
+// wraps ErrEdgeNotAdmitted and names the rule and what the token carries, and never a project the
+// edge serves: the refusal reaches the token's holder (apiAuth), who may not know another
+// customer's project, so the projects served go to apiAuth's log line alone. It reads nothing but
+// its arguments. apiAuth never hands it a read-only token: the listener's verifier refuses one as
+// no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
 func EdgeAdmits(edgeProjects []string, caller ciphertoken.Caller) error {
 	switch {
 	case caller.ReadOnly:

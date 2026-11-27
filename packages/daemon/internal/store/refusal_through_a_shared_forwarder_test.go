@@ -31,9 +31,10 @@ func askThroughFromB(ctx context.Context, pool *Pool) error { return beginThroug
 // keyed on the few frames nearest the pool would let the first caller's refusal silence the
 // second's. A caller that asks again logs nothing more.
 func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
-	logged := captureLog(t)
+	logged := captureLog(t, pool)
 
 	ctx := WithTransactionTracking(context.Background())
 	if err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {

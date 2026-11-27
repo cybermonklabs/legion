@@ -82,7 +82,7 @@ func (r *podUpdateRig) openRoundAnsweredBy(roles ...claim.Role) {
 }
 
 // sweepSettled is one sweep over machines that decide nothing: a claim whose machine is deciding
-// reads as one that has not answered (roundGroup's mask), so a sweep over a settled rig decides
+// reads as one that has not answered (masked), so a sweep over a settled rig decides
 // by the rule under test and by nothing else, and its outcome can be read once.
 func (r *podUpdateRig) sweepSettled() {
 	r.t.Helper()
@@ -360,7 +360,7 @@ func TestPodUpdateBackgroundOfAFailedOrSuspendedClaimHoldsNothing(t *testing.T) 
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, inPod: true, contract: api.DaemonAPIVersion()},
 	)
 	if c := rig.claimOf(claim.RolePlanner); c.State != supervise.StateFailed || podOf(c.Locator) != podUpdatePod {
 		t.Fatalf("the planner is %s at %+v, want it failed with a process recorded in pod %s", c.State, c.Locator, podUpdatePod)
@@ -591,7 +591,7 @@ func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateLaunching, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateLaunching, inPod: true, contract: api.DaemonAPIVersion()},
 	)
 	if c := rig.claimOf(claim.RolePlanner); c.State != supervise.StateLaunching || c.Session != "" || podOf(c.Locator) != podUpdatePod {
 		t.Fatalf("the planner is %s with session %q at %+v, want it launching with no session in pod %s", c.State, c.Session, c.Locator, podUpdatePod)

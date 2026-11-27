@@ -45,6 +45,7 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           defaultRuns.implement1,
           defaultRuns.review1,
@@ -95,6 +96,7 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "docs-implement-1", task: "docs" }),
           record({
@@ -110,6 +112,7 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
         task: "docs",
       },
       {
+        needs: null,
         steps: [record({ id: "default-plan-1", role: "planner", step: 1, type: "plan" })],
         task: "default",
       },
@@ -143,6 +146,49 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
   }
 });
 
+// An issue a draw put in an experiment shows the experiment and the variant its records name, once,
+// above its tasks; an issue whose records name none shows no such line.
+test("the Steps tab shows the variant of the issue above its tasks, and none where none is named", async () => {
+  const drawn = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        needs: null,
+        steps: [
+          record({ experiment: "planning", id: "implement-1", variant: "b" }),
+          record({
+            experiment: "planning",
+            id: "review-1",
+            role: "reviewer",
+            step: 3,
+            variant: "b",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const line = await screen.findByText("Experiment planning: variant b");
+    const table = screen.getByRole("table");
+    expect(line.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByText(/^Experiment /)).toHaveLength(1);
+  } finally {
+    drawn.restore();
+  }
+
+  const plain = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [{ needs: null, steps: [record({ id: "implement-1" })], task: "default" }],
+  }));
+  try {
+    await screen.findByRole("table");
+    expect(screen.queryByText(/^Experiment /)).toBeNull();
+  } finally {
+    plain.restore();
+  }
+});
+
 // A run's start and end are what a person reads off the row, so the cells show the clock time
 // and day of each instant, not only carry it in `datetime`. The instants are built from local
 // components, so the hour and minute each cell must show hold in any time zone, and differ in day
@@ -152,6 +198,7 @@ test("the Steps tab shows each run's own start and end, as a clock and calendar 
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({
             ended_at: new Date(2026, 10, 17, 14, 40).toISOString(),
@@ -181,6 +228,7 @@ test("the Steps tab keeps the step a run returned to whole, with its number", as
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1 })],
         task: "docs",
       },
@@ -203,6 +251,7 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({
             agent: "legion-core-core-2-implementer-with-a-long-name",
@@ -229,15 +278,75 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
   }
 });
 
+// Each task of the plan shows the tasks it needs and each step the plan gives it, with where the
+// step stands, before its runs; a task none of whose steps ran yet says so in place of a table. A
+// task that needs none shows no needs, and one whose plan node recorded no needs says so. The
+// fault is a task of the plan, or a step or the needs of one, that a person cannot see; the control
+// is the tab that draws the runs alone, under which task b has no section and step 2 of a no line.
+test("the Steps tab draws each step of the plan with its state, and each task's needs", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+        ],
+        steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
+        task: "a",
+      },
+      {
+        needs: ["a"],
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: [],
+        task: "b",
+      },
+      {
+        needs: null,
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: [],
+        task: "c",
+      },
+    ],
+  }));
+  try {
+    const planned = await screen.findByRole("list", { name: "Planned steps of task a" });
+    expect(
+      within(planned)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual(["1 implementer running", "2 reviewer not started"]);
+    expect(
+      bodyRows(screen.getByRole("table", { name: "Steps of task a" })).map((row) => row[0])
+    ).toEqual(["1"]);
+
+    const b = screen.getByRole("region", { name: "Task b" });
+    expect(within(b).getByText("Needs a")).toBeDefined();
+    expect(
+      within(within(b).getByRole("list", { name: "Planned steps of task b" }))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual(["1 tester not started"]);
+    expect(within(b).queryByRole("table")).toBeNull();
+    expect(within(b).getByText("No step of task b has run yet.")).toBeDefined();
+    expect(within(screen.getByRole("region", { name: "Task a" })).queryByText(/^Needs/)).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Task c" })).getByText("Needs not recorded")
+    ).toBeDefined();
+  } finally {
+    tab.restore();
+  }
+});
+
 // At 390 px the table is twice as wide as its card and scrolls sideways inside it, and the column
-// cut at the card's edge read as clipped text. The table wears the trailing fade the tablist and
-// the details rail wear, on the same terms: while columns lie past the edge, not where the table
-// fits, and not at the end of the scroll.
+// cut at the card's edge read as clipped text. The table wears a trailing fade while columns lie
+// past the edge, not where the table fits, and not at the end of the scroll.
 test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
   const sizes = installResizeObserver();
   const tab = renderTab(async () => ({
     issue: "CORE-1",
-    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+    tasks: [{ needs: null, steps: [record({ id: "implement-1" })], task: "default" }],
   }));
   try {
     const table = await screen.findByRole("table", { name: "Steps of task default" });
@@ -274,8 +383,9 @@ test("a Steps table wider than its box wears the trailing fade, and one that fit
   }
 });
 
-// An issue Legion never ran - or ran before the release that records steps - has no task.
-test("the Steps tab says so when no step of the issue has run in Legion", async () => {
+// An issue with no plan and no run - or one that ran before the release that records steps - has
+// no task.
+test("the Steps tab says so when the issue has no plan and no step of it has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
   try {
     const empty = await screen.findByRole("region", { name: "Steps empty state" });
@@ -306,7 +416,7 @@ test("the Steps tab says what failed when the read fails, and reads again on Ret
 
       answer = async () => ({
         issue: "CORE-1",
-        tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+        tasks: [{ needs: null, steps: [record({ id: "implement-1" })], task: "default" }],
       });
       await user.click(within(alert).getByRole("button", { name: "Retry" }));
       await tick(0);

@@ -24,7 +24,9 @@ import (
 
 // Process is this process's total CPU time, user and system, since it started
 // (getrusage(RUSAGE_SELF)). It counts every goroutine, so a test that times one call by it runs
-// no other measured work beside that call: no test in the packages that use it calls t.Parallel.
+// no other measured work beside that call: such a test does not call t.Parallel, and go test
+// starts a run's parallel tests only once every serial test of that run has ended, so none of them
+// runs beside it.
 func Process() time.Duration {
 	var usage syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {

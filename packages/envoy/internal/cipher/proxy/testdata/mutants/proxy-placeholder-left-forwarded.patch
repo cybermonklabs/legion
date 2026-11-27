@@ -1,0 +1,20 @@
+# proxy-placeholder-left-forwarded: a request that still carries a placeholder after the swap - an
+# ended grant's, another session's, a second grant's beside the one it is handled for, or one outside
+# the headers its kind names - goes upstream with it, and the service sees it, where the head refuses it.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# must fail: TestARenewedGitHubGrantsEndedPlaceholderIsRefused
+# must fail: TestOneRequestIsHandledForOneNameOfTheGrant
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -548,7 +548,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
+ 	// one outside the headers its kind names. The body is not read. Trailers are scanned where the
+ 	// proxy already read the body to its end; a streamed request's trailer has no value yet.
+-	if left, carried := leftoverPlaceholder(placeholderPrefixes(rules), scannedHeaders, r.Trailer, request.Path, request.RawPath, request.Query); carried {
++	// MUTANT: a placeholder left after the swap goes upstream with the request.
++	if left, carried := leftoverPlaceholder(placeholderPrefixes(rules), scannedHeaders, r.Trailer, request.Path, request.RawPath, request.Query); false && carried {
+ 		refused := info.callFor(chosen)
+ 		refused.placeholderGrant = s.placeholderGrant(r.Context(), left)
+ 		s.refuse(w, r, refused, http.StatusForbidden, codePlaceholderLeft, placeholderLeft)
+ 		return

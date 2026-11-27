@@ -1,0 +1,19 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addValues": {
+        "phase": ["censusRevert"]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "issue-record",
+      "keyPath": "phase",
+      "values": ["censusRevert"]
+    }
+  ]
+}

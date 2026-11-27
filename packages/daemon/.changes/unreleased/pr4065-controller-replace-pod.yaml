@@ -1,0 +1,34 @@
+kind: Added
+body: |-
+  The daemon serves the project's controller `POST /legion/v1/issues/pod-update` (`grantId`,
+  `issue`), which opens the daemon's update round over that issue's pod as a drift opens one, with
+  reasons that say the controller asked for the replacement. Each role of the pod is asked to push
+  its work and answer `ready_for_update`, and the round reaches its end once each has answered, no
+  turn runs and each role's report since its last turn names no running background work, or at
+  the round's bound, whether or not the pod has drifted. At its end the daemon reads the pod's
+  workspace, and the sweep replaces the pod only where that read finds nothing that no branch or
+  tag on origin holds. Where the read finds such work, or fails, the round keeps the pod and ends
+  with no replacement, and the open phase's worker or the issue's architect is told. The request
+  opens its round over a pod an earlier round kept as well, over which the sweep opens none. A
+  suspension by the operator or the controller over a role the round asks keeps the pod past the
+  bound until a resume lifts it. The
+  controller's own suspension counts too, so a controller that suspended a role and
+  then asks for the replacement waits on itself, and the round comes back as `update-stalled`. The
+  opening is held to `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` as a drift's
+  opening is, and a request they hold back is refused `409 POD_UPDATE_LIMITED`, naming the limit.
+  A round already open over the pod is answered as it stands, with `opened` false. The route takes
+  a controller grant alone, and refuses an issue of another project or with no claim
+  (`404 NO_CLAIM`), an issue whose claims run no worker in a pod (`404 NO_POD`), and an issue whose
+  pod is being replaced already (`409 POD_CHANGING`). The route answers 200 only once a claim of
+  the issue records the round in the store, which a restart restores and the sweeps carry; a round
+  no claim records within 30 seconds is refused `503 POD_UPDATE_NOT_RECORDED`. A request waits for
+  the update-round sweep's walk over the project's issues while it lasts and at most 30 seconds;
+  one that waits longer, or ends first, opens nothing and is refused `503 POD_UPDATE_BUSY` with
+  `Retry-After: 60`, the sweep's interval, which its sentence names too. While the project is
+  paused the route refuses the request `409 PROJECT_PAUSED`, with the pause that stands, before it
+  asks the daemon anything; and as the sweep opens no round over a pod a project's pause holds, the
+  request is refused `409 POD_HELD_BY_PAUSE` for such a pod, which a pause that began after that
+  read, or a hold the resume left on a pod none of whose roles runs yet, can leave.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

@@ -89,7 +89,9 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 	t.Helper()
 	var lookups atomic.Int64
 	envoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		code, body := http.StatusNotFound, any(map[string]any{})
+		// The listener's own refusal of a role nobody holds (listenerwire.RoleRefusal): only that
+		// body reads as gone (controller.Prober, dispatch://INFRA-2045 R5).
+		code, body := http.StatusNotFound, any(map[string]any{"error": "no holder for role " + strings.TrimPrefix(r.URL.Path, "/v1/roles/"), "reason": "unclaimed"})
 		if alive {
 			code, body = http.StatusOK, map[string]any{"holder": session, "last_seen": time.Now().UnixMilli()}
 		}

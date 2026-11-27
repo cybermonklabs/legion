@@ -53,7 +53,7 @@ func TestEveryRouteOfTheAnswerTableIsARegisteredRoute(t *testing.T) {
 		registered[pattern] = true
 	}
 
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		for _, route := range answer.Routes {
 			if !registered[route] {
 				t.Errorf("the %s answer names the route %q, which NewServer registers no pattern for", answer.ID, route)
@@ -95,16 +95,27 @@ func init() {
 // directly rather than through the mux, which names no route to hold. AnswerRefusal has no
 // route of its own: every door refuses, and the table says so with an empty Routes. And
 // answerUnparsed is no row of the table at all, being the bodies no plugin parses.
+//
+// AnswerObservedState is no row of the table either, since no plugin parses it, and it has one
+// door, the state route it is a view of (observedStateDoor): a write of it from any other door is
+// a finding.
 func routeAnswerProblems() []string {
 	answersWritten.mu.Lock()
 	defer answersWritten.mu.Unlock()
 	routes := map[AnswerID][]string{}
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		routes[answer.ID] = answer.Routes
 	}
 	problems := []string{}
 	for pair := range answersWritten.pairs {
 		if pair.pattern == "" || pair.id == AnswerRefusal || pair.id == answerUnparsed {
+			continue
+		}
+		if pair.id == AnswerObservedState {
+			if pair.pattern != observedStateDoor {
+				problems = append(problems, fmt.Sprintf(
+					"%s wrote the answer %s, whose one door is %s", pair.pattern, pair.id, observedStateDoor))
+			}
 			continue
 		}
 		declared, named := routes[pair.id]
@@ -123,6 +134,10 @@ func routeAnswerProblems() []string {
 	return problems
 }
 
+// observedStateDoor is the one route that writes the observed view (AnswerObservedState): the
+// state route, asked with `?view=observed`.
+const observedStateDoor = "GET /legion/v1/state"
+
 // askedPattern is the method and the target one pattern is asked with: a wildcard stands for a
 // value a route of that shape is asked with, and the catch-all pattern for a path no route of
 // this daemon has.
@@ -140,7 +155,7 @@ func askedPattern(pattern string) (method, target string) {
 // whatever the answer: the wrapper sets the header before the mux chooses a route, so a success,
 // a refusal, the catch-all's 404 and a known path asked with the wrong method all carry it.
 func TestEveryAnswerStatesTheDaemonsContract(t *testing.T) {
-	want := strconv.Itoa(DaemonAPIVersion)
+	want := strconv.Itoa(DaemonAPIVersion())
 	server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}}})
 
 	if _, wrapped := server.Handler.(statingContract); !wrapped {
@@ -178,7 +193,7 @@ func TestAnAnswerWithNoBodyStatesTheDaemonsContract(t *testing.T) {
 	h := newHarness(t)
 	_, boot := h.launch("LEGION-208", claim.RoleImplementer)
 	session := "ses_implementer"
-	registered := h.registerContract(boot, session, DaemonAPIVersion, true)
+	registered := h.registerContract(boot, session, DaemonAPIVersion(), true)
 
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: registered.ClaimToken, SessionID: session, Secret: registered.Secret, Generation: registered.Generation,
@@ -190,7 +205,7 @@ func TestAnAnswerWithNoBodyStatesTheDaemonsContract(t *testing.T) {
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("ready answered the body %s, want none: this case is about an answer with no body", recorder.Body)
 	}
-	if got, want := recorder.Header().Get(daemonContractHeader), strconv.Itoa(DaemonAPIVersion); got != want {
+	if got, want := recorder.Header().Get(daemonContractHeader), strconv.Itoa(DaemonAPIVersion()); got != want {
 		t.Errorf("the 204 carries %s %q, want %q", daemonContractHeader, got, want)
 	}
 }

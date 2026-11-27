@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `RegistrationStoppingError`, exported from `@legion/envoy-client/relay-registration`, is the
+  refusal of a registration once its session's stop has begun: the stop closes the relay on
+  purpose and deletes the session's record next, so the registration has nothing to ask for.
+  `registerWithRelay` throws it when its `stopping` option answers true before the registration
+  is sent, whether or not the session holds a relay subject: that check comes before the refusal
+  of a session with none (`NoRelaySubjectError`). It then sends nothing and tells the outage
+  report nothing. A host that refuses a registration before it builds one can throw it too, so its
+  caller reads both refusals as the same error.
+time: 2026-11-24T08:13:02Z
+custom:
+    Issue: pr4194

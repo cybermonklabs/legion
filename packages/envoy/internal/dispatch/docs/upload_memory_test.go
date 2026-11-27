@@ -29,6 +29,9 @@ const roomAllowance = 2 << 20
 // adds to the store and no faster: an upload of the 25 KB spec that changes one token retains
 // about what it stores, not a copy of every block's attributes.
 func TestUploadsToARoomInUseKeepMemoryWithinTheBound(t *testing.T) {
+	// Not parallel: it reads the whole process's heap (runtime.ReadMemStats HeapAlloc after
+	// runtime.GC, in measureRoom) as what its room retains, which the heap of the tests beside it
+	// would add to.
 	const uploads = 200
 	agent, start := newLoadAgent(t)
 	for range 2 {
@@ -47,6 +50,9 @@ func TestUploadsToARoomInUseKeepMemoryWithinTheBound(t *testing.T) {
 // what an upload stores; what the room retains stays within what the store holds, at a hundred
 // open anchors in table cells and prose as at none.
 func TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound(t *testing.T) {
+	// Not parallel: it reads the whole process's heap (runtime.ReadMemStats HeapAlloc after
+	// runtime.GC, in measureRoom) as what its room retains, which the heap of the tests beside it
+	// would add to.
 	const bare, anchored, anchors = 50, 100, 100
 	agent, start := newLoadAgent(t)
 	for range 2 {
@@ -80,6 +86,9 @@ func TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound(t *testing.T) {
 // replies on anchored threads, token edits and token uploads, the plain comments and the replies
 // on plain roots writing no document. What it retains stays within what those writes store.
 func TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound(t *testing.T) {
+	// Not parallel: it reads the whole process's heap (runtime.ReadMemStats HeapAlloc after
+	// runtime.GC, in measureRoom) as what its room retains, which the heap of the tests beside it
+	// would add to.
 	const writes = 400
 	agent, start := newLoadAgent(t)
 	for seed := range 4 {
