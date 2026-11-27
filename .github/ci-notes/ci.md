@@ -2441,7 +2441,9 @@ of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
-step that queued it), longest first.
+step that queued it), longest first. envoy-session-stall queues its ten stack suites the same
+way, after the contracts build they all import
+(#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 ## Why the daemon's Go suite is a job of its own
 
@@ -3196,6 +3198,20 @@ so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane 
 envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
+
+Each of these suites, and the role takeover smoke beside them, starts a stack of its own: its
+binaries built into a scratch directory of its own that also keeps its servers' state, its
+servers on ports the kernel chose for them, and each Dispatch server on a database of its own.
+They share the checkout, the Postgres service and the Go module and build caches. Most of each
+suite's time is a real window or timer it is about (nats.js's ping and dial timers, the
+listener's live window, gone horizon and reap interval), so as one step after another they were
+508 s of the job's 556 s median (17 green merge-group jobs, 2026-11-27) with the runner's four
+cores about 10 % busy. The job queues them through the harness pool (#the-harness-pool),
+longest first, and its wait step is their verdict. The go-envoy entry holds no objects of
+./cmd/dispatch or of the NATS auth service, and each Dispatch suite and the broker credential
+suite builds its own, so the job compiles both once before the pool starts any suite: started
+at once, the four Dispatch suites each compiled ./cmd/dispatch again, and a compile beside the
+suites would share the processors with rows that read real clocks.
 
 ## What the refill live proof shows
 
