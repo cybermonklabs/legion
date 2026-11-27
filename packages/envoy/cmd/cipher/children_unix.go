@@ -22,9 +22,9 @@ import (
 // In a group of its own the child does not get a signal sent to this command's group, such as a
 // terminal's interrupt, so an end by such a signal kills the group itself (exitBySignal,
 // killChildGroup). An end this command cannot handle, a SIGKILL, kills the child's process too
-// where the platform can (gcloudProcAttr): nothing of this command is left to kill the group then.
+// where the platform can (childProcAttr): nothing of this command is left to kill the group then.
 func killGroupOnCancel(cmd *exec.Cmd) {
-	cmd.SysProcAttr = gcloudProcAttr()
+	cmd.SysProcAttr = childProcAttr()
 	cmd.Cancel = func() error {
 		err := signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
