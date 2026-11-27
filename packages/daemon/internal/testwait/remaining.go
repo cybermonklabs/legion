@@ -40,8 +40,10 @@ func Remaining(t *testing.T) time.Duration {
 	}
 	left := time.Until(deadline)
 	if left <= giveUpMargin {
-		t.Fatalf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
-			deadline.Format(time.RFC3339Nano), left.Round(time.Millisecond), giveUpMargin)
+		// CONTROL: the regression the margin row catches: Remaining waits out the deadline it read
+		// and returns, rather than failing the test.
+		time.Sleep(max(left, 0) + time.Second)
+		return 0
 	}
 	return left - giveUpMargin
 }
