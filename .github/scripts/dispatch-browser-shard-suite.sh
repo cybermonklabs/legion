@@ -7,7 +7,7 @@
 #
 #   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
-# <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
+# <shard> is this leg's number out of the job's legs, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `lane` input, `pull-request`, `full` or `references`: it decides which projects

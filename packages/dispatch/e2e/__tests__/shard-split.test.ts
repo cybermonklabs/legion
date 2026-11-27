@@ -92,10 +92,22 @@ function shardLegs(workflow: BrowserWorkflow): number {
 
 /** The `--shard` denominator the browser step's script passes Playwright: the second place the leg
  *  count is written (.github/ci-notes/dispatch-browser.md, why the leg count stands in two
- *  places), which must equal the matrix's. */
+ *  places), which must equal the matrix's. It is read from the script's one Playwright command
+ *  line, never from a comment: the script's own comments spell `--shard=$shard/<legs>` too, and a
+ *  reading that took the first of them would hold a sentence to the matrix instead of the command
+ *  the sentence describes. A script with no such command line, or more than one, is refused. */
 function shardDenominator(script: string): number {
-  const found = /--shard=\$shard\/(\d+)/.exec(script);
-  if (!found) throw new Error(`no --shard=$shard/<legs> in ${shardSuitePath}`);
+  const commands = script
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#") && line.includes("bunx playwright test"));
+  if (commands.length !== 1) {
+    throw new Error(
+      `${shardSuitePath} has ${commands.length} uncommented \`bunx playwright test\` lines, not one`
+    );
+  }
+  const found = /--shard=\$shard\/(\d+)(?!\d)/.exec(commands[0] as string);
+  if (!found)
+    throw new Error(`the Playwright command of ${shardSuitePath} passes no --shard=$shard/<legs>`);
   return Number(found[1]);
 }
 
@@ -125,7 +137,35 @@ test("the leg count is the shard matrix's one list of 1 to N, and the script's -
   );
   expect(planted((matrix) => Object.assign(matrix, { shard: [1, 3] }))).toThrow("not 1 to N");
   expect(planted((matrix) => Object.assign(matrix, { shard: [] }))).toThrow("not 1 to N");
-  expect(shardDenominator(`--shard=$shard/${legs + 1} --workers 4`)).not.toBe(legs);
+  // The script's own controls: the invocation changed while every comment keeps the matrix's
+  // count, which a reading of the first `--shard=` in the file would not see, and the other way
+  // round, a comment changed while the invocation keeps it.
+  const script = readFileSync(shardSuitePath, "utf8");
+  const invocation = (line: string) =>
+    !line.trimStart().startsWith("#") && line.includes("bunx playwright test");
+  const withCommand = (count: number) =>
+    script
+      .split("\n")
+      .map((line) =>
+        invocation(line) ? line.replace(`--shard=$shard/${legs}`, `--shard=$shard/${count}`) : line
+      )
+      .join("\n");
+  const withComments = (count: number) =>
+    script
+      .split("\n")
+      .map((line) =>
+        invocation(line)
+          ? line
+          : line.replaceAll(`--shard=$shard/${legs}`, `--shard=$shard/${count}`)
+      )
+      .join("\n");
+  expect(
+    script
+      .split("\n")
+      .filter((line) => !invocation(line) && line.includes(`--shard=$shard/${legs}`)).length
+  ).toBeGreaterThan(0);
+  expect(shardDenominator(withCommand(legs - 1))).toBe(legs - 1);
+  expect(shardDenominator(withComments(legs - 1))).toBe(legs);
 });
 
 /** A table of three projects, one with a measured file and one measured row in it, for the
