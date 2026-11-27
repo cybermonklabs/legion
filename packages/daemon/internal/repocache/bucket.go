@@ -267,13 +267,14 @@ func newBucket(ctx context.Context, name string, repo ghrepo.Repository, through
 }
 
 // emulatorHost is value, STORAGE_EMULATOR_HOST's, where it is a loopback host:port: an address of
-// 127.0.0.0/8 or ::1, or localhost, then a port. Anything else is refused, naming it, a URL and a
-// bare host among them: emulator mode sends every Storage and IAM Credentials request to that
-// address with no credential and signs downloads for it, so it takes only a double on the cache's
-// own host.
+// 127.0.0.0/8 or ::1, or localhost, then a port. Anything else is refused, a URL and a bare host
+// among them, naming the variable alone: a refused value is no loopback host:port, so it can be a
+// URL with user information or anything else a person put there, and is printed nowhere. Emulator
+// mode sends every Storage and IAM Credentials request to that address with no credential and
+// signs downloads for it, so it takes only a double on the cache's own host.
 func emulatorHost(value string) (string, error) {
 	refuse := func() error {
-		return fmt.Errorf("%s is %q, not a loopback host:port (an address of 127.0.0.0/8 or ::1, or localhost, then a port): the cache takes a Cloud Storage emulator only on its own host", emulatorHostEnv, value)
+		return fmt.Errorf("%s is not a loopback host:port (an address of 127.0.0.0/8 or ::1, or localhost, then a port): the cache takes a Cloud Storage emulator only on its own host", emulatorHostEnv)
 	}
 	host, port, err := net.SplitHostPort(value)
 	if err != nil {
