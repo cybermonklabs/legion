@@ -77,36 +77,15 @@ export function viewKey(
 /** Resets every view of issue `key` the cache holds (`resetQueries`) for a load of the issue
  *  (`ViewReadProvider`), so a view a past load held is gone and each is read once: the open one at
  *  the load, at once, whether a write of the issue is out or not, and another when its filter is
- *  next on. It marks none, and clears the mark a write's drop put on a view (`droppedWhileHeld`):
- *  after a load the view is a load's first read. `subscribeTreeFreshness` resets none: it
- *  refreshes each held view through `refreshQueries`, and the view keeps what it draws until its
- *  new answer lands. */
+ *  next on. It marks none: after a load the view is a load's first read. `subscribeTreeFreshness`
+ *  resets none: it refreshes each held view through `refreshQueries`, and the view keeps what it
+ *  draws until its new answer lands. */
 export function resetViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     const queryKey = viewKey(key, filter);
     const view = queryClient.getQueryCache().find({ exact: true, queryKey });
     if (view === undefined) continue;
-    droppedWhileHeld.delete(view);
     treePagesOf.delete(view);
-    void queryClient.resetQueries({ exact: true, queryKey });
-  }
-}
-
-/** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write,
- *  after which a held view could be older than the tree the page draws. The write whose callback
- *  drops them has landed, so a view it drops is read at once, as a load's; but one it drops after
- *  a read of it while another write of the issue is out, which holds it, is a refresh: held as an
- *  answered one and read once as the last write settles (`droppedWhileHeld`, `mayReadNow`). One
- *  never read reads at once. */
-export function dropViews(queryClient: QueryClient, key: string): void {
-  for (const filter of TREE_FILTERS) {
-    const queryKey = viewKey(key, filter);
-    const view = queryClient.getQueryCache().find({ exact: true, queryKey });
-    if (view === undefined) continue;
-    if (heldByWrites.has(view)) {
-      const { fetchStatus, status } = view.state;
-      if (status !== "pending" || fetchStatus !== "idle") droppedWhileHeld.add(view);
-    }
     void queryClient.resetQueries({ exact: true, queryKey });
   }
 }
@@ -291,26 +270,18 @@ function mayReadOnMount(query: Pick<Query, "state">): boolean {
  *  as plain objects, since each query is typed by its own key and answer. */
 const heldByWrites = new WeakSet<object>();
 
-/** The views a write's own callback dropped (`dropViews`) while another write of their issue held
- *  them, after a read of them - answered, refused or still out - until the last write settles or
- *  a load resets them (`resetViews`). A view never read that a drop resets holds nothing either
- *  way, and its first read is still sent at once. Held as plain objects, as `heldByWrites` is. */
-const droppedWhileHeld = new WeakSet<object>();
-
 /** Whether TanStack may read the tree or a view of its own accord or for a refresh (`TREE_FRESH`'s
  *  `enabled`): always for a read that holds neither an answer nor a refusal yet - a first load, a
  *  view's first filter press, one a load reset (`resetViews`) - and for any other only while no
  *  write of its issue holds it (`heldByWrites`), since a read sent then reads a tree Dispatch may
- *  not have changed yet. A view a write's own callback dropped after a read of it, while another
- *  write holds it (`dropViews`, `droppedWhileHeld`), holds nothing either, but is a refresh, held
- *  as an answered one. A disabled query is no query of a refresh: the app's client refetches none
- *  (`api/query-client.ts`), the refresh scheduler only marks it stale (`api/query-refresh.ts`)
- *  and a new observer reads none of it, so nothing is sent while the write is out, and the
- *  subscription reads what was asked for once the last write settles. The reader's Retry is an
- *  observer's `refetch`, which TanStack sends whatever `enabled` says. */
+ *  not have changed yet. A disabled query is no query of a refresh: the app's client refetches
+ *  none (`api/query-client.ts`), the refresh scheduler only marks it stale
+ *  (`api/query-refresh.ts`) and a new observer reads none of it, so nothing is sent while the
+ *  write is out, and the subscription reads what was asked for once the last write settles. The
+ *  reader's Retry is an observer's `refetch`, which TanStack sends whatever `enabled` says. */
 function mayReadNow(query: Pick<Query, "state">): boolean {
   if (!heldByWrites.has(query)) return true;
-  return query.state.status === "pending" && !droppedWhileHeld.has(query);
+  return query.state.status === "pending";
 }
 
 /** How the tree read and its views are kept fresh: as `EVENT_FRESH`, except that none of
@@ -910,8 +881,7 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * observer send none of it; a first load, a view's first filter press and the reader's Retry are
  * sent at once, and each is owed one more read once the last write settles. An ask of a held read
  * - an event's, a refresh of every query, the subscription's own - only marks it stale, and is
- * owed at that settle too (`owedReads`); so is a view a write's own callback drops while another
- * write of the issue is out (`dropViews`). The hold ends a microtask after the last write landed
+ * owed at that settle too (`owedReads`). The hold ends a microtask after the last write landed
  * or was refused, so a write that goes out as it settles keeps it (`settle`), and each owed read
  * is asked for then, once: one observed is read once, and one nothing observes when something
  * next does. With the live feed down nothing tells of what the writes did, nor of an event lost
@@ -1044,10 +1014,6 @@ function watchTree(
     if ((action.type === "fetch" || action.type === "invalidate") && holding()) {
       owedReads.add(hash);
     }
-    // A view a write's own callback dropped while another write of the issue holds it, after a
-    // read of it, is owed the same way (`droppedWhileHeld`). The drop marks it before the reset,
-    // which TanStack tells of before it asks for the reads it reset, so none is sent.
-    if (action.type === "setState" && droppedWhileHeld.has(query)) owedReads.add(hash);
     // A refused read is marked valid once the cache has told every listener of the refusal.
     if (action.type === "error") queueMicrotask(() => markValid(query));
     // A read a focus or the feed's return found out has ended: where it ended refused it is asked
@@ -1109,10 +1075,7 @@ function watchTree(
   };
   // Lets the tree and each view of the issue go.
   const releaseReads = (): void => {
-    for (const query of cache.findAll(treeQueries)) {
-      heldByWrites.delete(query);
-      droppedWhileHeld.delete(query);
-    }
+    for (const query of cache.findAll(treeQueries)) heldByWrites.delete(query);
   };
   // A refused read from before this subscription began is marked valid as one refused since is,
   // and a subscription that begins while a write of the issue is out holds its reads at once.

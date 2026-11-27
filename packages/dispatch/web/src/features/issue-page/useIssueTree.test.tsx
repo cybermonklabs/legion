@@ -91,7 +91,6 @@ import {
   treeTuple,
 } from "./tree-read/tree-fixtures";
 import {
-  dropViews,
   readNextTreePage,
   readOlderComments,
   subscribeTreeFreshness,
@@ -6758,116 +6757,6 @@ const RELOAD_DURING_WRITE: RuleWay = {
   },
 };
 
-/** A write of the issue held open, and a second whose own callback, as Dispatch answers it in 200
- *  ms, drops the views (`dropViews`), as a Settle, a Keep reading the decisions again and a Change
- *  do; then, the first still out, the reader leaving the issue and coming back to it: a new load
- *  of the stage, with the filter that was on, which resets the views (`resetViews`) and reads the
- *  open one at once, and once more as the first write settles. */
-const RELOAD_AFTER_DROP_DURING_WRITE: RuleWay = {
-  words:
-    "a write of the issue whose callback drops the views while a second write of the issue is out, then the reader leaving the issue and coming back to it while the second is out",
-  does: async (rig) => {
-    const settleWrite = holdWrite(rig);
-    const drop = storeWrite(rig.client, KEY, () => Bun.sleep(200), {
-      onSuccess: () => {
-        dropViews(rig.client, KEY);
-      },
-    });
-    await writeSettles(() => drop.mutate(), 200);
-    await tick(10, 10);
-    const before = ruleReads(rig);
-    stageOf(rig).unmount();
-    rig.stage = undefined;
-    await tick(100, 10);
-    mountStage(rig);
-    await tick(300, 10);
-    expect(ruleReads(rig) - before, "the load's read, sent while the write is out").toBe(1);
-    act(() => settleWrite());
-    await tick(50, 10);
-  },
-};
-
-/** One write of the issue whose own callback, once Dispatch has answered it in 200 ms, drops the
- *  views (`dropViews`) and then keeps running until the row lets it go; meanwhile the reader
- *  leaves the issue and comes back to it. The write landed before its callback ran, which so
- *  drops the views with no write of the issue out: the open view is read at once for the drop,
- *  and the load resets the views (`resetViews`) and reads it at once again. */
-const RELOAD_AFTER_DROP_IN_ONE_WRITE: RuleWay = {
-  words:
-    "a write of the issue whose callback drops the views and keeps running, then the reader leaving the issue and coming back to it while it runs",
-  does: async (rig) => {
-    const dropped = Promise.withResolvers<void>();
-    const letGo = Promise.withResolvers<void>();
-    const write = storeWrite(rig.client, KEY, () => Bun.sleep(200), {
-      onSuccess: async () => {
-        dropViews(rig.client, KEY);
-        dropped.resolve();
-        await letGo.promise;
-      },
-    });
-    const settled = write.mutate();
-    await tick(300, 10);
-    await dropped.promise;
-    const before = ruleReads(rig);
-    stageOf(rig).unmount();
-    rig.stage = undefined;
-    await tick(100, 10);
-    mountStage(rig);
-    await tick(300, 10);
-    expect(ruleReads(rig) - before, "the load's read, sent while the callback runs").toBe(1);
-    letGo.resolve();
-    await act(async () => {
-      await settled;
-    });
-    await tick(50, 10);
-  },
-};
-
-/** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what a Settle,
- *  a Keep reading the decisions again and a Change do - code that calls `dropViews` there, which
- *  no load does: invalidates the coverage, refreshes the tree and drops the views. TanStack runs
- *  the callback once the write store has landed the write, which so holds nothing by then: the
- *  tree and the open view are read once, at once, and nothing of them while the write is out,
- *  counted as the write store lands it. With `press`, the reader presses the row's filter on, its
- *  view never read, halfway through the write: that first read is sent at once, read once more as
- *  the write settles, and once more for the drop. With `dropOnly`, the callback drops the views and
- *  nothing else, and the tree is not read. */
-function writeDroppingViews({
-  dropOnly = false,
-  press = false,
-}: {
-  dropOnly?: boolean;
-  press?: boolean;
-}): RuleWay {
-  return {
-    words: `a write of the issue whose callback, as Dispatch answers it in 200 ms, ${dropOnly ? "drops the views and nothing else" : "invalidates the coverage, refreshes the tree and drops the views"}${press ? ", the reader pressing the filter on while it is out" : ""}`,
-    does: async (rig) => {
-      const before = treeAndViewReads();
-      const trees = treeReadsOf();
-      let whileOut: number | undefined;
-      const stop = writesOf(rig.client).onIssueWrite(KEY, (phase) => {
-        if (phase === "landed") whileOut = treeAndViewReads() - before;
-      });
-      const write = storeWrite(rig.client, KEY, () => Bun.sleep(200), {
-        onSuccess: () => {
-          if (!dropOnly) {
-            void rig.client.invalidateQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
-            refreshQueries(rig.client, [{ exact: true, queryKey: conversationTreeKey(KEY) }]);
-          }
-          dropViews(rig.client, KEY);
-        },
-      });
-      await writeSettles(() => write.mutate(), 200, press ? async () => comeBack(rig) : undefined);
-      stop();
-      expect(whileOut, "the reads of the tree and its views while the write is out").toBe(
-        press ? 1 : 0
-      );
-      await quiet(rig);
-      expect(treeReadsOf() - trees, "the reads of the tree").toBe(dropOnly ? 0 : 1);
-    },
-  };
-}
-
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -7069,13 +6958,8 @@ const WAYS = {
   ),
   eventWhileDecisionsOut600: eventWhileDecisionsOut(600),
   eventWhileDecisionsOut1500: eventWhileDecisionsOut(1_500),
-  writeDroppingViews: writeDroppingViews({}),
-  firstPressDuringWriteDroppingViews: writeDroppingViews({ press: true }),
-  writeDroppingViewsOnly: writeDroppingViews({ dropOnly: true }),
   eventWhileMessagesRefused600: eventWhileMessagesRefused(600),
   reloadDuringWrite: RELOAD_DURING_WRITE,
-  reloadAfterDropDuringWrite: RELOAD_AFTER_DROP_DURING_WRITE,
-  reloadAfterDropInOneWrite: RELOAD_AFTER_DROP_IN_ONE_WRITE,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -7865,35 +7749,9 @@ const READ_RULES: readonly ReadRule[] = [
   // One event, read once, while a read of the decisions is out as it lands.
   { read: "tree", state: "answered", observed: true, way: "eventWhileDecisionsOut600", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "eventWhileDecisionsOut1500", now: 1 },
-  // A write's own callback runs once the write has landed, so its drop of the views holds
-  // nothing: the open view and the tree are read once, at once; a first press of a view never
-  // read meanwhile is sent at once, read once more as the write settles, and once for the drop.
-  { read: "verification", state: "answered", observed: true, way: "writeDroppingViews", now: 1 },
-  {
-    read: "verification",
-    state: "answered",
-    observed: true,
-    way: "writeDroppingViewsOnly",
-    now: 1,
-  },
-  {
-    read: "verification",
-    state: "never",
-    observed: false,
-    way: "firstPressDuringWriteDroppingViews",
-    now: 3,
-    back: 0,
-  },
   // A load while a write of the issue is out reads the open view at once, and once more as the
   // write settles: the load's reset holds nothing.
   { read: "spec", state: "answered", observed: true, way: "reloadDuringWrite", now: 2 },
-  // A load after a write's own callback dropped the views, while a write of the issue is still
-  // out, is a load too: the open view at once, and once more as the write settles.
-  { read: "spec", state: "answered", observed: true, way: "reloadAfterDropDuringWrite", now: 2 },
-  // Within one write, whose callback drops the views once it landed and keeps running at the
-  // load: no write of the issue is out by then, so the drop reads the open view at once, and the
-  // load does again.
-  { read: "spec", state: "answered", observed: true, way: "reloadAfterDropInOneWrite", now: 2 },
   // One event, read once, while a read of the messages is out that Dispatch then refuses.
   { read: "tree", state: "answered", observed: true, way: "eventWhileMessagesRefused600", now: 1 },
 ];
