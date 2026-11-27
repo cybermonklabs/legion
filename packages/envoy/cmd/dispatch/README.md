@@ -5453,10 +5453,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
 
-  What the command bar's File as a new issue files a person's words as:
+  What the command bar files a person's words as a new issue with:
   `{label, session}`, the label that new issue carries and the session it is routed to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
   Each is `""` where the deployment set none: the issue then carries no label, and takes no route.
-  Enter on the bar's File as a new issue starts a new_issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`, and nothing is posted on the issue: no first message goes to the session, since a message to an agent is a change of a plan the person approves.
+  Two readers file with it.
+  Enter on the bar's File as a new issue starts a new_issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`.
+  Where no deciding model is configured, the bar's New issue group writes the issue itself: `POST /api/v1/issues` with the label, `POST /api/v1/issues/{key}/artifacts` with its Verification document, and `PATCH /api/v1/issues/{key}` with the route `session:<id>`.
+  Neither posts a message on the issue, and neither sends the session a first message, since a message to an agent is a change of a plan the person approves.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
