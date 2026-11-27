@@ -1,5 +1,5 @@
 kind: Added
-body: 'runtime.kubernetes.sandbox.microvm.keep_volume, false by default: with it true, each microVM issue pod mounts a volume claim that its issue''s Sandbox owns. The volume stays through an eviction, a pod replacement and an idle release, and every suspension of the issue deletes it with the Sandbox. A local init-container failure on the volume gives the issue a new volume at the next launch, and `legion workspace-init fetch` and `provision` now exit 3 for a cause outside the volume.'
+body: 'runtime.kubernetes.sandbox.microvm.keep_volume, false by default: with it true, each microVM issue pod mounts a volume claim that its issue''s Sandbox owns. The volume stays through an eviction, a pod replacement and an idle release, and every suspension of the issue deletes it with the Sandbox. A local init-container failure on the volume gives the issue a new volume at the next launch, and `legion workspace-init provision` now exits 3 for a cause outside the volume.'
 time: 2026-11-20T00:03:54.163517673Z
 custom:
     Issue: pr4550

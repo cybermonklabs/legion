@@ -25,7 +25,7 @@ import { firstWordedBlock } from "./tree-fragment";
  *
  * A link to a block shows the block's own words, and reading them one link at a time is one
  * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` makes once for
- * them all (its entry in `packages/envoy/internal/dispatch/api/routes_table.go`). A page that has
+ * them all (its declaration in `packages/envoy/internal/dispatch/api`). A page that has
  * made that batched read publishes what it read here, and every surface under the store names a
  * reference from it instead of asking for it again: the plain-text projection before it mounts a
  * read of its own (`plain-text.tsx`), and the new issue page's rows. A page that publishes

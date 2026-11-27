@@ -129,9 +129,9 @@ type Credential struct {
 	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
 	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
-	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes its approve list names
-	// (approveScopeRoutes) alone, answering it 403 APPROVE_ONLY_TOKEN on every other
-	// (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
+	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
+	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
 	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
