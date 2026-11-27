@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1143,8 +1143,9 @@ func fakeJJ(t *testing.T) (record string, marks jjMarks) {
 	})
 	script := `#!/bin/sh
 if [ "$FAKE_JJ_MODE" = hang ]; then
-  trap 'read -r up _ </proc/uptime; read -r stat </proc/$$/stat; printf "%s %s\n" "$up" "$stat" >"` + termedMark("$FAKE_JJ_RECORD") + `"; exit 143' TERM
-  read -r up _ </proc/uptime; read -r stat </proc/$$/stat; printf '%s %s\n' "$up" "$stat" >"` + startedMark("$FAKE_JJ_RECORD") + `"
+  stopped() { ` + testexec.MarkStart(`"`+termedMark("$FAKE_JJ_RECORD")+`"`) + `; exit 143; }
+  trap stopped TERM
+  ` + testexec.MarkStart(`"`+startedMark("$FAKE_JJ_RECORD")+`"`) + `
 else
   ` + marks.started() + `
 fi
@@ -1169,39 +1170,26 @@ esac
 func recordedMark(record string) string { return record + ".recorded" }
 
 // startedMark is the file fakeJJ writes in mode hang as its first act, and termedMark the one its
-// SIGTERM trap writes. Each holds the jj's reading of /proc/uptime as it wrote the mark and its own
-// /proc/<pid>/stat line, whose starttime the kernel set when the shim started the jj (jjHeld).
+// SIGTERM trap writes. Each is a testexec.MarkStart: when the kernel made the jj's process, which
+// is when the shim started it, and the jj's own reading of the boot clock as it wrote the mark.
 func startedMark(record string) string { return record + ".started" }
 func termedMark(record string) string  { return record + ".termed" }
 
 // jjHeld answers how long after the shim started fakeJJ the latest mark the jj wrote came: its
-// termedMark where its trap took the budget's SIGTERM, else its startedMark. Both readings are on
-// the kernel's boot clock: the uptime in seconds, and the starttime (field 22 of the stat line) in
-// clock ticks, 100 to the second (USER_HZ). ok is false where the jj wrote neither mark, or the
-// mark does not read as one.
+// termedMark where its trap took the budget's SIGTERM, else its startedMark, each read as that
+// mark's Late (testexec.StartMark), from the kernel's start of the jj to its shell's reading of
+// the boot clock at the mark. ok is false where the jj wrote neither mark, or the mark does not
+// read as one.
 func jjHeld(record string) (held time.Duration, ok bool) {
-	for _, mark := range []string{termedMark(record), startedMark(record)} {
-		raw, err := os.ReadFile(mark)
-		if err != nil {
+	for _, path := range []string{termedMark(record), startedMark(record)} {
+		mark, err := testexec.ReadStartMark(path)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		uptime, stat, cut := strings.Cut(strings.TrimSpace(string(raw)), " ")
-		end := strings.LastIndexByte(stat, ')')
-		if !cut || end < 0 {
+		if err != nil {
 			return 0, false
 		}
-		// Field 3 (state) onwards, so starttime (field 22) is index 22-3.
-		fields := strings.Fields(stat[end+1:])
-		const starttime = 22 - 3
-		if len(fields) <= starttime {
-			return 0, false
-		}
-		seconds, err := strconv.ParseFloat(uptime, 64)
-		ticks, tickErr := strconv.ParseUint(fields[starttime], 10, 64)
-		if err != nil || tickErr != nil {
-			return 0, false
-		}
-		return time.Duration(seconds*float64(time.Second)) - time.Duration(ticks)*time.Second/100, true
+		return mark.Late(), true
 	}
 	return 0, false
 }
@@ -1314,17 +1302,22 @@ func (m jjMarks) shimSpent(t *testing.T, called time.Duration, runs int) time.Du
 }
 
 // timedOutOnceRecorded sends request, whose budget is the row's subject, to a shim whose PATH's
-// jj is fakeJJ in mode hang, and answers the shim's answer from a run it can judge. A run whose
-// jj wrote its whole record (recordedMark) before the budget's stop reached it is judged, and so is
-// a run whose answer is no timeout. A run whose stop cut the jj before its record is judged too, so
-// a budget that cuts the jj too soon (counted from too early, or shorter than TimeoutMs) fails the
-// row, unless the jj's own marks show that a loaded machine held it: its latest mark came more than
-// half its budget after the shim started it (jjHeld), its record still unwritten. A budget counted
-// from the shim's read passes no sooner than its TimeoutMs after the send, and a jj held that long
-// from its start can be cut by such a budget before its record; a jj whose start takes the
-// milliseconds a shell's start takes cannot. Only such a run is sent again, until a run of the
-// right order comes, within a minute. A jj that wrote no mark, which the stop met before its first
-// line or which never started, is judged: nothing of its own says it was held.
+// jj is fakeJJ in mode hang, and answers the shim's answer from a run it can judge. Every run whose
+// jj took the budget's stop is held to the one bound a budget counted from the shim's read of the
+// request puts on that stop: it reaches the jj no sooner than TimeoutMs after the send. That is
+// read on the boot clock, as the jj's own mark of the stop (termedMark) less the test's reading just
+// before the send, each to within a tick (testexec.ClockTick), so a budget counted from too early,
+// or shorter than TimeoutMs, fails the row on any such run, whatever its order. A run whose jj
+// wrote its whole record (recordedMark) before the stop reached it is judged, and so is a run whose
+// answer is no timeout. A run whose stop cut the jj before its record is judged too, unless the jj's
+// own marks show that a loaded machine held it: its latest mark came more than half its budget
+// after the kernel started it (jjHeld), its record still unwritten. With the stop held to no sooner
+// than TimeoutMs after the send, that span is the jj's own, from its kernel start to its record,
+// which no code of the shim runs in: a shim that moves its stop later leaves a jj whose start takes
+// the milliseconds a shell's start takes with its record whole, which is judged. Only such a run is
+// sent again, until a run of the right order comes, within a minute. A jj that wrote no mark, which
+// the stop met before its first line or which never started, is judged: nothing of its own says it
+// was held.
 func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCopy, record string) shimwire.Frame {
 	t.Helper()
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
@@ -1337,9 +1330,17 @@ func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCo
 				t.Fatalf("clear the jj's record before run %d: %v", runs, err)
 			}
 		}
+		called := testexec.SinceBoot(t)
 		p.send(t, request)
 		// The shim answers once the budget's stop has ended the jj, so every mark it wrote is there.
 		answer := p.next(t)
+		if stop, err := testexec.ReadStartMark(termedMark(record)); err == nil {
+			if after := stop.Reached - called; after < budget-2*testexec.ClockTick {
+				t.Fatalf("run %d: the budget's stop reached the jj %s after the request's send, sooner than its %s TimeoutMs, which a budget counted from the shim's read of the request cannot pass before", runs, after, budget)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("run %d: read the jj's mark of the budget's stop: %v", runs, err)
+		}
 		if _, err := os.Stat(recorded); err == nil {
 			return answer
 		}
@@ -1351,10 +1352,10 @@ func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCo
 			return answer
 		}
 		if time.Now().Before(until) {
-			t.Logf("run %d is not judged: the budget's stop came before the jj's whole record, and the jj's own marks show it held %s after the shim started it, past half its %s budget; sent again", runs, held, budget)
+			t.Logf("run %d is not judged: the budget's stop came before the jj's whole record, and the jj's own marks show it held %s after the kernel started it, past half its %s budget; sent again", runs, held, budget)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: in each, the budget's stop came before the jj's whole record, and the jj's own marks show it held past half its %s budget after the shim started it", runs, within, budget)
+		t.Fatalf("no run of the right order in %d runs over %s: in each, the budget's stop came before the jj's whole record, and the jj's own marks show it held past half its %s budget after the kernel started it", runs, within, budget)
 	}
 }
 
