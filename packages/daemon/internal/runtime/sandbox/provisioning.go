@@ -138,9 +138,13 @@ func endedByKubelet(pod *corev1.Pod) bool {
 // workspace-init; the controller's pod has none): it is running, or between the restarts the grace
 // covers, which is the same pod failedInit leaves alive. It is the rule the liveness mapping reads
 // such a pod alive by (evaluate), and the rule by which a launch's wait for the pod's launcher
-// keeps giving it longer (awaitRoleLauncher).
+// keeps giving it longer (awaitRoleLauncher). A pod being deleted is coming up no longer, whatever
+// its init container's status says: a pod on a lost node keeps a Running status while it waits in
+// Terminating, and a wait that read that as coming up would run to the boot timeout and the whole
+// ProvisionBound on a pod that is going away. The deletion mark is read here as well as in
+// startingAgain, since this reads a container that is running, which no grace covers.
 func provisioning(pod *corev1.Pod) bool {
-	if pod == nil || phaseOf(pod) != corev1.PodPending {
+	if pod == nil || pod.DeletionTimestamp != nil || phaseOf(pod) != corev1.PodPending {
 		return false
 	}
 	return slices.ContainsFunc(pod.Status.InitContainerStatuses, func(status corev1.ContainerStatus) bool {
