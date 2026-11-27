@@ -94,7 +94,8 @@ An end the daemon first judged a death of the role's own process stays that deat
 A read that finds the role's process running ends that judgement without telling the role it died.
 The death stays counted, as any death is.
 If the relaunch of that death still waits for its turn, in the wake pacing or behind a project pause, the daemon drops the relaunch and keeps the running process.
-The drop stands in for the ready of the launch it dropped: where the role's agent was already up, having said it was ready, the drop sets the launch failures to 0, as that ready would have, and an agent still coming up keeps its count until its own ready sets it to 0.
+The drop stands in for the ready of the launch it dropped: where the role's agent was already up, having said it was ready, the drop sets the launch failures to 0, as that ready would have.
+An agent that has not said it is ready, in any state before that ready, keeps its count until the next ready sets it to 0: its own, or that of the launch that replaces a process that cannot register.
 Otherwise, a launch failure the death's relaunch was charged stays counted until the role's next ready clears it.
 The next prompt still tells an earlier untold end in its own words, including the memory guidance if the task already carried an out-of-memory mark from that end.
 If the false death took the task back, the daemon sends it again with a sentence saying that it read the process wrongly as ended, after the earlier end's words when both apply.

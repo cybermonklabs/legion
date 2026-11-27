@@ -585,9 +585,9 @@ func TestADroppedDeathRelaunchClearsOnlyTheCauseItsDeathLeftPending(t *testing.T
 // A report that finds an agent already up running while the relaunch of the death it ends waits
 // drops that relaunch and sets the launch failures to 0, standing in for the ready of the launch
 // it dropped (dropOutlivedRelaunch,
-// dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): on main that relaunch would
-// have run and its agent's ready set them to 0, where the agent kept in its place, already up, says
-// no ready that resets anything (reready). So three false deaths of an idle claim that holds
+// dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): had that relaunch run, its
+// agent's ready would have set them to 0, where the agent kept in its place, already up, says no
+// ready that resets anything (reready). So three false deaths of an idle claim that holds
 // nothing, each overruled by the sweep while its relaunch waits behind another claim's wake, leave
 // the claim idle over its one process with no launch failure, no death and no cause pending, in
 // the claim and in the store, where each death would otherwise leave one more launch failure
@@ -596,8 +596,8 @@ func TestADroppedDeathRelaunchClearsOnlyTheCauseItsDeathLeftPending(t *testing.T
 // counted where a write while the relaunch waited stored it beside died pending
 // (deathLaunchFailureCharged); a ready from the process while the relaunch waits has reset the
 // count already; and a launch failure left over from before the false death, which a running read
-// kept as main keeps it (TestARunningVerdictBeforeTheBootsReplayGivesNothingBackAsMainDoes), goes
-// with the death's own, as main's ready of the dropped relaunch would take both.
+// kept (TestARunningVerdictBeforeTheBootsReplayGivesNothingBack), goes with the death's
+// own, as the ready of the dropped relaunch would have taken both.
 //
 // The roll edge is the reviewer's trace at 6b60c510
 // (dispatch://INFRA-1117/artifact/roll-edge-trace-md): a claim recording a session and no file
@@ -788,20 +788,20 @@ func TestADroppedDeathRelaunchResetsTheLaunchFailuresAsItsReadyWould(t *testing.
 }
 
 // A running verdict, a read at a caller's request (ReadProcess) or the sweep's report, that comes
-// after a restart and before the boot's replay of a decided death gives nothing back, as main
-// gives nothing back there (dispatch://INFRA-1117/comment/3859c597-2267-417b-a57d-be9738fdfebc).
+// after a restart and before the boot's replay of a decided death gives nothing back
+// (dispatch://INFRA-1117/comment/3859c597-2267-417b-a57d-be9738fdfebc).
 // The verdict ends the death (reportedProcess), so the replay finds no death decided and raises no
 // relaunch (relaunchRecordedDeath); no wake holds the relaunch the restart lost, so no drop stands
 // in for its ready (dropOutlivedRelaunch). The launch failure a task's write stored while that
 // relaunch waited stays counted, with died pending, in the claim and in the store, until the next
-// ready clears both, and nothing starts: what main counts and starts in the same order.
+// ready clears both, and nothing starts.
 //
-// It pins main's behaviour, which no line of this change touches, so it has no negative control
-// of this change. A regression would have to change relaunchRecordedDeath's first case, which
+// It pins behaviour that dispatch://INFRA-1117 left as it found it, so it has no negative control
+// of that change. A regression would have to change relaunchRecordedDeath's first case, which
 // returns over a claim whose running verdict cleared Claim.DeathCharged, or write the count where
 // no wake is dropped: a budget write in reportedProcess, ReadProcess or relaunchRecordedDeath,
 // which TestOutcomeSourceHoldsThePolicyAtItsSites refuses unless budgetResets lists it.
-func TestARunningVerdictBeforeTheBootsReplayGivesNothingBackAsMainDoes(t *testing.T) {
+func TestARunningVerdictBeforeTheBootsReplayGivesNothingBack(t *testing.T) {
 	// counts fails unless the claim and the store each count one launch failure and no death,
 	// with died pending and no death decided.
 	counts := func(t *testing.T, h *harness, when string) {

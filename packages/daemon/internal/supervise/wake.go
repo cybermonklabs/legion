@@ -743,22 +743,23 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // flight any more. Only a cause that relaunch recorded goes, read as died over an end the policy
 // charges (processOutcome, Charges): an end it charges nothing recorded none, and the cause pending
 // is the earlier failure's that this process is the relaunch of. The Death the death counted
-// stays counted, as main counts it (chargeDeath).
+// stays counted, as every death is (chargeDeath).
 //
 // The drop stands in for the ready of the launch it dropped
-// (dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): on main that launch would
-// have run, and its agent's ready would have set the launch failures to 0 (ready), and the process
-// the claim keeps is that healthy launch. So where the kept agent is already up, having said it is
-// ready (ready, working or idle, no state of unready), the drop sets the launch failures to 0 as
-// that ready would, and touches no other count. It reads no raise: whichever raise charged the
+// (dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): had that relaunch run, its
+// agent's ready would have set the launch failures to 0 (ready), and the process the claim keeps is
+// that healthy launch. So where the kept agent is already up, having said it is ready (ready,
+// working or idle, no state of unready), the drop sets the launch failures to 0 as that ready
+// would, and touches no other count. It reads no raise: whichever raise charged the
 // death's launch failure — the one that parked this wake, or an earlier one whose wake a restart
 // lost or whose turn the lifecycle recheck refused, its charge kept in memory or in the store
 // (deathLaunchFailureCharged) — and whatever the claim counted before the death, the count reads
-// what that ready would have left, and never less than 0. A kept agent still coming up, registered
-// and not yet ready, keeps its count
-// (dispatch://INFRA-1117/comment/031e8074-69aa-43c2-bcbc-bb0430dc1190): main resets only at a
-// ready, and that agent's own ready resets it when it comes, a full ready (ready), not the one a
-// kept agent already up gives again, which resets nothing (reready).
+// what that ready would have left, and never less than 0. A kept agent in any state of unready
+// (queued, launch_uncertain, launching, shim_connected or registered) keeps its count
+// (dispatch://INFRA-1117/comment/031e8074-69aa-43c2-bcbc-bb0430dc1190): the count stays until the
+// next ready resets it, the agent's own when it comes, a full ready (ready) and not the one a kept
+// agent already up gives again, which resets nothing (reready), or the ready of the launch that
+// replaces a process that cannot register.
 //
 // The wake goes off the machine and gives up what held it: its place in the pacing
 // (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop

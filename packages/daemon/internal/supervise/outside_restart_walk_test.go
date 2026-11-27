@@ -975,7 +975,7 @@ func (w *outsideWalk) relaunch() {
 			w.fail("the relaunched role was sent %q, want a displacement or an end decided from outside the pod never told as a death", p.Message)
 		}
 		if !w.cutSince && strings.Contains(p.Message, "interrupted") {
-			w.fail("the relaunched role was sent %q, want no turn told interrupted where no end cut one off since the last read", p.Message)
+			w.fail("the relaunched role was sent %q, want no turn told interrupted where no end cut one off since the last running verdict, a read's or a sweep's", p.Message)
 		}
 	}
 }
