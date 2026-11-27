@@ -79,9 +79,10 @@
 # settings, the results route compares a check with the head of an open pull request within 5
 # seconds of its event, in the project's default repository and in a repository an issue names as
 # its own. head-from-github is R2: a later event of a closed pull request leaves it closed, and
-# envelopes GitHub never sent, published through an envoy-listener this checkout builds, move no
-# head. github-outage is R4: the fake GitHub answers every call with 500 for 6 minutes while one pull
-# request opens and another gets a push, and within 10 minutes after GitHub answers again the
+# envelopes GitHub never sent move no head: an envoy-listener this checkout builds refuses each on
+# GitHub's lane, and sent straight onto the bus each moves nothing. github-outage is R4: the fake
+# GitHub answers every call with 500 for 6 minutes while one pull request opens and another gets a
+# push, and within 10 minutes after GitHub answers again the
 # results route names each head (the driver's section "the head checks on a stack of their own").
 #
 # first-start-tip runs last (first_start_tip), on a NATS of its own and an emptied database: R3 of
@@ -773,8 +774,9 @@ fresh_stack() {
 }
 
 # start_listener starts the envoy-listener this checkout builds, on the run's NATS, for
-# head-from-github's envelopes GitHub never sent: on loopback with no credential, which the listener
-# takes on loopback alone, with a home of its own, and sets listener_url once it answers /healthz.
+# head-from-github's envelopes GitHub never sent, which it must refuse on GitHub's lane: on
+# loopback with no credential, which the listener takes on loopback alone, with a home of its own,
+# and sets listener_url once it answers /healthz.
 start_listener() {
   mkdir -p "$work/listener-home"
   start_process listener env -i \

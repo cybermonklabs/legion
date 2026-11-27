@@ -4445,8 +4445,12 @@ Every read of the results is the `dispatch` command's.
   Each read waits 45 seconds before it says a head is missing, as the negative control does.
 
 - `head-from-github` — `#48` opens and closes, then gets a labeled and an edited event while GitHub holds it closed: 3 seconds after each it is still no basis (L); that the opening makes it a basis and the close takes it away are the case's self-checks, and a run where either fails stops, `UNKNOWN`.
-  Then six envelopes GitHub never sent, published through an `envoy-listener` this checkout builds (`POST /v1/messages/publish`, source `github`), on loopback with no credential: a synchronize back to an older commit that carries a pass (F1), a close of an open pull request whose head carries one (F2), a reopen of a closed one whose head carries one (F3), a number GitHub does not have, which the fake answers 404 (`refused_pulls`, F4), a repository the App is not installed on (F5), a pull request whose read the App's token may not make, which the fake answers 403 (F5b), and a synchronize dated an hour ahead, after which GitHub's own push still lands (F6).
+  Then six envelopes GitHub never sent: a synchronize back to an older commit that carries a pass (F1), a close of an open pull request whose head carries one (F2), a reopen of a closed one whose head carries one (F3), a number GitHub does not have, which the fake answers 404 (`refused_pulls`, F4), a repository the App is not installed on (F5), a pull request whose read the App's token may not make, which the fake answers 403 (F5b), and a synchronize dated an hour ahead, after which GitHub's own push still lands (F6).
+  Each is sent twice.
+  First through an `envoy-listener` this checkout builds (`POST /v1/messages/publish`, source `github`), on loopback with no credential: the listener refuses GitHub's lane by name (400, `expected: ["topic"]`), and the envelope's subject carries no message in the next second.
+  Then straight onto the run's NATS, where the intake takes only which pull request changed and reads it from GitHub.
   None moves a head or the route's answer.
+  Before main's #4194 the listener published such an envelope, so this case's forgeries reached the bus through the listener; that route is closed now, and the bus is the one route left to test the intake on.
 
 - `github-outage` — `#3001` opens and its head row is stored; the fake then answers every call with 500 for 6 minutes (`PUT /__fixture/outage`), and in that time `#2001` opens and `#3001` gets a push, the fake holding each new head; within 10 minutes after the fake answers again, each head row and `dispatch results` name the head GitHub holds.
   At the head they do within about five minutes, the reconcile's next pass.

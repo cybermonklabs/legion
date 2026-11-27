@@ -5606,13 +5606,15 @@ async function tipControlStart(
 //       closed: 3 seconds after each, #48 is still no basis, so no pass at its head stands. That
 //       the opening makes #48 a basis and the close takes it away are the half's self-checks: a run
 //       where either fails shows nothing of the check.
-//   F1 to F6  envelopes GitHub never sent, through a real envoy-listener (POST
-//       /v1/messages/publish, source github), each with an issue and a pull request of its own: a
+//   F1 to F6  envelopes GitHub never sent, each with an issue and a pull request of its own: a
 //       synchronize back to an older commit that carries a pass; a close of an open pull request
 //       whose head carries one; a reopen of a closed one whose head carries one; a number GitHub
 //       does not have (404); a repository the App is not installed on; a pull request whose read
 //       the App's token may not make (403); and a synchronize dated an hour ahead, after which
-//       GitHub's own push still lands. None moves a head or the route's answer.
+//       GitHub's own push still lands. Each is sent twice. Through a real envoy-listener (POST
+//       /v1/messages/publish, source github), which refuses GitHub's lane (400, `topic`), so the
+//       envelope reaches no bus; then straight onto the bus, where the intake reads GitHub. None
+//       moves a head or the route's answer.
 // github-outage: #3001 opens and its head row is stored; GitHub then answers every call with 500
 //   for 6 minutes (PUT /__fixture/outage), and in that time #2001 opens and #3001 gets a push,
 //   GitHub holding each new head; within 10 minutes after GitHub answers again, each head row and
@@ -5684,6 +5686,22 @@ function headPayload(
     updated_at: new Date(at).toISOString().replace(/\.\d+Z$/, "Z"),
     url: `https://github.com/${repository}/pull/${number}`,
   };
+}
+
+/** Whether `answered`, the listener's body for a publish, is its refusal of GitHub's lane: the
+ *  field `topic` named as the one to change, and the error naming `notifications.github.`. */
+function listenerRefusedLane(answered: string): boolean {
+  try {
+    const body = JSON.parse(answered) as { readonly error?: unknown; readonly expected?: unknown };
+    return (
+      Array.isArray(body.expected) &&
+      body.expected.includes("topic") &&
+      typeof body.error === "string" &&
+      body.error.startsWith("cannot publish to notifications.github. topics")
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Publishes the event `payload` reports, as GitHub sends one: the fake is first made to hold what
@@ -6010,8 +6028,17 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
     );
   }
 
-  // F1 to F6. Each forged envelope goes through the listener, and leaves the fake as it is.
+  // F1 to F6. Each envelope GitHub never sent is tried twice, and leaves the fake as it is. First
+  // through the envoy-listener's publish route, as any caller of the listener can send one: the
+  // listener refuses GitHub's lane by name (400, `expected: ["topic"]`, since main's #4194), and
+  // the subject the envelope names carries no message in the next second, so the forgery never
+  // reaches the bus. Then straight onto the bus, as only GitHub's own publisher can: the intake
+  // takes from the envelope only which pull request changed and reads that pull request from
+  // GitHub. The same watcher of the subject sees that copy arrive, which shows its second of
+  // silence could have heard one. The expectation after each forgery reads the head the bus copy
+  // leaves.
   const forge = async (
+    label: string,
     repository: string,
     number: number,
     action: string,
@@ -6021,26 +6048,41 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   ): Promise<string> => {
     await resetPullReads();
     const payload = headPayload(repository, number, action, head, at, issue);
+    const { subject } = envelopeOf(payload, at);
+    const watched = nats.subscribe(subject);
+    let reached = 0;
+    const counted = (async () => {
+      for await (const _message of watched) reached++;
+    })();
+    await nats.flush();
     const answer = await fetch(new URL("/v1/messages/publish", listenerUrl), {
       body: JSON.stringify({
         message: `pull request #${number} ${action}`,
         payload: JSON.stringify(payload),
         source: "github",
-        topic: envelopeOf(payload, at).subject,
+        topic: subject,
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
     const answered = await answer.text();
-    if (!answer.ok) {
-      setupFailed(
-        "head-from-github's forged envelope",
-        `the listener answered ${answer.status} to the ${action} of ${repository}#${number}, so it never reached the bus: ${answered}`
-      );
-    }
+    await Bun.sleep(1_000);
+    const fromListener = reached;
+    // The listener stamped an envelope with the time it took it, so the bus copy is stamped too.
+    const onBus = envelopeOf(payload, Date.now());
+    nats.publish(onBus.subject, onBus.data);
+    await nats.flush();
+    const heardBy = Date.now() + 1_000;
+    while (reached === fromListener && Date.now() < heardBy) await Bun.sleep(pollMs);
+    watched.unsubscribe();
+    await counted;
+    expect(
+      answer.status === 400 && listenerRefusedLane(answered) && fromListener === 0 && reached === 1,
+      `${label}: the listener refuses the forged ${action} of ${repository}#${number} on GitHub's lane, and it reaches no bus: it answered ${answer.status} ${answered}; ${subject} carried ${fromListener} message(s) in the second after, and ${reached - fromListener} once the copy went straight onto the bus, want 0 and 1`
+    );
     await Bun.sleep(3_000);
     const calls = await fakeCalls();
-    return `the listener answered ${answer.status}; the calls of GitHub since: ${calls.map(callText).join("; ") || "none"}`;
+    return `the listener answered ${answer.status}; the subject carried ${fromListener} message(s) after it and ${reached - fromListener} after the bus copy; the calls of GitHub since: ${calls.map(callText).join("; ") || "none"}`;
   };
 
   const k1 = await seedHeadIssue("F1: the change");
@@ -6057,7 +6099,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   );
   note(`F1 GitHub's opening: ${k1Line(f1.text)}`);
   note(
-    `F1 forged synchronize to ${c.f1old.slice(0, 12)}, dated now: ${await forge(headRepo, 61, "synchronize", c.f1old, Date.now(), k1)}`
+    `F1 forged synchronize to ${c.f1old.slice(0, 12)}, dated now: ${await forge("F1", headRepo, 61, "synchronize", c.f1old, Date.now(), k1)}`
   );
   const f1After = k1Line(await resultsCommand(k1));
   expect(
@@ -6078,7 +6120,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
     15_000
   );
   note(`F2 GitHub's opening: ${k1Line(f2.text)}`);
-  note(`F2 forged close: ${await forge(headRepo, 62, "closed", c.f2, Date.now(), k2)}`);
+  note(`F2 forged close: ${await forge("F2", headRepo, 62, "closed", c.f2, Date.now(), k2)}`);
   const f2After = k1Line(await resultsCommand(k2));
   expect(
     f2.met && f2After.includes(`#62 at ${c.f2}`) && passStands(f2After, "yes"),
@@ -6098,7 +6140,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   );
   const f3 = await awaitResults(k3, (text) => !k1Line(text).includes("#63"), f3Closing.at, 15_000);
   note(`F3 GitHub's opening, then its close: ${k1Line(f3.text)}`);
-  note(`F3 forged reopen: ${await forge(headRepo, 63, "reopened", c.f3, Date.now(), k3)}`);
+  note(`F3 forged reopen: ${await forge("F3", headRepo, 63, "reopened", c.f3, Date.now(), k3)}`);
   const f3After = k1Line(await resultsCommand(k3));
   expect(
     f3.met && !f3After.includes("#63") && passStands(f3After, "no"),
@@ -6108,7 +6150,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   const k4 = await seedHeadIssue("F4: the change");
   await recordHeadPass(k4, c.f4, "implementer");
   note(
-    `F4 forged opening of #64, which GitHub does not have (404): ${await forge(headRepo, 64, "opened", c.f4, Date.now(), k4)}`
+    `F4 forged opening of #64, which GitHub does not have (404): ${await forge("F4", headRepo, 64, "opened", c.f4, Date.now(), k4)}`
   );
   const f4After = k1Line(await resultsCommand(k4));
   expect(
@@ -6119,7 +6161,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
 
   const k5 = await seedHeadIssue("F5: the change", undefined, "HIDE");
   note(
-    `F5 forged opening of ${hiddenHeadRepo}#65, a repository the App is not installed on: ${await forge(hiddenHeadRepo, 65, "opened", c.f5, Date.now(), k5)}`
+    `F5 forged opening of ${hiddenHeadRepo}#65, a repository the App is not installed on: ${await forge("F5", hiddenHeadRepo, 65, "opened", c.f5, Date.now(), k5)}`
   );
   expect(
     !(await headRows()).some((row) => row.startsWith(`${hiddenHeadRepo}#65 `)),
@@ -6129,7 +6171,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   const k5b = await seedHeadIssue("F5b: the change", undefined, "LOCK");
   await recordHeadPass(k5b, c.f5b, "implementer");
   note(
-    `F5b forged opening of ${lockedHeadRepo}#66, whose read GitHub refuses (403): ${await forge(lockedHeadRepo, 66, "opened", c.f5b, Date.now(), k5b)}`
+    `F5b forged opening of ${lockedHeadRepo}#66, whose read GitHub refuses (403): ${await forge("F5b", lockedHeadRepo, 66, "opened", c.f5b, Date.now(), k5b)}`
   );
   const f5bAfter = k1Line(await resultsCommand(k5b));
   expect(
@@ -6146,7 +6188,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
   );
   await awaitResults(k6, (text) => k1Line(text).includes(`#67 at ${c.f6a}`), f6Opening.at, 15_000);
   note(
-    `F6 forged synchronize to ${c.f6b.slice(0, 12)}, dated an hour ahead: ${await forge(headRepo, 67, "synchronize", c.f6b, Date.now() + 3_600_000, k6)}`
+    `F6 forged synchronize to ${c.f6b.slice(0, 12)}, dated an hour ahead: ${await forge("F6", headRepo, 67, "synchronize", c.f6b, Date.now() + 3_600_000, k6)}`
   );
   const f6Forged = k1Line(await resultsCommand(k6));
   note(`F6 after the forgery: ${f6Forged}`);
