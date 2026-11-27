@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
+	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -217,7 +217,7 @@ func reopenedLog(t *testing.T, key string) *reportLog {
 	l.status(closed.Add(time.Second), "done")
 	l.status(reportRequested, "todo")
 	l.wait(reportRequested.Add(2*time.Second), record.StoredWait{NextChange: &record.WaitChange{Generation: 2, Since: reportRequested,
-		Reasons: []record.WaitReason{{ID: 17, Kind: record.DefectKindRequest, Text: "Reopened after an early close: the export.", Role: claim.RoleController, Since: reportRequested}}}})
+		Reasons: []record.WaitReason{{ID: 17, Kind: record.DefectKindRequest, Text: "Reopened after an early close: the export.", Role: legionclaim.RoleController, Since: reportRequested}}}})
 	l.status(reportRequested.Add(3*time.Second), "in_progress")
 	return l
 }
