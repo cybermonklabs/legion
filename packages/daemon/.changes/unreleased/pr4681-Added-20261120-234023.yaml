@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The daemon logs one github_rate_reading line for each installation of each GitHub App it holds a
+  key for, whichever owners its project serves, at start, every 10 minutes and in the last minute
+  before each counter's reset, with both counters and the daemon's own answered calls by caller
+  kind.
+time: 2026-11-20T23:40:23Z
+custom:
+    Issue: pr4681

@@ -50,7 +50,8 @@
     "msw": "3.0.4",
     "recheck": "4.6.2",
     "typescript": "^5",
-    "vite": "^5"
+    "vite": "^5",
+    "yaml": "2.9.0"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.22",

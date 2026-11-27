@@ -139,8 +139,9 @@ case "$lane" in
     # nine of the reading list's walk (e2e/reading-rows.ts), and main's parse-count walk,
     # which holds every page those rows draw to no parse of a stored text on the page's
     # own thread, and the one place they are written: ci.yaml's dispatch-references job
-    # runs them on a pull request that changes what they test, so that document's checks
-    # read CI at the head rather than a run of an hour and a half by hand. Every
+    # runs them on a pull request that changes what they test and whose run does not run
+    # the full lane, whose `chromium` project holds every one of them, so that document's
+    # checks read CI at the head rather than a run of an hour and a half by hand. Every
     # Chromium row of them, `@pr` or not, so no grep. Each is a Playwright file
     # filter, a regular expression matched against a spec's absolute path, and each
     # matches the one file of that name under e2e/ and no other. A file added to this
