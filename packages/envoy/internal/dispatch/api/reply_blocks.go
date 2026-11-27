@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -31,29 +32,45 @@ func replyBlockOwner(nodeID string) refs.ItemKind {
 // namedBlock is the block of its parent a reply names (reply_to_block, in_reply_to_block): the
 // kind of item holding it, since a comment's reply may name a block of the comment it answers or
 // a part of the ask it was asked under, the node id replies_to_block stores, the item holding the
-// block, the block's own id and its stored excerpt.
+// block, the block's own id and its stored excerpt, and the words of it the reply quotes with the
+// match of them it quotes (namedBlock.setQuote), both nil for a reply that quotes none.
 type namedBlock struct {
-	kind    refs.ItemKind
-	node    string
-	item    string
-	id      string
-	excerpt string
+	kind       refs.ItemKind
+	node       string
+	item       string
+	id         string
+	excerpt    string
+	quote      *string
+	occurrence *int
 }
 
 // replyBlock is the block as a reply carries it (model.ReplyBlock), for a write whose reply row
 // is queued and so has nothing for the read of a stored reply to join (refs.ReplyBlocks). The
 // block is one the item holds now, so it is not removed; the item's own kind addresses it, with
 // issueKey, project and slug, as that read addresses it, under the reply's owner (ownerAddress).
+// It carries the words the reply quotes, which the reply's insert stores from it (replyQuote).
 func (block *namedBlock) replyBlock(issueKey *string, project, slug string) *model.ReplyBlock {
 	if block == nil {
 		return nil
 	}
 	return &model.ReplyBlock{
-		Node:    block.node,
-		Ref:     refs.ItemBlockRef(block.kind, issueKey, project, slug, block.item, block.id),
-		BlockID: block.id,
-		Text:    block.excerpt,
+		Node:       block.node,
+		Ref:        refs.ItemBlockRef(block.kind, issueKey, project, slug, block.item, block.id),
+		BlockID:    block.id,
+		Text:       block.excerpt,
+		Quote:      block.quote,
+		Occurrence: block.occurrence,
 	}
+}
+
+// replyQuote is what a reply's insert stores in replies_to_quote and replies_to_occurrence: the
+// words of block, the block the reply carries as its write read it (namedBlock.replyBlock), that
+// the reply quotes, both null for a reply that names no block or quotes none of it.
+func replyQuote(block *model.ReplyBlock) (quote *string, occurrence *int) {
+	if block == nil {
+		return nil, nil
+	}
+	return block.Quote, block.Occurrence
 }
 
 // ownerAddress is how refs addresses an item under owner: an issue's comments and messages by
@@ -130,6 +147,14 @@ type replyRowPlan struct {
 // answers 400 with code, naming field and the block, and so does one who, the reply's writer,
 // may not see.
 //
+// quote and occurrence are the words of the block the reply quotes and which of their matches,
+// which replyQuoteRefusal has let stand. A quote is checked on the block's whole text, where the
+// excerpt keeps at most the first 480 runes and stops earlier where a reference would cross the
+// cut (refs.BlockExcerpt): the repair's plan holds it for an item this transaction indexes, and
+// the index's record of the block holds it otherwise (refs.CurrentItemBlockText).
+// The block keeps the quote with the occurrence it resolves to (namedBlock.setQuote), and a
+// quote the block does not hold is the *apiError that method answers.
+//
 // The live write of this request is the reply, which its own route stamps; the item indexed here
 // is the parent, whose text an earlier write already carried an event for, so a block mention
 // this records takes the source_seq of the parent's own refs row for its target at the item's
@@ -137,6 +162,7 @@ type replyRowPlan struct {
 // request.
 func (s *server) planReplyBlock(
 	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string,
+	quote *string, occurrence *int,
 ) (refs.ItemRepair, *namedBlock, error) {
 	repair, err := refs.PlanItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL)
 	if err != nil {
@@ -151,7 +177,76 @@ func (s *server) planReplyBlock(
 	if !found {
 		return refs.ItemRepair{}, nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 	}
-	return repair, &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}, nil
+	block := &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}
+	if quote == nil {
+		return repair, block, nil
+	}
+	var text string
+	if repair.Owed() {
+		text, _ = repair.BlockText(blockID)
+	} else if text, err = refs.CurrentItemBlockText(ctx, tx, kind, node); err != nil {
+		return refs.ItemRepair{}, nil, err
+	}
+	if err := block.setQuote(text, quote, occurrence); err != nil {
+		return refs.ItemRepair{}, nil, err
+	}
+	return repair, block, nil
+}
+
+// replyQuoteRefusal is the refusal a reply's quote and occurrence take before anything is read,
+// with code, the code the reply's route gives a bad block field, field the name of that field and
+// block its value: an occurrence counts the matches of a quote, and a quote is words of the block
+// the reply names, so neither stands without the other; a quote holds some text, as an anchor's
+// does (resolveAnchor); and an occurrence counts from 0. Each message opens with the field it is
+// about. It is nil for a request that may name them.
+func replyQuoteRefusal(code, field string, block, quote *string, occurrence *int) error {
+	switch {
+	case occurrence != nil && quote == nil:
+		return errorf(http.StatusBadRequest, code, "occurrence requires quote, the words whose matches it counts")
+	case quote != nil && block == nil:
+		return errorf(http.StatusBadRequest, code, "quote requires %s, the block whose words it quotes", field)
+	case quote != nil && *quote == "":
+		return errorf(http.StatusBadRequest, code, "quote must not be empty")
+	case occurrence != nil && *occurrence < 0:
+		return errorf(http.StatusBadRequest, code, "occurrence must be 0 or more: it counts the quote's matches from 0")
+	}
+	return nil
+}
+
+// setQuote checks quote against text, the block's whole markdown read as its plain text
+// (pmdoc.QuoteFinder.FindPlain), and keeps on the block the quote with the occurrence the reply
+// stores with it: the one sent, or 0 for a quote the text holds once. A quote the text does not
+// hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more
+// than once with no occurrence 409 TARGET_AMBIGUOUS, as a document anchor's quote is answered
+// (handler_errors.go), but with no candidates: a position inside the tree of one block means
+// nothing to the reply's writer. A refused quote leaves the block as it was.
+func (block *namedBlock) setQuote(text string, quote *string, occurrence *int) error {
+	doc, err := pmdoc.Parse(text)
+	if err != nil {
+		return fmt.Errorf("read the text of block %s of %s %s: %w", block.id, block.kind, block.item, err)
+	}
+	_, err = pmdoc.NewQuoteFinder(doc).FindPlain(*quote, occurrence)
+	var ambiguous *pmdoc.ErrTargetAmbiguous
+	var missing *pmdoc.ErrQuoteNotFound
+	switch {
+	case err == nil && occurrence == nil:
+		block.quote, block.occurrence = quote, new(0)
+		return nil
+	case err == nil:
+		block.quote, block.occurrence = quote, occurrence
+		return nil
+	case errors.As(err, &ambiguous):
+		return errorf(http.StatusConflict, "TARGET_AMBIGUOUS",
+			"quote %q matches %d places in block %s of %s %s; send occurrence, counted from 0, to name one",
+			*quote, len(ambiguous.Candidates), block.id, block.kind, block.item)
+	case errors.As(err, &missing) && missing.Matches > 0:
+		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND",
+			"occurrence %d is past the last of the %d matches of quote %q in block %s of %s %s, counted from 0",
+			*occurrence, missing.Matches, *quote, block.id, block.kind, block.item)
+	case errors.As(err, &missing):
+		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "quote %q is not in the text of block %s of %s %s", *quote, block.id, block.kind, block.item)
+	}
+	return fmt.Errorf("find the quote in block %s of %s %s: %w", block.id, block.kind, block.item, err)
 }
 
 // nodeID is the block's node id for replies_to_block, null for a reply naming no block.
@@ -250,9 +345,10 @@ func hydrateThreadReplyBlocks(ctx context.Context, q queryer, who model.Actor, r
 // deleteEventReplyBlock is block, the block of its parent a reply names, as the reply's delete
 // event carries it: every field that routes the event and says which block it is - its node id,
 // which names the kind and the id of the item holding it, its reference, its id, whether it is
-// removed and the quoted post's marks - and no text. A delete event carries no text of another
-// post (dispatch://INFRA-1523, the architect's decision of 2026-11-19): the reply's creation froze
-// a preview of its parent, which the event log keeps, and the delete is a new event written after
+// removed and the quoted post's marks - and no text, and so neither the quote nor its occurrence,
+// which are words of that post too. A delete event carries no text of another post
+// (dispatch://INFRA-1523, the architect's decision of 2026-11-19): the reply's creation froze a
+// preview of its parent, which the event log keeps, and the delete is a new event written after
 // it, so it writes no new copy of that text. Both correction builders apply it on a delete
 // (commentCorrectionPayload, messageCorrectionEvent), and a message's delete leaves out
 // reply_body with it, the preview of the parent or of this block a message event carries beside
@@ -263,6 +359,6 @@ func deleteEventReplyBlock(block *model.ReplyBlock) *model.ReplyBlock {
 		return nil
 	}
 	carried := *block
-	carried.Text = ""
+	carried.Text, carried.Quote, carried.Occurrence = "", nil, nil
 	return &carried
 }
