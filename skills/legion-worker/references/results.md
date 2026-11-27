@@ -43,7 +43,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
-  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
+  Lint, types and the unit and integration suites are CI's: read on GitHub the ones the head ran, rerun no lane as evidence, and wait for none; a suite the repository holds back for its merge queue has no run at the head, and that is no gap.
 
 - On a new head, the tester reruns each check the change since the head it last tested can reach (for a merge of the base, `skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
 
