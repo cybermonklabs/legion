@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  `legionStateSubject(token)` is the subject of a Legion deployment's state lane,
+  `notifications.legion.<token>.state` (`LEGION_STATE_SUFFIX`, and `LegionStateSubject` in the
+  `Subject` union). `bun run gen:go` writes it into Go as `LegionStateSubject` and
+  `LegionStateSuffix`. `legionStateMessage` is one message of that lane: the state events of one
+  committed daemon transaction, with `project`, `run`, `stateId`, `firstSeq`, `seq`, `at`,
+  `events` and `more`, each event a `change`, an `admission` or a `boot`. `stateId` is the id the
+  daemon made once for its store, and a reader applies only a message whose `stateId` is the one
+  its starting point read. `more: true` is on every message of a transaction but its last, and a
+  reader applies a transaction only once its last message has arrived. A `boot` event carries the
+  store's `schemaVersion`. The daemon block of the state answer reads `stateSeq`, `stateId` and
+  `stateRun`, all optional: the sequence of the newest state event that the answer's snapshot
+  holds, the store's id, and the id of the daemon run that serves the answer (daemon API entry
+  20261125174131 state-seq). A reader takes `stateRun` as the run of its starting point, so a
+  `boot` event of that run at or below the starting point's `stateSeq` is one that the reader
+  already holds. `fixtures/daemon-api/state-events.json` is the daemon's golden of the lane.
+  `LegionObservedStateResponse` is the answer of `GET /legion/v1/state?view=observed` (daemon API
+  entry 20261125174131 state-seq), the part of the state that Dispatch reads: `daemon`,
+  `settings` and `admission` as the state answer has them, and `issues`, each with only `key`,
+  `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and `workers.<role>.claim.state`.
+  `fixtures/daemon-api/observed-state.json` is the daemon's golden of it.
+custom:
+  Issue: pr4432

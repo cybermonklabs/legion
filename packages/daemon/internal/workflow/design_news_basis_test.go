@@ -46,6 +46,7 @@ func firstBasisGates() map[record.DesignStep]record.DesignGate {
 // basis. The control is the same news over the person's approval of version 5 (newsGates), which
 // reads as it always has.
 func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
+	t.Parallel()
 	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
 	const noPerson = "No person approved version 5 of its spec document (artifact-spec)."
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
@@ -85,6 +86,7 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 // version a person approved, and the holder's item and the summary's entry then name the basis it
 // stands on.
 func TestNewsOfAFirstVersionOpenOnABasisSaysNoPersonApprovedIt(t *testing.T) {
+	t.Parallel()
 	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
 	news := firstApprovalHolderNews()
 	news.Gates = firstBasisGates()

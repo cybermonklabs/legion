@@ -27,7 +27,11 @@ func stringValue(value any) string {
 // rather than at the bus's own 5 s bound.
 const slackAnswerBudget = 2500 * time.Millisecond
 
-// slackMaxBody is the largest Slack event body the handler reads.
+// slackMaxBody is the largest Slack event body the handler reads: 1 MiB. Slack documents no cap on
+// the size of an event. It cuts a message's text at 40,000 characters
+// (docs.slack.dev/reference/methods/chat.postMessage, "Truncating content"). A message event
+// carries that text and its blocks, which repeat it. At six bytes a character, the length of a
+// \uXXXX escape, the two come to 480,000 bytes, under half the limit.
 const slackMaxBody = 1 << 20
 
 // slackRoomWait is the most a Slack event waits, in all, for room in the listener's body budget
