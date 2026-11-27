@@ -1,4 +1,9 @@
-import type { PlanRecordInput, PlanTaskInput, StepExperimentInput } from "@legion/contracts";
+import type {
+  ArtifactWithTrees,
+  PlanRecordInput,
+  PlanTaskInput,
+  StepExperimentInput,
+} from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
@@ -6,7 +11,7 @@ import type { GraphReferences } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
-import { baseUrl, e2eAgentToken } from "./api";
+import { baseUrl, e2eAgentToken, getIssue } from "./api";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
@@ -24,7 +29,7 @@ import { settledState } from "./settled";
  * part L's rows of the box do its `daemonOf` (`e2e/issue-page-l.ts`'s `seedHistoryTurns`) and its
  * `historyItem` (`e2e/issue-page-l.e2e.ts`): it imports the readers of `e2e/issue-page.ts`,
  * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, `settledState` of `e2e/settled.ts`, and
- * `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and copies none of them.
+ * `baseUrl`, `e2eAgentToken` and `getIssue` of `e2e/api.ts`, and copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
@@ -274,6 +279,13 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
  *  are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
+}
+
+/** The primary spec of issue `key`, read through `getIssue`; throws when the issue holds none. */
+export async function primarySpec(key: string): Promise<ArtifactWithTrees> {
+  const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error(`${key} holds no spec`);
+  return spec;
 }
 
 /** The runs of the issue's steps, under the history in Details. */

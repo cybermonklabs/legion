@@ -139,6 +139,7 @@ import {
   isReadMarkRead,
   newestHistoryEntry,
   olderPageAnswered,
+  primarySpec,
   putPlan,
   putStepExperiment,
   referencesTo,
@@ -5319,10 +5320,7 @@ test("what references the focused row opens from its facts, and each row leads t
         { body: longCitingLines(reference).join("\n\n") },
         { login: "bob" }
       );
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return {
         comment: comment.id,
         key: issue.key,
@@ -5464,10 +5462,7 @@ test("at 1440 px Tab from a row passes through the box at the foot into its fact
         { body: `Bob checks dispatch://${issue.key}/spec#b-r-tabbed against the page.` },
         { login: "bob" }
       );
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return { key: issue.key, statement: blockNode(spec.slug, "r-tabbed") };
     },
     async (page, seeded) => {
@@ -5615,10 +5610,7 @@ test("what references the focused row names each task that serves it by the task
           `the plan's two tasks never came to serve ${statement}`
         )
         .toBe(2);
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return {
         key: issue.key,
         planSlug: plan.artifact.slug,
@@ -5746,16 +5738,11 @@ test("what references the focused row names a task whose block opens with long a
           `the plan's two tasks never came to serve ${statement}`
         )
         .toBe(2);
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.statement);
+      const facts = await rowFacts(page, seeded.key, seeded.statement);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
@@ -6146,8 +6133,7 @@ async function seedLongLists() {
       )
     )
   );
-  const spec = ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary);
-  if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+  const spec = await primarySpec(issue.key);
   return { key: issue.key, statement: blockNode(spec.slug, "r-cited") };
 }
 
