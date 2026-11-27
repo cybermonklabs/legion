@@ -302,6 +302,53 @@ index) exit 0 ;;
 	}
 }
 
+// TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst: a role's stop is role-init's
+// SIGTERM to every process of the role at once, and the build can end on it before the shim's own
+// SIGTERM has ended the warm-up's context. The warm-up waits for that context
+// (codegraphStopSettle) before it reads the end as the build's own, so the stop stays an orderly
+// one: the record is removed, and the next launch's warm-up repairs the index. The fake clock holds
+// the shim's SIGTERM back until the warm-up's wait is armed, the order a stop under load takes.
+func TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst(t *testing.T) {
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	fakeCodegraphBundle(t, callLog, "1.6.4", recordedOutcomeStandIn("kill -TERM $$"))
+	dir := t.TempDir()
+	captured := captureStderr(t)
+	c := clocktest.New(time.Date(2026, 11, 27, 8, 0, 0, 0, time.UTC))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		warmCodegraphIndexOn(ctx, c, procgroup.NoReaper, dir, time.Now())
+	}()
+	// The shim's SIGTERM lands once the build has ended on its own and the warm-up has read that
+	// end: its wait for the context armed, or, with no such wait, the warm-up already returned.
+	settle := c.Now().Add(codegraphStopSettle)
+	testwait.Until(t, "the build to end on its SIGTERM while the warm-up's context runs", func() (struct{}, bool) {
+		select {
+		case <-returned:
+			return struct{}{}, true
+		default:
+		}
+		return struct{}{}, slices.Contains(c.Armed(), settle)
+	})
+	cancel()
+	testwait.Receive(t, "the warm-up to return once its context ended", returned)
+	stderr := captured()
+	if rec, ok := readWarmBuildRecord(t, dir); ok {
+		t.Fatalf("the warm-up left the record %+v after a stop that reached the build first, want none: an orderly stop is repaired at the next launch", rec)
+	}
+	if want := "ended with its process before `codegraph init` finished"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
+	indexed.Delete(dir)
+
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
+	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "init", "status", "index"}) {
+		t.Fatalf("the calls across both warm-ups = %v, want the second to repair the index the stop left", calls)
+	}
+}
+
 // TestWarmCodegraphIndexDoesNotRepairABuildASignalEnded: a build a signal ended that the warm-up
 // did not send (the kernel's out-of-memory kill, the launcher's memory guard) is recorded
 // `killed`, and the next warm-up, a new shim's, does not build again.

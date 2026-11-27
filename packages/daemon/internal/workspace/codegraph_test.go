@@ -1249,6 +1249,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		r.reached("the build's shell to be gone with its pipes still held", "gone")
 		r.endTheBound()
 		r.mark("release")
+		r.settle()
 		r.answered("was ended by signal: killed: parsing 512 files")
 	})
 }
@@ -1314,6 +1315,18 @@ func (r *boundRow) endTheBound() {
 	r.t.Helper()
 	r.c.AwaitArmed(r.t, "the build's bound", 1)
 	r.c.Advance(codegraphTimeout)
+}
+
+// settle waits for the warm-up's wait for its context after a build a signal ended
+// (codegraphStopSettle) to be armed on the fake clock and moves the clock past it: the row's
+// context runs on, as a build no stop ended leaves it.
+func (r *boundRow) settle() {
+	r.t.Helper()
+	at := r.c.Now().Add(codegraphStopSettle)
+	testwait.Until(r.t, "the warm-up's wait for its context after the build's signal", func() (struct{}, bool) {
+		return struct{}{}, slices.Contains(r.c.Armed(), at)
+	})
+	r.c.Advance(codegraphStopSettle)
 }
 
 // answered waits for the warm-up to return and wants its stderr to carry the line of the build's

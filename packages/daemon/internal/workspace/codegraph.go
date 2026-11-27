@@ -38,6 +38,18 @@ var codegraphTimeout = 30 * time.Minute
 // WaitDelay). It is a variable so that a test can lengthen it.
 var codegraphStopGrace = 2 * time.Second
 
+// codegraphStopSettle is how long a warm-up whose build a signal or a non-zero exit ended, while
+// its own context still ran, waits for that context to end before it reads the end as the build's
+// own and records it (warmBuild). A role's stop is role-init's SIGTERM to every process of the role
+// at once (WarmCodegraphIndex): the build, which CodeGraph 1.6.4 leaves 0.03 s after it, and the
+// shim, whose own SIGTERM ends this warm-up's context only after a few of its goroutines have run.
+// Read before that, the stop's SIGTERM would be recorded as a build that died, and every later
+// warm-up on that disk would leave the partial index unrepaired, where R2 repairs an orderly stop
+// at the next launch (INFRA-5717). The shim's SIGTERM comes in the same kill as the build's, so
+// its context ends well inside codegraphStopGrace; this is that grace. A cap's kill and the
+// timeout are the warm-up's own ends and wait for nothing.
+var codegraphStopSettle = codegraphStopGrace
+
 // codegraphEmptyLockGrace is how long an empty `.codegraph/codegraph.lock` still counts as held,
 // either side of now. CodeGraph 1.6.4's FileLock (FileLock.create) writes the builder's PID to a
 // temporary file and hard-links that to the lock, so the lock normally appears with its PID
@@ -133,9 +145,14 @@ func WarmCodegraphIndexInBackground(start procgroup.Starter, dir string) {
 // is SIGTERMed, then killed after codegraphStopGrace) rather than the other way round. A role's
 // `legion worker-shim --warm-codegraph` runs it under the shim's own lifetime (internal/shim's
 // Config.WarmCodegraph): once its Oh My Pi has exited the shim ends the warm-up and waits for it,
-// so a stop mid-build — the launcher's SIGTERM to the role's whole process group, which ends Oh My
-// Pi and the codegraph child at once — never leaves the lease behind for the role's relaunch to
-// read as a live build. The index such a stop leaves partial is repaired by the next warm-up, as is
+// so a stop mid-build — role-init's SIGTERM to every process of the role (its kill(-1) as the
+// role's PID 1, internal/launcher's signalGeneration), which ends Oh My Pi and the build, in its own
+// process group, together — never leaves the lease behind for the role's relaunch to read as a
+// live build. A launcher that is not PID 1 signals the shim's group alone, and the shim's end of
+// the warm-up then reaches the build (runCodegraph). Since the build can end on that SIGTERM
+// before the shim's own has ended ctx, a build a signal or a non-zero exit ended waits up to
+// codegraphStopSettle for ctx before its end is read as the build's own (warmCodegraphIndexOn).
+// The index such a stop leaves partial is repaired by the next warm-up, as is
 // one another CodeGraph CLI version built (nextCodegraphStep: initialized, not current, no live
 // CodeGraph lock, no record of a build that died → `index`). launched is the instant the caller's
 // process started — a role shim's Run — which the one line a built index logs reports the build
@@ -278,6 +295,11 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.St
 	}
 	result, err := runCodegraph(ctx, c, start, codegraphPath, dir, subcommand)
 	built := time.Since(buildStarted)
+	if err == nil && ctx.Err() == nil && result.cappedAt == 0 && !result.timedOut && (result.signal != "" || result.exitCode != 0) {
+		// The stop's SIGTERM may have reached the build before the shim's has ended ctx
+		// (codegraphStopSettle). Sleep answers at once when ctx ends, and its own error is no news.
+		_ = c.Sleep(ctx, codegraphStopSettle)
+	}
 	if ctx.Err() != nil {
 		// The warm-up's own stop ended this build (a role's stop, the shim on its way out), so
 		// the next launch builds again: an orderly stop is no reason to hold a workspace.

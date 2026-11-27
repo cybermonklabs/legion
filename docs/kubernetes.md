@@ -6511,8 +6511,9 @@ The cap was measured in a Job of an issue pod's shape (2 CPUs, 8Gi, gVisor, the 
 It leaves the pod under the guard's 85% mark while the pod's six roles hold their median (2,417 MiB of the guard's hourly readings over 2026-11-23/24), so a warm-up no longer takes the pod's sandbox down by itself.
 
 Beside the lease, the warm-up keeps the record of its last build at `.codegraph/legion-warm.build`, one JSON line: the subcommand, its start, how it ended, and the CodeGraph version (read from `/opt/codegraph/package.json`) and the cap it ran under.
-It is written, and synced, before the build starts, and removed when the build exits 0, when the warm-up's own stop ended the build, when the build never started, and when a warm-up finds the index current.
-A build that died otherwise — at the cap, on a signal the shim did not send, at the 30-minute timeout, with a non-zero exit, or with its pod, which leaves the record saying `running` — holds every later warm-up of that workspace on that disk, each of which runs `status` alone and logs `codegraph warm-up for <workspace> skipped: its last build, codegraph <subcommand> started <instant>, ended "<outcome>", …`.
+It is written, and synced, before the build starts, and removed when the build exits 0, when a stop of the role ended the build, when the build never started, and when a warm-up finds the index current.
+A stop's SIGTERM can reach the build before the warm-up's own stop, so the warm-up waits up to 2 s for that stop before it reads a signal or a non-zero exit as the build's own end.
+A build that died otherwise — at the cap, on a signal no stop of the role sent (the kernel's out-of-memory kill, the memory guard), at the 30-minute timeout, with a non-zero exit, or with its pod, which leaves the record saying `running` — holds every later warm-up of that workspace on that disk, each of which runs `status` alone and logs `codegraph warm-up for <workspace> skipped: its last build, codegraph <subcommand> started <instant>, ended "<outcome>", …`.
 A warm-up that finds the index current removes the record, whoever built it.
 A new workspace (`.jj/legion-created` after the recorded build's start), or another CodeGraph version or cap in the image, allows one new attempt; an agent's own `codegraph index` is never held by the record.
 
