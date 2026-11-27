@@ -251,8 +251,15 @@ export async function refuseOpenDecisionBlocks(
     // (in code, a fence opened on a footnote's label line included, or in front matter) names no
     // ask Dispatch recorded.
     const text = await liveText();
+    // A Dispatch of the release before is read as it reads itself: a copy whose every opening line
+    // in the latest version records it settled is not open. Under `decidedBy: "version"` the copy
+    // goes on to the check below instead, which compares the answer each of those lines records
+    // with the one the live text's opening line holds (liveTextAsks): a person may change the
+    // source's answer while it stays answered, and the version settlement then writes ends a basis
+    // registered on this one.
     // kept for one release: release-before-text
-    if (!text.served && recordsSettled) return undefined;
+    // kept for one release: stored-ask-state
+    if (!text.served && recordsSettled && refusal.decidedBy === "live") return undefined;
     // kept for one release: release-before-text
     if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
