@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The publish tool's description no longer says that every notification topic is stored. It
+    names each topic the listener refuses a publish to, and why: an agent topic, since
+    `envoy_send` sends to one session; a topic under `notifications.dispatch.`, since only
+    Dispatch publishes on Dispatch's lane; a topic under `notifications.github.`, since only the
+    listener that receives GitHub's webhook publishes on GitHub's lane;
+    `notifications.legion.wake`, since only the listener reports a Legion pod wake; and a topic
+    under `notifications.envoy.kept.`, `notifications.envoy.resume.` or
+    `notifications.envoy.takeover.`, since those lanes are the listener's own. It says that every
+    other topic the stream captures is stored. The subscribe tool's description still lists every
+    lane the stream stores.
+time: 2026-11-20T13:00:00Z
+custom:
+    Issue: pr4194

@@ -45,8 +45,8 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
   A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
-  The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
-  The label stays on while a `ci_check` of the issue names such a job.
+  The implementer adds that job's own `lane:<output>` label, never `full-ci`, then pushes, because the workflow starts on a push and not on a label.
+  The label stays on while a `ci_check` of the issue names such a job, and comes off when none does: the merge queue runs every held-back job before the change lands, so a held-back job that no check names needs no label.
   No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
   On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 

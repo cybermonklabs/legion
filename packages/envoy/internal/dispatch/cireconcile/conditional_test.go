@@ -95,6 +95,7 @@ func (h *harness) refuseWrites(check string) {
 // later pass would meet the same refusal, so reading the head in full at every pass would buy
 // nothing. The next pass reads it conditionally and GitHub answers 304.
 func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -140,6 +141,7 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 // of the head's two listings is read with the ETag GitHub answered the first pass with, GitHub
 // answers 304 to each, and the head's record is left exactly where it was.
 func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -194,6 +196,7 @@ func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
 // settles. Were the ETag kept, GitHub would answer 304 for ever and the run the record lacks
 // would never reach it.
 func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -241,6 +244,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 // status and conclusion under a later updated_at -- is written and settles once, and a pass over
 // the answers as they now stand writes nothing and settles nothing more.
 func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -287,6 +291,7 @@ func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
 // there is no record for it to have lost, and dropping them would read it in full at every pass
 // for ever.
 func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -333,6 +338,7 @@ func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
 // second is read to its end and every run of both pages recorded, and a run added to the second
 // page afterwards is found by the next pass, whose first page answers 304.
 func TestAListingIsReadPageByPage(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

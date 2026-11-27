@@ -12,7 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/verify"
 )
 
-// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads.
+// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads: 1 MiB, the limit the
+// route has always had. An event names a session, its times and the links to its documents
+// (ghostWisprPayload), and a current unit sends no title or summary text, so a real body holds some
+// short fields. Only an older unit adds one meeting's summary.
 const ghostWisprMaxBody = 1 << 20
 
 // ghostWisprRoomWait is the most a Ghost Wispr event waits, in all, for room in the listener's

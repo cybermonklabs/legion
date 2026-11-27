@@ -1,4 +1,4 @@
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -13,11 +13,13 @@ import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
   type LegionClaim,
   legionPane,
+  logLegion,
   paneDaemonClient,
   ROLE_CLAIM_RETRY_MS,
   ROLE_CLAIM_WAIT_MS,
   SAVED_MARKER_SUFFIX,
   startLegionClaim,
+  stopPane,
   waitForTranscript,
 } from "../src/legion-claim"
 
@@ -898,4 +900,65 @@ test("the pane's daemon client states this build's own daemon API contract on ev
   }
 
   expect(stated).toEqual([String(PLUGIN_CONTRACT), String(PLUGIN_CONTRACT)])
+})
+
+/** The channel server as `stopPane` reads it (`paneServer` in `../src/envoy-channel-server`): its
+ *  stop, and its Legion log through its tell gate. Every SIGTERM `endPane` sends, and every byte
+ *  the server's stderr takes, is recorded, and neither reaches the process. */
+function paneServer() {
+  let stopping = false
+  const kills = spyOn(process, "kill").mockImplementation(() => true)
+  const written = spyOn(process.stderr, "write").mockImplementation(() => true)
+  return {
+    server: {
+      stopping: () => stopping,
+      log: (line: string) => {
+        if (!stopping) logLegion(line)
+      },
+    },
+    stop: () => {
+      stopping = true
+    },
+    kills,
+    written,
+    restore: () => {
+      kills.mockRestore()
+      written.mockRestore()
+    },
+  }
+}
+
+const INBOUND_OFF =
+  "a Legion pane's task reaches it over NATS, and inbound messages are off: no NATS server"
+
+// A Legion pane whose inbound messages are off cannot get its task: the server says why on the
+// pane's log and ends the pane, `claude`, its parent.
+test("stopPane says why on the pane's log and ends the pane", () => {
+  const pane = paneServer()
+  try {
+    stopPane(INBOUND_OFF, pane.server)
+
+    expect(pane.written.mock.calls.map(([line]) => line)).toEqual([
+      `[legion] ${INBOUND_OFF}; stopping the pane so the daemon launches it again\n`,
+    ])
+    expect(pane.kills.mock.calls).toEqual([[process.ppid, "SIGTERM"]])
+  } finally {
+    pane.restore()
+  }
+})
+
+// The server's stop has begun before the server reached that point (R24 of
+// dispatch://INFRA-3589): the pane writes nothing on stderr, and the stop, which ends the pane
+// already, sends `claude` no SIGTERM of its own.
+test("stopPane once the server's stop has begun writes nothing and ends nothing", () => {
+  const pane = paneServer()
+  try {
+    pane.stop()
+    stopPane(INBOUND_OFF, pane.server)
+
+    expect(pane.written).not.toHaveBeenCalled()
+    expect(pane.kills).not.toHaveBeenCalled()
+  } finally {
+    pane.restore()
+  }
 })

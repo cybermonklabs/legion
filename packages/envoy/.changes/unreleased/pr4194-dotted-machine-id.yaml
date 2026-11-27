@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A listener whose `ENVOY_MACHINE_ID` holds a dot, as a fully qualified host name does, starts and
+  delivers. The listener's durable and queue group escape each character NATS refuses in a
+  consumer name as `%` and two hex digits, and keep every machine id NATS takes today unchanged,
+  so no deployed durable is renamed. A machine id that holds `%` is refused at start, naming
+  `ENVOY_MACHINE_ID`. envoy-infra's machine id check uses the same rule and now accepts a dotted
+  id. The NATS auth service's `BROKER_NATS_SERVICES` takes the same machine ids for a `dispatch`,
+  `listener`, `webhook-listener` or `edge-listener` entry, a dotted one among them, and refuses one
+  that holds `%`. An edge listener spells its machine id the same way in its inbox prefix and its
+  relay receipts, so a dotted edge id is one subject token there too. The new
+  `natsgrant.MachineIDToken(id)` is the token rule of a grant's machine id:
+  `natsgrant.SessionToken`'s rule with the dot allowed. It refuses an empty id and an id that holds
+  a wildcard, a space or a control character. The auth service reads each `BROKER_NATS_SERVICES`
+  machine id by it, and `natsgrant.Edge` refuses a machine id it refuses.
+  One input still refuses a dot: `gcp:ClusteredNatsHub`'s `tailnet.listener.machineId` names the
+  listener's NATS user too, so it must also be a valid NATS user name, and a NATS user name holds
+  no dot.
+time: 2026-11-16T18:39:55Z
+custom:
+    Issue: pr4194

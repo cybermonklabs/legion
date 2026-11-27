@@ -13,7 +13,7 @@ import {
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -176,6 +176,26 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.steps).not.toContain("stop");
   expect(unreachable.lines).toEqual([]);
 });
+
+// The host stops while its boot's `claims/register` is on the wire, and the daemon refuses it (R24
+// of dispatch://INFRA-3589): the refusal writes nothing on the host's log, a 4xx as a 5xx. The
+// host's stop ends the agent itself.
+for (const status of [403, 503]) {
+  test(`a ${status} at claims/register after the host's signal aborted writes nothing on the host's log`, async () => {
+    const stopping = new AbortController();
+    const { host, lines } = claimHost({
+      register: () => {
+        stopping.abort();
+        return Response.json({ error: "Invalid boot token" }, { status });
+      },
+      overrides: { signal: stopping.signal },
+    });
+
+    await bootLegionClaim(host).catch(() => undefined);
+
+    expect(lines).toEqual([]);
+  });
+}
 
 // An outage (`@legion/contracts/http-status`: a 5xx, a 408 or a 429) is no answer about the
 // registration or the ready. The daemon writes no 408 and no 429, so a proxy between the session
@@ -456,6 +476,100 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   // A boot that stopped before the claim step still settles its answer, so a caller that waits
   // on the claim is not left waiting for a step that is never coming.
   await booted.claimed;
+});
+
+// The host stops while its boot's `claims/ready` is on the wire, and the daemon answers 503 (R24
+// of dispatch://INFRA-3589): the boot sends no ready again, says nothing, and stops nothing; the
+// host's stop ends the agent itself.
+test("a 5xx at claims/ready after the host's signal aborted is not retried, says nothing and stops nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps, lines } = claimHost({
+    ready: () => {
+      stopping.abort();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+    overrides: { signal: stopping.signal },
+  });
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([]);
+});
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers 503 (R24 of dispatch://INFRA-3589). The regain sends no ready again
+// and writes nothing on the host's log: the host's stop ends the agent itself. The control is the
+// same regain with no abort: its ready is sent again, and each failure is written. A regain never
+// stops the agent, so neither run asks for `stop`.
+test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log; the control with no abort writes each failure", async () => {
+  const failingRegain = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        if (readies === 1) return new Response(null, { status: 204 });
+        if (stops) stopping.abort();
+        return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    const booted = await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    // The stop ends the claim step. With no stop, the step waits for a first turn that no run
+    // starts.
+    if (stops) await booted.claimed;
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), lines };
+  };
+
+  const stopped = await failingRegain(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  // The boot's ready, then the regain's three attempts, a second apart.
+  const control = await failingRegain(false);
+  expect(control.readies).toHaveLength(4);
+  expect(control.lines).toHaveLength(4);
+  expect(control.lines.at(-1)).toStartWith(
+    `claims/ready after role ${claimToken} was reclaimed failed;`
+  );
+}, 10_000);
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
+// the next regain, which starts after the stop, sends no ready. The control is the same two
+// regains with no stop: each sends its ready and writes its line.
+test("a regain whose claims/ready answers after the host's signal aborted writes nothing, and a regain after the abort sends no ready; the control with no abort writes both lines", async () => {
+  const twoRegains = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        // The boot's ready is the first; the first regain's ready is the second.
+        if (stops && readies === 2) stopping.abort();
+        return new Response(null, { status: 204 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    await regain()?.(claimToken, "reregistered");
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), steps, lines };
+  };
+
+  const stopped = await twoRegains(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  const control = await twoRegains(false);
+  expect(control.readies).toHaveLength(3);
+  expect(control.lines).toEqual([
+    `re-ran claims/ready after role ${claimToken} was reclaimed`,
+    `re-ran claims/ready after role ${claimToken} was reregistered`,
+  ]);
 });
 
 test("the name is taken at the host's first-turn callback and not before it", async () => {

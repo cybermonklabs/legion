@@ -158,9 +158,7 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
     // The question is the editor's text; the card does not repeat it.
     await expect(ask.getByText("Should we ship?")).toHaveCount(1);
     await expect(hosted.getByRole("radio")).toHaveCount(3);
-    // Nothing chosen yet: nothing to submit.
-    await expect(hosted.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
-    await hosted.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    // Nothing chosen yet: nothing to submit, under the answer box that stands in place.
     const answer = hosted.getByLabel("Your answer");
     const submit = hosted.getByRole("button", { exact: true, name: "Answer" });
     await expect(submit).toBeDisabled();
@@ -227,7 +225,6 @@ test("a reader asks back from a decision block: the question threads under the b
     // No exchange yet: nothing to disclose.
     await expect(block.getByRole("button", { name: /repl/ })).toHaveCount(0);
     // The same two-row composer as the Inbox card: the words can answer or ask back.
-    await hosted.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     const askBack = hosted.getByRole("button", { name: "Ask back" });
     await expect(askBack).toBeDisabled();
     await hosted.getByLabel("Your answer").fill(question);
@@ -522,7 +519,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
     const storageCard = hostedCard(storage);
     await expect(storageCard.getByRole("radio")).toHaveCount(3);
     await expect(storageCard.getByText("Reuse the existing cluster")).toBeVisible();
-    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
+    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeDisabled();
     await pickOption(storageCard, "Postgres Reuse the existing cluster");
     await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
 

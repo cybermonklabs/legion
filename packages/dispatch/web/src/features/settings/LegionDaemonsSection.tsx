@@ -1,8 +1,9 @@
 // The Settings page's Legion section (dispatch://INFRA-1077): which project's state Dispatch
-// reads from which daemon. Naming a project's daemon here is what makes Dispatch's sampler read
-// that daemon's `GET /legion/v1/state` once a minute and record what changed, and removing one
-// stops the reading while everything already read stays. No page draws what the sampler records:
-// nothing in the dashboard reads the board it feeds (`GET /api/v1/projects/{key}/legion/board`).
+// reads from which daemon. Naming a project's daemon here is what makes Dispatch record each state
+// change that daemon publishes (dispatch://INFRA-3931), reading its `GET /legion/v1/state` whole
+// only where the changes cannot carry the state, and removing one stops the recording while
+// everything already recorded stays. No page draws what Dispatch records: nothing in the dashboard
+// reads the board it feeds (`GET /api/v1/projects/{key}/legion/board`).
 //
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
@@ -104,7 +105,11 @@ export function legionStateUrl(raw: string): { readonly url: string; readonly re
 }
 
 /** Each project's Legion daemon, one row per project that names one, and - for a signed-in
- *  person - the field that names one and the Remove that stops reading it. */
+ *  person - the field that names one and the Remove that stops reading it.
+ *
+ *  Its form's groups, in this order: Project, Legion daemon state URL and Save Legion daemon,
+ *  three columns from `sm` and one below it; each field shrinks with its column, and a URL longer
+ *  than its field ends in an ellipsis with the whole URL as its title. */
 export function LegionDaemonsSection(): ReactNode {
   const queryClient = useQueryClient();
   const human = useIsHuman();
@@ -232,10 +237,12 @@ export function LegionDaemonsSection(): ReactNode {
         Legion
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        Naming a project&apos;s Legion daemon here makes Dispatch read that daemon&apos;s state once
-        a minute and record what changed. No page shows that record yet. The address is the
-        daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under it.
-        Removing one stops the reading; what was read stays.
+        Naming a project&apos;s Legion daemon here makes Dispatch record each state change that
+        daemon publishes. Dispatch reads the daemon&apos;s whole state only to start that record or
+        to check what it recorded; it does not poll the daemon on a timer. No page shows that record
+        yet. The address is the daemon&apos;s base URL, with no path: Dispatch reads{" "}
+        <code>/legion/v1/state</code> under it. Removing one stops the recording. What was recorded
+        stays.
         {human ? "" : " Sign in to name one."}
       </p>
 
@@ -347,6 +354,7 @@ export function LegionDaemonsSection(): ReactNode {
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
                   required
+                  title={stateUrl === "" ? undefined : stateUrl}
                   value={stateUrl}
                 />
               </label>

@@ -49,8 +49,11 @@ type CIRecorder interface {
 }
 
 // githubMaxBody is the largest webhook body the handler reads: GitHub's documented payload cap,
-// 25 MB, read as MiB so no delivery GitHub sends is refused. A push of a thousand commits is
-// several megabytes, and a refused delivery is lost for good, since a redelivery is the same body.
+// 25 MB ("Payloads are capped at 25 MB", docs.github.com/en/webhooks/webhook-events-and-payloads,
+// "Payload cap"), read as MiB so no delivery GitHub sends is refused. A push of a thousand commits
+// is several megabytes, and a refused delivery is lost for good, since a redelivery is the same
+// body. A body past the NATS max payload is served too: no envelope carries the body whole, and
+// each text an envelope copies from it is capped (contracts' maxEnvelopeTextRunes).
 const githubMaxBody = 25 << 20
 
 // githubRoomWait is the most a GitHub delivery waits, in all, for room in the listener's body

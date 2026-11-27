@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The exports `scripts/dev-broker.sh` prints now name a sign-in store in the stack's workdir
+  (`AGENT_SECRETS_SIGNIN_DIR`) and no machine identity (`AGENT_SECRETS_MACHINE_IDENTITY` empty), so
+  the session walk-through of the guide "Run the broker locally" works from the shell of a person
+  who uses another broker. `agent-secrets` takes a person's sign-in before the helper, so with that
+  person's own `agent-secrets login` every call of a session registered in the stack signed as that
+  person at the stack's broker, which refused it, and a helper given the machine's own identity
+  traded it at that broker and kept its key in that person's `~/.config/agent-secrets`.
+time: 2026-11-25T01:55:23Z
+custom:
+    Issue: dev-broker-walkthrough

@@ -278,8 +278,10 @@ func (l *ownerStepsLive) stepsRead(issue, task string, steps []string) {
 	}
 }
 
-// taskLinesHold says whether out, what `dispatch steps --issue <issue>` printed, is exactly the runs
-// of want, each of task, ended with its result and with an agent, under a header of one task.
+// taskLinesHold says whether out, what `dispatch steps --issue <issue>` printed, holds a header of
+// one task and exactly the runs of want, each of task, ended with its result and with an agent. The
+// line of the task's needs and planned steps before its runs is no run, and parseSteps passes it
+// over.
 func taskLinesHold(issue, out, task string, want []stepWant) error {
 	printed, err := parseSteps(issue, out)
 	if err != nil {
