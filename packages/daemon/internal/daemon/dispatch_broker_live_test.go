@@ -2083,6 +2083,13 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			}
 		}
 	}
+	// The control's records rows, and the code each is refused with: only a Legion daemon's
+	// session writes the step record, its rating and experiment, the plan and the role holders, and
+	// other-project-worker is none; and R26 takes a status write on the daemon's issue of P, a
+	// Legion issue, only from a token that holds legion-status, which the control's does not. R26's
+	// control with the setting on refuses the shared token's writes with the same codes.
+	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutStepExperiment": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": roleHolderForbiddenCode,
+		"SetStatus": statusScopeCode, "SetStatusAt": statusScopeCode, "HandOver": statusScopeCode, "ChangeStatus": statusScopeCode}
 	for _, write := range scopeOn {
 		if write.read {
 			if !write.ok {
@@ -2090,10 +2097,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			}
 			continue
 		}
-		want := statusScopeCode
-		if write.write == "PutRoleHolders" {
-			want = roleHolderForbiddenCode
-		}
+		want := refusedRecords[write.write]
 		status, code := refusal(write.err)
 		mutations := write.mutations()
 		if status != http.StatusForbidden || code != want || len(mutations) != 1 || mutations[0].Scheme != "Bearer" ||
@@ -2121,12 +2125,6 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			t.Errorf("with the token of %s, the role's %s = %s, and the proxy recorded no write (%+v); want it sent to Dispatch and accepted", rigP, write.write, write.outcome, write.records)
 		}
 	}
-	// The control's records rows, and the code each is refused with: only a Legion daemon's
-	// session writes the step record, its rating and experiment, the plan and the role holders, and
-	// other-project-worker is none; and R26 takes a status write on the daemon's issue of P, a
-	// Legion issue, only from a token that holds legion-status, which the control's does not.
-	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutStepExperiment": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": roleHolderForbiddenCode,
-		"SetStatus": statusScopeCode, "SetStatusAt": statusScopeCode, "HandOver": statusScopeCode, "ChangeStatus": statusScopeCode}
 	for _, write := range withQ {
 		if write.read {
 			continue

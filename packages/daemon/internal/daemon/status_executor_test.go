@@ -706,7 +706,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 			if rows := statusRowsOf(t, pool, issue); rows != 0 {
 				t.Fatalf("status rows after the write was taken = %d, want none", rows)
 			}
-			lines := loggedLines(t, logs.String(), "outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again")
+			lines := loggedLines(t, logs.String(), statusScopeRefusedLine)
 			if len(lines) != tc.scopeLines {
 				t.Fatalf("scope refusal lines = %d, want one for each scope refusal", len(lines))
 			}
@@ -720,7 +720,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("status-scope notices = %+v, want %d", told, tc.notices)
 			}
 			for _, notice := range told {
-				if !strings.Contains(notice.Reason, statusScopeCode) || !strings.Contains(notice.Reason, issue) || !namesStatusScopeSteps(notice.Reason) {
+				if !strings.Contains(notice.Reason, statusScopeCode) || !strings.Contains(notice.Reason, issue) || !containsAll(notice.Reason, statusScopeSteps) {
 					t.Fatalf("status-scope notice reason = %q, want the code, the issue, the token a person must give and the three changes that give it", notice.Reason)
 				}
 			}
@@ -735,7 +735,6 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 	// (packages/envoy/internal/dispatch/api/issue_role_holders.go in cybermonklabs/legion#4601).
 	notProven := &dispatch.Error{Status: http.StatusForbidden, Code: roleHolderNotProvenCode,
 		Message: "project LEGION records proven sessions, so it takes the role holders of LEGION-209 only on a credential that proves session legion-daemon:LEGION. This request's credential does not prove that session."}
-	const roleHoldersLine = "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again"
 	for _, tc := range []struct {
 		name string
 		// refusal is Dispatch's answer to each refused publication, and code its code.
@@ -791,7 +790,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				string(record.OutboxKindRoleHoldersPublish), issue).Scan(&left); err != nil || left != 0 {
 				t.Fatalf("role-holder rows of %s after the publication was taken = %d, %v; want none", issue, left, err)
 			}
-			lines := loggedLines(t, logs.String(), roleHoldersLine)
+			lines := loggedLines(t, logs.String(), roleHolderRefusedLine)
 			if len(lines) != tc.refusals {
 				t.Fatalf("role-holder refusal lines = %d, want one for each of the %d refusals", len(lines), tc.refusals)
 			}
@@ -809,7 +808,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("status-scope notices of %s = %+v, want %d: the run queues one notice for the first refusal of either code", issue, told, want)
 			}
 			for _, notice := range told {
-				if !strings.Contains(notice.Reason, tc.code) || !strings.Contains(notice.Reason, issue) || !namesStatusScopeSteps(notice.Reason) {
+				if !strings.Contains(notice.Reason, tc.code) || !strings.Contains(notice.Reason, issue) || !containsAll(notice.Reason, statusScopeSteps) {
 					t.Fatalf("status-scope notice reason = %q, want the code, the issue, the token a person must give and the three changes that give it", notice.Reason)
 				}
 			}
@@ -828,16 +827,6 @@ var statusScopeSteps = []string{
 	"run the daemon with dispatch_token_broker: true in place of dispatch_token_file.",
 	"give the daemon's ServiceAccount a BROKER_EXCHANGE_ACCOUNTS entry that names the project LEGION and fixes the session legion-daemon:LEGION.",
 	"run a secrets broker release that has the change that added the legion-status scope to the broker, cybermonklabs/legion pull request #4601.",
-}
-
-// namesStatusScopeSteps says whether reason holds every one of statusScopeSteps.
-func namesStatusScopeSteps(reason string) bool {
-	for _, step := range statusScopeSteps {
-		if !strings.Contains(reason, step) {
-			return false
-		}
-	}
-	return true
 }
 
 // refusingStatus is outboxDispatch whose status write answers each of refusals in turn, and then

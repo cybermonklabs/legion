@@ -171,8 +171,8 @@ func TestADaemonWriteWithoutTheStatusScopeIsKeptAgainstScratchDispatch(t *testin
 
 			lines := map[string]int{}
 			for _, line := range append(
-				loggedLines(t, logs.String(), "outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again"),
-				loggedLines(t, logs.String(), "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again")...) {
+				loggedLines(t, logs.String(), statusScopeRefusedLine),
+				loggedLines(t, logs.String(), roleHolderRefusedLine)...) {
 				lines[fmt.Sprint(line["issue"], " ", line["code"])]++
 			}
 			if !maps.Equal(lines, wantLines) {
@@ -187,7 +187,7 @@ func TestADaemonWriteWithoutTheStatusScopeIsKeptAgainstScratchDispatch(t *testin
 				t.Fatalf("status-scope notices = %+v, want %d: one for the daemon run, whichever refusal comes first", told, kept)
 			}
 			for _, notice := range told {
-				if (!strings.Contains(notice.Reason, "403 "+statusScopeCode) && !strings.Contains(notice.Reason, "403 "+roleHolderForbiddenCode)) || !namesStatusScopeSteps(notice.Reason) {
+				if (!strings.Contains(notice.Reason, "403 "+statusScopeCode) && !strings.Contains(notice.Reason, "403 "+roleHolderForbiddenCode)) || !containsAll(notice.Reason, statusScopeSteps) {
 					t.Errorf("status-scope notice reason = %q, want the refusal's status and code and the three changes that give the daemon the scope", notice.Reason)
 				}
 			}

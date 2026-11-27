@@ -1692,9 +1692,9 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 		// refill's check of which keys the listing holds.
 		prepared.scope = append(prepared.scope, summary)
 	}
-	// shown is the scope by key, for the walk up an unrecorded todo child's parents, read once the
-	// listing holds such a child.
-	var shown map[string]intake.DispatchIssue
+	// shown is the scope by key, each entry pointing into prepared.scope, for the walk up an
+	// unrecorded todo child's parents, made once the listing holds such a child.
+	var shown map[string]*dispatch.IssueSummary
 	for _, summary := range prepared.scope {
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
@@ -1711,9 +1711,9 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 			// the listing.
 			if records[summary.Key] == nil && fact.ChildTodo() {
 				if shown == nil {
-					shown = make(map[string]intake.DispatchIssue, len(prepared.scope))
-					for _, listed := range prepared.scope {
-						shown[listed.Key] = intake.ListedIssue(listed)
+					shown = make(map[string]*dispatch.IssueSummary, len(prepared.scope))
+					for i := range prepared.scope {
+						shown[prepared.scope[i].Key] = &prepared.scope[i]
 					}
 				}
 				fact.Transition, err = w.childTransition(ctx, fact, listedParentAtWork(records, shown, fact.Parent))
@@ -1787,7 +1787,7 @@ func (w *workflowRuntime) leftOutUnreadable(key string, err error) bool {
 // listed at a status of work the pass may return it to, or unrecorded and listed todo, which the
 // pass records first (admit's parentsFirst), as a root handed to Legion or as a child whose own
 // parent can, up to record.MaxChainLinks issues above the child.
-func listedParentAtWork(records map[string]*record.Issue, shown map[string]intake.DispatchIssue, parent string) bool {
+func listedParentAtWork(records map[string]*record.Issue, shown map[string]*dispatch.IssueSummary, parent string) bool {
 	for range record.MaxChainLinks {
 		listed, inListing := shown[parent]
 		if recorded := records[parent]; recorded != nil {
@@ -1796,7 +1796,7 @@ func listedParentAtWork(records map[string]*record.Issue, shown map[string]intak
 		if !inListing || listed.Status != "todo" {
 			return false
 		}
-		above := record.InProjectParent(listed.Key, listed.Parent)
+		above := record.InProjectParent(listed.Key, parentKey(listed.Parent))
 		if above == "" {
 			return listed.HandedOver
 		}

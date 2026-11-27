@@ -786,8 +786,7 @@ func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *recor
 	if gateRoot != "" {
 		tree = chains.GateTree(gateRoot)
 	}
-	claimed := make([]string, 0, 1+len(links)+len(tree))
-	claimed = append(append(append(claimed, issue.Key), links...), tree...)
+	claimed := slices.Concat([]string{issue.Key}, links, tree)
 	agent, err := e.store.SessionClaimsOf(ctx, tx, claimed, write.Session)
 	if err != nil {
 		return writeTaken, false, err

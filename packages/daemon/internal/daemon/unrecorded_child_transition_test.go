@@ -247,18 +247,12 @@ func (r *childTransitionRig) runStatusRows() {
 // write, its status and the sequence it undoes, and the fence is the queue's.
 func (r *childTransitionRig) statusWrites(key string) []record.StatusWrite {
 	r.t.Helper()
-	rows, err := r.w.pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = $2 order by id`,
-		key, string(record.OutboxKindDispatchStatus))
-	if err != nil {
-		r.t.Fatalf("read the status rows of %s: %v", key, err)
-	}
-	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
-	if err != nil {
-		r.t.Fatalf("read the status rows of %s: %v", key, err)
-	}
-	writes := make([]record.StatusWrite, 0, len(payloads))
-	for _, payload := range payloads {
-		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindDispatchStatus, Issue: key, Payload: payload})
+	var writes []record.StatusWrite
+	for _, row := range rowsOfKind(r.t, r.w.pool, record.OutboxKindDispatchStatus) {
+		if row.Issue != key {
+			continue
+		}
+		decoded, err := record.DecodeOutboxPayload(row)
 		if err != nil {
 			r.t.Fatalf("decode a status row of %s: %v", key, err)
 		}

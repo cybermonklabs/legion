@@ -529,11 +529,12 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // wakeWaitingChildren wakes the board lane of each issue whose write into work outboxInOrder held
 // behind row, a dispatch_status row that has just finished (record.WaitingChildStatusIssues), so
 // the child's row runs now rather than at the next sweep: a held row takes no lease and its lane
-// exits with nothing due, and nothing else wakes it. It reads once the finish has committed, so a
-// child row committed before the read is woken here, and one committed after it is listed by its
-// own lane against a board that no longer holds row. A read that fails is logged and the sweep
-// wakes the lane within sweepInterval. While no lane runs (RunOnce) nothing is read: a wake would
-// reach none.
+// exits with nothing due, and nothing else wakes it but a drop of the issue's status writes, whose
+// commit wakes the same lanes (projectRecords.DropStatusWrites). It reads once the finish has
+// committed, so a child row committed before the read is woken here, and one committed after it is
+// listed by its own lane against a board that no longer holds row. A read that fails is logged and
+// the sweep wakes the lane within sweepInterval. While no lane runs (RunOnce) nothing is read: a
+// wake would reach none.
 func (r *outbox) wakeWaitingChildren(ctx context.Context, row record.OutboxRow) {
 	if row.Kind != record.OutboxKindDispatchStatus {
 		return
@@ -1438,27 +1439,27 @@ func (r *outbox) awaitParentInWork(ctx context.Context, row record.OutboxRow, pa
 	if payload.Kind != record.ReassertStatusRow || payload.IncludeParent || !record.InWorkStatus(payload.Status) {
 		return nil
 	}
-	if r.pool == nil || read.Parent == nil || *read.Parent == "" || *read.Parent == row.Issue {
+	above := parentKey(read.Parent)
+	if r.pool == nil || above == "" || above == row.Issue {
 		return nil
 	}
-	parentKey := *read.Parent
-	parentRec, err := r.recordedIssue(ctx, parentKey)
+	parentRec, err := r.recordedIssue(ctx, above)
 	if err != nil {
 		return err
 	}
 	if parentRec == nil || !record.InLegionsWork(*parentRec) {
 		return nil
 	}
-	parent, err := r.dispatch.GetIssue(ctx, parentKey)
+	parent, err := r.dispatch.GetIssue(ctx, above)
 	if err != nil {
 		if _, permanent := dispatch.PermanentRefusal(err); permanent {
 			return nil
 		}
-		return fmt.Errorf("read Dispatch parent %s before setting %s back to %s: %w", parentKey, row.Issue, payload.Status, err)
+		return fmt.Errorf("read Dispatch parent %s before setting %s back to %s: %w", above, row.Issue, payload.Status, err)
 	}
 	if !record.InWorkStatus(parent.Status) {
 		return wait.Errorf("outbox status row %d of %s waits for its parent %s (Dispatch shows %s, record shows %s) to be in work before setting %s back to %s",
-			row.ID, row.Issue, parentKey, parent.Status, parentRec.Status, row.Issue, payload.Status)
+			row.ID, row.Issue, above, parent.Status, parentRec.Status, row.Issue, payload.Status)
 	}
 	return nil
 }
@@ -1509,6 +1510,15 @@ const roleHolderForbiddenCode = "ROLE_HOLDER_FORBIDDEN"
 // change together, as statusScopeCode's do.
 const roleHolderNotProvenCode = "ROLE_HOLDER_NOT_PROVEN"
 
+// statusScopeRefusedLine is statusRefusal's line for each 403 LEGION_STATUS_SCOPE_REQUIRED of a
+// status write (statusScopeCode), logged with the code and the issue.
+const statusScopeRefusedLine = "outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again"
+
+// roleHolderRefusedLine is publishRoleHolders' line for each 403 ROLE_HOLDER_FORBIDDEN or
+// ROLE_HOLDER_NOT_PROVEN of a publication (roleHolderForbiddenCode, roleHolderNotProvenCode),
+// logged with the code and the issue.
+const roleHolderRefusedLine = "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again"
+
 // statusRefusal answers the two refusals of a status write that the row decides itself rather
 // than as dispatch.PermanentRefusal reads them, and says whether err was one of them; the error it
 // answers is the row's. A PARENT_STATUS_CONFLICT (R24 of dispatch://INFRA-3320) ends the row: on a
@@ -1529,7 +1539,7 @@ func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payloa
 	case dispatch.ParentStatusConflict(err):
 		return true, r.parentRuleRefused(ctx, row, payload, refusal)
 	case refusal.Status == http.StatusForbidden && refusal.Code == statusScopeCode:
-		r.log.Warn("outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again",
+		r.log.Warn(statusScopeRefusedLine,
 			"row", row.ID, "issue", row.Issue, "status", payload.Status, "code", refusal.Code)
 		written := fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
 		if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
@@ -2274,7 +2284,7 @@ func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, p
 		(refusal.Code != roleHolderForbiddenCode && refusal.Code != roleHolderNotProvenCode) {
 		return published
 	}
-	r.log.Warn("outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again",
+	r.log.Warn(roleHolderRefusedLine,
 		"row", row.ID, "issue", payload.Issue, "code", refusal.Code)
 	if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
 		"Dispatch refused the daemon's publication of the role holders of %s with %d %s. Dispatch takes a publication from a token that proves the session %s and holds the legion-status scope, and the token the daemon writes Dispatch with is not such a token. The daemon keeps the publication and writes it again. Dispatch lets the issue's architect write the status of the issues below it only once the daemon's own token has published that architect. %s",
@@ -4662,6 +4672,7 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 	}
 	// Wait before reading Dispatch. The workflow checks again when the fact applies,
 	// because the copy can change while this executor is reading the parent.
+	var version int
 	if payload.Parent != "" {
 		var pending bool
 		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -4674,9 +4685,6 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 		if pending {
 			return wait.Errorf("re-parent seed of %s waits for the chain of %s: %w", row.Issue, payload.Parent, record.ErrChainUnknown)
 		}
-	}
-	var version int
-	if payload.Parent != "" {
 		var err error
 		if version, err = r.reparentBasisVersion(ctx, payload.Parent); err != nil {
 			return err

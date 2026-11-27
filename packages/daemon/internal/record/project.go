@@ -773,14 +773,13 @@ func (f LineFacts) Queued(issue Issue) bool {
 }
 
 // HeldWhereItStands says whether issue's chain holds it where it stands, so that the line starts
-// nothing of it by any path — its returning work (Waiting), its queued promotion (Queued) or its
-// first phase (Waiting): its chain is unknown (R16 of dispatch://INFRA-3320), which says neither
+// nothing of it by any path — its returning work or its first phase (Waiting), or its queued
+// promotion (Queued): its chain is unknown (R16 of dispatch://INFRA-3320), which says neither
 // whether it is a root nor what stands above it; or it stands under a parent in one of R19's three
-// holds — its parent is out of
-// Legion's work and an issue above that parent is in it (ancestry), its top issue waits on a person
-// (root_awaiting_person), or an issue above it stands in its retro or its merge
-// (HeldUnderAccepted). It is the one statement of those holds that the line reads; which of them
-// holds the issue, and which issue holds it, is the held list's word (HeldReasonOf).
+// holds — its parent is out of Legion's work and an issue above that parent is in it (ancestry),
+// its top issue waits on a person (root_awaiting_person), or an issue above it stands in its retro
+// or its merge (HeldUnderAccepted). It is the one statement of those holds that the line reads;
+// which of them holds the issue, and which issue holds it, is the held list's word (HeldReasonOf).
 func (f LineFacts) HeldWhereItStands(issue Issue) bool {
 	chains := f.Chains
 	chain := chains.Chain(issue.Key)

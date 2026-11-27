@@ -3241,8 +3241,7 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // notices as they come due. That is what lets a transition apply at once and hold only the start.
 var outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
-		and not (outbox.kind = $2 and outbox.payload->>'status' in (` + inWorkStatusesSQL + `)
-			and coalesce(outbox.payload->>'includeParent', '') <> 'true'
+		and not (outbox.kind = $2 and ` + outboxStatusIntoWorkSQL + `
 			and exists (select 1 from outbox parent
 				where parent.kind = $2 and parent.issue <> outbox.issue
 					and parent.payload->>'status' in (` + inWorkStatusesSQL + `)
@@ -3252,9 +3251,16 @@ var outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox olde
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
 			and not exists (select 1 from slots where slots.issue = outbox.issue))`
 
-// inWorkStatusesSQL is inWorkStatuses as an SQL literal list, shared by outboxInOrder and
-// WaitingChildStatusIssues so the two can never disagree on which statuses are in work.
+// inWorkStatusesSQL is inWorkStatuses as an SQL literal list, which both sides of outboxInOrder's
+// parent rule read, the child's row through outboxStatusIntoWorkSQL as WaitingChildStatusIssues
+// reads it too, so the rule and that read can never disagree on which statuses are in work.
 var inWorkStatusesSQL = sqlTextList(inWorkStatuses)
+
+// outboxStatusIntoWorkSQL is a dispatch_status row, the outer `outbox` row, that puts its issue
+// into work (inWorkStatuses) without includeParent: the write outboxInOrder holds behind its
+// parent's own write into work, and so the row WaitingChildStatusIssues lists as waiting on it.
+var outboxStatusIntoWorkSQL = `outbox.payload->>'status' in (` + inWorkStatusesSQL + `)
+			and coalesce(outbox.payload->>'includeParent', '') <> 'true'`
 
 // outboxParentSQL is the Dispatch parent of the outer `outbox` row's issue as the Dispatch copy
 // (dispatch_issues) holds it: null where the copy holds no row of the issue, or a row showing it
@@ -3849,33 +3855,29 @@ func (s *Postgres) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseT
 
 // WaitingChildStatusIssues is the distinct issues whose queued dispatch_status row writes an
 // in-work status without includeParent and whose Dispatch copy names parent as their parent
-// (outboxParentSQL): the board lanes to wake once a dispatch_status row of parent finishes, since
-// outboxInOrder held them back behind it.
+// (outboxParentSQL): the board lanes to wake once a dispatch_status row of parent finishes or its
+// status writes are dropped (DropStatusWrites), since outboxInOrder held them back behind it.
 func WaitingChildStatusIssues(ctx context.Context, tx pgx.Tx, parent string) ([]string, error) {
 	rows, err := tx.Query(ctx, waitingChildStatusIssuesSQL, string(OutboxKindDispatchStatus), parent)
 	if err != nil {
 		return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
 	}
-	defer rows.Close()
-	var issues []string
-	for rows.Next() {
-		var issue string
-		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
-		}
-		issues = append(issues, issue)
-	}
-	if err := rows.Err(); err != nil {
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
 	}
 	return issues, nil
 }
 
-var waitingChildStatusIssuesSQL = `select distinct outbox.issue from outbox
-		where outbox.kind = $1 and outbox.issue <> $2
-			and outbox.payload->>'status' in (` + inWorkStatusesSQL + `)
-			and coalesce(outbox.payload->>'includeParent', '') <> 'true'
-			and ` + outboxParentSQL + ` = $2
+// waitingChildStatusIssuesSQL is WaitingChildStatusIssues' statement ($1 the dispatch_status kind,
+// $2 the parent): it starts from the parent's children in the Dispatch copy, through the copy's
+// index on its parent column (dispatch_issues_parent), and keeps each child with a queued write
+// into work outboxInOrder holds behind the parent (outboxStatusIntoWorkSQL). dispatch_issues is
+// keyed by its issue, so a child joins at most one copy row, the one outboxParentSQL reads.
+var waitingChildStatusIssuesSQL = `select distinct outbox.issue from dispatch_issues d
+		join outbox on outbox.issue = d.key
+		where d.parent = $2 and outbox.kind = $1 and outbox.issue <> $2
+			and ` + outboxStatusIntoWorkSQL + `
 		order by outbox.issue`
 
 func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {

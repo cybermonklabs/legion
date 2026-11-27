@@ -2554,7 +2554,7 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // stands at, and the event that reaches the daemon can be that rename. A failed or undecodable log
 // read fails the preparation naming the issue, so the event is delivered again.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	return w.prepareIssue(ctx, issue, true, true)
+	return w.prepareIssue(ctx, issue, eventView)
 }
 
 // prepareObserved readies a view whose writer the daemon knows, already observed as Dispatch's
@@ -2562,19 +2562,37 @@ func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.Di
 // reads no transition: release_children's todo child, which the architect's release starts, and
 // Dispatch's answer to the daemon's own status write (the outbox's applyOwnWrite).
 func (w *workflowRuntime) prepareObserved(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	return w.prepareIssue(ctx, issue, false, false)
+	return w.prepareIssue(ctx, issue, writerKnownView)
 }
 
 // prepareReread readies the chain re-read's view of an issue (rereadChain) as prepareRepository
 // readies an event's, transition and all: no event of the issue names who wrote what it shows.
 func (w *workflowRuntime) prepareReread(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	return w.prepareIssue(ctx, issue, false, true)
+	return w.prepareIssue(ctx, issue, rereadView)
 }
 
+// issueView is which view of an issue prepareIssue readies, and so what it reads for an unrecorded
+// issue admission would record.
+type issueView int
+
+const (
+	// eventView is an admission event (prepareRepository): prepared from Dispatch's current view
+	// of the issue, and an unrecorded todo child's transition read.
+	eventView issueView = iota
+	// writerKnownView is a view already observed as Dispatch shows the issue now and whose writer
+	// the daemon knows (prepareObserved): release_children's child and Dispatch's answer to the
+	// daemon's own status write. Dispatch is not read again and no transition is read.
+	writerKnownView
+	// rereadView is the chain re-read's view (rereadChain, prepareReread), already Dispatch's
+	// current one, so Dispatch is not read again, but an unrecorded todo child's transition is.
+	rereadView
+)
+
 // prepareIssue is prepareRepository, preparing an admission event from Dispatch's current view
-// only when observe is set, as the view of release_children's child and the chain re-read's are
-// already, and reading an unrecorded todo child's transition only when attribute is set.
-func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.DispatchIssue, observe, attribute bool) (intake.DispatchIssue, error) {
+// only for an event's view (eventView), as the view of release_children's child and the chain
+// re-read's are already, and reading an unrecorded todo child's transition for every view but one
+// whose writer the daemon knows (writerKnownView).
+func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.DispatchIssue, view issueView) (intake.DispatchIssue, error) {
 	recorded, err := w.recordOf(ctx, issue.Key)
 	if err != nil {
 		return issue, err
@@ -2590,7 +2608,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		}
 		return w.prepareUnrecorded(ctx, issue, false)
 	}
-	if observe {
+	if view == eventView {
 		delivered := issue.Seq
 		now, err := w.dispatch.GetIssue(ctx, issue.Key)
 		if err != nil {
@@ -2603,7 +2621,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		}
 		issue.Seq, issue.Delivered = max(delivered, issue.Seq), &event
 	}
-	if attribute && issue.ChildTodo() {
+	if view != writerKnownView && issue.ChildTodo() {
 		parent, err := w.recordOf(ctx, issue.Parent)
 		if err != nil {
 			return issue, err

@@ -270,11 +270,20 @@ func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, ke
 	if err != nil {
 		return false, err
 	}
-	return !chains.Chain(parent).Known(), nil
+	return reparentChainUnknown(*issue, seed, chains), nil
+}
+
+// reparentChainUnknown says whether seed waits on the chain of its wait parent
+// (reparentWaitParent), which chains, read over that parent, shows still unknown.
+func reparentChainUnknown(issue record.Issue, seed record.ReparentSeed, chains *record.Chains) bool {
+	parent := reparentWaitParent(issue, seed)
+	return parent != "" && !chains.Chain(parent).Known()
 }
 
 // reparentArchitects names the issue's own architect claim and the owners reached from the
-// seed's two parents. Parents in another project are not part of the walk.
+// seed's two parents. Parents in another project are not part of the walk. waits says the chain
+// of the seed's wait parent is still unknown (reparentChainUnknown), and then it names no one:
+// the telling stays owed until R16's re-read fills the copy.
 type reparentArchitects struct {
 	own, before, now string
 	waits            bool
@@ -308,7 +317,7 @@ func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return reparentArchitects{}, err
 	}
-	if parent := reparentWaitParent(issue, seed); parent != "" && !chains.Chain(parent).Known() {
+	if reparentChainUnknown(issue, seed, chains) {
 		return reparentArchitects{waits: true}, nil
 	}
 	walk, err := record.OwnerWalkOver(ctx, e.store, tx, project, chains, keys)
