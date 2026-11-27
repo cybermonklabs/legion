@@ -344,6 +344,9 @@ func eachTakenTask(most int, take func(steps []Step)) {
 			return
 		}
 		for _, role := range roles {
+			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
+				continue // control: the enumeration before the fix put each role on a line once
+			}
 			for _, key := range stepKeys {
 				choose(append(slices.Clone(steps), Step{Role: role.Name, Key: key}))
 			}
