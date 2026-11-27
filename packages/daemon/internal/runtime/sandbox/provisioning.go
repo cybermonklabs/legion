@@ -52,8 +52,14 @@ func initEnd(status corev1.ContainerStatus) *corev1.ContainerStateTerminated {
 // or failed is started again, whatever its own status says it did. A container the kubelet lost
 // (the reason ContainerStatusUnknown, which the kubelet writes when the node or its container
 // runtime restarted) is a node loss and never inside the grace: the next launch replaces the pod
-// and keeps its volume.
+// and keeps its volume. Nor is a container of a pod that is being deleted: such a pod stays
+// Pending while it terminates, and the kubelet can restart its init container as it goes, so
+// without this a launch would read the pod as still coming up and wait out its whole provisioning
+// bound on a pod that is going away (provisioning, awaitRoleLauncher).
 func startingAgain(pod *corev1.Pod, status corev1.ContainerStatus) bool {
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
 	if ended := initEnd(status); ended != nil && ended.Reason == "ContainerStatusUnknown" {
 		return false
 	}

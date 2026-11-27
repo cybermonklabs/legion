@@ -176,7 +176,7 @@ Each item below names a script, then what it proves.
     A deployment whose admission lowers a CPU request that equals its limit gives the opt-out label of a timed run with `--label`, and the harness reads the cache container's request back from the admitted Job and refuses the run when it is not 1 CPU.
     `--repo` names another public repository than node's;
     `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), prints the cache container's CPU request as admitted, creates nothing, and exits.
-    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about ten minutes on the default repository, and its clean-up is a trap that a tool killing a long call does not let run.
+    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about twenty minutes on the default repository (its pod ran 19m17s and 20m31s in the two runs of 2026-11-26 and 2026-11-27), and its clean-up is a trap that a tool killing a long call does not let run.
     Exit statuses: 0 pass; 1 the Job ran and a check failed; 2 the harness could not run, or the run is void; 3 the Job reached no verdict inside its deadline.
 
   Legion pod only
