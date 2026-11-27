@@ -55,7 +55,7 @@ func restoredOwedStart(t *testing.T) *harness {
 	}
 	h.conns.Register(testToken, h.conn)
 	h.conn.SetStreaming(true)
-	h.conn.RefusePrompt(busyAnswer)
+	h.conn.FailPrompt(busyRefusal())
 	h.rt.AnswerStartAtBranch(movedTo)
 	h.start(restored)
 	return h

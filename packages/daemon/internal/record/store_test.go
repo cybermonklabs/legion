@@ -3188,7 +3188,7 @@ func TestAChangeGenerationKeepsTheGate(t *testing.T) {
 				must(t, err)
 			})
 			inTx(t, st, func(tx pgx.Tx) {
-				must(t, records.ClearChangeGeneration(ctx, tx, tc.cleared.Key, at.Add(time.Hour)))
+				must(t, records.ClearChangeGeneration(ctx, tx, tc.cleared.Key))
 			})
 			inTx(t, st, func(tx pgx.Tx) {
 				if got := rowsText(t, tx, kept, tc.other.Key); !reflect.DeepEqual(got, beforeOther) {
@@ -3277,10 +3277,16 @@ func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
 		name  string
 		clear func(tx pgx.Tx, issue string) error
 	}{
-		{"ClearGeneration", func(tx pgx.Tx, issue string) error { return records.ClearGeneration(ctx, tx, issue, clearedAt) }},
+		{"ClearGeneration", func(tx pgx.Tx, issue string) error {
+			_, err := records.ClearGeneration(ctx, tx, issueFixture(issue), forgetNothing)
+			return err
+		}},
 		// Each issue is its own tree's root, so its tree's clear covers it alone.
-		{"ClearTreeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearTreeGeneration(ctx, tx, issue, clearedAt) }},
-		{"ClearChangeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearChangeGeneration(ctx, tx, issue, clearedAt) }},
+		{"ClearTreeGeneration", func(tx pgx.Tx, issue string) error {
+			_, err := records.ClearTreeGeneration(ctx, tx, issue, forgetNothing)
+			return err
+		}},
+		{"ClearChangeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearChangeGeneration(ctx, tx, issue) }},
 	} {
 		for _, tc := range []struct {
 			issue                string
@@ -3342,9 +3348,15 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 		name  string
 		write func(tx pgx.Tx) error
 	}{
-		{"ClearGeneration", func(tx pgx.Tx) error { return records.ClearGeneration(ctx, tx, issue.Key, mergedAt) }},
-		{"ClearTreeGeneration", func(tx pgx.Tx) error { return records.ClearTreeGeneration(ctx, tx, issue.Tree, mergedAt) }},
-		{"ClearChangeGeneration", func(tx pgx.Tx) error { return records.ClearChangeGeneration(ctx, tx, issue.Key, mergedAt) }},
+		{"ClearGeneration", func(tx pgx.Tx) error {
+			_, err := records.ClearGeneration(ctx, tx, issue, forgetNothing)
+			return err
+		}},
+		{"ClearTreeGeneration", func(tx pgx.Tx) error {
+			_, err := records.ClearTreeGeneration(ctx, tx, issue.Tree, forgetNothing)
+			return err
+		}},
+		{"ClearChangeGeneration", func(tx pgx.Tx) error { return records.ClearChangeGeneration(ctx, tx, issue.Key) }},
 		{"a PutIssue of a whole new record", func(tx pgx.Tx) error {
 			fresh := issueFixture(issue.Key)
 			fresh.Parent, fresh.Generation, fresh.Phase, fresh.Status = nil, 9, "admitted", "todo"
