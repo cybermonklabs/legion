@@ -9,7 +9,9 @@ import {
 import { constants } from "node:os";
 import type { Duplex } from "node:stream";
 import { API_ROUTE_PATTERN, DISPATCH_API_METHODS } from "@legion/contracts/dispatch-tools";
+import { errorClass, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import { brokerTokenFor } from "./broker-credential";
 import { writeRoute } from "./dispatch-commands/api";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -80,6 +82,11 @@ const TARGET_REFUSED = { status: 400, code: "PROXY_TARGET_REFUSED" } as const;
 const METHOD_REFUSED = { status: 405, code: "PROXY_METHOD_REFUSED" } as const;
 const TRADE_REFUSED = { status: 502, code: "PROXY_TRADE_REFUSED" } as const;
 const DISPATCH_UNREACHABLE = { status: 502, code: "PROXY_DISPATCH_UNREACHABLE" } as const;
+
+/** What names the Dispatch URL in the proxy's refusals where the URL does not print
+ *  (`urlForText`): one that carries user information or a query, or that is not a plain http(s)
+ *  URL. */
+const DISPATCH_URL_SETTING = "the configured Dispatch URL";
 
 /** What the proxy sends, as each of its refusals of a request says it. */
 const SENDS =
@@ -273,10 +280,10 @@ async function listen(server: Server, socket: string): Promise<void> {
  * among them, to `clientError`: each is answered 405 on its socket.
  */
 function proxyServer(run: DispatchProxyRun, tally: Tally): Server {
-  // Dispatch's URL, parsed once with no fragment, and its own path with no `/` at its end, so `/`
-  // alone is the empty path. `serve` sends each request to a copy of this URL.
-  const dispatch = new URL(run.config.url);
-  dispatch.hash = "";
+  // Dispatch's URL as `joinUrl` reads it, with no fragment and its path cleaned, and its own path
+  // with no `/` at its end, so `/` alone is the empty path. `serve` sends each request to its
+  // target joined onto this URL, which `joinUrl` cleans the same way.
+  const dispatch = joinUrl(run.config.url, "/");
   const base = withoutTrailingSlashes(dispatch.pathname);
   const server = createServer((request, response) => {
     serve(request, response, run, dispatch, base, tally).catch((error: unknown) => {
@@ -517,9 +524,9 @@ interface Sent {
 
 /**
  * One request through the proxy: the two target rules on the raw target (a host, then another
- * route), the method and path rule on the path of the URL it would send, the check of that URL
- * whole, then the send. `dispatch` is Dispatch's URL as {@link proxyServer} parsed it, and `base`
- * its own path.
+ * route), the join of the target onto Dispatch's URL, the method and path rule on the path of the
+ * URL it would send, the check of that URL whole, then the send. `dispatch` is Dispatch's URL as
+ * {@link proxyServer} read it, and `base` its own path.
  */
 async function serve(
   request: IncomingMessage,
@@ -536,23 +543,36 @@ async function serve(
     answerRefusal(
       response,
       TARGET_REFUSED,
-      `The proxy sends each request to the Dispatch server ${run.config.url} alone, so a target that names a host, ${JSON.stringify(target)}, is refused. Write the path and the query alone.`
+      `The proxy sends each request to the Dispatch server at ${urlForText(run.config.url, DISPATCH_URL_SETTING)} alone, so a target that names a host, ${JSON.stringify(target)}, is refused. Write the path and the query alone.`
     );
     return;
   }
   const at = target.indexOf("?");
   const path = at === -1 ? target : target.slice(0, at);
-  // The URL it sends: a copy of Dispatch's, with only its path and its query set from the target.
-  // The target is never parsed as a reference, so nothing in it can change the origin.
-  const outbound = new URL(dispatch);
-  outbound.pathname = `${base}${path}`;
-  outbound.search = at === -1 ? "" : target.slice(at);
+  const elsewhere = elsewhereRefusal(target, path);
+  if (elsewhere !== undefined) {
+    answerRefusal(response, METHOD_REFUSED, elsewhere);
+    return;
+  }
+  // The URL it sends: the target joined onto Dispatch's URL (`joinUrl`), its path below Dispatch's
+  // own path and Dispatch's query ahead of the target's own. `joinUrl` refuses a target that names
+  // a scheme, a host or a fragment, so nothing in it can change the origin.
+  let outbound: URL;
+  try {
+    outbound = joinUrl(run.config.url, target);
+  } catch {
+    answerRefusal(
+      response,
+      METHOD_REFUSED,
+      `${SENDS} The target ${JSON.stringify(target)} is no path the proxy can join onto the Dispatch server's URL (a % that starts no escape, for one). Name the route's own path, escaped, or read it with dispatch api.`
+    );
+    return;
+  }
   const header = request.headers["idempotency-key"];
   const key = Array.isArray(header) ? header.join(", ") : header;
   // The method and path rule reads the path that the URL holds below Dispatch's own path, and the
   // URL is checked whole last, so the request it sends is the one each rule passed.
   const refusal =
-    elsewhereRefusal(target, path) ??
     methodRefusal(method, outbound.pathname.slice(base.length), key) ??
     outboundRefusal(outbound, dispatch, base);
   if (refusal !== undefined) {
@@ -621,7 +641,7 @@ async function serve(
     answerRefusal(
       response,
       DISPATCH_UNREACHABLE,
-      `Dispatch at ${run.config.url} did not answer: ${messageFor(error)}`
+      `Dispatch at ${urlForText(run.config.url, DISPATCH_URL_SETTING)} did not answer: ${errorClass(error)}`
     );
     return;
   }

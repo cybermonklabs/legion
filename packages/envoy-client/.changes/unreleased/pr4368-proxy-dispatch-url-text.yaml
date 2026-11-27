@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  `dispatch proxy` no longer prints a credential the configured Dispatch URL carries. `--dry-run`'s
+  `Dispatch server:` line, the proxy's `PROXY_TARGET_REFUSED` answer to a target that names a
+  host, and its `PROXY_DISPATCH_UNREACHABLE` answer printed the URL whole, its user information
+  and query included. They now name it as `urlForText` does: the URL where it is a plain http(s)
+  URL, else `the configured Dispatch URL (not printed: ...)`. `PROXY_DISPATCH_UNREACHABLE` now
+  names the failure by its class (`ECONNREFUSED`, `getaddrinfo ENOTFOUND`), never the runtime's
+  message, which repeats the host it dialed: a password with an unescaped `@` is read as a host,
+  so that message printed part of the password.
+time: 2026-11-27T01:15:05Z
+custom:
+    Issue: pr4368

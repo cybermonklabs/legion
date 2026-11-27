@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `dispatch proxy` now sends each request to its target joined onto the configured Dispatch URL's
+  path with `joinUrl`, the URL's query kept ahead of the target's own. It sent a copy of the URL
+  with its path and query set from the target, so a Dispatch URL with a query
+  (`http://host/dispatch?key=v`) lost the query. The configured path is cleaned as the join cleans
+  it (`/dispatch//v2` sends to `/dispatch/v2/api/...`). A target with a `%` that starts no escape
+  is refused with `405 PROXY_METHOD_REFUSED` and sends nothing, where it was sent as written.
+time: 2026-11-27T01:15:05Z
+custom:
+    Issue: pr4368
