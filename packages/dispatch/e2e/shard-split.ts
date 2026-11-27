@@ -22,17 +22,17 @@
  * 1,617 rows at f02514268a, and the largest, `chromium` `issue-page-i.e2e.ts`, weighs 309 of the
  * 6,872 s the table expects of them, under a fifth of a leg.
  *
- * A unit's weight is its rows times the seconds one of its rows took on main
- * (`e2e/shard-weights.json`, which `e2e/tools/shard-weights.ts` writes from main's merged
- * reports; its `--run <id>` adds a named full-lane run's report).
- * Its rows are counted now, not when the weights were read, so a file that grew is
- * heavier at once. A file the table has no entry for - a file added since, or renamed - takes
- * the median row of its project, and a project the table has none for takes the median of every
- * project's: an estimate from the same measurements, never nothing, so a new file is placed on
- * the day it lands and the split never refuses a run. How far those estimates are from the truth
- * is what makes the table worth reading again: each leg prints how many of its rows were placed
- * by one (`e2e/shard-reporter.ts`), and `tableWarnings` below says when the table is old enough,
- * or the estimates many enough, that the browser step's hang guard no longer covers the drift.
+ * A unit's weight is its rows times the seconds one of its rows took on main, or on a full-lane
+ * run that `--run <id>` named (`e2e/shard-weights.json`, which `e2e/tools/shard-weights.ts` writes
+ * from main's merged reports and the report of each run `--run <id>` names). Its rows are counted
+ * now, not when the weights were read, so a file that grew is heavier at once. A file the table
+ * has no entry for - a file added since, or renamed - takes the median row of its project, and a
+ * project the table has none for takes the median of every project's: an estimate from the same
+ * measurements, never nothing, so a new file is placed on the day it lands and the split never
+ * refuses a run. How far those estimates are from the truth is what makes the table worth reading
+ * again: each leg prints how many of its rows were placed by one (`e2e/shard-reporter.ts`), and
+ * `tableWarnings` below says when the table is old enough, or the estimates many enough, that the
+ * browser step's hang guard no longer covers the drift.
  *
  * The placement is the longest-first greedy: the heaviest unit first, each onto the leg with the
  * least time so far. It is a function of the selection and the table alone - the units are sorted

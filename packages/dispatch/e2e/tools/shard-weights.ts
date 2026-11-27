@@ -18,13 +18,13 @@
  * `--run <id>`, which may be given more than once, is for a pull request that adds or grows
  * files. Main's reports hold none of their new rows until the files land, so until then the split
  * places those by their project's median row, however long they take. The pull request's own
- * full-lane run - a run under the `full-ci` label, which uploads the same merged report - has
- * measured them: named with `--run`, its report joins main's, each row's median is over every
- * report that holds it, and the new files are placed by their measured time before main's reports
- * hold them. The next read from main alone replaces those numbers once the files land. A named
- * run's artifact is found by the run's id (`actions/runs/<id>/artifacts`); a run with none, or
- * whose artifact has expired, ends the tool, and a run named twice, or one that is also among
- * main's newest <count>, is read once.
+ * full-lane run - a run under the `lane:dispatch_browser` label (`full-ci` is the other label that
+ * gives it), which uploads the same merged report - has measured them: named with `--run`, its
+ * report joins main's, each row's median is over every report that holds it, and the new files are
+ * placed by their measured time before main's reports hold them. The next read from main alone
+ * replaces those numbers once the files land. A named run's artifact is found by the run's id
+ * (`actions/runs/<id>/artifacts`); a run with none, or whose artifact has expired, ends the tool,
+ * and a run named twice, or one that is also among main's newest <count>, is read once.
  *
  * What it writes, for each row that ran: the seconds every attempt of it took, summed, since a
  * retry is time its leg spent; the median of that over the reports, so one slow runner, which
