@@ -86,8 +86,12 @@ func workspaceFetch(ctx context.Context, ws workspaceProcess, repo, feed, cacheU
 // which matched the manifest's, for a reader to compare with the bucket's own listing; or
 // `source=/tar reason=<why the bucket was not used>`, `/packs is not served` for a cache with no
 // bucket or of a release before it. A reason is one line, and names no signed address, query,
-// token or ref's contents (workspace.FetchReport.TarReason). A feed with no cache named, or one
-// that held the repository already, says nothing here.
+// token or ref's contents (workspace.FetchReport.TarReason). The cache's and the bucket's words,
+// which whatever answers at their addresses writes and which can echo the cache's bearer or a
+// signed address's query, reach this line only as the fetch's redaction rule reads them: a reason
+// holds them so, and an object's name holds no run of the bearer, since the fetch refuses a
+// manifest whose object's name holds one. A feed with no cache named, or one that held the
+// repository already, says nothing here.
 func printSource(stdout io.Writer, report workspace.FetchReport) {
 	switch report.Source {
 	case workspace.SourceBucket:
