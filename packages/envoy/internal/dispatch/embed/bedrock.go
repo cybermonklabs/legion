@@ -91,8 +91,10 @@ func NewBedrock(ctx context.Context, opts ...BedrockOption) (*BedrockClient, err
 // NewBedrockWithConfig builds a BedrockClient directly from an already-loaded AWS configuration,
 // skipping NewBedrock's region check and credential-chain loading - a test supplies its own
 // static, fake credentials and WithBaseEndpoint rather than touching the real AWS SDK default
-// chain. Its HTTP client goes through awsbody.Client, so an answered InvokeModel is not failed by
-// smithy-go closing the request body before net/http has finished with it (package awsbody).
+// chain. Its HTTP client goes through awsbody.Client, so an answered InvokeModel over HTTP/1.1 is
+// not failed by smithy-go closing the request body before net/http has finished with it (package
+// awsbody). Bedrock's own endpoint answered over HTTP/2, which that failure does not reach; a
+// stand-in over plain HTTP, as the queue's tests use, is HTTP/1.1.
 func NewBedrockWithConfig(cfg aws.Config, opts ...BedrockOption) *BedrockClient {
 	c := &BedrockClient{model: BedrockModel}
 	for _, opt := range opts {
