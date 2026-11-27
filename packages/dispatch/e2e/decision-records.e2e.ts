@@ -72,7 +72,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   const composer = page.getByRole("form", { name: `Change ${DECISION}` });
   await expect(composer.getByTestId("decision-quote")).toContainText(REASON);
   await composer.getByRole("textbox").fill("Measure the file store first.");
-  await composer.getByRole("button", { name: "Send" }).click();
+  await composer.getByRole("button", { name: "Send change" }).click();
   await expect(composer).toBeHidden();
 
   // The agent changes the decision's text: both blocks it links are out of date, on the Decisions
@@ -173,7 +173,7 @@ test("a decision written as a list keeps its link and its key, and anchors its C
   const composer = page.getByRole("form", { name: `Change ${LISTED}` });
   await expect(composer.getByTestId("decision-quote")).toHaveText(words);
   await composer.getByRole("textbox").fill(LISTED_CHANGE);
-  await composer.getByRole("button", { name: "Send" }).click();
+  await composer.getByRole("button", { name: "Send change" }).click();
   await expect(composer).toBeHidden();
   await expect
     .poll(async () => {

@@ -3,7 +3,8 @@ import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
 import { api } from "../../../api/client";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { KEY } from "../../decision-card/decision-fixture";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { CONTROL_LABELS } from "../page-words";
 import { FailedReadLine } from "./failed-read-line";
