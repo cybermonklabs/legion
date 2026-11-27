@@ -3656,10 +3656,33 @@ if (import.meta.main) {
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
   } else if (command === "cells" && (rest.length === 2 || rest.length === 3)) {
+    // The counts of `<label>\t<case>` keys, as JSON: rig.sh check-stored reads them from the Job's
+    // own cell lines, one count a case, since a Job runs each case to its form's runs. Anything
+    // else is refused with exit 2, as `cell`'s count is: a number, a list, null or the old
+    // `cells <dir> <scenario> <count>` form would otherwise be read as no counts at all, and every
+    // cell would fall back to its stage's runs with nothing said.
+    let counts: Record<string, number> | undefined;
+    if (rest.length === 3) {
+      let given: unknown;
+      try {
+        given = JSON.parse(rest[2] ?? "");
+      } catch {
+        given = undefined;
+      }
+      const ok =
+        typeof given === "object" &&
+        given !== null &&
+        !Array.isArray(given) &&
+        Object.values(given).every((value) => Number.isInteger(value) && (value as number) > 0);
+      if (!ok) {
+        console.error(
+          `score.ts: the counts ${rest[2]} are no object of <label>\\t<case> to a positive whole number`
+        );
+        process.exit(2);
+      }
+      counts = given as Record<string, number>;
+    }
     try {
-      // The counts of `<label>\t<case>` keys, as JSON: rig.sh check-stored reads them from the
-      // Job's own cell lines, one count a case, since a Job runs each case to its form's runs.
-      const counts = rest.length === 3 ? JSON.parse(rest[2] ?? "{}") : undefined;
       for (const cell of cells(rest[0] ?? "", rest[1] ?? "", counts))
         console.log(JSON.stringify(cell));
     } catch (error) {

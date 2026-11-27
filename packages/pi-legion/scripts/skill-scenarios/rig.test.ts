@@ -3872,6 +3872,64 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
   });
 });
 
+describe("score.ts cells", () => {
+  // Catches: a counts argument that is no object of counts taken as none, so `cells <dir>
+  // <scenario> 3`, the form before the per-case map, and a list, null or a string value each read
+  // as a run with no counts at all and exit 0, where `score.ts cell` refuses a bad count with
+  // exit 2. check-stored's reading rests on those counts, so a silent no-op there measures every
+  // cell against its stage's runs instead of the Job's.
+  test("score.ts cells refuses a counts argument that is no object of positive whole numbers", () => {
+    const runs = freshDir("counts-runs");
+    const name = "owner-walk-root-B-claude-head-1";
+    plantScored(runs, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const cells = (...args: string[]) =>
+      childSpawn([
+        "bun",
+        path.join(scenarios, "score.ts"),
+        "cells",
+        path.join(runs, "runs"),
+        "owner-walk",
+        ...args,
+      ]);
+    for (const bad of [
+      "3",
+      "null",
+      "[1]",
+      '{"head\\troot-B-claude":"3"}',
+      '{"head\\troot-B-claude":0}',
+      '{"head\\troot-B-claude":1.5}',
+      "not json",
+    ]) {
+      const refused = cells(bad);
+      expect({
+        bad,
+        code: refused.exitCode,
+        said: refused.stderr.toString().includes("no object of"),
+        out: refused.stdout.toString(),
+      }).toEqual({ bad, code: 2, said: true, out: "" });
+    }
+    const taken = cells('{"head\\troot-B-claude":1}');
+    expect({ code: taken.exitCode, stderr: taken.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    expect({
+      code: taken.exitCode,
+      cell: JSON.parse(taken.stdout.toString().trim()),
+    }).toEqual({
+      code: 0,
+      cell: {
+        scenario: "owner-walk",
+        label: "head",
+        cell: "guidance/root-B-claude",
+        count: 1,
+        scored: 1,
+        passes: 1,
+        pending: 0,
+        verdict: "pass",
+      },
+    });
+    expect({ name, code: cells().exitCode }).toEqual({ name, code: 0 });
+  });
+});
+
 describe("rig.sh batch", () => {
   // Catches: a general batch that runs owner-walk beside batch-scored, with its own copies of
   // batch-scored's owner-walk steps.
