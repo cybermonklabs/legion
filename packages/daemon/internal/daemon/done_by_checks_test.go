@@ -309,11 +309,12 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 
 // fifthSetBack is the fifth issue, a child a person files under the third once the third waits in
 // verifying, walked from its first phase to its merge, its pull request approved and signed off by
-// the tree's architect. The daemon gives the child an architect of its own, which owns it: each
-// notice of the child reaches that architect while its claim holds its role. Then that architect's
-// done on it, while its check after the merge has no pass: the daemon sets the done back, the
-// child stays in verifying with the status testing, and the architect is told why. It answers the
-// fifth issue's key.
+// the tree's architect. The daemon starts an architect of the child's own, which each notice of
+// the child reaches while it holds its role: the close-waits of the child's entry into verifying
+// among them. Then the tree's architect writes done on the child, while its check after the merge
+// has no pass: Dispatch takes the done of an architect of an issue above the child, the daemon
+// sets it back, and the child stays in verifying with the status testing. The architect that wrote
+// the done, the third's, is told why. It answers the fifth issue's key.
 func fifthSetBack(r *doneByChecksRig, third string) string {
 	t := r.t
 	t.Helper()
@@ -329,29 +330,32 @@ func fifthSetBack(r *doneByChecksRig, third string) string {
 	merged := r.mergeOf(fifth, doneByChecksGearsPull, doneByChecksGearsMerge)
 	r.awaitCloseRead(fifth, "the fifth issue's merge", merged, namesMerge(doneByChecksCheck, doneByChecksGearsMerge))
 	r.awaitIssue(fifth, "its merge", inVerifying)
-	told := func() int {
+	toldOn := func(key string) int {
 		count := 0
-		for _, notice := range r.architectNotices(fifth, "close-waits") {
+		for _, notice := range r.architectNotices(key, "close-waits") {
 			if strings.Contains(notice.Payload, fifth) {
 				count++
 			}
 		}
 		return count
 	}
-	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the close-waits notice of "+fifth+"'s entry into verifying", func() bool { return told() > 0 })
-	before := told()
-	architect := r.workerOf(fifth, claim.RoleArchitect)
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the close-waits notice of "+fifth+"'s entry into verifying to its own architect",
+		func() bool { return toldOn(fifth) > 0 })
+	before := toldOn(third)
+	architect := r.worker(claim.RoleArchitect)
 	seq := r.sessionStatus(fifth, architect, record.DoneStatus)
 	r.awaitApplied("the owning architect's done on "+fifth, fifth, func(event doneByChecksEvent) bool { return event.Seq == seq })
 	r.awaitIssue(fifth, "the architect's done", inVerifying)
-	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+fifth+" told why it stays open", func() bool { return told() > before })
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+third+", which wrote the done, told why "+fifth+" stays open",
+		func() bool { return toldOn(third) > before })
 	var status struct {
 		Status string `json:"status"`
 	}
 	testwait.WithinPolling(t, stepRecordsWait, 200*time.Millisecond, "Dispatch's status of "+fifth+" set back to testing", func() bool {
 		return r.personRead("/api/v1/issues/"+fifth, &status) == nil && status.Status == "testing"
 	})
-	t.Logf("the architect's done on %s set back: Dispatch shows it %s, and its own architect %s holds %d close-waits notices naming it", fifth, status.Status, architect.token, told())
+	t.Logf("%s's done on %s set back: Dispatch shows it %s, %s holds %d close-waits notices naming it, and %s's own architect %d",
+		architect.token, fifth, status.Status, architect.token, toldOn(third), fifth, toldOn(fifth))
 	return fifth
 }
 
