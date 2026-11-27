@@ -76,7 +76,8 @@ func TestEveryPlannedStartNamesItsStepsClaim(t *testing.T) {
 		}},
 		{"the promoted start", claim.RoleImplementer, phase.Implementing, 0, func(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, _ []planTask, task planTask) {
 			onTask(t, pool, engine, root.Key, task.id, func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
-				return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
+				_, err := engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer, false)
+				return err
 			})
 		}},
 		{"the owed entry", claim.RoleImplementer, phase.Implementing, 0, func(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, _ []planTask, task planTask) {

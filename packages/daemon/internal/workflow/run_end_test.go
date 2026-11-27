@@ -94,7 +94,7 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 	engine := stepEngine(nil)
 	held := 0
 	for i, row := range Table {
-		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), standingIn(row.From))
 		if !runs {
 			continue
 		}
@@ -107,16 +107,20 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 600 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
 		seedMirrorChild(t, pool, child, "todo", key)
-		target := phase.Phase("")
+		target := record.TaskPlace{}
 		if row.Trigger == TriggerBackward {
-			target = row.To
+			target = row.ToPlace
 		}
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			pr, err := engine.store.PullRequest(ctx, tx, key)
+			pr, err := engine.store.MergePullRequest(ctx, tx, key)
 			if err != nil {
 				return err
 			}
-			return engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the held move")
+			s, err := firstScope(ctx, tx, engine, issue)
+			if err != nil {
+				return err
+			}
+			return engine.transition(ctx, tx, s, row.Trigger, target, record.PhaseRow{}, pr, "the held move")
 		})
 		if issueRecord(t, pool, key).Phase != phase.AwaitingChildren {
 			continue

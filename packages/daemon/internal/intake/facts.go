@@ -2071,9 +2071,10 @@ type Handler interface {
 // Added is set for a PlanGiven alone, the one fact whose route answers what the apply wrote (api's
 // registerPlan): the ids of the tasks the version adds over the version in force, in the plan's
 // order, every task of a generation's first version, and [] where it adds none. The workflow's
-// apply answers them over the version in force it read in its own transaction. For a give of the
-// version in force, which it takes again and writes nothing of, it answers the tasks that version
-// recorded it added (record.PlanVersion.Added). It is nil for every other fact and for a refusal.
+// apply answers them over the version in force it read in its own transaction. A give of the
+// version in force, which it takes again and writes nothing of, answers none: the route reads the
+// tasks that version recorded it added (record.Store.PlanVersionHeld). It is nil for that give, for
+// every other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool

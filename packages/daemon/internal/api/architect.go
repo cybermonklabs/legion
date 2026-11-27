@@ -352,14 +352,16 @@ func requestFactID(route string) string {
 // applyFact applies one fact of a fact route and answers the empty object every fact route
 // answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
-	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, func(intake.Result) any { return response })
+	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, func(context.Context, intake.Result) (any, error) { return response, nil })
 }
 
 // applyFactAnswering is applyFact for a route whose answer is not the empty object: answer builds
 // the body from what the fact's apply answered (register_plan's tasks the version added), and it is
 // written as the answer id names (register_plan's AnswerPlanRegister), so the route's body is
-// shaped and recorded as that answer and not as the empty object.
-func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, answer func(intake.Result) any) {
+// shaped and recorded as that answer and not as the empty object. answer may read the record after
+// the apply (register_plan reads what a version given again first added); an error of that read is
+// answered as a failed apply is, 500 FACT_APPLY_FAILED, though the fact committed.
+func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, answer func(context.Context, intake.Result) (any, error)) {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
@@ -373,7 +375,13 @@ func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, even
 		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	s.writeAnswer(w, r, id, http.StatusOK, answer(result))
+	body, err := answer(r.Context(), result)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: the read of what a fact applied failed", "event", eventID)
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "the fact applied, and the read of what it applied failed")
+		return
+	}
+	s.writeAnswer(w, r, id, http.StatusOK, body)
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {

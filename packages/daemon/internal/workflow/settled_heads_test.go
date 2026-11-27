@@ -91,7 +91,7 @@ func TestAReopenKeepsBothKindsOfStoredFences(t *testing.T) {
 func TestAnOpenedOfAnotherNumberReplacesTheRowAndItsFences(t *testing.T) {
 	t.Parallel()
 	pool, apply := twoHeadsSettledAndARunOpen(t)
-	apply("opened-43", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-43",
+	apply("opened-43", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-43", HeadRepo: "sjawhar/legion",
 		URL: "https://github.com/sjawhar/legion/pull/43", UpdatedAt: lateApplied.Add(3 * time.Minute)})
 	if pr := latePullRequest(t, pool); pr.Number != 43 || pr.HeadSHA != "head-43" || pr.SettledHeads != nil || pr.Run != nil {
 		t.Fatalf("after #43 opened the record is #%d at %s remembering %+v with the run %+v; want #43 at head-43 remembering nothing, no run",

@@ -234,11 +234,13 @@ func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue reco
 // (holdPromotedStart) each make: the open Dispatch children of the issue that hold it
 // (childrenHoldingStart, which holds no start once the pull request has merged), none where the
 // phase's role stands on an entry R9 exempts (samePhaseExempt). It answers the pull request of s's
-// task it read too (taskPullRequestRow), which the retry composes its task from and reads its
-// review round on, whether or not children hold the start.
+// task it read too, the whole record (taskPullRequest), which the retry composes its task from,
+// reads its review round on and hands to the move a settled round makes (settleRound, transition),
+// whose merge forward may write it back (mergeForwardOnEntry), whether or not children hold the
+// start.
 func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, s TaskScope) ([]record.OpenChild, *record.PullRequest, error) {
 	issue := s.issue
-	pr, err := e.taskPullRequestRow(ctx, tx, s)
+	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return nil, nil, err
 	}

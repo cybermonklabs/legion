@@ -61,8 +61,9 @@ func approvesReviewOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key stri
 }
 
 // heldBeforeItsRetro fails unless key stands held before its retro for its children
-// (record.HoldForChildren) at its task's retro place, accepted by nothing (record.Accepted), with
-// no retro started; why is the step the test reads it after.
+// (record.HoldForChildren), its task held for them at its retro place, as every hold of a run with
+// plan rows holds its task (arrive, record.Store.HoldTask), accepted by nothing (record.Accepted),
+// with no retro started; why is the step the test reads it after.
 func heldBeforeItsRetro(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, why string) {
 	t.Helper()
 	held := issueOf(t, pool, engine, key)
@@ -72,8 +73,9 @@ func heldBeforeItsRetro(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, w
 	if record.Accepted(held) {
 		t.Fatalf("%s %s reads as accepted, want it accepted by nothing while it is held before its retro", key, why)
 	}
-	if task := taskOf(t, pool, engine, key); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
-		t.Fatalf("task a of %s %s is %s at %+v, want running at its retro", key, why, task.State, task.Place)
+	if task := taskOf(t, pool, engine, key); task.State != record.TaskHeld || task.HoldReason != record.HoldForChildren ||
+		task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
+		t.Fatalf("task a of %s %s is %s (hold reason %q) at %+v, want held at its retro for its children", key, why, task.State, task.HoldReason, task.Place)
 	}
 	if got := startsIn(t, pool, key, claim.RoleImplementer, phase.Retro); len(got) != 0 {
 		t.Fatalf("%s %s has the retro's starts %+v, want none", key, why, got)

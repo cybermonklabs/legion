@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -125,13 +126,17 @@ func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
 // start of implementing, step 1's phase, with the task its worker would have been given, and
 // starts nobody. Dispatch is written the status of awaiting_children over the todo, and the
 // architect is told once. When the child is done the return starts the implementer on the task
-// the restart held, which names why.
+// the restart held, which names why. A start of a run with plan rows names its step's claim, and
+// the next start of that claim takes out its start the outbox has not run
+// (record.Store.EnqueueStart): the implementer's start of the gate's opening is still queued here,
+// so the starts are read whole, not counted, and the return's start is the one at the entry it
+// raised (returnStartOf).
 func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stoppedAtTesting(t, pool, engine)
 	mirrorChild(t, pool, cwChild, root.Key, "todo", 1)
-	implementers, statuses := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)), len(statusWrites(t, pool, root.Key))
+	implementers, statuses := roleStartsOf(t, pool, root.Key, claim.RoleImplementer), len(statusWrites(t, pool, root.Key))
 
 	if result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key)); result.Refusal != nil {
 		t.Fatalf("the todo was refused: %+v", result.Refusal)
@@ -147,8 +152,8 @@ func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 		task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) {
 		t.Fatalf("task a after the todo is %s (%q) at %+v, want running at step 1 with no stop reason", task.State, task.StoppedReason, task.Place)
 	}
-	if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got != implementers {
-		t.Fatalf("the todo started the implementer %d times, want never while the child is open", got-implementers)
+	if got := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); !reflect.DeepEqual(got, implementers) {
+		t.Fatalf("the todo left the implementer's starts %+v, want them as they were, %+v: no start while the child is open", got, implementers)
 	}
 	if got := statusWrites(t, pool, root.Key)[statuses:]; len(got) != 1 || got[0] != record.OrdinaryStatusWrite("in_progress", "todo", "") {
 		t.Fatalf("the todo queued the status writes %+v, want the one of awaiting_children over the todo Dispatch shows", got)
@@ -161,8 +166,7 @@ func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 	returnsFromChildren(t, pool, engine, root.Key)
 
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-	started := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
-	if len(started) != implementers+1 || !strings.Contains(started[len(started)-1].Task, restartedBy) {
-		t.Fatalf("the implementer's starts = %+v, want one more, on the task the restart held, which holds %q", started, restartedBy)
+	if started := returnStartOf(t, pool, root.Key, claim.RoleImplementer, implementers); !strings.Contains(started.Task, restartedBy) {
+		t.Fatalf("the return's start of the implementer = %+v, want it on the task the restart held, which holds %q", started, restartedBy)
 	}
 }

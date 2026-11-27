@@ -127,7 +127,10 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 // its agent, the one that waited longest first (by the moment its wait began, then by task id), is
 // started through Engine.start where no running step of the issue holds its agent, which starts it
 // in that agent's session. An issue of a tree that lingers starts nothing, as no move does there,
-// and an issue the record does not hold has no step to start: the hand-on goes on to the next.
+// and neither does an issue in awaiting_children, where no role works it (dispatch://INFRA-3320
+// R11): the return's start of the step its wait holds waits for its agent then (ReturnFromChildren,
+// Engine.start), and the settle of that return hands the agent on. An issue the record does not
+// hold has no step to start: the hand-on goes on to the next.
 func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) error {
 	var order []string
 	for _, key := range keys {
@@ -140,7 +143,7 @@ func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) err
 		if err != nil {
 			return err
 		}
-		if issue == nil {
+		if issue == nil || issue.Phase == phase.AwaitingChildren {
 			continue
 		}
 		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
@@ -175,7 +178,10 @@ func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) err
 // queued at a generation the issue has left: admission's re-admission carries a running task, its
 // wait among it, to the next generation, and the row of the generation it left finishes without
 // acting (the outbox's taskBranch), so nothing else would end the wait. An issue of a tree that
-// lingers joins nothing, as no move starts anything there.
+// lingers joins nothing, as no move starts anything there, and neither does an issue in
+// awaiting_children: a stopped task's restart at its first step that open children hold
+// (startAtFirstStep) moves the task into running, whose step waits for its join, and starts
+// nothing, and the return's start of that step joins its needs (ReturnFromChildren, Engine.start).
 func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error {
 	var order []string
 	for _, key := range keys {
@@ -188,7 +194,7 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 		if err != nil {
 			return err
 		}
-		if issue == nil {
+		if issue == nil || issue.Phase == phase.AwaitingChildren {
 			continue
 		}
 		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
