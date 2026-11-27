@@ -134,8 +134,27 @@ func TestStateWriteMutations(t *testing.T) {
 	for index := range all {
 		all[index] = index
 	}
-	runAll(all, *mutationDepth, func(index int, r mutationResult) { results[index] = r })
+	// The controls first: the unmutated model must pass the very run each
+	// mutant gets, at each depth, or a mutant's failure there catches nothing.
+	deeperControl := make(chan error, 1)
 	if *mutationDeeper > *mutationDepth {
+		go func() { deeperControl <- controlModel(pkg, *mutationDeeper) }()
+	}
+	if err := controlModel(pkg, *mutationDepth); err != nil {
+		t.Fatalf("UNKNOWN: %v", err)
+	}
+	fmt.Printf("control depth=%d passed\n", *mutationDepth)
+	runAll(all, *mutationDepth, func(index int, r mutationResult) { results[index] = r })
+	deeper := *mutationDeeper > *mutationDepth
+	if deeper {
+		if err := <-deeperControl; err != nil {
+			// The depth-2 results stand; no depth-3 run would measure anything.
+			t.Errorf("UNKNOWN: %v; no mutant is run again at depth %d", err, *mutationDeeper)
+			deeper = false
+		}
+	}
+	if deeper {
+		fmt.Printf("control depth=%d passed\n", *mutationDeeper)
 		var again []int
 		for index, r := range results {
 			if r.Outcome != "caught" && r.Outcome != "invalid" {
@@ -516,6 +535,11 @@ var maskPattern = regexp.MustCompile(`invariant mask (\d+)`)
 var witnessPattern = regexp.MustCompile(`model_test\.go:\d+: ([A-Za-z0-9-]+): `)
 var plantPattern = regexp.MustCompile(`missed (?:plant|scheduler plant) ?([A-Za-z0-9-]*)`)
 
+// A seed's own failure, as replaySeed reports it: the verdict that failed, or
+// the event the mutant disabled, at that seed step.
+var verdictPattern = regexp.MustCompile(`model_test\.go:\d+: (.+?\[\d+\]) want (\S+), got `)
+var disabledPattern = regexp.MustCompile(`model_test\.go:\d+: (.+?\[\d+\]) disabled (\S+): `)
+
 // mutantOverlay writes the mutated file and the overlay that replaces the
 // original with it, and returns the overlay's path.
 func mutantOverlay(pkg, dir string, m stateMutation) (string, error) {
@@ -567,30 +591,66 @@ func runStateMutation(pkg, base string, m stateMutation, depth int) mutationResu
 		return result
 	}
 	result.overlay = overlay
-	// A deeper search takes longer than go test's default 10 minutes. Its
-	// timeout is no catch: the mutant was not measured.
-	limit := 15 * time.Minute
-	if depth > 2 {
-		limit = 2 * time.Hour
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), limit+time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-vet=off", "-overlay", overlay, "-timeout="+limit.String(),
-		"-run", "^(TestTheHoldStateMachine|TestPlants|TestCleanRestartSendPlant)$",
-		"./internal/supervise/holdmodel", "-hold-depth="+strconv.Itoa(depth))
-	cmd.Dir = filepath.Clean(filepath.Join(pkg, "..", "..", ".."))
-	out, err := cmd.CombinedOutput()
+	out, err, timedOut := runModel(pkg, overlay, depth)
 	switch {
-	case ctx.Err() != nil || strings.Contains(string(out), "panic: test timed out after"):
-		result.Outcome, result.Catcher = "timeout", "no result in "+limit.String()
+	case timedOut:
+		result.Outcome, result.Catcher = "timeout", "no result in "+depthLimit(depth).String()
 	case err == nil:
 		result.Outcome, result.Catcher = "survived", ""
-	case strings.Contains(string(out), "[build failed]") || strings.Contains(string(out), "[setup failed]"):
-		result.Outcome, result.Catcher = "invalid", firstLine(string(out))
+	case strings.Contains(out, "[build failed]") || strings.Contains(out, "[setup failed]"):
+		result.Outcome, result.Catcher = "invalid", firstLine(out)
 	default:
-		result.Outcome, result.Catcher = mutationCatcher(string(out))
+		result.Outcome, result.Catcher = mutationCatcher(out)
 	}
 	return result
+}
+
+// depthLimit is how long one run at depth may take. A deeper search takes
+// longer than go test's default 10 minutes; its timeout is no catch: the
+// mutant was not measured.
+func depthLimit(depth int) time.Duration {
+	if depth > 2 {
+		return 2 * time.Hour
+	}
+	return 15 * time.Minute
+}
+
+// runModel runs the state machine to depth, the planted-oracle controls and
+// the D10 restore plant, on the tree mutated by overlay, or unmutated when
+// overlay is empty.
+func runModel(pkg, overlay string, depth int) (out string, err error, timedOut bool) {
+	limit := depthLimit(depth)
+	ctx, cancel := context.WithTimeout(context.Background(), limit+time.Minute)
+	defer cancel()
+	args := []string{"test", "-count=1", "-vet=off", "-timeout=" + limit.String()}
+	if overlay != "" {
+		args = append(args, "-overlay", overlay)
+	}
+	args = append(args, "-run", "^(TestTheHoldStateMachine|TestPlants|TestCleanRestartSendPlant)$",
+		"./internal/supervise/holdmodel", "-hold-depth="+strconv.Itoa(depth))
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = filepath.Clean(filepath.Join(pkg, "..", "..", ".."))
+	b, err := cmd.CombinedOutput()
+	out = string(b)
+	return out, err, ctx.Err() != nil || strings.Contains(out, "panic: test timed out after")
+}
+
+// controlModel is the run every mutant gets, on the unmutated model. A
+// mutant's failure is a catch only where this passes: at 87bd6c73 the
+// unmutated model failed at depth 3, and 49 of one shard's 51 depth-3 rows
+// named that model's own deadline violation as a catch of theirs.
+func controlModel(pkg string, depth int) error {
+	out, err, timedOut := runModel(pkg, "", depth)
+	if timedOut || err != nil {
+		var lines []string
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "model_test.go:") || strings.HasPrefix(line, "FAIL") {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+		return fmt.Errorf("the unmutated model fails the mutants' run at depth %d (timed out: %v; %v): %s", depth, timedOut, err, strings.Join(lines[:min(len(lines), 5)], " | "))
+	}
+	return nil
 }
 
 func firstLine(s string) string {
@@ -616,10 +676,34 @@ func mutationCatcher(out string) (outcome, names string) {
 			}
 		}
 	}
-	if strings.Contains(out, " want ") {
+	// TestPlants replays the seeds too, so each failure is counted once.
+	verdicts, disabled := map[string]bool{}, map[string]bool{}
+	for _, m := range verdictPattern.FindAllStringSubmatch(out, -1) {
+		verdicts[m[1]+" :"+m[2]] = true
+	}
+	for _, m := range disabledPattern.FindAllStringSubmatch(out, -1) {
+		disabled[m[1]+" "+m[2]] = true
+	}
+	for kind, set := range map[string]map[string]bool{"seed verdict": verdicts, "seed event disabled": disabled} {
+		if len(set) == 0 {
+			continue
+		}
+		list := make([]string, 0, len(set))
+		for name := range set {
+			list = append(list, name)
+		}
+		sort.Strings(list)
+		more := ""
+		if len(list) > 3 {
+			more = fmt.Sprintf(" and %d more", len(list)-3)
+			list = list[:3]
+		}
+		seeds[kind+" ("+strings.Join(list, "; ")+more+")"] = true
+	}
+	if len(verdicts) == 0 && strings.Contains(out, " want ") {
 		seeds["seed verdict"] = true
 	}
-	if strings.Contains(out, " disabled ") {
+	if len(disabled) == 0 && strings.Contains(out, " disabled ") {
 		seeds["seed event disabled"] = true
 	}
 	if strings.Contains(out, "panic:") {

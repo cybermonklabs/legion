@@ -174,10 +174,15 @@ func observe(before *State, input Event, m *Machine, fx *Effects, log *commitLog
 	// A deadline is a bound of this daemon once it has the row that carries
 	// it. A write whose reply the daemon never received is not yet its own,
 	// so its deadline waits rather than measuring a timer it cannot know.
-	if m.P.Kind == 0 {
-		for i := range log.List[:log.N] {
-			h.recordDue(&log.List[i])
-		}
+	// That write is the step's last commit, the one the machine still holds
+	// as uncertain; every commit before it got its reply and is recorded.
+	n := log.N
+	if last := n - 1; n != 0 && m.P.Uncertain && log.List[last].Kind == m.P.Kind &&
+		log.List[last].Want == m.P.Want && log.List[last].Cause == m.P.Cause {
+		n = last
+	}
+	for i := range log.List[:n] {
+		h.recordDue(&log.List[i])
 	}
 	// At a restart that judges a redelivered item again, the driver reads the
 	// rebuilt machine, not the one the item first arrived at.

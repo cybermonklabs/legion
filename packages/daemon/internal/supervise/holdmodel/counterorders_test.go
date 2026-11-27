@@ -140,6 +140,12 @@ func xSeeds() []seed {
 	// a StartedBy row then releases that daemon hold, so the relaunch runs.
 	cs = append(cs, seed{"read/X/W5/stale-relaunch-after-bound-stop-in-recovery", legacy, "boot daemonDL!1.1 stale bound!1.1 st :launch :rotated"})
 	cs = append(cs, seed{"read/X/W5/stale-relaunch-after-lost-reply-bound-stop", legacy, "boot daemonDL!1.1 stale bound!2.1 st :launch :rotated"})
+	// The fourth round's depth 3 (Job legion-holdmodel-depth3-6jvgv at
+	// 37521842): the retried start-row write ends the daemon hold and a new
+	// daemon request starts a hold of its own in the same step, whose last
+	// write loses its reply. Both earlier commits got theirs, so the old
+	// hold's deadline does not bound the new hold's timer.
+	cs = append(cs, seed{"read/X/W5/fresh-hold-in-a-step-whose-last-reply-is-lost", legacy, "boot daemonDL!1.1 stale bound!1.1 st!1.2 daemon!2.3 :pending :daemon bound :H4"})
 	// W6, W7: a pending write that retires the task (claim end, replacement)
 	// is retried before a fatal report applies, so the report closes no open
 	// attempt and resurrects no retired task.

@@ -288,7 +288,7 @@ func TestPlants(t *testing.T) {
 		out := Explore([]Prefix{{State: s, Origin: "deadline-scheduler-skips-hold", Length: ps[len(ps)-1].Length}}, 1)
 		w, ok := out.Violations[Late]
 		if !ok {
-			t.Fatal("missed scheduler plant")
+			t.Fatal("missed scheduler plant", "deadline-scheduler-skips-hold")
 		}
 		t.Logf("caught deadline-scheduler-skips-hold: %s + %v", w.Origin, w.Steps)
 	})
