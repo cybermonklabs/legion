@@ -1072,18 +1072,25 @@ const liveSocketPattern = "/ws/live"
 //
 // The limited-token gate sits just inside decideBrokerToken, whose decision it reads, and ahead
 // of the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
-// its views carry, so the gate takes a declaration of the socket's method and pattern alone: its
-// zero read entry classes nothing, and it states neither ResultsScope nor ApproveOnly. A
-// read-only token of every kind is answered 403 READ_ONLY_TOKEN, a results token 403
-// RESULTS_ONLY_TOKEN and an approve-only token 403 APPROVE_ONLY_TOKEN, before a socket is ever
-// opened for it. The socket is admitted by whichever credential optionalActor resolves - a
-// bearer, a broker-issued token or a sign-in cookie - so its heartbeat resolves that same
-// credential again (callerStillResolves).
+// its views carry, so the gate takes noTableRoute, the zero declaration: it classes nothing as a
+// read and states neither ResultsScope nor ApproveOnly. A read-only token of every kind is
+// answered 403 READ_ONLY_TOKEN, a results token 403 RESULTS_ONLY_TOKEN and an approve-only token
+// 403 APPROVE_ONLY_TOKEN, before a socket is ever opened for it. The socket is admitted by
+// whichever credential optionalActor resolves - a bearer, a broker-issued token or a sign-in
+// cookie - so its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseLimitedToken(routeDecl{Method: http.MethodGet, Pattern: liveSocketPattern},
+		s.refuseLimitedToken(noTableRoute,
 			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
+
+// noTableRoute is the declaration the limited-token gate takes for a mount that is no row of the
+// route table: GET /ws/live, the one such mount. Every field is zero, so the gate classes it as
+// no read and sees neither ResultsScope nor ApproveOnly, and holds every limited credential off
+// it. It is a declared zero value and no routeDecl literal, so the route guards that read the
+// package's declarations off its source count the table's routes alone (routeDeclHandlers,
+// decision_block_route_guard_test.go).
+var noTableRoute routeDecl
 
 // trackTransactions marks the request's context for the pool's nested-acquire check
 // (store.WithTransactionTracking), for a mount beside the route table: the websockets.
@@ -1695,8 +1702,8 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // (model.Credential.ResultsOnly) to the routes that state ResultsScope, and an approve-only one
 // (model.Credential.ApproveOnly) to the routes that state ApproveOnly. register wraps every route
 // of the table in it, with the route's own declaration, which states all three (routeDecl.Read,
-// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with a declaration of its
-// method and pattern alone, which classes nothing as a read and states neither. It reads every
+// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with noTableRoute, the zero
+// declaration, which classes nothing as a read and states neither. It reads every
 // credential that can be limited:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
