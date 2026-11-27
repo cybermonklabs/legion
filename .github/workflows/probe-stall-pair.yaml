@@ -12,19 +12,11 @@ permissions:
   checks: write
 
 jobs:
-  serial:
-    strategy:
-      fail-fast: false
-      matrix:
-        leg: [1, 2, 3, 4]
-    uses: ./.github/workflows/probe-stall-serial.yaml
-    with:
-      leg: ${{ matrix.leg }}
   pooled:
     strategy:
       fail-fast: false
       matrix:
-        leg: [1, 2, 3, 4, 5, 6]
+        leg: [1, 2]
     uses: ./.github/workflows/probe-stall-pooled.yaml
     with:
       leg: ${{ matrix.leg }}

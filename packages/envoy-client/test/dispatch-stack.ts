@@ -11,6 +11,7 @@ import {
   type ReadyBudget,
   startOnHeldPort,
   stopProcess,
+  tail,
 } from "./envoy-stack";
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
@@ -121,7 +122,11 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       const stopping = child;
       child = undefined;
       // SIGINT is the stop the server takes: it closes its listener and its pool on it.
+      const stopStart = Date.now();
       await stopProcess(stopping, "SIGINT");
+      const stopMs = Date.now() - stopStart;
+      console.log(`probe-stop: Dispatch stopped ${stopMs} ms after SIGINT, exit ${stopping.exitCode} signal ${stopping.signalCode}`);
+      if (stopMs > 5_000) console.log(`probe-stop: the last 80 lines of its log:\n${tail(path.join(work, "dispatch.log"), 80)}`);
     }
     // Dropped with force: the server's pool is gone with the process above, and a connection the
     // run left behind must not keep the database on the shared test server.
