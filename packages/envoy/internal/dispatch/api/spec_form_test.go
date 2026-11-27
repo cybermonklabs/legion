@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
@@ -64,8 +65,21 @@ func specFormOn(t testing.TB, specRoots, serverURL string, documents docs.API) *
 	return &form
 }
 
+// specFormResultOf is the judgment of one spec, spec.md version 3 of ACME-2 under the root ACME-1,
+// that holds findings.
+func specFormResultOf(findings []specFormFinding) specFormResult {
+	issue, root := "ACME-2", "ACME-1"
+	return specFormResult{documents: []specFormDocument{{
+		artifact:  model.Artifact{ID: "a1", IssueKey: &issue, Name: "spec.md"},
+		version:   3,
+		specScope: specScope{scope: specScopeCovered, root: &root},
+		findings:  findings,
+	}}}
+}
+
 // A refusal's body holds at most 500 findings and counts every one, and its error lists the first
-// 20 and names the command, which lists them, the first 500 at most.
+// 20 and names the command, which lists them, the first 500 at most. The refusal is the one the
+// judgment writes (specFormResult.refusal), so the command it names is the one the server names.
 func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 	findings := make([]specFormFinding, 501)
 	for index := range findings {
@@ -77,7 +91,10 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 			},
 		}
 	}
-	refusal := &specFormRefusal{act: specform.ActRequest, findings: findings, more: "dispatch spec-form --issue ACME-2 --artifact spec.md lists them all."}
+	refusal := specFormResultOf(findings).refusal(specform.ActRequest)
+	if want := "dispatch spec-form --issue ACME-2 --artifact spec.md --version 3 lists the first 500 of them."; refusal.more != want {
+		t.Fatalf("the refusal of 501 findings names %q, want %q", refusal.more, want)
+	}
 	body := refusal.body()
 	if body.Code != "SPEC_FORM" || len(body.Findings) != 500 || body.FindingsTotal != 501 || body.ChangesReason != "" {
 		t.Fatalf("body = code %q, %d findings, total %d, changes_reason %q; want SPEC_FORM, 500, 501 and none",
@@ -88,15 +105,19 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 	}
 	lines := strings.Split(body.Error, "\n")
 	if len(lines) != 23 || lines[0] != "Dispatch refused this approval request, because 501 texts break the form of The Spec." ||
-		lines[21] != "And 481 more: dispatch spec-form --issue ACME-2 --artifact spec.md lists them all." ||
+		lines[21] != "And 481 more: dispatch spec-form --issue ACME-2 --artifact spec.md --version 3 lists the first 500 of them." ||
 		lines[22] != "Fix each text, then request approval again." {
 		t.Fatalf("error =\n%s\nwant the head, 20 finding lines, the count of the other 481 and the next step", body.Error)
 	}
-	approval := (&specFormRefusal{act: specform.ActApproval, findings: findings[:1], more: refusal.more}).body()
-	if !strings.HasSuffix(approval.Error, "\nTo send these findings to the author, choose Request changes.") ||
-		approval.ChangesReason != "Dispatch refused my approval, because 1 text breaks the form of The Spec.\n"+
+	approval := specFormResultOf(findings[:1]).refusal(specform.ActApproval)
+	if want := "dispatch spec-form --issue ACME-2 --artifact spec.md --version 3 lists them all."; approval.more != want {
+		t.Fatalf("the refusal of 1 finding names %q, want %q", approval.more, want)
+	}
+	approvalBody := approval.body()
+	if !strings.HasSuffix(approvalBody.Error, "\nTo send these findings to the author, choose Request changes.") ||
+		approvalBody.ChangesReason != "Dispatch refused my approval, because 1 text breaks the form of The Spec.\n"+
 			"- statement s0 in spec.md version 3: it has 3 sentences, and a statement has one or two.\n"+
 			"Fix each text, then request approval again." {
-		t.Fatalf("approval body = error %q, changes_reason %q", approval.Error, approval.ChangesReason)
+		t.Fatalf("approval body = error %q, changes_reason %q", approvalBody.Error, approvalBody.ChangesReason)
 	}
 }
