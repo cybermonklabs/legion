@@ -511,19 +511,19 @@ func (r *heldRoleRig) step(name string, state supervise.ClaimState, by supervise
 }
 
 // A suspension keeps its claim's role in the set Dispatch is sent only where its source does
-// (suspensionsKeepTheirRole). The idle release's changes no holder, so it queues nothing, and the
-// set names the session through the suspension and through the resume over the kept session —
-// queued, launching, the agent's hello and its registration: an idle release is not the loss of a
-// role, and the set does not empty and fill again around it. Every other source ends the role: the
-// suspension queues the set without the session, and the first step of the resume over the session
-// the claim kept, a queued claim or a launching one, queues the set with it again, before the agent
-// registers, since a claim queued or launched over its session holds its role
-// (supervise.HoldsRole). Each source is resumed both ways: through the queue, and straight into the
-// launch.
+// (suspensionsKeepTheirRole). The idle release's and the project release's change no holder, so
+// neither queues anything, and the set names the session through the suspension and through the
+// resume over the kept session — queued, launching, the agent's hello and its registration:
+// neither release is the loss of a role, and the set does not empty and fill again around it.
+// Every other source ends the role: the suspension queues the set without the session, and the
+// first step of the resume over the session the claim kept, a queued claim or a launching one,
+// queues the set with it again, before the agent registers, since a claim queued or launched over
+// its session holds its role (supervise.HoldsRole). Each source is resumed both ways: through the
+// queue, and straight into the launch.
 //
 // The control is the code before this change, which read a role as held only while a process ran
-// (supervise.HoldsCapability): there the idle release queues the empty set, and neither a queued
-// nor a launching claim queues the set back, so every row fails there.
+// (supervise.HoldsCapability): there the idle release and the project release queue the empty set,
+// and neither a queued nor a launching claim queues the set back, so every row fails there.
 func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range suspensionsKeepTheirRole {

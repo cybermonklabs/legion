@@ -883,9 +883,8 @@ const releaseFarSideError = `Delete "https://user:secret@api.example/apis?labelS
 
 // releaseFarSideKept is releaseFarSideError as the store keeps a far side's error text
 // (storetext.FarSideError): the URL's authority, which holds a userinfo, written as
-// redact.URLWithCredentials with nothing of it kept (redact.URLCredentials since
-// cybermonklabs/legion#4796, which before it removed the userinfo alone and kept the host), its
-// query removed, the NUL as U+FFFD, and every other word as written.
+// redact.URLWithCredentials with nothing of it kept (redact.URLCredentials), its query removed,
+// the NUL as U+FFFD, and every other word as written.
 const releaseFarSideKept = `Delete "https://` + redact.URLWithCredentials + `/apis": the server refused` + "\uFFFD" + ` the request`
 
 // releaseFarSideLastWords is how the log keeps the last words of releaseFarSideLong, the

@@ -2251,8 +2251,9 @@ func namedIssuersEnv() map[string]string {
 	return e
 }
 
-// refusedNaming fails t unless Load refuses e with an error naming each of want.
-func refusedNaming(t *testing.T, e map[string]string, want ...string) {
+// refusedNaming fails t unless Load refuses e with an error naming each of want, and answers that
+// error.
+func refusedNaming(t *testing.T, e map[string]string, want ...string) error {
 	t.Helper()
 	_, err := Load(env(e))
 	if err == nil {
@@ -2263,6 +2264,7 @@ func refusedNaming(t *testing.T, e map[string]string, want ...string) {
 			t.Fatalf("Load refused with %q, want a refusal naming %q", err, w)
 		}
 	}
+	return err
 }
 
 // TestTheK8sIssuerSettingTakesNamedIssuers pins BROKER_K8S_OIDC_ISSUER's list: one bare URL loads
@@ -2462,9 +2464,9 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := namedIssuersEnv()
 			maps.Copy(e, c.settings)
-			refusedNaming(t, e, c.want...)
+			err := refusedNaming(t, e, c.want...)
 			// No refusal of the list quotes a URL of it, where a credential can be pasted.
-			if _, err := Load(env(e)); strings.Contains(err.Error(), "oidc.") || strings.Contains(err.Error(), "madeUp") {
+			if strings.Contains(err.Error(), "oidc.") || strings.Contains(err.Error(), "madeUp") {
 				t.Fatalf("Load refused with %q, which quotes the setting's value", err)
 			}
 		})

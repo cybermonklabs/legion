@@ -223,7 +223,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// whether the role's released pod is coming back, the role's launch waits for its turn in the
 	// wake pacing, the claim read again at that turn or parkedWakeBound on, whichever comes first
 	// (parkedWait), or the role waits for the start the daemon's boot gives it after a project
-	// release (awaitsBootStart). A row a pause held wakes its role with that pause's held wake
+	// release (bootStartComing). A row a pause held wakes its role with that pause's held wake
 	// (wakeForDelivery's mark).
 	if err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
 		return err

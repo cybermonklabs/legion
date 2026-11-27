@@ -250,7 +250,7 @@ const roleTakenMargin = 15 * time.Second
 // a claim again through an outbox start, which the wake pacing lets out in its turn (workflow's
 // booted), and from that start until its session holds its role the claim reads as any claim
 // coming up does. So the set is what tells it from a claim no release stopped: a delivery waits
-// for the first (outbox.awaitsBootStart), and one for the second is ended when nobody holds its
+// for the first (outbox.bootStartComing), and one for the second is ended when nobody holds its
 // role.
 //
 // Every boot builds the set again from the store (readReleaseStoppedClaims), so a claim an earlier
@@ -315,7 +315,7 @@ func newReleaseStoppedClaims(claims []supervise.Claim, stopSet map[claim.Token]b
 // its session takes the role at its first turn, which the claim reports as working, or at that
 // bound (supervise.SaidReady), so from that moment the claim leaves the set and waits no longer. A
 // claim still stored suspended by the project release has had no start yet: it keeps its place and
-// waits on no reading of this set (awaitsBootStart reads it). Any other claim — working, failed,
+// waits on no reading of this set (bootStartComing reads it). Any other claim — working, failed,
 // retired, or suspended by another source — leaves the set, so a later start of it is a start
 // like any other.
 //

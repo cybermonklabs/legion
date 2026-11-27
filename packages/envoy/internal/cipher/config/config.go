@@ -880,8 +880,8 @@ type Config struct {
 	// A malformed entry, two entries of one name or of one URL, a bare URL beside other entries,
 	// and an issuer URL holding a user name or a password, an "@" after its host, or a query or a
 	// fragment refuse the boot, naming the setting and an entry by its place in the list, never
-	// the value's text (oidc.IssuerRefusal). Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in
-	// which case no pod can enroll.
+	// any URL of the value (oidc.IssuerRefusal); a bare URL is refused by the setting alone. Set it
+	// with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
 	K8sOIDCIssuers []oidc.NamedIssuer
 	// BROKER_K8S_OIDC_AUDIENCE: the audience a pod's projected service-account token must carry,
 	// one value for the tokens of every issuer BROKER_K8S_OIDC_ISSUER names.
@@ -1544,12 +1544,13 @@ var issuerNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 // (oidc.IssuerRefusal), so a deployment that names its one cluster that way boots on the value it
 // holds. An entry is bare when it holds no "=" or a ":" before its first one, since a name holds
 // no ":" and a URL's scheme does, so a URL with "=" in its path is still one bare URL. It refuses,
-// naming setting, and an entry by its place in the list, never any text of the value, where a
-// credential can be pasted (oidc.IssuerRefusal): an issuer URL oidc.IssuerRefusal refuses, which a
-// bare URL's refusal names by setting alone, as every issuer setting's does; an entry not of the
-// form (an empty one, a name not of issuerNamePattern, a URL not absolute http(s)); two entries of
-// one name, which it names; two of one URL; and a bare URL beside other entries, which would leave
-// an issuer no account entry can name. Empty answers no issuer.
+// naming setting, and an entry by its place in the list, never any URL of the value, where a
+// credential can be pasted (oidc.IssuerRefusal): an issuer URL oidc.IssuerRefusal refuses, a bare
+// URL being refused by the setting alone, as every issuer setting's is; an entry not of the form
+// (an empty one, a name not of issuerNamePattern, a URL not absolute http(s)); two entries of one
+// name, which it names; two of one URL, whose two names it names; and a bare URL beside other
+// entries, which would leave an issuer no account entry can name. Each name a refusal quotes has
+// passed issuerNamePattern first. Empty answers no issuer.
 func parseK8sIssuers(setting, value string) ([]oidc.NamedIssuer, error) {
 	if value == "" {
 		return nil, nil

@@ -78,7 +78,8 @@ carry the one audience `BROKER_K8S_OIDC_AUDIENCE`. The
 broker refuses to start on a malformed entry, on two entries of one name or of one URL, on a
 bare URL beside named entries, and on an issuer URL that holds a user name or a password, an `@`
 after its host, or a query or a fragment. Each refusal names the setting and the entry by its
-place in the list, never any text of the value, where a credential could have been pasted.
+place in the list, and never any URL of the value, where a credential could have been pasted; a
+bare URL is refused by the setting alone.
 
 The broker reads each issuer in the background from its start, so it starts and serves while
 one of them cannot be read. Until it reads an issuer, it answers the tokens of that issuer

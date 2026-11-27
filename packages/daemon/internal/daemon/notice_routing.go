@@ -204,7 +204,7 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // A notice for a claim the project release stopped waits in the database while the release holds
 // every delivery. After the daemon's next boot it is routed to that owner as to a released one,
 // and it waits for the start the boot queued rather than for a wake, which nothing makes for it
-// (wakeForDelivery's awaitsBootStart).
+// (wakeForDelivery's claimWake.bootStart).
 func holdsRole(held supervise.ClaimView) bool {
 	return supervise.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }

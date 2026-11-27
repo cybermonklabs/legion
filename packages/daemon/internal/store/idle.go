@@ -37,8 +37,10 @@ import (
 // written for one of its roles, and that role never reads it. An update ask holds the pod only
 // while its row is pending, which is one attempt where the publish goes through or finds no
 // holder. A hook prompt's or a phase-ended message's row waits up to an hour for a session to hold
-// its role (the daemon's keptRoleMessageEnded and keptRoleMessageHoldBound), and holds the pod for
-// that wait only while its role has a claim this pod answers (idleWaitingRow).
+// its role (the daemon's keptRoleMessageEnded and keptRoleMessageHoldBound), but for a role the
+// project release stopped, which comes back by the boot's start, the hour does not end the row
+// while that start is coming. The row holds the pod for its wait only while its role has a claim
+// this pod answers (idleWaitingRow).
 var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
 	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward"}
 
@@ -64,14 +66,16 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 // A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) to a role that has
 // no claim on the issue, or whose claim failed, was retired or was suspended for any cause but an
 // idle release (heldMessageForNoClaimThisPodAnswers). Such a role comes back only by a start or a
-// resume, the operator's or the controller's, and either brings a pod of its own, so a release
-// under the row loses it nothing: the row waits on and ends undelivered once its hour has passed,
-// a hook prompt with a message on the issue and a phase-ended message with a log line (the daemon's
-// keptRoleMessageEnded). A claim that runs or is starting holds the pod, since its session is in
-// this pod or coming to it, and so does a claim an idle release suspended, since the row's own
-// first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either way,
-// about one a minute on its backoff, and the Envoy listener answers each `404` with a WARN request
-// line, a refusal exception and a role wake report.
+// resume, the operator's or the controller's, or, for a claim the project release stopped, by the
+// boot's start, and each brings a pod of its own, so a release under the row loses it nothing: the
+// row waits on and ends undelivered once its hour has passed, a hook prompt with a message on the
+// issue and a phase-ended message with a log line (the daemon's keptRoleMessageEnded). The hour
+// does not end the row of a role the project release stopped while the boot's start of it is
+// coming (the daemon's wakeComing). A claim that runs or is starting holds the pod, since its
+// session is in this pod or coming to it, and so does a claim an idle release suspended, since the
+// row's own first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either
+// way, about one a minute on its backoff, and the Envoy listener answers each `404` with a WARN
+// request line, a refusal exception and a role wake report.
 //
 // A pod held for any of them would stand idle for all that time.
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')

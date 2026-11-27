@@ -5600,7 +5600,7 @@ func HoldsCapability(state ClaimState) bool {
 // next wake for its role resumes the same session, so what it owns is still its own. A claim the
 // project release stopped keeps them too, as the release left them, and the daemon's next boot
 // starts it on that session (workflow's startReleaseStopped) rather than a wake: a delivery for it
-// waits for that start (internal/daemon's awaitsBootStart). The controller is the one claim that
+// waits for that start (internal/daemon's bootStartComing). The controller is the one claim that
 // boot may start on a fresh session (the controller keeper's rule, dispatch://INFRA-2045), and it
 // holds no issue's role in the set Dispatch reads (internal/store's holdsIssueRole). Any other
 // suspension stops the agent until a rule or a resume starts it again, and one the operator or the

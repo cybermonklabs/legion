@@ -398,11 +398,11 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 // removal is (deliverHeld): while nobody holds the role the row waits rather than ending. For a
 // claim the boot found stopped by the project release it also publishes nothing until that claim
 // has come back, as the role message, the phase-ended message and the hook prompt above do
-// (wakeForDelivery's awaitsBootStart): before the boot's start of it has run, and while the
-// start's process is launching and registered. Once the claim has stood ready past the first-turn
-// bound its session holds the role, and the ask is published to it once, under its row's key. The
-// negative control is deliverHeld without that wait: each of those attempts then publishes to the
-// topic nobody holds yet, and the row counts publishes the test wants none of.
+// (bootStartComing): before the boot's start of it has run, and while the start's process is
+// launching and registered. Once the claim has stood ready past the first-turn bound its session
+// holds the role, and the ask is published to it once, under its row's key. The negative control
+// is deliverHeld without that wait: each of those attempts then publishes to the topic nobody
+// holds yet, and the row counts publishes the test wants none of.
 func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -450,10 +450,12 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 // phase-ended message and a hook prompt held for it each wait for that start as a delivery waits
 // for any launch the pacing parked (launchParked): the row runs again at the start's turn or
 // parkedWakeBound on, whichever comes first, on a routine wait, rather than climbing its backoff
-// to 64 s and warning at every attempt from the seventh for as long as the park lasts. The
-// negative control is awaitsBootStart without its read of the park: each delivery, which reads
-// the park of such a claim through awaitsBootStart alone, then waits on its backoff with the
-// start's own sentence.
+// to 64 s and warning at every attempt from the seventh for as long as the park lasts. Each
+// delivery reads that park in its own place, so each has its own negative control. A role message
+// reads it in awaitsBootStart alone (launchParked), so awaitsBootStart without that read has its
+// row wait on its backoff with the start's own sentence. A phase-ended message and a hook prompt
+// read it in their claim's one read (claimWake.parked), which deliveryWake waits on before
+// claimWake.bootStart, so deliveryWake reading claimWake.bootStart first does the same to theirs.
 func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {

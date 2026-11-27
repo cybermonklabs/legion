@@ -96,8 +96,10 @@ func (pastItsHour) Is(target error) bool { return target == errKeptRoleMessagePa
 //
 // So a session that held the role all along is not handed a message past its hour, and a failed
 // or retired role is never published to. A row the project release holds never comes here before
-// the next boot (the outbox's releaseHolds puts it back unrun, with no attempt counted), so the
-// release's hold spends none of its hour either.
+// the next boot (the outbox's releaseHolds puts it back unrun, with no attempt counted), so
+// nothing ends it while the release holds it. After that boot, for a role the release stopped, the
+// hour cannot end the row while the boot's start is coming (claimWake.bootStart) and then runs
+// from that session's ready; for any other role the release's time counts toward the hour.
 func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow, wake claimWake, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	start := row.CreatedAt
 	if wake.machine != nil {

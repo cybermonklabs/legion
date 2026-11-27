@@ -199,7 +199,7 @@ type outbox struct {
 	release *projectRelease
 	// releaseStopped is the claims a boot found stopped by a project release whose sessions do not
 	// hold their roles yet, set by attach: a delivery to one of them waits until its session holds
-	// its role again (awaitsBootStart). Nil, in a test that builds the outbox by hand, holds no
+	// its role again (bootStartComing). Nil, in a test that builds the outbox by hand, holds no
 	// claim.
 	releaseStopped *releaseStoppedClaims
 	// hold answers whether a claimed row is put back unrun for now, due again outboxHoldRecheck

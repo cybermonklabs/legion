@@ -9003,7 +9003,7 @@ The wakes are these:
   - A hook prompt's row waits while its role is being woken: its claim is released and its issue is still in the workflow with a tree that does not linger, so the row's own attempt wakes it, or its claim is launching under that wake or under the wake pacing's hold.
     Otherwise it waits for one hour from the later of the hook's firing and the role's last ready, so a released role of an issue that has left the workflow gets no wake, and its row ends at that hour; a role whose claim failed or was retired is never published to, and the row ends at once.
     The waiting row holds the pod from idle release only while its role has a claim on the issue that runs, is starting, or was suspended by an idle release, which the row's own first attempt wakes.
-    A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a resume, the operator's or the controller's, and either brings a pod of its own.
+    A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a resume, the operator's or the controller's, or, for a claim the project release stopped, by the boot's start, and each brings a pod of its own; the hour does not end the row of a role the project release stopped while that start is coming.
     Either way the row tries again about once a minute on its backoff, so a role that does not come costs about 60 attempts in the hour, and Envoy answers each with a `404`, a WARN request line naming the outcome `role_no_source_session`, a refusal exception and a role wake report.
     The row is kept in the daemon's own database, so a daemon that restarts inside the hour delivers the prompt to a session that holds the role after the restart, and ends it at the hour otherwise.
     An ended prompt is named in a message on the issue that says, for each prompt, the hook, the move back the prompt was for, why it was not delivered and its words, and that no session received them.
@@ -9018,9 +9018,9 @@ The wakes are these:
     At its end it finishes with the log line `outbox phase-ended message finished undelivered: no live session holds the role` and a reason, and with no message on the issue, since the role's next task from the daemon names its phase anyway.
     A listener of an earlier release kept the message on the role's kept lane for the role's next holder, and the row ended there.
 
-  - A hook prompt or a phase-ended message held by a project release waits unrun until the daemon's next boot, spends no attempt, and its hour does not run ([Releasing a project's pods](#releasing-a-projects-pods)).
-    At that boot, a row for a role the release stopped waits for the boot's start of that role until its session holds the role again, and its hour runs from that session's ready.
-    A row for any other role is counted from the hook's firing or the phase's end, or from the role's last ready, as above, so one whose hour passed during the release ends at its first attempt after the boot.
+  - A hook prompt or a phase-ended message held by a project release waits unrun until the daemon's next boot and spends no attempt, and nothing ends it while the release holds it ([Releasing a project's pods](#releasing-a-projects-pods)).
+    At that boot, a row for a role the release stopped waits for the boot's start of that role until its session holds the role again; the hour cannot end it while that start is coming, and then runs from that session's ready.
+    A row for any other role is counted from the hook's firing or the phase's end, or from the role's last ready, as above, the release's time counting toward its hour, so one whose hour passed during the release ends at its first attempt after the boot.
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
@@ -9410,7 +9410,7 @@ A claim whose current session records a name it does not hold, which only a daem
 The release's ask is no task, and no daemon sends it again.
 Each new pod builds its workspace from the issue's pushed branch.
 A delivery that waited reaches its claim after the start.
-Seven deliveries for such a claim wait for the start, each until the start's session holds the claim's role again (`awaitsBootStart`, `packages/daemon/internal/daemon/wake.go`): a notice, a role message, a phase-ended message, a hook prompt, a merge-queue removal message, a merge-holds change message and a merge-forward message.
+Seven deliveries for such a claim wait for the start, each until the start's session holds the claim's role again (`bootStartComing`, `packages/daemon/internal/daemon/wake.go`): a notice, a role message, a phase-ended message, a hook prompt, a merge-queue removal message, a merge-holds change message and a merge-forward message.
 A role message published while nobody holds the role would end undelivered, and a phase-ended message or a hook prompt would be refused by a listener that keeps nothing for a publish naming no sender session, or kept by an earlier listener for an hour that could lapse before the session is back, so none of the three is published before then.
 The hour a phase-ended message's or a hook prompt's row waits for a session does not run while the release holds the row or while the row waits for the start, and runs from the started session's ready after it ([Idle release](#idle-release), the bullet on a message published to the role topic).
 One for a claim that failed, retired or was suspended again by an operator, the controller or the daemon is handled as any delivery for a role nobody holds.
@@ -9418,7 +9418,7 @@ Nothing wakes a claim the release stopped before that start.
 While the wake pacing holds the start, every one of those deliveries looks again at its turn or five minutes later, whichever comes first.
 The wake the Envoy listener reports for a message to the claim's session or role starts nothing, since that wake acts only on a claim an idle release suspended.
 The listener reads such a claim's session `gone` from the release's stop on, because that stop deletes the session's registration once the process has ended, as the stop of every suspended claim that holds its session does ([Liveness rules](#liveness-rules)).
-Dispatch's role holders still name that session: a claim the release stopped holds its role (`supervise.HoldsRole`), so neither the stop nor the boot's start on the same session queues a role-holder publication ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
+Dispatch's role holders still name that session: a claim the release stopped holds its role (`supervise.HoldsRole`), so neither the stop nor the boot's start on the same session changes the set Dispatch reads ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
 The release and the starts charge no launch failure and no death.
 The release changes no claim that was suspended, failed or retired before it, except that it takes each claim of a pod it leaves out of its update round (below).
 A claim an idle release suspended before the release stays `released` and waits for its role's wake, which comes after the next boot; one that an idle release suspends while the release runs is taken over by the release's own suspension when its pod is stopped, and the boot starts it.

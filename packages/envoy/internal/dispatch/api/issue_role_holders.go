@@ -43,10 +43,11 @@ import (
 // sets that mark even on a pair it keeps. The status guard trusts only marked architect pairs.
 //
 // A claim ends when the daemon retires it, fails it or suspends it by any source but the idle
-// release. The session of an ended claim leaves the set only when the daemon's next publication
-// lands, and until then its row stays. The process of a failed or a suspended claim can still run
-// during that window: the daemon lets go of a process whose stop the runtime refused. Such a
-// process keeps the pane's bearer, and its session keeps its role, until the publication lands.
+// release or the project release. The session of an ended claim leaves the set only when the
+// daemon's next publication lands, and until then its row stays. The process of a failed or a
+// suspended claim can still run during that window: the daemon lets go of a process whose stop the
+// runtime refused. Such a process keeps the pane's bearer, and its session keeps its role, until
+// the publication lands.
 // A released claim has not ended: its session holds its role through the release, so a process of
 // it whose stop the runtime refused writes as that session in its role, as the resumed agent
 // will. The daemon queues the publication in the transaction of each claim write that changes the

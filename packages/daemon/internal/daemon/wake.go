@@ -341,9 +341,8 @@ type claimWake struct {
 	// record issue is: a delivery row resumes it.
 	resume bool
 	issue  record.Issue
-	// parked is a launch the wake pacing parked over no process (parkedLaunch), due at turn.
+	// parked is a launch the wake pacing parked over no process (parkedLaunch).
 	parked bool
-	turn   time.Time
 	// bootStart is a claim the daemon's boot starts after a project release, which a delivery
 	// waits for until its session holds its role again and which nothing here wakes
 	// (bootStartComing); bootUntil is the moment a claim that stands ready holds its role by, zero
@@ -372,7 +371,7 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 		return claimWake{}, err
 	}
 	if !wake.view.Released() {
-		wake.turn, wake.parked = parkedLaunch(wake.view)
+		_, wake.parked = parkedLaunch(wake.view)
 		return wake, nil
 	}
 	issue, wakeable, err := r.wakeableIssue(ctx, wake.view.Issue)
@@ -521,12 +520,12 @@ func (r *outbox) bootStartComing(ctx context.Context, held supervise.ClaimView) 
 		return time.Time{}, false, nil
 	}
 	_, live, err := r.wakeableIssue(ctx, held.Issue)
-	return time.Time{}, live && err == nil, err
+	return time.Time{}, live, err
 }
 
 // bootStartWait is the wait of a delivery, which detail names, for held's claim to hold its role
 // again after the start the daemon's boot gives a claim the project release stopped
-// (awaitsBootStart). A claim that stands ready names until, the moment its session holds the role
+// (bootStartComing). A claim that stands ready names until, the moment its session holds the role
 // by, and the row runs again then; a zero until leaves the row to its backoff.
 func bootStartWait(detail string, held supervise.ClaimView, until time.Time) error {
 	text := fmt.Sprintf("%s waits for %s's %s to hold its role again after the start the daemon's boot gives a claim the project release stopped",
@@ -555,7 +554,7 @@ func (r *outbox) launchParked(held supervise.ClaimView, detail string) error {
 // an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
 // to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says. These
 // are also the issues whose claim a project release stopped a delivery waits for the boot's start
-// of (awaitsBootStart).
+// of (bootStartComing).
 func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {

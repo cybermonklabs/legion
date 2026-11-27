@@ -62,9 +62,9 @@ const moveDeliveryText = "the move test's delivery, which arrived during the rel
 // claim the release stopped the outbox has the row wait instead, until the boot has started the
 // claim and its session holds its role again (awaitsBootStart). An early publish of the other
 // kinds of delivery to such a claim still arrives: a notice waits for its architect while that
-// architect can hold its role again (noticeAnswered), and the listener keeps a hook prompt for the
-// role's next holder (publishKeptToRole). An early publish of a role message is lost, so the role
-// message is the delivery the move reads to check that wait.
+// architect can hold its role again (noticeAnswered), and a hook prompt's row keeps the prompt and
+// tries again until a session holds the role (publishKeptToRole). An early publish of a role
+// message is lost, so the role message is the delivery the move reads to check that wait.
 const moveRoleMessageBody = "CI settled at head while the move test's release held this message for its role."
 
 // projectMove is one project the move tests move, on the idle rig: its issues, one for each case

@@ -213,12 +213,13 @@ func OutboxLanes() []OutboxLane {
 //     (releaseRound, the round its asks ride, while it runs and once it finished; "" before its
 //     record committed, which holds every ask).
 //
-// A held row spends no attempt, and nothing of its executor runs, so neither does any bound its
-// executor counts: a hook prompt's or a phase-ended message's hour (internal/daemon's
-// keptRoleMessageEnded) does not end it while the release holds it. At the next boot it runs as
-// any row of its kind, and one for a role the release stopped waits for the start the boot gives
-// that role until its session holds the role again, its hour not running meanwhile (the daemon's
-// wakeComing and awaitsBootStart); its hour then runs from that session's ready.
+// A held row spends no attempt, and nothing of its executor runs, so nothing ends it while the
+// release holds it, a hook prompt's or a phase-ended message's hour (internal/daemon's
+// keptRoleMessageEnded) included. At the next boot it runs as any row of its kind. One for a role
+// the release stopped waits for the start the boot gives that role until its session holds the
+// role again, and the hour cannot end it while that start is coming (the daemon's wakeComing and
+// bootStartComing); its hour then runs from that session's ready. For any other role the
+// release's time counts toward the hour.
 //
 // Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
 // gated_steps_publish, design_gates_publish and role_holders_publish; a claim the release stops
@@ -1562,7 +1563,7 @@ func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 // (workflow's startStoppedClaim). The boot writes no start for a phase owner a queued start
 // already covers (workflow's startReleaseStopped), so a queued start may be that claim's one
 // start, and ended unrun it would leave the claim suspended with every delivery for it waiting
-// (the daemon's awaitsBootStart). So each place that would end a start of such a claim unrun puts
+// (the daemon's bootStartComing). So each place that would end a start of such a claim unrun puts
 // this start in its place: the outbox's phase and entry fences, for a start they would finish
 // other than one queued for news alone (SuperviseRequest.News), which is never the claim's start
 // (the daemon's releaseStoppedStart, workflow.StartsWork); Store.EnqueueStart, for a start of
