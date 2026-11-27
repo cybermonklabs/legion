@@ -383,7 +383,9 @@ func (e *Engine) ownOfTask(ctx context.Context, tx pgx.Tx, s TaskScope, pr recor
 // phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
 // head as the merge's, and the phase's worker and, where the task's reviewer step already ran, the
 // reviewer are told. It is
-// recorded before the phase's own handling below, which goes on as it would for any move.
+// recorded before the phase's own handling below, which goes on as it would for any move. A head
+// that moves takes back the decision of a review round a pull request the issue links holds of its
+// own (takeBackPushedDecision), as it takes back an approval of the task's own head.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -411,6 +413,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	moved := classify.MovesBy(*pr, fact.HeadSHA)
 	if moved {
 		*pr = classify.AdvancePullRequestHead(*pr, arrival, fact.HeadSHA)
+		takeBackPushedDecision(pr)
 	} else {
 		*pr = classify.NameMove(*pr, named)
 	}
@@ -457,7 +460,8 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 // that names no head, which no source sends in this release (intake's decodePullRequest and
 // daemon's mergeQueueRead both name it): a push made before such a merge but delivered after it is
 // not recorded, so it does not take back an approval of the head the record holds, although it may
-// be the code that merged.
+// be the code that merged. A push on its way from the head takes back the decision of a review round
+// a pull request the issue links holds of its own (takeBackPushedDecision).
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
 	if fact.After == record.NoCommit {
 		return intake.Result{}, nil
@@ -480,6 +484,7 @@ func (e *Engine) pushedTo(ctx context.Context, tx pgx.Tx, fact intake.Push, pr *
 	var dropped classify.Dropped
 	*pr, dropped = classify.ApplyPushDropping(*pr, record.ClassifiedPush{SHA: fact.After, Before: fact.Before,
 		ByReviewApp: e.byReviewApp(fact.Pusher), Sender: fact.Sender})
+	takeBackPushedDecision(pr)
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return err
 	}

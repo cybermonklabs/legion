@@ -1073,6 +1073,27 @@ func (e *Engine) decideEach(ctx context.Context, tx pgx.Tx, pulls *roundPulls, p
 	return ownDecided, nil
 }
 
+// takeBackPushedDecision clears the decision of a review round pr holds of its own
+// (record.PullRequest.ReviewDecision: the decision of a pull request the issue links that is no
+// task's own, dispatch://INFRA-5910 decision 7) once a push leaves it a decision of other code
+// than the head: the synchronize that moves the head off the head the decision names
+// (pullRequestSynchronized), or a push the record holds on its way from that head (pushedTo,
+// classify.CodeOnItsWay). Any push may change code, so the decision decides nothing of the code
+// that comes, and that pull request's part of the round waits for a review of its new head, as an
+// approval of the task's own pull request stops standing at a push (classify.ApprovalStands). A
+// push delivered late, spent by the move the record made, is on its way from no head and takes
+// nothing back. A decision that holds no head, a refusal at the head the record held, goes at any
+// push, since it stood at that head alone. The task's own pull request holds no decision of its
+// own (decideEach): its decision is the reviewer's row's, which this leaves alone. A new run clears
+// the decision too (record.Store.ClearGeneration).
+func takeBackPushedDecision(pr *record.PullRequest) {
+	d := pr.ReviewDecision
+	if d == nil || d.Head != "" && d.Head == pr.HeadSHA && !classify.CodeOnItsWay(*pr) {
+		return
+	}
+	pr.ReviewDecision = nil
+}
+
 // reviewedCommitStays is why review, a deciding review of the reviewer's own session (byReviewer)
 // that its round has just taken, leaves the commit the reviewer read where it stands
 // (record.PhaseRow.ReviewedHead), reviewer being the reviewer's row, and "" where the review moves

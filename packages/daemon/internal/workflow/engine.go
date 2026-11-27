@@ -3533,12 +3533,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	}
 	// The move into accepting starts no worker: the architect's acceptance is the step of the issue
 	// there, and the phase-finished notice of the step before it is what tells the architect so
-	// (prompts/go/architect-common.md). That notice names the pull requests of the task's scope as
-	// every step's text names them (pullRequestText, dispatch://INFRA-5910 decision 21, r1), its
-	// task's own first, so the architect accepts the issue on each of them.
+	// (prompts/go/architect-common.md). That notice names each open pull request of the issue with
+	// its repository, number and head (acceptancePart, dispatch://INFRA-5910 decision 21, r1), its
+	// task's own first, so the architect accepts the code each of them stands at.
 	notice := noticeFor(trigger, from, row.To, handoff, reason, ended)
 	if row.To == phase.Accepting && notice.Kind != "" {
-		pulls, err := e.pullRequestText(ctx, tx, s, pr)
+		pulls, err := e.acceptancePart(ctx, tx, s, pr)
 		if err != nil {
 			return err
 		}

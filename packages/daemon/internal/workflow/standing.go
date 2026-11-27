@@ -148,14 +148,57 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope, pull 
 // pullRequestText is what a step of s's task is told of its issue's pull requests
 // (pullRequestPart): own, its task's own pull request (nil for none), and the pull requests the
 // step works or that hold the issue's close beside it (scopePullRequests). The start and the resume
-// of every step read it (standingPart), and so does the notice that hands the architect its
-// acceptance (transition).
+// of every step read it (standingPart).
 func (e *Engine) pullRequestText(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (string, error) {
 	pulls, err := e.scopePullRequests(ctx, tx, s, own)
 	if err != nil {
 		return "", err
 	}
 	return pullRequestPart(s.issue, own, pulls), nil
+}
+
+// acceptancePart is the `Pull request:` line of the phase-finished notice that hands the architect
+// its acceptance of s's task (transition, dispatch://INFRA-5910 decision 21, r1): each open pull
+// request of the issue's set (record.Store.PullRequestSetsOf), each named as owner/name#number at
+// its head, so the architect accepts the code each one stands at; own, the task's own pull request
+// as the move read it, first where it is open, and a pull request the issue links marked so; then
+// each link that holds the issue's close with no row to name a head of (setHolds), its read owed
+// or Legion unable to read it, with why it holds the close (heldLink.holdsClause). "" where it
+// names none.
+func (e *Engine) acceptancePart(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (string, error) {
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{s.issue.Key})
+	if err != nil {
+		return "", err
+	}
+	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
+	if err != nil {
+		return "", err
+	}
+	at := func(pr record.PullRequest) string {
+		named := prName(pr.Repo, pr.Number) + " at " + pr.HeadSHA
+		if pr.Linked {
+			named += " (linked on the issue)"
+		}
+		return named
+	}
+	var named []string
+	if own != nil && own.State == record.PullRequestOpen {
+		named = append(named, at(*own))
+	}
+	for _, pr := range sets[s.issue.Key] {
+		if pr.State == record.PullRequestOpen && (own == nil || !e.samePullRequest(pr, *own)) {
+			named = append(named, at(pr))
+		}
+	}
+	for _, held := range holds {
+		if held.row == nil {
+			named = append(named, fmt.Sprintf("%s (linked on the issue; %s)", prName(held.link.Repo, held.link.Number), held.holdsClause()))
+		}
+	}
+	if len(named) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf(" %s: %s.", pullRequestLabel, strings.Join(named, "; ")), nil
 }
 
 // taskPull is the pull request of a started step's task as the start has it. A handler that read

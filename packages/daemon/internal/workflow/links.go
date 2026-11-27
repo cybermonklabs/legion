@@ -172,8 +172,9 @@ func (e *Engine) refuseLinkOfAnotherIssue(ctx context.Context, tx pgx.Tx, pr rec
 // (record.LinkRefusedOtherIssue, detail that issue's key). A link held as unserved (detail the App
 // that is missing) or unreadable (detail GitHub's answer) holds the issue's close instead, since
 // Legion cannot see its pull request merge (setHolds), and is told with the close's notice,
-// `pr-holds-close`, with what is missing and the way out: give Legion what it lacks there, or
-// remove the link.
+// `pr-holds-close`, with what is missing and the way out (decision 10): remove its link, or, for an
+// unserved link, install the App that is missing there, and for an unreadable one, make the pull
+// request readable to Legion's Apps.
 func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink, refusal record.LinkRefusal, detail string) error {
 	if err := e.store.SetPullRequestLinkRefused(ctx, tx, link.Repo, link.Number, refusal); err != nil {
 		return err
@@ -198,11 +199,11 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	case record.LinkRefusedUnserved:
 		holds = true
 		reason = fmt.Sprintf("%s links pull request %s, and Legion does not serve %s: %s. Legion cannot read the pull request or see it merge, so it holds the close of %s. "+
-			"Install what is missing on %s, or remove the link.", issue.Key, name, link.Repo, detail, issue.Key, link.Repo)
+			"Remove its link, or install on %s the App that is missing there.", issue.Key, name, link.Repo, detail, issue.Key, link.Repo)
 	case record.LinkRefusedUnreadable:
 		holds = true
 		reason = fmt.Sprintf("%s links pull request %s, and Legion cannot read it: %s. Legion cannot see it merge, so it holds the close of %s. "+
-			"Give Legion's Apps access to it, or remove the link.", issue.Key, name, detail, issue.Key)
+			"Remove its link, or make the pull request readable to Legion's Apps.", issue.Key, name, detail, issue.Key)
 	default:
 		return nil
 	}
@@ -384,23 +385,25 @@ type heldLink struct {
 }
 
 // why is the clause the notice that tells a held link (tellHolds) names it with: why the link holds
-// the close, and the way out of that hold.
+// the close, and the way out of that hold (decision 10): remove its link, or have it merged, or, for
+// a link held refused, give Legion what it lacks there.
 func (h heldLink) why() string {
 	switch {
 	case h.link.Refused == record.LinkRefusedUnserved:
-		return fmt.Sprintf("Legion does not serve %s, so it cannot read the pull request or see it merge. Install what Legion lacks on %s, or remove its link.",
+		return fmt.Sprintf("Legion does not serve %s, so it cannot read the pull request or see it merge. Remove its link, or install on %s the App that is missing there.",
 			h.link.Repo, h.link.Repo)
 	case h.link.Refused == record.LinkRefusedUnreadable:
-		return "GitHub does not show it to Legion, so Legion cannot see it merge. Give Legion's Apps access to it, or remove its link."
+		return "GitHub does not show it to Legion, so Legion cannot see it merge. Remove its link, or make the pull request readable to Legion's Apps."
 	case h.row == nil:
 		return "Legion has not read it from GitHub yet. Remove its link, or have it merged."
 	}
 	return "it is open. Remove its link, or have it merged."
 }
 
-// holdsClause is what a step's text says of h, a link that holds the issue's close and that the
-// step does not work (pullRequestPart): that it holds the close, and why, for a worker, who has no
-// way out of the hold to take, which the architect's notice names (why).
+// holdsClause is what a text says of h, a link that holds the issue's close, beside the pull
+// requests it names: a step's text, whose step does not work it (pullRequestPart), and the
+// notice that hands the architect its acceptance, which names no head of it (acceptancePart):
+// that it holds the close, and why. The way out of the hold is the architect's notice's (why).
 func (h heldLink) holdsClause() string {
 	switch {
 	case h.link.Refused == record.LinkRefusedUnserved:

@@ -439,10 +439,15 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 // of its close met at the merge of its task's #42, and links acme/deploy#6990, open: the architect
 // gets one pr-holds-close that names it and says to remove its link. A redelivery of the merge,
 // Dispatch's event that names the same link again and the boot's sweep each pass over the issue,
-// and none sends a second notice. Once the link is removed, the issue closes.
+// and none sends a second notice. Once the link is removed, the issue closes. A link held refused
+// as unserved (Legion does not serve acme/deploy) or as unreadable (GitHub answered 404) holds the
+// close too, and is told once, at the read that refused it, with its own way out beside the removal
+// of its link: install the App that is missing there, or make the pull request readable to
+// Legion's Apps; the merge and a second read tell nothing more, and the removal closes the issue.
 //
-// The faults it catches: the notice sent at each pass, under which the sweep sends a second; and the
-// notice left out, under which the merge sends none.
+// The faults it catches: the notice sent at each pass, under which the sweep sends a second; the
+// notice left out, under which the merge sends none; and a refusal told without the removal of its
+// link as a way out.
 func TestAnOpenLinkedPullRequestThatHoldsTheCloseIsToldOnce(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -463,4 +468,36 @@ func TestAnOpenLinkedPullRequestThatHoldsTheCloseIsToldOnce(t *testing.T) {
 
 	mustSpend(t, "the removal of the link", apply("unlinked", linkEvent(t, pool, root.Key, "", 4)))
 	closedDone(t, pool, root.Key, "the removal of the link")
+
+	for _, refused := range []struct {
+		name, wayOut string
+		read         intake.PullRequestLinkReadDone
+	}{
+		{"unserved", "Remove its link, or install on acme/deploy the App that is missing there.",
+			intake.PullRequestLinkReadDone{Repo: deployLink.Repo, Number: deployLink.Number, Unserved: "the implement App is not installed on acme"}},
+		{"unreadable", "Remove its link, or make the pull request readable to Legion's Apps.",
+			intake.PullRequestLinkReadDone{Repo: deployLink.Repo, Number: deployLink.Number, NotFound: true}},
+	} {
+		t.Run("a link held "+refused.name, func(t *testing.T) {
+			t.Parallel()
+			pool := migratedPool(t)
+			root := stepRoot(t, pool, phase.Merging)
+			seedTasksAt(t, pool, root.Key, root.Generation, taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merges: true})
+			apply := applyFacts(t, pool, noCheckEngine())
+			read := refused.read
+			read.Issue = root.Key
+			mustSpend(t, "the link of "+linkedPR, apply("linked", linkEvent(t, pool, root.Key, "", 2, deployLink)))
+			mustSpend(t, "the read of "+linkedPR, apply("read", read))
+			mustSpend(t, "the merge of #42", apply("merged-42", mergedFact(42, "a")))
+			stillOpen(t, pool, root.Key, phase.Merging, "the merge of #42")
+			holdToldOnce(t, pool, root.Key, linkedPR, "the merge of #42")
+			if holds := noticesOf(t, pool, root.Key, "pr-holds-close"); !strings.Contains(holds[0].Reason, refused.wayOut) {
+				t.Fatalf("the pr-holds-close of the %s link = %q, want it to say %q", refused.name, holds[0].Reason, refused.wayOut)
+			}
+			mustSpend(t, "the read again", apply("read-again", read))
+			holdToldOnce(t, pool, root.Key, linkedPR, "the read again")
+			mustSpend(t, "the removal of the link", apply("unlinked", linkEvent(t, pool, root.Key, "", 3)))
+			closedDone(t, pool, root.Key, "the removal of the link")
+		})
+	}
 }

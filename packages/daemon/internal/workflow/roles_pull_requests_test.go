@@ -123,7 +123,11 @@ func TestEachRolesTaskNamesEachOpenPullRequest(t *testing.T) {
 		if len(finished) == 0 {
 			t.Fatalf("the move into accepting told the architect nothing, want the phase-finished notice of the reviewer's step")
 		}
-		namesBoth(t, "architect's acceptance notice", finished[len(finished)-1].Reason)
+		reason := finished[len(finished)-1].Reason
+		namesBoth(t, "architect's acceptance notice", reason)
+		if want := "Pull request: " + ownPR + " at head-a; " + linkedPR + " at head-6990 (linked on the issue)."; !strings.Contains(reason, want) {
+			t.Fatalf("the architect's acceptance notice = %q, want it to hold %q: each open pull request of the issue at its head", reason, want)
+		}
 	})
 }
 
@@ -165,6 +169,11 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, repo string, number int, state
 //     has an approving review standing, whichever is approved first: one approval leaves a at its
 //     reviewer's step, the second moves it on to its retro;
 //   - a request for changes on one of them rejects the round, though the other is approved;
+//   - a push to the head of the linked pull request, its synchronize or a push to its branch, takes
+//     back the decision it holds, as a push takes back an approval of the task's own head: an
+//     approval of the linked head, then the push, then an approval of the task's own pull request,
+//     and the round is not approved; the linked pull request's own decision is cleared (a new run
+//     clears it too, record.Store.ClearGeneration);
 //   - a head two open pull requests share is one review of each: the issue also links
 //     sjawhar/legion#43, another pull request on a's branch at a's head, and one approval of that
 //     head on #42 approves both;
@@ -179,7 +188,10 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, repo string, number int, state
 //
 // The faults it catches: the decision held on the reviewer's row for one pull request, under which
 // the first approval, of either pull request, moves the issue on and the request for changes on the
-// second finds it gone; and the merger's task that names its task's pull request alone.
+// second finds it gone; the merger's task that names its task's pull request alone; and a push to
+// a linked head that leaves the decision of the head before it on the linked pull request's row
+// (its control: the synchronize and the push writing the row with its decision as it was, under
+// which the approval of head-6990 is still held after the push).
 func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 	t.Parallel()
 	approveOwn := personsReview("sjawhar/legion", 42, "head-a", "approved", 1)
@@ -217,6 +229,26 @@ func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 			personsReview(deployLink.Repo, deployLink.Number, "head-6990", "changes_requested", 3)))
 		assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(1))
 	})
+
+	for _, moved := range []struct {
+		name string
+		fact intake.Fact
+	}{
+		{"its head's synchronize", intake.PullRequestSynchronized{Repo: deployLink.Repo, Number: deployLink.Number, Branch: "fix/deploy",
+			Before: "head-6990", HeadSHA: "head-6990-b", Sender: "a-writer", UpdatedAt: linkedAt.Add(time.Hour)}},
+		{"a push to its branch", intake.Push{Repo: deployLink.Repo, Branch: "fix/deploy", Before: "head-6990", After: "head-6990-b",
+			Pusher: "a-writer", Sender: "a-writer"}},
+	} {
+		t.Run("a push to the linked head takes back its decision, by "+moved.name, func(t *testing.T) {
+			t.Parallel()
+			pool, engine, apply, root := reviewingWithLink(t)
+			mustSpend(t, "the approval of "+linkedPR, apply("approve-linked", approveLinked))
+			mustSpend(t, moved.name, apply("moved", moved.fact))
+			decisionOf(t, pool, deployLink.Repo, deployLink.Number, "", "", moved.name+" of "+linkedPR)
+			mustSpend(t, "the approval of "+ownPR, apply("approve-own", approveOwn))
+			assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(2))
+		})
+	}
 
 	t.Run("a head two pull requests share is one review of each", func(t *testing.T) {
 		t.Parallel()
