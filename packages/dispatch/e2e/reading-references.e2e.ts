@@ -19,6 +19,7 @@
  * alone, since that is the only body that has cards, and says so where it does.
  */
 import { answerAsk, createAsk, createComment, createMessage } from "./api";
+import { openIssueDetails } from "./issue-details";
 import {
   expectReadsForms,
   expectReadsReferences,
@@ -231,6 +232,8 @@ test("referenced-by-excerpt: a backlink's excerpt draws every form of a stored r
   await createComment(world.host.key, { body: readingText(world) }, readingAuthor);
 
   await page.goto(`/issues/${world.addressed.key}`);
+  // What references the issue is a row of the header's Details (dispatch://INFRA-5200).
+  await openIssueDetails(page);
   const header = page.getByTestId("issue-header");
   await header.getByRole("button", { name: /^Referenced by/ }).click();
   const panel = header.getByRole("region", { name: "Referenced by" });

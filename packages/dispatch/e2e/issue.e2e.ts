@@ -1,6 +1,7 @@
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
+  claimIssue,
   createAsk,
   createComment,
   createIssue,
@@ -16,8 +17,9 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearedInbox, expectDrawn } from "./inbox-drawn";
+import { issueDetailsButton, issueDetailsRow, openIssueDetails } from "./issue-details";
 import { clearIssueCreator, resetDatabase } from "./seed";
-import { expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
+import { expect, type Locator, rowKey, rowNumber, rowPerson, rowSessionId, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser, fixedLogin } from "./users";
 
@@ -55,6 +57,7 @@ test("database reset clears fake Envoy subscribers before the next issue", async
     );
     await page.goto(`/issues/${issue.key}`);
     expect((await subscribers).status()).toBe(200);
+    await openIssueDetails(page);
     await expect(page.getByRole("button", { name: "Subscribers: 0" })).toBeVisible();
   } finally {
     await context.close();
@@ -124,6 +127,57 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
   }
 });
 
+// Release sits beside the claim chip in the header's Attention group, at every width, and a
+// press of it frees the issue on the server and takes the chip and the control off the page.
+// The person whose agent token takes the claim, who then releases it, and the session that holds
+// it are the row's own (`rowPerson`, `rowSessionId`, e2e/test.ts), as its project is.
+test("Release beside the claim on today's issue header frees the issue", async ({ browser }) => {
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  const holder = rowSessionId("holder");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Claimed, then released" },
+    { login: me }
+  );
+  const token = await mintAgentToken("claim-e2e", me);
+  await setLiveSessions([{ session_id: holder, title: "Implementer" }]);
+  await claimIssue(issue.key, {
+    actor: { id: holder, kind: "session", origin: { session_title: "Implementer" } },
+    as: "agent",
+    token,
+  });
+
+  const context = await asUser(browser, me);
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const attention = page.getByTestId("issue-attention");
+    const chip = attention.getByTestId("issue-claim");
+    const release = attention.getByRole("button", { name: `Release the claim on ${issue.key}` });
+    await expect(chip).toBeVisible();
+    await expect(release).toBeVisible();
+    // The chip and its Release share a line.
+    const [chipBox, releaseBox] = await Promise.all([chip.boundingBox(), release.boundingBox()]);
+    expect(
+      Math.abs(
+        (chipBox?.y ?? 0) +
+          (chipBox?.height ?? 0) / 2 -
+          (releaseBox?.y ?? 0) -
+          (releaseBox?.height ?? 0) / 2
+      )
+    ).toBeLessThan(4);
+
+    await release.click();
+    await expect.poll(async () => (await getIssue(issue.key)).claim).toBeNull();
+    await expect(chip).toHaveCount(0);
+    await expect(release).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
 const session = {
   actor: {
     kind: "session" as const,
@@ -155,7 +209,11 @@ test("issue header identifies session and human creators", async ({ browser }, t
   try {
     await page.goto(`/issues/${sessionIssue.key}`);
     const sessionHeader = page.getByTestId("issue-header");
-    await expect(sessionHeader).toContainText(/Opened by:\s*chief of staff/);
+    // Who opened the issue is a row of Details, which stays open for alice on every issue below.
+    await openIssueDetails(page);
+    await expect(sessionHeader.getByTestId("issue-details-opened-by")).toContainText(
+      /Opened by\s*chief of staff/
+    );
     const sessionScreenshot = testInfo.outputPath("issue-header-session-creator.png");
     await sessionHeader.screenshot({ path: sessionScreenshot });
     await testInfo.attach("session-authored issue header", {
@@ -165,7 +223,10 @@ test("issue header identifies session and human creators", async ({ browser }, t
 
     await page.goto(`/issues/${humanIssue.key}`);
     const humanHeader = page.getByTestId("issue-header");
-    await expect(humanHeader).toContainText(/Opened by:\s*alice/);
+    await openIssueDetails(page);
+    await expect(humanHeader.getByTestId("issue-details-opened-by")).toContainText(
+      /Opened by\s*alice/
+    );
     const humanScreenshot = testInfo.outputPath("issue-header-human-creator.png");
     await humanHeader.screenshot({ path: humanScreenshot });
     await testInfo.attach("human-authored issue header", {
@@ -176,7 +237,9 @@ test("issue header identifies session and human creators", async ({ browser }, t
     await page.goto(`/issues/${historicalIssue.key}`);
     const historicalHeader = page.getByTestId("issue-header");
     await expect(historicalHeader).toBeVisible();
-    await expect(historicalHeader.getByText("Opened by:", { exact: true })).toHaveCount(0);
+    await openIssueDetails(page);
+    await expect(historicalHeader.getByTestId("issue-details-opened-by")).toHaveCount(0);
+    await expect(historicalHeader.getByText("Opened by", { exact: true })).toHaveCount(0);
     const historicalScreenshot = testInfo.outputPath("issue-header-historical-creator.png");
     await historicalHeader.screenshot({ path: historicalScreenshot });
     await testInfo.attach("historical issue header", {
@@ -223,53 +286,20 @@ test("issue header copies its key and persists its title, status, and route", as
     // The same button copies the dispatch:// reference under Ctrl/Cmd.
     await copyKey.click({ modifiers: ["ControlOrMeta"] });
     await expect.poll(copied).toEqual([issue.key, `dispatch://${issue.key}`]);
-    const routeLabel = page.getByText("Message route:", { exact: true });
-    await routeLabel.hover();
-    // The screenshot shows the hint as a fixed box under its label. The box sits over the header's
-    // controls, so the hint gets its own style back before anything below is clicked.
-    const hintStyle = await routeLabel.evaluate((label) => {
-      const hintId = label.getAttribute("aria-describedby");
-      const hint = hintId === null ? null : document.getElementById(hintId);
-      if (hint === null) {
-        throw new Error("Message route hint is missing");
-      }
-      const style = hint.getAttribute("style");
-      const labelBox = label.getBoundingClientRect();
-      Object.assign(hint.style, {
-        background: "Canvas",
-        border: "1px solid CanvasText",
-        borderRadius: "0.375rem",
-        boxShadow: "0 4px 6px rgb(0 0 0 / 0.15)",
-        clip: "auto",
-        clipPath: "none",
-        color: "CanvasText",
-        height: "auto",
-        left: `${Math.min(labelBox.left, window.innerWidth - 304)}px`,
-        maxWidth: "calc(100vw - 16px)",
-        overflow: "visible",
-        padding: "0.5rem",
-        position: "fixed",
-        top: `${labelBox.bottom + 8}px`,
-        whiteSpace: "normal",
-        width: "18rem",
-        zIndex: "50",
-      });
-      return style;
-    });
+    // The route's hint is visible text under the route in Details, not a tooltip a pointer
+    // reader alone could reach.
+    const details = await openIssueDetails(page);
+    await expect(
+      details.getByTestId("issue-details-route").locator("#issue-route-hint")
+    ).toHaveText(
+      "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim."
+    );
+    await expect(
+      details.getByRole("button", { name: "Messages default to no route" })
+    ).toHaveAccessibleDescription(/It is where messages go/);
     await page.screenshot({
       path: testInfo.outputPath("issue-header-1280.png"),
     });
-    await routeLabel.evaluate((label, style) => {
-      const hint = document.getElementById(label.getAttribute("aria-describedby") ?? "");
-      if (hint === null) {
-        throw new Error("Message route hint is missing");
-      }
-      if (style === null) {
-        hint.removeAttribute("style");
-      } else {
-        hint.setAttribute("style", style);
-      }
-    }, hintStyle);
     await heading.click();
     const issueTitle = page.getByLabel("Issue title");
     await issueTitle.fill("First decision revised");
@@ -340,6 +370,7 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents).toContainText("e2e-session-title");
@@ -353,8 +384,10 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
     await expect(
       page.getByRole("link", { name: `https://github.com/sjawhar/legion/issues/${linked}` })
     ).toHaveCount(0);
-    // No component attached anywhere on the chain: the rail's read-only line says so.
-    await expect(page.getByTestId("issue-components")).toContainText("Components:Not attached");
+    // No component attached anywhere on the chain: the Components row of Details says so.
+    await expect(page.getByTestId("issue-details-components")).toContainText(
+      "ComponentsNot attached"
+    );
     await page.getByRole("tab", { name: "Children" }).click();
     const childRow = page
       .getByRole("tabpanel")
@@ -402,6 +435,7 @@ test("a subscriber no longer live shows its last heartbeat, not its subscription
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     const row = subscribedAgents
@@ -443,6 +477,7 @@ test("editing the parent line moves the issue across Children tabs live", async 
       })(),
       (async () => {
         await moverPage.goto(`/issues/${mover.key}`);
+        await openIssueDetails(moverPage);
         await expect(moverPage.getByRole("link", { name: oldParent.key })).toBeVisible();
       })(),
     ]);
@@ -700,6 +735,7 @@ test("a human can unsubscribe an agent from an issue and the session is told", a
 
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents.getByText("Worker (e2e)", { exact: true })).toBeVisible();
@@ -755,7 +791,7 @@ async function subscribeSession(issueKey: string): Promise<void> {
   ]);
 }
 
-test("issue header keeps every control in a shared row on a phone and the whose-turn indicator in view at every width @phone", async ({
+test("issue header keeps each group whole, its properties in Details, and the whose-turn indicator in view at every width @phone", async ({
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
@@ -784,45 +820,52 @@ test("issue header keeps every control in a shared row on a phone and the whose-
     return box !== null && box.x >= 0 && box.x + box.width <= width;
   };
   try {
+    const pageFits = () =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth === document.documentElement.clientWidth
+      );
     await page.setViewportSize({ height: 844, width: 390 });
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
     const indicator = page.getByTestId("issue-whose-turn");
-    const openedBy = page.getByText("Opened by:", { exact: true });
-    const subscribers = page.getByRole("button", { name: "Subscribers: 1" });
-    const link = page.getByRole("link", { name: `#${pull} sjawhar/legion` });
+    const close = page.getByRole("button", { name: "Close issue" });
+    const detailsButton = issueDetailsButton(page);
     await expect(indicator).toHaveText("Waiting on you (1)");
+    // Details is closed until the reader opens it: its rows are not on the page.
+    await expect(detailsButton).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("issue-details")).toBeHidden();
+
+    // The State group keeps the status and the priority on one line; Close and Details end the
+    // header's last line together, after the labels.
+    const stateRow = await top(page.getByLabel("Status"));
+    expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
+    expect(await top(close)).toBe(await top(detailsButton));
+    expect(await top(close)).toBeGreaterThan(stateRow);
+    expect(await top(page.getByTestId("issue-labels"))).toBeGreaterThan(stateRow);
+    expect(await inView(indicator, 390)).toBe(true);
+    expect(await inView(detailsButton, 390)).toBe(true);
+    // Measured 314 px at 390 px (2026-11-23). A line of this header is at least 44 px tall here,
+    // so one line piled on reaches 358 px and fails.
+    const phoneHeader = await header.boundingBox();
+    expect(phoneHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(358);
+    await expect(pageFits()).resolves.toBe(true);
+    const phoneShot = testInfo.outputPath("issue-header-390.png");
+    await page.screenshot({ path: phoneShot });
+    await testInfo.attach("issue header (390px)", { contentType: "image/png", path: phoneShot });
+
+    // Open, Details holds who opened the issue, the subscribers and the GitHub link, as its
+    // reference and never its raw address, and the page still never scrolls sideways.
+    const details = await openIssueDetails(page);
+    await expect(details.getByTestId("issue-details-opened-by")).toContainText("alice");
+    const subscribers = details.getByRole("button", { name: "Subscribers: 1" });
+    const link = details.getByRole("link", { name: `#${pull} sjawhar/legion` });
     await expect(subscribers).toBeVisible();
     await expect(link).toBeVisible();
     await expect(
       page.getByRole("link", { name: `https://github.com/sjawhar/legion/pull/${pull}` })
     ).toHaveCount(0);
-
-    // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
-    // details line with the indicator — nothing but the title sits on a row of its own.
-    const stateRow = await top(page.getByLabel("Status"));
-    // `Priority of <KEY>` is the issue's own grade; the control beside it that adds a priority
-    // the issue advances ("Edit priorities") names that word too.
-    expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
-    expect(await top(page.getByRole("button", { name: "Close issue" }))).toBe(stateRow);
-    const rail = page.getByTestId("issue-metadata-rail");
-    const detailsRow = await top(rail);
-    expect(detailsRow).toBeGreaterThan(stateRow);
-    const detailsRowMiddle = await middle(page.getByTestId("issue-labels"));
-    expect(await middle(openedBy)).toBe(detailsRowMiddle);
-    expect(await middle(subscribers)).toBe(detailsRowMiddle);
-    expect(await middle(link)).toBe(detailsRowMiddle);
-    expect(await inView(indicator, 390)).toBe(true);
-    const phoneHeader = await header.boundingBox();
-    expect(phoneHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(300);
-    await expect(
-      page.evaluate(
-        () => document.documentElement.scrollWidth === document.documentElement.clientWidth
-      )
-    ).resolves.toBe(true);
-    const phoneShot = testInfo.outputPath("issue-header-390.png");
-    await page.screenshot({ path: phoneShot });
-    await testInfo.attach("issue header (390px)", { contentType: "image/png", path: phoneShot });
+    await expect(pageFits()).resolves.toBe(true);
+    await detailsButton.click();
 
     await page.setViewportSize({ height: 900, width: 1280 });
     // The shell swaps its phone bar for the sidebar, and the margin its sheet for the column, in
@@ -832,22 +875,24 @@ test("issue header keeps every control in a shared row on a phone and the whose-
     await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible();
     await expect(indicator).toHaveText("Waiting on you (1)");
     expect(await inView(indicator, 1280)).toBe(true);
+    // Two labels leave room for Close and Details on their line.
+    expect(await middle(close)).toBe(await middle(detailsButton));
+    // Measured 134 px at 1280 px (2026-11-23), under the bound the header had before.
     const desktopHeader = await header.boundingBox();
     expect(desktopHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(140);
+    await expect(pageFits()).resolves.toBe(true);
 
     await page.setViewportSize({ height: 900, width: 1536 });
     await expect(indicator).toHaveText("Waiting on you (1)");
     expect(await inView(indicator, 1536)).toBe(true);
-    const wideDetailsRowMiddle = await middle(page.getByTestId("issue-labels"));
-    for (const item of [
-      indicator,
-      openedBy,
-      page.getByRole("button", { name: "Messages default to no route" }),
-      subscribers,
-      link,
-    ]) {
-      expect(await middle(item)).toBe(wideDetailsRowMiddle);
-    }
+    // At a desktop width a row of Details draws its value beside its name.
+    await openIssueDetails(page);
+    const routeRow = page.getByTestId("issue-details-route");
+    const nameTop = await top(routeRow.locator("dt"));
+    const valueTop = await top(routeRow.locator("dd"));
+    // Beside it: the two share a line (baseline alignment moves the taller value a few pixels).
+    expect(Math.abs(nameTop - valueTop)).toBeLessThan(20);
+    await expect(pageFits()).resolves.toBe(true);
   } finally {
     await context.close();
   }
@@ -884,13 +929,14 @@ test("issue header flips between Waiting on you and Waiting on agents as the new
   }
 });
 
-test("issue header gives the title the row's free space beside a short details line", async ({
+// The header's title slot takes a row of its own below 1536 px and shares its row with the State
+// and Attention groups only from there, and then only where they fit beside the whole title: so
+// however busy those groups are, and whether Details is open or shut, the title keeps at least
+// half the card, or its whole width on one line where that is less.
+test("issue header keeps the title at least half the card beside busy State and Attention groups", async ({
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  // The pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one
-  // address from one issue alone (`EXTERNAL_LINK_TAKEN`).
-  const pullUrl = `https://github.com/sjawhar/legion/pull/${rowNumber("pull")}`;
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Header keeps its title readable" });
 
@@ -905,48 +951,45 @@ test("issue header gives the title the row's free space beside a short details l
       const heading = document.querySelector("[data-testid=issue-header] h1") as HTMLElement;
       const header = document.querySelector("[data-testid=issue-header]") as HTMLElement;
       const style = getComputedStyle(header);
+      // The title's width on one line, in its own font, laid out apart from the header.
+      const probe = heading.cloneNode(true) as HTMLElement;
+      probe.style.cssText =
+        "position:absolute;visibility:hidden;width:max-content;white-space:nowrap";
+      document.body.append(probe);
+      const oneLine = probe.getBoundingClientRect().width;
+      probe.remove();
       return {
         contentWidth:
           header.clientWidth -
           Number.parseFloat(style.paddingLeft) -
           Number.parseFloat(style.paddingRight),
+        oneLine,
         width: heading.getBoundingClientRect().width,
       };
     });
-  try {
-    // One cold load for the whole row: the header's layout is CSS plus a `ResizeObserver`
-    // (`IssueHeader.tsx`), so a resize re-runs every decision a fresh load would make, and the
-    // writes below reach the open page on its event feed - whose refresh its own clock fires
-    // rather than the wall clock.
-    await page.clock.install();
-    await page.setViewportSize({ height: 800, width: 1024 });
-    await page.goto(`/issues/${issue.key}`);
-    await expect(title).toHaveText("Header keeps its title readable");
-
-    // Below 1280 the details line shares the row with the title once it fits beside the state
-    // controls; the title must still take the rest of the row rather than split it with the line.
-    for (const width of [1024, 1200, 1279]) {
+  const widths = [1024, 1279, 1440, 1600];
+  const titleHoldsHalf = async (label: string) => {
+    for (const width of widths) {
       await page.setViewportSize({ height: 800, width });
       await nextFrames(page);
       const measured = await measureTitle();
       expect(
         measured.width,
-        `title ${measured.width}px of a ${measured.contentWidth}px card at ${width}px`
-      ).toBeGreaterThanOrEqual(measured.contentWidth / 2);
-      if (width === 1024) {
-        const shot = testInfo.outputPath("issue-header-title-1024.png");
-        await page.screenshot({ path: shot });
-        await testInfo.attach("issue header title (1024px)", {
-          contentType: "image/png",
-          path: shot,
-        });
-      }
+        `title ${measured.width}px (${measured.oneLine}px on one line) of a ${measured.contentWidth}px card at ${width}px ${label}`
+      ).toBeGreaterThanOrEqual(Math.min(measured.contentWidth / 2, measured.oneLine - 1));
     }
+  };
+  try {
+    await page.setViewportSize({ height: 800, width: 1024 });
+    await page.goto(`/issues/${issue.key}`);
+    await expect(title).toHaveText("Header keeps its title readable");
+    await titleHoldsHalf("with quiet groups");
+    const shot = testInfo.outputPath("issue-header-title-1024.png");
+    await page.setViewportSize({ height: 800, width: 1024 });
+    await page.screenshot({ path: shot });
+    await testInfo.attach("issue header title (1024px)", { contentType: "image/png", path: shot });
 
-    // A busy details line (whose-turn badge, one label, Route, Subscribers) that fits beside a
-    // 12rem title but not beside the whole title: just below 1280 the title must keep at least
-    // half the card rather than share the row and drop to its minimum. The line without the
-    // GitHub link is the one that could squeeze (with the link it is too wide to share).
+    // Busy groups: whose turn, a label and a subscriber, beside a longer title.
     await patchIssue(issue.key, {
       labels: ["api"],
       title: "Migrate the issue header to a single row",
@@ -957,26 +1000,10 @@ test("issue header gives the title the row's free space beside a short details l
     await page.reload();
     await expect(title).toHaveText("Migrate the issue header to a single row");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
+    await titleHoldsHalf("with busy groups, Details shut");
+    await openIssueDetails(page);
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
-    const githubLink = page.locator(`[data-testid=issue-header] a[href="${pullUrl}"]`);
-    for (const withLink of [false, true]) {
-      await patchIssue(issue.key, {
-        external_links: withLink ? [{ kind: "github_pr", url: pullUrl }] : [],
-      });
-      // The link's own state is what the measurement below depends on, so it is waited for.
-      await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-      await expect(githubLink).toHaveCount(withLink ? 1 : 0);
-      for (const width of [1265, 1279]) {
-        await page.setViewportSize({ height: 800, width });
-        await nextFrames(page);
-        const measured = await measureTitle();
-        const label = `${width}px ${withLink ? "with" : "without"} the GitHub link`;
-        expect(
-          measured.width,
-          `title ${measured.width}px of a ${measured.contentWidth}px card at ${label}`
-        ).toBeGreaterThanOrEqual(measured.contentWidth / 2);
-      }
-    }
+    await titleHoldsHalf("with busy groups, Details open");
   } finally {
     await context.close();
   }
@@ -1156,6 +1183,9 @@ test("issue header suggests its project's default repository, and a child resolv
   try {
     await page.goto(`/issues/${parent.key}`);
     const header = page.getByTestId("issue-header");
+    // The repository is a row of Details; once opened, Details stays open for alice across the
+    // reload and the other issue below.
+    await openIssueDetails(page);
     const control = page.getByLabel(`Repository of ${parent.key}`, { exact: true });
     // The box holds the issue's own repository and it has none, so its placeholder names the
     // project's default, which the issue inherits; the box's description says the same in
@@ -1207,7 +1237,7 @@ test("issue header suggests its project's default repository, and a child resolv
     await expect(control).toHaveAttribute("placeholder", "acme/widgets");
 
     // A project with no default repository has nothing to suggest, and its issues take a
-    // repository all the same: the rail carries the item with an empty suggestion list. The box
+    // repository all the same: Details carries the row with an empty suggestion list. The box
     // takes its suggestion from the project list, so the row waits until the bare issue's page
     // reads that list, and then reads the box. A read that the page before it made for the
     // project.created event does not count.
@@ -1221,9 +1251,8 @@ test("issue header suggests its project's default repository, and a child resolv
     );
     await page.goto(`/issues/${bare.key}`);
     await projectsRead;
-    const rail = page.getByTestId("issue-metadata-rail");
-    await expect(rail.getByText("Parent:")).toBeVisible();
-    await expect(rail.getByText("Repository:")).toBeVisible();
+    await expect(issueDetailsRow(page, "parent")).toContainText("Parent");
+    await expect(issueDetailsRow(page, "repository")).toContainText("Repository");
     const bareControl = page.getByLabel(`Repository of ${bare.key}`, { exact: true });
     await expect(bareControl).toHaveAttribute("placeholder", "owner/name");
     expect(await repoSuggestions(bareControl)).toEqual([]);
@@ -1249,6 +1278,7 @@ test("an open issue's header follows its project's default repository as it is s
     // clock fires it.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
     const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
     // The box holds the issue's own repository, which it has none of, so what it resolves to is
     // its placeholder, and the project's default is its suggestion.
@@ -1298,6 +1328,7 @@ test("an issue takes a repository other than its project's default, and keeps it
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
     const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
     await expect(control).toHaveValue("");
     // The project's default is acme/widgets; the box suggests it and takes anything else.
@@ -1324,6 +1355,70 @@ test("an issue takes a repository other than its project's default, and keeps it
         .getByTestId("issue-header")
         .getByRole("button", { name: `Clear the repository of ${issue.key}` })
     ).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+/** Where `refusal` stands against the Repository box: wholly below it, and inside the cell the
+ *  box's row gives its value. */
+async function refusalBelowBox(box: Locator, refusal: Locator) {
+  const [boxRect, refusalRect, cellRect] = await Promise.all([
+    box.boundingBox(),
+    refusal.boundingBox(),
+    box.evaluate((node) => node.closest("dd")?.getBoundingClientRect().toJSON()),
+  ]);
+  if (boxRect === null || refusalRect === null || cellRect === undefined) {
+    throw new Error("expected the box, the refusal and the cell to have boxes");
+  }
+  return {
+    below: refusalRect.y >= boxRect.y + boxRect.height - 0.5,
+    insideCell: refusalRect.x + refusalRect.width <= cellRect.right + 0.5,
+  };
+}
+
+// The Repository line of today's Details wraps, so a refusal moves whole onto the line under the
+// box rather than standing beside it and squeezing it (dispatch://INFRA-5200, c-review F3). At
+// 360 px, both refusals the line draws: its own, for a name that is no `owner/name`, and the
+// server's, with its Retry.
+test("at 360 px the Repository line puts its own refusal and the server's under the box", async ({
+  browser,
+}) => {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await putProjectDefaultRepository(core, "acme/widgets");
+  const issue = await createIssue({ project: core, title: "A narrow refusal" });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 800, width: 360 });
+    await page.goto(`/issues/${issue.key}`);
+    await openIssueDetails(page);
+    const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
+    const line = page.getByTestId("issue-header");
+
+    await control.fill("acme gadgets");
+    await control.press("Enter");
+    const own = line.getByRole("alert").filter({ hasText: "Write the repository as owner/name." });
+    await expect(own).toBeVisible();
+    expect(await refusalBelowBox(control, own)).toEqual({ below: true, insideCell: true });
+
+    const refusal = "repo must be owner/name, said the server";
+    await page.route(`**/api/v1/issues/${issue.key}`, (route) =>
+      route.request().method() === "PATCH"
+        ? route.fulfill({
+            body: JSON.stringify({ code: "INVALID_ISSUE", error: refusal }),
+            contentType: "application/json",
+            status: 400,
+          })
+        : route.fallback()
+    );
+    await control.fill("acme/gadgets");
+    await control.press("Enter");
+    const server = line.getByText(refusal);
+    await expect(server).toBeVisible();
+    expect(await refusalBelowBox(control, server)).toEqual({ below: true, insideCell: true });
   } finally {
     await context.close();
   }
@@ -1368,52 +1463,64 @@ test("an issue's whole title wraps at every width, whether prose or one unbroken
   }
 });
 
-test("the details rail fades its trailing edge only while it has somewhere to scroll @phone @phone-only", async ({
+// Whether Details is open is the reader's, and nothing else's: closed until they open it, then
+// open for them on every issue they go to, until they close it, and then closed on every issue.
+// Open, it draws a pull request under "Pull requests" and any other link under "Links", each a
+// list the layout rule caps (`pull-requests`, `links`).
+test("Details stays as the reader left it, open or closed, from one issue to the next", async ({
   browser,
 }) => {
   const core = rowKey("CORE");
+  // The pull request's number and the plain link's address are the row's own (`rowNumber`,
+  // e2e/test.ts): Dispatch links one address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const pullUrl = `https://github.com/sjawhar/legion/pull/${rowNumber("pull")}`;
+  const notes = `https://example.com/design-notes/issue-header-details/${rowNumber("notes")}`;
   await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Rail fade" });
+  const first = await createIssue({ project: core, title: "First issue" });
+  const second = await createIssue({ project: core, title: "Second issue" });
+  const third = await createIssue({ project: core, title: "Third issue" });
+  await patchIssue(second.key, {
+    external_links: [
+      { kind: "github_pr", url: pullUrl },
+      { kind: "url", url: notes },
+    ],
+  });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const rail = page.getByTestId("issue-metadata-rail");
-    const masked = () => rail.evaluate((element) => getComputedStyle(element).maskImage !== "none");
-    const overflow = () => rail.evaluate((element) => element.scrollWidth - element.clientWidth);
+    const heading = (title: string) =>
+      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title });
+    await page.goto(`/issues/${first.key}`);
+    await expect(heading("First issue")).toBeVisible();
+    await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("issue-details")).toBeHidden();
 
-    // A bare issue's details fit a wide desktop rail: nothing to scroll to, so nothing to fade.
-    // 2400 rather than 1920 because every issue carries a repository box now: at 1920 this
-    // issue's rail measures 1142 wide against 1333 of content, so it scrolls there and the
-    // fade is right to be on.
-    await page.setViewportSize({ height: 900, width: 2400 });
-    await page.goto(`/issues/${issue.key}`);
-    await expect(rail).toBeVisible();
-    await expect.poll(overflow).toBe(0);
-    expect(await masked()).toBe(false);
+    await openIssueDetails(page);
+    await page.goto(`/issues/${second.key}`);
+    await expect(heading("Second issue")).toBeVisible();
+    await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "true");
+    await expect(issueDetailsRow(page, "repository")).toBeVisible();
+    // The pull request is a row of its own, and the plain link is under Links, as its address.
+    const pullRequests = issueDetailsRow(page, "pull-requests");
+    await expect(pullRequests.locator("dt")).toHaveText("Pull requests");
+    await expect(pullRequests.locator('[data-layout-group="pull-requests"] a')).toHaveAttribute(
+      "href",
+      pullUrl
+    );
+    const links = issueDetailsRow(page, "links");
+    await expect(links.locator("dt")).toHaveText("Links");
+    await expect(
+      links.locator('[data-layout-group="links"]').getByRole("link", { name: notes })
+    ).toHaveAttribute("href", notes);
+    await expect(pullRequests.getByRole("link", { name: notes })).toHaveCount(0);
 
-    // At a phone width the same details run past the rail, and the cut lands inside a control -
-    // the Labels button alone is wider than the rail is.
-    await patchIssue(issue.key, {
-      labels: ["frontend", "documentation", "needs-design", "observability"],
-    });
-    await page.setViewportSize({ height: 844, width: 390 });
-    await page.reload();
-    await expect(page.getByTestId("issue-labels")).toBeVisible();
-    await expect.poll(overflow).toBeGreaterThan(0);
-    await expect.poll(masked).toBe(true);
-
-    // At the end of the scroll the last item is all there is; a fade there would hide it.
-    await rail.evaluate((element) => {
-      element.scrollLeft = element.scrollWidth;
-    });
-    await expect.poll(masked).toBe(false);
-
-    // Scrolling back re-arms it.
-    await rail.evaluate((element) => {
-      element.scrollLeft = 0;
-    });
-    await expect.poll(masked).toBe(true);
+    await issueDetailsButton(page).click();
+    await expect(page.getByTestId("issue-details")).toBeHidden();
+    await page.goto(`/issues/${third.key}`);
+    await expect(heading("Third issue")).toBeVisible();
+    await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("issue-details")).toBeHidden();
   } finally {
     await context.close();
   }

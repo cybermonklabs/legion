@@ -32,8 +32,15 @@ async function post(page: Page): Promise<Record<string, unknown>> {
   return (await response).request().postDataJSON() as Record<string, unknown>;
 }
 
-// @pr: The /btw delivery mode's own row: the token is stripped and one comment-level delivery goes out.
-test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts). Two rows keep the /btw claim on every pull request:
+// `mention-composer.e2e.ts`'s "E1 and E2: explicit role mentions deliver once while /btw without a
+// mention stays a plain comment @pr", whose /btw role mention posts `delivery: "btw"` with the
+// token gone from the body and is sent once, and Go's `TestCommentBodyMentionDelivers`
+// (packages/envoy/internal/dispatch/api/comment_body_mentions_test.go), in which a btw comment
+// whose body names a session is stored as written and delivered to it once, in btw mode. The full
+// lane runs this one.
+test("/btw with a surviving mention strips its token and sends one comment-level mode", async ({
   browser,
 }) => {
   const core = rowKey("CORE");

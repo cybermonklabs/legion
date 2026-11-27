@@ -18,6 +18,7 @@ import {
   getArtifact,
 } from "./api";
 import { blockId } from "./editor";
+import { openIssueDetails } from "./issue-details";
 import { stubbed } from "./stub/stub-test";
 
 /** The key this file's recordings were made under. */
@@ -117,6 +118,8 @@ twiceTest(
   async ({ page, scene }) => {
     const { first, firstId, second, secondId, source } = scene;
     await page.goto(`/issues/${scene.target}`);
+    // What references the issue is a row of the header's Details, whose control draws the count.
+    await openIssueDetails(page);
     // The target's own spec is attached to it, and each citing paragraph counts once.
     const toggle = page.getByRole("button", { name: /^Referenced by \(3\)$/ });
     await expect(toggle).toBeVisible();

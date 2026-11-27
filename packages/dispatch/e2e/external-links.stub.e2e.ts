@@ -4,6 +4,7 @@
 import { expect } from "@playwright/test";
 
 import { createIssue, createProject, fixedKey } from "./api";
+import { openIssueDetails } from "./issue-details";
 import { insertExternalLink } from "./seed";
 import { stubbed } from "./stub/stub-test";
 
@@ -21,8 +22,15 @@ const test = stubbed(async () => {
 
 test("an unsafe stored external link is rendered as inert text @pr", async ({ page, scene }) => {
   await page.goto(`/issues/${scene.issue}`);
+  // The issue's links are a row of the header's Details.
+  await openIssueDetails(page);
 
   const unsafeLink = page.getByText(unsafeUrl);
-  await expect(unsafeLink).toHaveAttribute("title", "Unsafe external link");
+  // Text no click opens; its title holds the whole address and why it is no link
+  // (dispatch://INFRA-5200, c-review F4).
+  await expect(unsafeLink).toHaveAttribute(
+    "title",
+    `Unsafe external link, not opened: ${unsafeUrl}`
+  );
   await expect(unsafeLink).not.toHaveAttribute("href");
 });

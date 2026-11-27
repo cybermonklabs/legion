@@ -21,8 +21,14 @@ const initialMarkdown = "The quick brown fox";
 // The server writes RFC 3339 and drops trailing fractional zeros, so two replies in one second come
 // back as strings of different widths, and as text `…01.12Z` sorts after `…01.123456Z`, the later
 // time. The margin lists the replies in the order they were written.
-// @pr: The margin's order is read from the server's own timestamps, which two replies in one second sort wrongly as text.
-test("the margin lists replies written in the same second in the order they were written @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts). Two unit rows keep the order claim on every pull
+// request: `web/src/features/margin/useMarginItems.test.ts`'s "replies written in the same second
+// follow their times, not their timestamp strings", which lists a thread's two same-second replies
+// in the order they were written, and `web/src/lib/timestamps.test.ts`'s "two times in one second
+// order by time, though their strings sort the other way", which holds `compareTimestamps` to that
+// order. The full lane runs this one.
+test("the margin lists replies written in the same second in the order they were written", async ({
   browser,
 }) => {
   const order = rowKey("ORDER");
