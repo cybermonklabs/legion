@@ -40,8 +40,8 @@ PI_ENVOY_BUILDS = [
 # same notices script.
 PI_LEGION_BUILDS = [
     ("bundle", "packages/pi-legion", "extensions/legion.ts",
-     ["--target", "bun", "--external", "@oh-my-pi/pi-coding-agent", "--external", "@oh-my-pi/pi-tui",
-      "--external", "@oh-my-pi/pi-utils"]),
+     ["--target", "bun", "--external", "@oh-my-pi/pi-ai", "--external", "@oh-my-pi/pi-coding-agent",
+      "--external", "@oh-my-pi/pi-tui", "--external", "@oh-my-pi/pi-utils"]),
     ("bundle", ".", "scripts/third-party-notices.ts", ["--target", "bun"]),
 ]
 
