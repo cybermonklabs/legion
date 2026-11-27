@@ -148,8 +148,8 @@ func storedOwnsKeptVolume(u *unstructured.Unstructured) bool {
 // on the issue's disk (disk), in one container whose PID 1 is one `legion launcher` holding a
 // connection of each role's own (launcherContainer). The disk is the pod's own generic ephemeral
 // volume, created with the pod and deleted with it, or, where the pod keeps its volume
-// (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Two init containers
-// provision that workspace from the issue's repository.
+// (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Its one init
+// container provisions that workspace directly from the repository cache and GitHub.
 type issuePod struct{}
 
 func (issuePod) roles() []claim.Role { return claim.Roles }
@@ -269,47 +269,27 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 	return map[string]string{annotationIssue: l.spec.Issue}
 }
 
-// initContainers are workspace-fetch and workspace-init, so the provisioning token never shares a
-// process with anything an agent of the issue can write (Stage 4b Task 4b.6b): workspace-fetch, the
-// one container of the pod that holds the token, mounts the provisioning Secret, its own TMPDIR, and
-// the feed alone of the issue's volume (its feedSubPath, read-write), and fills the feed — from the
-// repository's cache when one is ready (fetchEnvironment), then from GitHub the branches an
-// issue's clone is made from, or from GitHub alone; workspace-init
-// mounts the issue's volume, the feed over it read-only, and the config home, and does all the
-// volume's work from the feed, with no credential, making the issue's clone shared with the feed
-// and starting an issue with no branch at the repository's default branch the spec names. The
-// issue's volume is the pod's disk (disk). A new pod's own ephemeral volume is empty, and a kept
-// volume (keptVolume) holds the feed and the clone that the issue's earlier pods left. Each takes
-// the pod's one reservation, which adds nothing to the pod's: the scheduler counts a pod's request
-// as the larger of its main containers' sum and its largest init container.
+// initContainers is workspace-init, which fills the clone directly on the issue volume. It mounts
+// the provisioning Secret and its in-memory TMPDIR for its one-shot credentials, the issue volume,
+// and the config home that holds the clone's jj configuration. Each takes the pod's one
+// reservation, which adds nothing to the pod's: the scheduler counts a pod's request as the larger
+// of its main containers' sum and its largest init container.
 func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 	legion, resources := r.tools.Legion, k.resources(r)
 	return []corev1.Container{{
-		Name:       fetchContainer,
-		Image:      r.image,
-		Command:    []string{legion, "workspace-init", "fetch", "--repo", l.spec.Repository.String(), "--feed", FeedDir},
-		Env:        fetchEnvironment(l),
-		WorkingDir: FeedDir,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: provisionVolume, MountPath: ProvisionDir, ReadOnly: true},
-			{Name: tempVolume, MountPath: initTempDir},
-			{Name: issueVolume, MountPath: FeedDir, SubPath: feedSubPath},
-		},
-		Resources:       resources,
-		SecurityContext: restrictedContainer(),
-	}, {
 		Name:  initContainer,
 		Image: r.image,
 		Command: []string{
 			legion, "workspace-init", "provision", "--issue", l.spec.Issue, "--repo", l.spec.Repository.String(),
 			"--default-branch", l.spec.DefaultBranch, "--root", TreeRoot,
-			"--credential-helper", workspace.GitHubCredentialHelper, "--feed", FeedDir,
+			"--credential-helper", workspace.GitHubCredentialHelper,
 		},
 		Env:        r.initEnvironment(l),
 		WorkingDir: TreeRoot,
 		VolumeMounts: []corev1.VolumeMount{
+			{Name: provisionVolume, MountPath: ProvisionDir, ReadOnly: true},
+			{Name: tempVolume, MountPath: initTempDir},
 			{Name: issueVolume, MountPath: TreeRoot},
-			readOnlyFeed(),
 			{Name: configVolume, MountPath: xdgConfigHome},
 		},
 		Resources:       resources,
@@ -317,15 +297,8 @@ func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 	}}
 }
 
-// readOnlyFeed is the issue volume's feed mounted read-only at FeedDir, over the volume's own mount
-// at TreeRoot: what every container of an issue pod but workspace-fetch sees of the feed.
-func readOnlyFeed() corev1.VolumeMount {
-	return corev1.VolumeMount{Name: issueVolume, MountPath: FeedDir, SubPath: feedSubPath, ReadOnly: true}
-}
-
-// initVolumes are the provisioning material only the init containers mount: the provisioning
-// Secret, with the provisioning token and the repository cache's bearer token, and
-// workspace-fetch's in-memory TMPDIR. The feed is the issue volume's own (FeedDir).
+// initVolumes are the provisioning material workspace-init mounts: the provisioning Secret, with
+// the provisioning token and the repository cache's bearer token, and its in-memory TMPDIR.
 func (issuePod) initVolumes(l launch) []corev1.Volume {
 	return []corev1.Volume{
 		{Name: provisionVolume, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -348,23 +321,20 @@ func (issuePod) initVolumes(l launch) []corev1.Volume {
 // launcher token and gh files read-only, and none at those fixed paths; the role homes volume
 // (roleHomesVolume) at RoleHomesDir holds each role's home overlay, temporary directories and own
 // config home. The pod's shared mounts are mounted once: the issue's disk, the config home
-// workspace-init writes, the feed read-only (so no agent writes what workspace-fetch, the token's
-// holder, reads), the providers, the session writer token, the broker's token and the exchange's
-// (podTokenMounts), and the operator's. Every
-// one of them that belongs at or under the image's home — the config home, an operator's mount
-// there — is mounted under launcher.HomeMountsDir at the same relative path instead
-// (homeMountsView), so the home carries no mount: each role's namespace overlays the home, which
-// Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
-// own path, but the shared config home, whose place gets the role's own copy of it
-// (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so
-// (microVMLauncher), the metadata endpoint's token mounted at WorkloadIdentityDir, under RolesDir,
-// where no role's namespace shows it.
+// workspace-init writes, the providers, the session writer token, the broker's token and the
+// exchange's (podTokenMounts), and the operator's. Every one of them that belongs at or under the
+// image's home — the config home, an operator's mount there — is mounted under
+// launcher.HomeMountsDir at the same relative path instead (homeMountsView), so the home carries no
+// mount: each role's namespace overlays the home, which Linux refuses over a lower layer with
+// mounts under it, and then binds each of them back at its own path, but the shared config home,
+// whose place gets the role's own copy of it (launcher.ConfigHomeDir). The values the kubelet
+// resolves are the same for every role (the downward API's POD_UID), so they are set once. A
+// microVM pod's launcher is told so (microVMLauncher), the metadata endpoint's token mounted at
+// WorkloadIdentityDir, under RolesDir, where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	shared := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
-		readOnlyFeed(),
 	}
 	var flags []string
 	var extra []corev1.VolumeMount
@@ -523,18 +493,18 @@ func ghAgentEnv(l launch) []corev1.EnvVar {
 }
 
 // provision is what a new issue pod needs before it starts: it mints the provisioning token for
-// the repository, makes sure the repository has its cache (EnsureRepositoryCache: one a
-// sweep has not made yet is made now), since a fresh feed comes from that cache alone, waits until
-// the cache's Service is its own (awaitCacheService), since the fetch presents the cache's token
-// at that Service's name, and writes the token to the pod's init-only provisioning Secret with the
-// cache's bearer token. It waits on no other pod, the cache's included: the fetch waits for the
-// cache to be ready itself, and the issue's clone lives on the pod's own disk, which no other pod
-// mounts. A cache that cannot be made, or whose Service is not its own by the boot timeout, fails
-// the launch, with nothing written: the fetch could fill no fresh feed without it.
+// the repository, makes sure the repository has its cache (EnsureRepositoryCache: one a sweep has
+// not made yet is made now), waits until the cache's Service is its own (awaitCacheService), and
+// writes the token to the pod's init-only provisioning Secret with the cache's bearer token.
+// Workspace-init waits for the cache to be ready itself and fills the clone from it. Provision
+// waits on no other pod, the cache included, and the issue's clone lives on the pod's own disk,
+// which no other pod mounts. A cache that cannot be made, or whose Service is not its own by the
+// boot timeout, fails the launch, with nothing written: workspace-init cannot use the cache
+// safely.
 //
-// The repository the token is minted for is the one the launch names, and the token source is
-// what reads a configured rename off it (ProvisionTokens): every address below — the cache, its
-// Service and the fetch's own `--repo` — stays this recorded repository.
+// The repository the token is minted for is the one the launch names, and the token source is what
+// reads a configured rename off it (ProvisionTokens): every address below — the cache, its Service
+// and workspace-init's `--repo` — stays this recorded repository.
 func (issuePod) provision(ctx context.Context, r *Runtime, l *launch, s *sandbox) error {
 	minting, cancel := call(ctx)
 	token, err := r.tokens.Token(minting, l.spec.Repository)

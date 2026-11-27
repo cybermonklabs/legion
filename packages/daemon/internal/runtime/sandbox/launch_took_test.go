@@ -208,17 +208,18 @@ func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *
 
 // suspendedKept is a rig whose issue Sandbox keeps a volume, Suspended by a round's ReplacePod over
 // the pod that loc records, with that pod gone. failInit has that pod show a failed workspace-init
-// first, so the suspension writes the reset mark (volumeFault).
+// first, past its restart grace (initRestartGrace), so the suspension writes the reset mark
+// (volumeFault).
 func suspendedKept(t *testing.T, failInit bool, options ...rigOption) (*rig, runtime.Locator) {
 	t.Helper()
 	g := newRig(t, nil, append([]rigOption{withOptions(keptVolumes(SandboxMicroVM))}, options...)...)
 	loc := g.spawn(workerSpec(t))
 	if failInit {
 		g.editPod(loc.Sandbox.Name, "the pod store to see the failed workspace-init", func(p *corev1.Pod) {
-			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-				{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
-				{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
-			}}
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
+				Name: initContainer, RestartCount: initRestartGrace + 1,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
+			}}}
 		})
 	}
 	if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {

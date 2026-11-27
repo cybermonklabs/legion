@@ -1,0 +1,18 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+parent: legion-keeps-each-claim
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: a-claim-survives-a-restart
+subject: code
+procedure: agent
+claim: The daemon reads the claim of an issue after it starts again.
+procedure_text:
+  - An agent claims one issue, starts the daemon again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.

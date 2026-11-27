@@ -57,10 +57,10 @@ const (
 // delete, in the order it lists them. Each root itself is never unlinked — a role's tool makes
 // its cache directory once and locks it, and the trimmer removing the inode under a waiting
 // `flock` would hand two roles the same lock — and nothing outside these four is touched at all:
-// the workspaces, the shared clone, the feed, the state and data homes, the module cache and
-// uv's cache and Pythons are a role's work or a role's own state, the shared public leak check
-// is software every role's push runs, and all of them are named in ProtectedPaths so that a
-// reader of either list can see the whole volume accounted for.
+// the workspaces, the shared clone, the state and data homes, the module cache and uv's cache and
+// Pythons are a role's work or a role's own state, the shared public leak check is software every
+// role's push runs, and all of them are named in ProtectedPaths so that a reader of either list can
+// see the whole volume accounted for.
 var ReclaimableRoots = []ReclaimableRoot{
 	// $TMPDIR, of which only Go's own build trees are eligible. A role's clones, toolchains,
 	// scratch databases and half-written artefacts live here too, under names the role chose,
@@ -114,9 +114,6 @@ var ProtectedPaths = []string{
 	VolumeRoot + "/workspaces",
 	// The shared clones every workspace is cut from, `/legion/repos/github.com/<owner>/<repo>`.
 	VolumeRoot + "/repos",
-	// The pod's feed, which workspace-fetch wrote and every other container mounts read-only
-	// (sandbox.FeedDir).
-	VolumeRoot + "/feed",
 	// XDG_STATE_HOME's parent: one state home per role (roleStateHome), holding Oh My Pi's
 	// profile, its logs and the browser broker's lock, none of it a cache.
 	VolumeRoot + "/scratch/state",

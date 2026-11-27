@@ -32,7 +32,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	for field, want := range map[string]any{
 		"repo":            "zeta/tools",
 		"repoBefore":      "acme/widgets",
-		"repoCorrectedAt": "2026-09-22T07:40:00Z",
+		"repoCorrectedAt": "2126-09-22T07:40:00Z",
 	} {
 		if corrected[field] != want {
 			t.Errorf("LEGION-210's %s = %v, want %v", field, corrected[field], want)
@@ -53,7 +53,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	if !shown {
 		t.Fatalf("LEGION-210 carries no pullRequest in %s", body)
 	}
-	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1251), "state": "open"} {
+	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1243), "state": "open"} {
 		if pull[field] != want {
 			t.Errorf("LEGION-210's pull request %s = %v, want %v: the repository the issue left, and the pull request still open on it", field, pull[field], want)
 		}

@@ -1942,10 +1942,17 @@ type PlanDocument struct {
 	Version    int    `json:"version"`
 }
 
-// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+// PlanRecordTask is one task of a plan: its id, its steps in order, each a role or `role:key`, and
+// the tasks it needs, each by its id (record.PlanTask.Needs, as register_plan resolved them), [] for
+// a task that needs none. Needs is nil in a row the release before wrote, which carried no needs:
+// the write then carries no member, and Dispatch reads the plan's needs as not recorded. The
+// release before decodes strictly (DisallowUnknownFields), so the way back in docs/kubernetes.md,
+// "Rolling back the release that records each task's needs", takes `needs` off each queued row
+// before that release boots.
 type PlanRecordTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
@@ -2014,9 +2021,9 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // nothing tells the worker, since the daemon's next task for a role waits for that role's turn to
 // end. Role is the recipient, From the phase that ended, To the phase the issue is in now, which is
 // awaiting_children, Reason the open children that hold the parent, and MergeForward the merge
-// forward of the parent's pull request that the move dropped before it landed, which chooses the
-// form of the message (Message). It stops nothing: the recipient keeps its turn, its jobs, its
-// process and its session.
+// forward of the parent's pull request that the move dropped while it was still open and not
+// withdrawn, which chooses the form of the message (Message). It stops nothing: the recipient
+// keeps its turn, its jobs, its process and its session.
 //
 // The kind is phase_ended, which the releases before dispatch://INFRA-4374 wrote for a head that
 // conflicts with its base, and whose queued rows INFRA-4374's migration 20261119003157 deleted. A
@@ -2028,12 +2035,12 @@ type PhaseEnded struct {
 	From   phase.Phase `json:"from"`
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
-	// MergeForward is the merge forward the move into awaiting_children dropped before it landed
-	// (PullRequest.MergeForward with Landed empty), nil where it dropped none.
+	// MergeForward is the merge forward the move into awaiting_children dropped while it was still
+	// open and not withdrawn (PullRequest.MergeForward, workflow's openAsk), nil where it dropped none.
 	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
 }
 
-// DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
+// DroppedMergeForward is a merge forward a move into awaiting_children dropped while it was open
 // (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, Base the base branch
 // it was to merge forward onto that head, and Role the role it was asked of (MergeForward.Asked):
 // the implementer, or the merger for an ask made in merging. Its one writer, workflow's
@@ -2082,8 +2089,9 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 // last, behind the `Reason:` label a started worker's task carries it under (workflow's task), and
 // names each open child. What the worker does with its work takes one of three forms:
 //
-//   - where the move dropped no merge forward that had not landed, the worker commits and pushes
-//     what it has and does no more work on the phase, whatever its role;
+//   - where the move named no dropped merge forward (MergeForward nil: none, or one that landed,
+//     closed or was withdrawn), the worker commits and pushes what it has and does no more work on
+//     the phase, whatever its role;
 //   - where it dropped one and the worker is the role it was asked of (DroppedMergeForward.Role),
 //     the same, with the dropped merge forward named and that role's rule for it
 //     (DroppedMergeForward.told);
@@ -2389,8 +2397,9 @@ type ConflictConfirm struct {
 func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
 
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
-// (PullRequest.MergeForward): the two the act on a confirmed conflict writes, and the two the
-// landing of a new head writes.
+// (PullRequest.MergeForward): the two the act on a confirmed conflict writes, the withdrawal it
+// writes where the merger's ask ends the implementer's, and the two the landing of a new head
+// writes.
 type MergeForwardStep string
 
 const (
@@ -2398,13 +2407,18 @@ const (
 	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// planner, the tester, the reviewer or the merger, to stop writing the workspace while the
+	// merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
 	// MergeForwardReview asks the reviewer to read the merge that landed on an issue whose task's
 	// reviewer step already ran, and to approve the new head or request changes.
 	MergeForwardReview MergeForwardStep = "review"
+	// MergeForwardWithdrawn tells the implementer that the merge forward it was asked for is no
+	// longer its work: the merger is asked for the same head (workflow's mergeForward), and one
+	// merge of one head has one asked role at a time.
+	MergeForwardWithdrawn MergeForwardStep = "withdrawn"
 )
 
 // mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
@@ -2412,23 +2426,37 @@ const (
 // the merger); the hold to a worker of the phase the issue stays in that is neither the role
 // asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
 // worker of that phase, the merger included, which in merging made the merge and learns from it
-// to merge only once the reviewer approved the new head, where its task has a reviewer step; and
-// the review to the reviewer. The hold still lists the merger, which a daemon before
-// cybermonklabs/legion#4979 held in merging while it asked the implementer, so a row that daemon
-// queued is still read after the upgrade.
+// to merge only once the reviewer approved the new head, where its task has a reviewer step; the
+// review to the reviewer; and the withdrawal to the implementer, whose ask the merger's ends. The
+// hold and the landed go to each role that works the head in the
+// workspace every role of the issue shares: the planner, whose step may follow the implementer's,
+// the tester, the reviewer, and the merger, which is held in merging while another role's merge
+// forward of the head stands (workflow's heldWorker, which names the worker a hold told to wait).
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
-	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
-	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
-	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
-	MergeForwardReview: {claim.RoleReviewer},
+	MergeForwardAsk:       {claim.RoleImplementer, claim.RoleMerger},
+	MergeForwardHold:      {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardLanded:    {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardReview:    {claim.RoleReviewer},
+	MergeForwardWithdrawn: {claim.RoleImplementer},
 }
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
-// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload), a merge-forward
-// message by its step and the dropped merge forward a phase-ended message names by the ask.
+// one list MergeForwardWorker reads for the hold and the landed and a row is validated against
+// (validateOutboxPayload), a merge-forward message by its step and the dropped merge forward a
+// phase-ended message names by the ask.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	return slices.Contains(mergeForwardRoles[step], role)
+}
+
+// MergeForwardWorker is the worker of the phase at, the role phase.RoleFor gives it, and whether
+// step of a merge forward, a hold or a landed, goes to it (MergeForwardReaches). It is the one rule
+// the workflow addresses the hold and the landed by (workflow's mergeForward, heldWorker, which
+// the start's hold and the completion fence read, and mergeForwardLanded) and a row of either is
+// validated against (validateOutboxPayload): each goes to the worker of the phase it names, and to
+// no other role.
+func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool) {
+	worker := phase.RoleFor(at)
+	return worker, MergeForwardReaches(step, worker)
 }
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
@@ -2439,12 +2467,22 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // issue stays in, where that is another role, to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
 // the reviewer to read the merge where the reviewer step of the issue's task already ran
-// (MergeForwardReview).
+// (MergeForwardReview). Where the merger is asked for a head the implementer was asked to merge
+// forward, it tells the implementer that the merge is no longer its work (MergeForwardWithdrawn).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
 // to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
 // the base branch, Phase the phase the issue stays in, PullRequest the pull request's number, and
 // Why the first of R0's reasons that held (MergeForward.Why), which the ask and the hold state.
+//
+// SentLaunch is carried by an ask the workflow sent again at a launch of the asked role's claim
+// (workflow's askAgain): that launch. A delivered row of it records the launch on the record's ask
+// (MergeForward.SentLaunch) where that ask is still the row's own, which a delivery the listener
+// named no holder of needs, since it names no launch told (workflow's MergeForwardAskEnded). Every
+// other row carries none. A release before the key refuses a row that carries it
+// (DecodeOutboxPayload, DisallowUnknownFields), so its rollback takes the key off such rows first,
+// leaving a plain ask (docs/kubernetes.md, "Rolling back the release that holds every worker while
+// a merge forward is owed").
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released implementer must still be woken for the merge; its executor
@@ -2458,6 +2496,7 @@ type MergeForwardMessage struct {
 	Phase       phase.Phase      `json:"phase"`
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
+	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2518,8 +2557,14 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the tester in testing, the implementer in retro, the
-// merger in merging; the architect alone in accepting).
+// worker of the phase the issue stands in (phase.RoleFor: the planner in planning, the tester in
+// testing, the implementer in retro, the merger in merging; the architect alone in accepting).
+//
+// The withdrawal names the head, the base and the phase the issue stands in, and tells the
+// implementer that the merge forward it was asked for is no longer its work - the merger is asked
+// for that head, or the issue moved where the ask no longer stands (workflow's withdrawUnowed) - and
+// to merge and push nothing for that ask, with no handoff and no completion for the message: the
+// daemon asks the role whose merge it is where the next step needs it.
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -2558,15 +2603,16 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
+	case MergeForwardWithdrawn:
+		return fmt.Sprintf("%s: the merge of %s forward onto head %s of %s is no longer your work."+
+			" The issue stands in %s. Merge nothing for the merge-forward message about head %s, and push no merge of %s for it."+
+			" The daemon asks the role whose merge it is when the next step needs the merge."+
+			" Write no handoff and make no completion for this message.",
+			issue, p.Base, p.Head, pull, p.Phase, p.Head, p.Base)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
 		tell := "the architect what you decided, on its role topic"
-		switch p.Phase {
-		case phase.Testing:
-			tell = "the architect and the tester what you decided, each on its own role topic"
-		case phase.Retro:
-			tell = "the architect and the implementer what you decided, each on its own role topic"
-		case phase.Merging:
-			tell = "the architect and the merger what you decided, each on its own role topic"
+		if worker := p.Tells(); worker != "" {
+			tell = fmt.Sprintf("the architect and the %s what you decided, each on its own role topic", worker)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
@@ -2574,6 +2620,20 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			" Write no handoff and make no completion for this review. Then tell %s.",
 			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
 	}
+}
+
+// Tells is the worker of the phase a review names that the reviewer tells what it decided beside
+// the architect (Message): the role phase.RoleFor gives that phase, the planner, the tester, the
+// implementer in retro or the merger, and "" where that is the architect, in accepting, or the
+// reviewer itself. It is "" for every other step, which tells nobody.
+func (p MergeForwardMessage) Tells() claim.Role {
+	if p.Step != MergeForwardReview {
+		return ""
+	}
+	if worker := phase.RoleFor(p.Phase); worker != claim.RoleArchitect && worker != p.Role {
+		return worker
+	}
+	return ""
 }
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
@@ -3223,13 +3283,18 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {
-			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
+			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review, or a withdrawal; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the planner, the tester, the reviewer or the merger, a review to the reviewer, and a withdrawal to the implementer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		if value.Step == MergeForwardHold || value.Step == MergeForwardLanded {
+			if worker, _ := MergeForwardWorker(value.Step, value.Phase); worker != value.Role {
+				return fmt.Errorf("a merge-forward hold or landed goes to the worker of the phase it names; a %s naming %q goes to %q, not %q", value.Step, value.Phase, worker, value.Role)
+			}
 		}
 		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
 		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the
@@ -3243,6 +3308,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
+		}
+		if value.Step != MergeForwardAsk && value.SentLaunch != 0 {
+			return fmt.Errorf("only a merge-forward ask sent again at a launch names the launch it was sent at; a %s names %d", value.Step, value.SentLaunch)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

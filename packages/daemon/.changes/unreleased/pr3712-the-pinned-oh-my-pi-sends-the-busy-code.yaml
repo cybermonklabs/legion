@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The worker image runs Oh My Pi v18.18.6-sami.20261126-222037 (`.omp-pin`), whose refusal of a
+  The worker image runs Oh My Pi v18.18.6-sami.20261127-010836 (`.omp-pin`), whose refusal of a
   prompt sent while the agent is busy carries `code: "session_busy"` on the refusal and on the
   prompt's result, as every fork release from v18.18.6-sami.20261118-035823 on does. The daemon
   now reads a busy answer from that code, where the worker stream only kept it before, so such a

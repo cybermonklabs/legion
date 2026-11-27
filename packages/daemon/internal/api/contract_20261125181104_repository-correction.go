@@ -73,8 +73,9 @@ package api
 // leaves the column as it stood, the document of the earlier approval, which the rollback
 // docs/kubernetes.md gives under this contract clears.
 //
-// This release's image pins Oh My Pi v18.18.6-sami.20261126-222037 (`.omp-pin`), which main's
-// #5769 moved the pin to while this change was open, after #5183's, #5473's, #5577's and #5702's pins.
+// This release's image pins Oh My Pi v18.18.6-sami.20261127-010836 (`.omp-pin`), which main's
+// #5776 moved the pin to while this change was open, after #5183's, #5473's, #5577's, #5702's and
+// #5769's pins.
 // It carries all of v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal
 // and `prompt_result` carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
 // shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and

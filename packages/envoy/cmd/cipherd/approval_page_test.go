@@ -25,6 +25,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -122,9 +123,9 @@ func (f approvalFixture) start(t *testing.T, databaseURL, publicURL string, env 
 	return startBroker(t, brokerOptions{Binary: f.binary, Env: append(f.baseEnv(databaseURL, publicURL), env...)})
 }
 
-// pods is a ciphertest.Pods on base, the one way every broker here is asked for a secret.
-func (f approvalFixture) pods(t *testing.T, base string) ciphertest.Pods {
-	return ciphertest.Pods{T: t, Base: base, Token: ciphertest.IssuerTokens(t, f.issuer, f.podKey, approvalPodAudience)}
+// pods is a podclient.Pods on base, the one way every broker here is asked for a secret.
+func (f approvalFixture) pods(t *testing.T, base string) podclient.Pods {
+	return podclient.Pods{T: t, Base: base, Token: podclient.IssuerTokens(t, f.issuer, f.podKey, approvalPodAudience)}
 }
 
 // dispatchToken is Dispatch's server's own projected ServiceAccount token, as it calls the broker.
@@ -136,7 +137,7 @@ func (f approvalFixture) dispatchToken(t *testing.T) string {
 
 // requirePending fails pods' test unless request id, which pod p made, is still pending on its
 // record.
-func requirePending(pods ciphertest.Pods, p ciphertest.Pod, id, after string) {
+func requirePending(pods podclient.Pods, p podclient.Pod, id, after string) {
 	pods.T.Helper()
 	if reply := pods.State(p, id); reply.State != "pending" || reply.GrantID != nil {
 		pods.T.Fatalf("after %s the request is %+v, want still pending with no grant", after, reply)
@@ -270,8 +271,8 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		t.Fatalf("the broker's boot log does not say sign-in is on:\n%s", broker.Boot)
 	}
 
-	var launch ciphertest.Launcher
-	var podA, podB ciphertest.Pod
+	var launch podclient.Launcher
+	var podA, podB podclient.Pod
 	var requestA, requestB, recordA, recordB string
 	newBrowser := func(t *testing.T) *ciphertest.Browser {
 		return ciphertest.NewBrowser(t, base, http.DefaultTransport, f.issuer)
