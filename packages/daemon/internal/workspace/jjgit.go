@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // The jj and git plumbing the shim runs over an issue workspace (internal/shim), the idle release's
@@ -49,6 +51,10 @@ func OutputLines(out string) []string {
 // the caller stopped by cancelling its context, rather than the budget ending it, reports the
 // signal its stop sent (procgroup.Err), not a timeout.
 func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
+	// CONTROL ONLY (#5206 far-budget row): the budget passes at the leader's own exit, before the
+	// wait has read that exit (startPassingTheBudgetAtTheLeadersExit).
+	ctx, passAtLeadersExit, endStandIn := testwait.StandInDeadline(ctx)
+	defer endStandIn()
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
@@ -65,7 +71,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	killed := procgroup.Configure(cmd)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
-	err := procgroup.Run(cmd, start)
+	err := procgroup.Run(cmd, startPassingTheBudgetAtTheLeadersExit(start, passAtLeadersExit, killed))
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time the wait returned) and the budget is what ended
@@ -95,6 +101,32 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 		return "", errors.New(message)
 	}
 	return "", fmt.Errorf("Command failed (exit %d): %s\n%s", cmd.ProcessState.ExitCode(), command, report)
+}
+
+// startPassingTheBudgetAtTheLeadersExit is CONTROL ONLY (#5206 far-budget row): start, and then,
+// before procgroup.Run's wait, the budget passes at the leader's own exit. It waits for the leader
+// to exit without reaping it (waitid WNOWAIT), passes the budget then, and lets exec's Cancel stop
+// the group before the wait reads the exit: the child the leader left in its group takes the
+// SIGTERM, the unreaped leader holds the group through the grace, and the stop counts as the
+// budget's kill. A command that exited on its own is then reported as timed out.
+func startPassingTheBudgetAtTheLeadersExit(start procgroup.Starter, pass func(error), killed func() bool) procgroup.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		done, err := start(cmd)
+		if err != nil {
+			return done, err
+		}
+		var info unix.Siginfo
+		for {
+			if err := unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil); !errors.Is(err, unix.EINTR) {
+				break
+			}
+		}
+		pass(context.DeadlineExceeded)
+		for until := time.Now().Add(10 * time.Second); !killed() && time.Now().Before(until); {
+			time.Sleep(time.Millisecond)
+		}
+		return done, nil
+	}
 }
 
 // gitLockReports are the ways a git or jj failure names the lock file it could not take: jj's git
