@@ -1,6 +1,6 @@
 import { beforeEach, describe as bunDescribe, test as bunTest } from "bun:test";
 import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * The program `name` itself, never a mise shim of it, or null when this host has neither: the
@@ -13,36 +13,44 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
  * first on PATH.
  *
  * It walks `PATH` in order and takes the first executable `name`. A link to the `mise` binary is a
- * shim: it is replaced by what `mise which <name>` names, or, where that names nothing, by the
- * next `name` on PATH, the one the shim would fall back to. On a host without mise this is the
- * first `name` on PATH, as `Bun.which` gives, and mise is never run. A directory at or below
- * `outside`, a test's own stand-in directory, is skipped, so a stand-in never resolves to itself.
+ * shim: it is replaced by what `mise which <name>` names, or, where that names nothing or names a
+ * file at or below `outside`, by the next `name` on PATH, the one the shim would fall back to. On a
+ * host without mise this is the first `name` on PATH, as `Bun.which` gives, and mise is never run.
+ * A directory at or below `outside`, a test's own stand-in directory, is skipped, so a stand-in
+ * never resolves to itself, whether it is first on PATH or what a shim names.
  *
  * A `name` that holds a path separator names one file, and PATH is not walked: it is that file
  * where it is an executable file outside `outside`, what `mise which` names for its base name where
- * it is a link to mise, and null otherwise, including a shim mise names nothing for, since no PATH
- * entry follows a file the caller named.
+ * it is a link to mise and that answer is outside `outside` too, and null otherwise, including a
+ * shim mise names nothing for, since no PATH entry follows a file the caller named.
+ *
+ * Every path it returns is absolute, as `Bun.which` returns, so it means the same file from any
+ * working directory: a relative `name` (`./tool`, `bin/tool`) and a relative PATH entry are
+ * resolved against this process's working directory once, before any check reads them.
  */
 export function hostTool(name: string, outside?: string): string | null {
   if (name.includes(sep)) {
-    if (outside !== undefined && within(outside, dirname(resolve(name)))) return null;
-    return executableFile(name) ? programAt(name, basename(name)) : null;
+    const path = resolve(name);
+    return beyond(outside, path) && executableFile(path)
+      ? programAt(path, basename(path), outside)
+      : null;
   }
   for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
     if (directory === "") continue;
-    if (outside !== undefined && within(outside, directory)) continue;
-    const candidate = join(directory, name);
-    if (!executableFile(candidate)) continue;
-    const program = programAt(candidate, name);
+    const candidate = resolve(directory, name);
+    if (!beyond(outside, candidate) || !executableFile(candidate)) continue;
+    const program = programAt(candidate, name, outside);
     if (program !== null) return program;
   }
   return null;
 }
 
-/** Whether `directory` is `outside` or below it. */
-function within(outside: string, directory: string): boolean {
-  const fromOutside = relative(outside, directory);
-  return !(fromOutside === ".." || fromOutside.startsWith(`..${sep}`) || isAbsolute(fromOutside));
+/** Whether `path`'s directory is neither `outside` nor below it; every path is, where no
+ *  `outside` is given. */
+function beyond(outside: string | undefined, path: string): boolean {
+  if (outside === undefined) return true;
+  const fromOutside = relative(outside, dirname(path));
+  return fromOutside === ".." || fromOutside.startsWith(`..${sep}`) || isAbsolute(fromOutside);
 }
 
 /** Whether `path` is a file this process may execute. */
@@ -56,13 +64,15 @@ function executableFile(path: string): boolean {
 }
 
 /** `candidate` itself where it is no link to the `mise` binary; for a mise shim, what
- *  `mise which <name>` names, or null where that names nothing. */
-function programAt(candidate: string, name: string): string | null {
+ *  `mise which <name>` names, or null where that names nothing or a file at or below `outside`. */
+function programAt(candidate: string, name: string, outside: string | undefined): string | null {
   const target = realpathSync(candidate);
   if (basename(target) !== "mise") return candidate;
   const named = Bun.spawnSync([target, "which", name]);
-  const path = named.stdout.toString().trim();
-  return named.exitCode === 0 && path !== "" && existsSync(path) ? path : null;
+  const answer = named.stdout.toString().trim();
+  if (named.exitCode !== 0 || answer === "") return null;
+  const path = resolve(answer);
+  return existsSync(path) && beyond(outside, path) ? path : null;
 }
 
 /**

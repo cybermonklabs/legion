@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, dirname, join, sep } from "node:path";
 import { restoreEnvironment } from "./environment";
 import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
@@ -293,4 +293,36 @@ test("hostTool skips a directory at or below the one it is told to stay outside"
   process.env["PATH"] = [standIn, below, after].join(delimiter);
   expect(hostTool("tool", standIn)).toBe(join(after, "tool"));
   expect(hostTool("tool")).toBe(join(standIn, "tool"));
+});
+
+test("hostTool returns an absolute path for a relative name or a relative PATH entry, as Bun.which does", () => {
+  // A relative path means a different file from another working directory: a child started
+  // elsewhere, or a link made from it, would address the wrong one.
+  const directory = realTool();
+  const before = process.cwd();
+  try {
+    process.chdir(directory);
+    process.env["PATH"] = realTool();
+    expect(hostTool(`.${sep}tool`)).toBe(join(directory, "tool"));
+    process.chdir(dirname(directory));
+    expect(hostTool(join(basename(directory), "tool"))).toBe(join(directory, "tool"));
+    process.env["PATH"] = basename(directory);
+    expect(hostTool("tool")).toBe(join(directory, "tool"));
+  } finally {
+    process.chdir(before);
+  }
+});
+
+test("hostTool holds what a shim names to the directory it is told to stay outside", () => {
+  // The shim lies outside the stand-in directory; what mise names for it lies inside.
+  const standIn = realTool();
+  const after = realTool();
+  const shims = miseShims(join(standIn, "tool"));
+  process.env["PATH"] = [shims, after].join(delimiter);
+  // On PATH, the walk goes on to the next `tool`, as it does where mise names nothing.
+  expect(hostTool("tool", standIn)).toBe(join(after, "tool"));
+  expect(hostTool("tool")).toBe(join(standIn, "tool"));
+  // Named by its path, the shim has no next entry, so it is no program.
+  expect(hostTool(join(shims, "tool"), standIn)).toBeNull();
+  expect(hostTool(join(shims, "tool"))).toBe(join(standIn, "tool"));
 });
