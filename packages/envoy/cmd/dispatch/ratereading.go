@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -169,13 +170,12 @@ type repositoryName struct {
 // which lists no installation, forgets them all. A pass cut short by the end of ctx, the process
 // stopping, logs nothing further.
 func (r *rateReading) pass(ctx context.Context) []time.Time {
-	line := githubrate.Reading{Program: "dispatch", Process: r.process}
-	appErr := r.readApp(ctx)
-	line.AppID, line.AppSlug = r.appID, r.appSlug
 	installations, err := r.client.ReadInstallations(ctx)
 	if ctx.Err() != nil {
 		return nil
 	}
+	r.app(ctx, installations)
+	line := githubrate.Reading{Program: "dispatch", Process: r.process, AppID: r.appID, AppSlug: r.appSlug}
 	switch {
 	case err != nil:
 		line.Error = "list the App's installations: " + err.Error()
@@ -206,15 +206,14 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		reading.Owner = installation.AccountLogin
 		reading.InstallationID = strconv.FormatInt(installation.ID, 10)
 		reading.Permissions = installation.Granted
+		if installation.AppID != 0 {
+			reading.AppID = strconv.FormatInt(installation.AppID, 10)
+		}
 		if installation.AppSlug != "" {
 			reading.AppSlug = installation.AppSlug
 		}
 		var err error
-		if appErr != nil {
-			err = appErr
-		} else {
-			reading.Core, reading.GraphQL, err = r.read(ctx, installation.ID)
-		}
+		reading.Core, reading.GraphQL, err = r.read(ctx, installation.ID)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -285,18 +284,31 @@ func (r *rateReading) untriedResets() []time.Time {
 	return untried
 }
 
-// readApp reads the App's numeric id and fallback slug from GitHub until it has them. The id is
-// stable, while each pass's installation list names the current slug if the App was renamed.
-func (r *rateReading) readApp(ctx context.Context) error {
-	if r.appSlug != "" {
-		return nil
+// app keeps the App's numeric id and slug the reading names a line by, from installations, the
+// list this pass read: each installation object names both (app_id, app_slug), and the last one
+// named wins, so a renamed App's lines take its new slug. GET /app (githubapp.Client.AppIdentity)
+// is read only where the list named either of them nowhere and the reading holds none, as a failed
+// or empty list does. A failure there is logged and fails no reading: a line then names the App
+// by what the list named, or by nothing.
+func (r *rateReading) app(ctx context.Context, installations []githubapp.Installation) {
+	for _, installation := range installations {
+		if installation.AppID != 0 {
+			r.appID = strconv.FormatInt(installation.AppID, 10)
+		}
+		if installation.AppSlug != "" {
+			r.appSlug = installation.AppSlug
+		}
+	}
+	if r.appID != "" && r.appSlug != "" {
+		return
 	}
 	id, slug, err := r.client.AppIdentity(ctx)
 	if err != nil {
-		return fmt.Errorf("read the App's id and slug: %w", err)
+		slog.Warn("dispatch: the GitHub rate reading names the App by what its installation list named: GET /app failed", "error", err)
+		return
 	}
-	r.appID, r.appSlug = strconv.FormatInt(id, 10), slug
-	return nil
+	r.appID = cmp.Or(r.appID, strconv.FormatInt(id, 10))
+	r.appSlug = cmp.Or(r.appSlug, slug)
 }
 
 // read reads installation's two counters with a token of its own, REST core as core reads it and
@@ -304,8 +316,12 @@ func (r *rateReading) readApp(ctx context.Context) error {
 // own calls are among them. A counter whose reset passed before that snapshot is an error rather
 // than an old reading paired with the new hour's own calls. Every read is sent past the shared
 // ledger's hold on the installation (githubapp.Client.ReadPastHold): the installation the ledger
-// holds is one that spent its budget, and its reading is the one that says so.
+// holds is one that spent its budget, and its reading is the one that says so. A secondary limit
+// GitHub answered the installation's token with is the one hold the reading obeys (held).
 func (r *rateReading) read(ctx context.Context, installation int64) (core, graphql githubrate.Bucket, err error) {
+	if err := r.held(installation); err != nil {
+		return core, graphql, err
+	}
 	token, err := r.client.Token(ctx, installation)
 	if err != nil {
 		return core, graphql, fmt.Errorf("mint a token of installation %d: %w", installation, err)
@@ -314,7 +330,7 @@ func (r *rateReading) read(ctx context.Context, installation int64) (core, graph
 	if err != nil {
 		return core, graphql, err
 	}
-	body, status, header, err := r.client.ReadPastHold(ctx, token, "/rate_limit")
+	body, status, header, err := r.pastHold(ctx, installation, token, "/rate_limit")
 	if err == nil {
 		err = githubapp.CheckResponse(status, header, body)
 	}
@@ -330,6 +346,29 @@ func (r *rateReading) read(ctx context.Context, installation int64) (core, graph
 		return core, graphql, errors.New("a counter reset before its own-call snapshot; the reading spans two rate windows")
 	}
 	return core, graphql, nil
+}
+
+// held is the error of a secondary limit that holds installation's reads on the reading's clock,
+// and nil when none does. GitHub asks a client to send nothing while a secondary limit holds, and
+// warns that it may ban an integration that goes on. The limit is the one the process's Counter
+// noted from GitHub's own answer to one of the installation's tokens, whichever client of the
+// process sent it (githubapp.Client.SecondaryUntil), so a secondary limit another process met is
+// not seen here. A primary limit is not one: its refusal still names the spent counter, which is
+// what the reading reads.
+func (r *rateReading) held(installation int64) error {
+	if until := r.client.SecondaryUntil(installation); until.After(r.clock.now()) {
+		return fmt.Errorf("a GitHub secondary rate limit holds installation %d until %s, as GitHub answered this process; nothing was sent", installation, until.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// pastHold is githubapp.Client.ReadPastHold of path with token, sent unless a secondary limit
+// holds installation (held), as one GitHub answered an earlier read of this pass with can.
+func (r *rateReading) pastHold(ctx context.Context, installation int64, token, path string) ([]byte, int, http.Header, error) {
+	if err := r.held(installation); err != nil {
+		return nil, 0, nil, err
+	}
+	return r.client.ReadPastHold(ctx, token, path)
 }
 
 // core is installation's REST core counter as the headers of
@@ -349,7 +388,7 @@ func (r *rateReading) core(ctx context.Context, installation int64, token string
 		return githubrate.Bucket{}, err
 	}
 	path := "/repos/" + url.PathEscape(repository.owner) + "/" + url.PathEscape(repository.name) + "/actions/workflows?per_page=1"
-	_, status, header, err := r.client.ReadPastHold(ctx, token, path)
+	_, status, header, err := r.pastHold(ctx, installation, token, path)
 	if err != nil {
 		return githubrate.Bucket{}, fmt.Errorf("read the core counter: %w", err)
 	}
@@ -372,7 +411,7 @@ func (r *rateReading) repository(ctx context.Context, installation int64, token 
 	if repository, ok := r.repositories[installation]; ok {
 		return repository, nil, nil
 	}
-	body, status, header, err := r.client.ReadPastHold(ctx, token, "/installation/repositories?per_page=1")
+	body, status, header, err := r.pastHold(ctx, installation, token, "/installation/repositories?per_page=1")
 	if err != nil {
 		return repositoryName{}, nil, fmt.Errorf("list installation %d's repositories: %w", installation, err)
 	}

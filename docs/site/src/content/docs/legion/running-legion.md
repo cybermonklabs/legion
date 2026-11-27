@@ -264,18 +264,30 @@ separate thirty-second bound, so one stalled installation does not stop every la
 installation whose token or read fails, or that GitHub lists as suspended, still has its line,
 carrying `error` and no counter; its `before_reset` is true where the failed try was in the last
 minute of a reset the reading knows of the installation, so that minute shows as tried and read
-nothing rather than as a minute no line came from. An App whose list GitHub refuses, or
-lists no installation, has one line with `error` and no installation (`GET /app/installations
-listed no installation of the App` for the empty list), so no pass is silent for an App. A failed
-reading or a refused list keeps the resets the installation's last readings read, a failed
-reading's own where it read the core counter before it failed, so the pass before them still
-runs; an installation the list no longer holds is forgotten with them. A reading that fails in a
-counter's last minute still counts as that minute's reading, so a failing installation is read
-once there rather than pass after pass. Each pass reads the installations in a counter's last
-minute first. When the daemon holds an App's key, it says once as the reading starts that it
-reads each installation of those Apps, naming their ids and the interval. An App on
-`token_command` holds no key to list its installations with, so it is not read, and the daemon
-says so once as the reading starts.
+nothing rather than as a minute no line came from. A suspended installation that GitHub lists
+with no account has its line with no `owner`; one listed with no id has no line, since no line
+could name it, and is not counted in `installations`; neither fails the list. A permission GitHub
+lists with a value that is not text is left out of `permissions`. An App whose list GitHub
+refuses has one line with `error` for each installation the reading holds of it, with the
+`owner`, the `permissions` and the count its last list gave, and `before_reset` as above, so an
+owner whose list fails in a last minute still has that minute's line; with none held, and for a
+list that names no installation (`GET /app/installations listed no installation of the App`), it
+has one line with `error` and no installation, so no pass is silent for an App. A failed reading
+or a refused list keeps the resets the installation's last readings read, a failed reading's own
+where it read the core counter before it failed, so the pass before them still runs; an
+installation the list no longer holds is forgotten with them. A reading that fails in a counter's
+last minute still counts as that minute's reading, so a failing installation is read once there
+rather than pass after pass. An installation that a secondary limit holds, because GitHub
+answered one of the daemon's calls with that installation's token with one, is sent nothing until
+the end GitHub asked for (its `Retry-After`, else a minute, at most an hour), and its line carries
+the hold as its `error`; a primary limit holds no reading, since its refusal still names the spent
+counter. A line's `error` holds at most 1,024 bytes: a longer one, such as a refusal carrying
+GitHub's whole body, is cut at a whole character and ends with the length it was cut from. Each
+pass lists every App before it reads any installation, then reads the installations of every App
+in a counter's last minute first, the soonest reset first, then the rest. When the daemon holds an
+App's key, it says once as the reading starts that it reads each installation of those Apps,
+naming their ids and the interval. An App on `token_command` holds no key to list its
+installations with, so it is not read, and the daemon says so once as the reading starts.
 
 `scripts/github-apps/create.ts` registers all three from the manifests beside it:
 `scripts/github-apps/implement.json` and `review.json` hold the permissions above and carry no

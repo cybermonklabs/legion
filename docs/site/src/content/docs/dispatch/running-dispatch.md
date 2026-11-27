@@ -538,11 +538,13 @@ before. It holds:
 
 - `program` (`dispatch`), `process` (the server's host name) and `project` (empty).
 - `app_id`, `app_slug`, `owner` and `installation_id`, which name the installation, and
-  `installations`, how many installations the list held. The slug comes from the fresh
-  installation list, so a renamed App does not keep its old slug until the server restarts.
+  `installations`, how many installations the list held. The App's id and slug come from the
+  fresh installation list, which names both for each installation, so a renamed App does not keep
+  its old slug until the server restarts. The server asks GitHub's `GET /app` only when the list
+  names neither, and a failure there fails no reading.
 - `permissions`: each permission the installation grants the App, with its access, as the
   installation list named them. It is `{}` when the list named none, and it is on the line of a
-  reading that failed too.
+  reading that failed too. A permission the list names with a value that is not text is left out.
 - `before_reset`, true when the line was written in the last minute before a reset of one of this
   installation's counters, including on a regular pass. A reading that failed there is a
   `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
@@ -562,12 +564,18 @@ before. It holds:
 
 A reading of an installation that has used its whole budget still carries the counters. Its reads
 are sent even while the server holds back its other reads of that installation, and GitHub names
-the counter in a refusal too. A reading that fails carries `error` in place of the counters: for
-example, when GitHub refuses the installation's token, does not answer, or a counter resets
-before the server reads its own-call counts. So a reading logs a line for each installation
-listed. A list that fails, or that holds no installation, logs one line with its `error` and no
-`permissions`. A reading that fails keeps the resets the server read before, so the reading
-before those resets is still taken.
+the counter in a refusal too: about 6 + 2N core calls an hour of each such installation from each
+server, N being the App's installations. A secondary limit is different: GitHub asks a client to
+send nothing while one holds, and may ban an integration that goes on. So once GitHub answers one
+of this server's calls with an installation's token with a secondary limit, the server sends that
+installation's reading nothing until the end GitHub asked for (its `Retry-After`, else a minute,
+at most an hour), and the line carries the hold as its `error`. A reading that fails carries
+`error` in place of the counters: for example, when GitHub refuses the installation's token, does
+not answer, or a counter resets before the server reads its own-call counts. An `error` holds at
+most 1,024 bytes: a longer one is cut at a whole character and ends with the length it was cut
+from. So a reading logs a line for each installation listed. A list that fails, or that holds no
+installation, logs one line with its `error` and no `permissions`. A reading that fails keeps the
+resets the server read before, so the reading before those resets is still taken.
 
 GitHub counts every caller of an installation together. Its used counts are REST requests or
 GraphQL points, while the server's own counts are answered calls. A GraphQL query can cost several

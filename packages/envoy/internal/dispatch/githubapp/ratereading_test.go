@@ -23,17 +23,19 @@ import (
 // with app), its installation list (installations, read under the App's JWT and counted), token
 // mints of any installation, and the calls a token makes, each answered with the installation's
 // counter in GitHub's X-RateLimit headers. limitedPath is answered as GitHub answers a spent
-// budget: 403 with no requests remaining.
+// budget: 403 with no requests remaining; secondaryPath as it answers a secondary limit: 403 with
+// requests remaining and Retry-After 90.
 type rateGitHub struct {
-	mu          sync.Mutex
-	app         string
-	appStatus   int
-	listings    int
-	installed   []int64
-	minted      int
-	limitedPath string
-	requests    []string
-	reset       int64
+	mu            sync.Mutex
+	app           string
+	appStatus     int
+	listings      int
+	installed     []int64
+	minted        int
+	limitedPath   string
+	secondaryPath string
+	requests      []string
+	reset         int64
 }
 
 func (g *rateGitHub) serve(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +79,14 @@ func (g *rateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		header.Set("X-RateLimit-Remaining", "0")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded for installation ID 7."}`)
+		return
+	}
+	if r.URL.Path == g.secondaryPath {
+		header.Set("X-RateLimit-Used", "10")
+		header.Set("X-RateLimit-Remaining", "4990")
+		header.Set("Retry-After", "90")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
 		return
 	}
 	header.Set("X-RateLimit-Used", "10")
@@ -205,7 +215,8 @@ func TestReadInstallationsAsksGitHubEachCallAndLeavesTheCacheAsItWas(t *testing.
 
 // A listed installation holds every permission GitHub's GET /app/installations named for it, as
 // GitHub named it, those the client reads nothing of among them (Granted), and the ones the client
-// reads as before (Permissions). An installation listed with no permissions holds an empty map.
+// reads as before (Permissions), and the App's id the list names for it. An installation listed
+// with no permissions holds an empty map.
 func TestAListedInstallationHoldsEveryPermissionGitHubNamed(t *testing.T) {
 	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/app/installations" {
@@ -214,7 +225,7 @@ func TestAListedInstallationHoldsEveryPermissionGitHubNamed(t *testing.T) {
 		}
 		listed := `[]`
 		if r.URL.Query().Get("page") == "1" {
-			listed = `[{"id":7,"app_slug":"example-app","account":{"login":"acme"},
+			listed = `[{"id":7,"app_id":4242,"app_slug":"example-app","account":{"login":"acme"},
 				"permissions":{"contents":"read","checks":"write","administration":"read","pull_requests":"write"}},
 				{"id":8,"app_slug":"example-app","account":{"login":"example-org"}}]`
 		}
@@ -235,8 +246,73 @@ func TestAListedInstallationHoldsEveryPermissionGitHubNamed(t *testing.T) {
 	if got := installations[0].Permissions; got.Contents != "read" || got.PullRequests != "write" {
 		t.Errorf("installation 7's read permissions are %+v, want contents read and pull requests write", got)
 	}
+	if installations[0].AppID != 4242 || installations[1].AppID != 0 {
+		t.Errorf("the listed App ids are %d and %d, want the list's 4242, and 0 where it names none", installations[0].AppID, installations[1].AppID)
+	}
 	if got := installations[1].Granted; got == nil || len(got) != 0 {
 		t.Errorf("installation 8, listed with no permissions, grants %#v, want an empty map", got)
+	}
+}
+
+// A permission GitHub names with a value that is no string fails no decode of an installation:
+// the list keeps the permissions whose access is a string, and the repository's installation
+// lookup, behind RepositoryToken, DeliveryPermissions, CheckSource and Installed, answers as
+// before.
+func TestAPermissionThatIsNoStringFailsNoDecode(t *testing.T) {
+	permissions := `{"contents":"read","some_future_flag":true,"limits":{"rate":5}}`
+	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app/installations" && r.URL.Query().Get("page") == "1":
+			_, _ = fmt.Fprintf(w, `[{"id":7,"app_slug":"example-app","account":{"login":"acme"},"permissions":%s}]`, permissions)
+		case r.URL.Path == "/app/installations":
+			_, _ = fmt.Fprint(w, `[]`)
+		case r.URL.Path == "/repos/acme/widgets/installation":
+			_, _ = fmt.Fprintf(w, `{"id":7,"app_slug":"example-app","permissions":%s}`, permissions)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	}})
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.rate", PEM: pemText}, base)
+	if err != nil {
+		t.Fatalf("build the client: %v", err)
+	}
+	installations, err := client.ReadInstallations(context.Background())
+	if err != nil || len(installations) != 1 {
+		t.Fatalf("ReadInstallations = %v, %v; want the one installation", installations, err)
+	}
+	if got := fmt.Sprint(installations[0].Granted); got != "map[contents:read]" {
+		t.Errorf("installation 7 grants %s, want the permissions whose access is a string, map[contents:read]", got)
+	}
+	if installed, err := client.Installed(context.Background(), "acme", "widgets"); err != nil || !installed {
+		t.Errorf("Installed = %t, %v; want true", installed, err)
+	}
+}
+
+// SecondaryUntil is the end of the secondary limit the client's Counter noted for an installation
+// (githubrate.Counter.SecondaryUntil), and the zero time for a client with no Counter.
+func TestSecondaryUntilIsTheCountersNote(t *testing.T) {
+	counter := githubrate.NewCounter()
+	fake, client := startRateGitHub(t, WithRateCounter(counter))
+	fake.secondaryPath = "/repos/acme/web/actions/workflows"
+	ctx := context.Background()
+	token, err := client.Token(ctx, 7)
+	if err != nil {
+		t.Fatalf("mint installation 7's token: %v", err)
+	}
+	before := time.Now()
+	if _, status, _, err := client.ReadPastHold(ctx, token, "/repos/acme/web/actions/workflows?per_page=1"); err != nil || status != http.StatusForbidden {
+		t.Fatalf("ReadPastHold = %d, %v; want GitHub's 403", status, err)
+	}
+	if until := client.SecondaryUntil(7); until.Before(before.Add(90*time.Second)) || until.After(time.Now().Add(90*time.Second)) {
+		t.Errorf("SecondaryUntil(7) = %s, want 90 s after the answer", until)
+	}
+	if until := (*Client)(nil).SecondaryUntil(7); !until.IsZero() {
+		t.Errorf("a nil client's SecondaryUntil = %s, want zero", until)
+	}
+	_, without := startRateGitHub(t)
+	if until := without.SecondaryUntil(7); !until.IsZero() {
+		t.Errorf("a client with no Counter's SecondaryUntil = %s, want zero", until)
 	}
 }
 

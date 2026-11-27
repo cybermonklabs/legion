@@ -56,30 +56,40 @@ const (
 	noCoreCounter      = "a workflows answer with no core counter"
 	rateLimitRefused   = "GET /rate_limit refused"
 	rateLimitMalformed = "a GET /rate_limit answer with no GraphQL counter"
+	rateLimitSecondary = "GET /rate_limit answered with a secondary limit"
+	workflowsSecondary = "the workflows read answered with a secondary limit"
 	listingRefused     = "the repository listing refused"
 	listingEmpty       = "a repository listing of no repository"
 	listingUnparsable  = "a repository listing of a name with no owner"
 	listingNotJSON     = "a repository listing that is no JSON"
 )
 
+// secondaryRetryAfter is the Retry-After, in seconds, of the secondary limit the fake answers.
+const secondaryRetryAfter = 60
+
 // rateReadingGitHub is a fake GitHub for the rate reading: the App's own GET /app, its installation
 // list, token mints, and the reads an installation's token makes. Every answer to a token's call
 // carries that installation's counter in GitHub's X-RateLimit headers, GET /rate_limit included,
 // so a count of a call the reading must not count shows. A workflows read of a repository that is
 // not the installation's first is answered 404 with the counter, as GitHub answers a repository
-// that went. It counts the App reads, the installation listings and each installation's
-// repository listings, and keeps the workflows reads in order. listRefused answers the
-// installation list 503.
+// that went. A secondary limit is answered 403 with requests remaining, Retry-After
+// secondaryRetryAfter and GitHub's wording. It counts the App reads, the installation listings,
+// each installation's repository listings and each installation's token calls, and keeps the
+// workflows reads in order. listRefused answers the installation list 503, appRefused answers
+// GET /app 500, and listNamesNoApp leaves the App's id out of each listed installation.
 type rateReadingGitHub struct {
 	t                       *testing.T
 	mu                      sync.Mutex
 	installations           []rateInstallation
 	coreReset, graphQLReset int64
 	listRefused             bool
+	appRefused              bool
+	listNamesNoApp          bool
 	minted                  int
 	tokens                  map[string]int64
 	appReads, listings      int
 	repositoryListings      map[int64]int
+	tokenCalls              map[int64]int
 	workflowReads           []string
 }
 
@@ -89,7 +99,7 @@ func newRateReadingGitHub(t *testing.T, coreReset, graphQLReset time.Time, insta
 	t.Helper()
 	github := &rateReadingGitHub{
 		t: t, installations: installations, coreReset: coreReset.Unix(), graphQLReset: graphQLReset.Unix(),
-		tokens: map[string]int64{}, repositoryListings: map[int64]int{},
+		tokens: map[string]int64{}, repositoryListings: map[int64]int{}, tokenCalls: map[int64]int{},
 	}
 	return github, githubtest.Server(t, githubtest.Spec{Handle: github.serve})
 }
@@ -118,6 +128,11 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/app":
 		g.appReads++
+		if g.appRefused {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"id":4242,"slug":"example-app","name":"Example App"}`)
 		return
 	case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
@@ -131,7 +146,10 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "1" {
 			for _, installation := range g.installations {
 				entry := map[string]any{
-					"id": installation.id, "app_slug": "example-app", "account": map[string]any{"login": installation.owner},
+					"id": installation.id, "app_id": 4242, "app_slug": "example-app", "account": map[string]any{"login": installation.owner},
+				}
+				if g.listNamesNoApp {
+					delete(entry, "app_id")
 				}
 				if installation.permissions != nil {
 					entry["permissions"] = installation.permissions
@@ -167,6 +185,12 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		g.t.Errorf("GitHub was asked %s %s with no token of an installation it lists", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
+	}
+	g.tokenCalls[id]++
+	secondary := func() {
+		w.Header().Set("Retry-After", strconv.Itoa(secondaryRetryAfter))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
 	}
 	coreReset, graphQLReset := cmpOr(installation.coreReset, g.coreReset), cmpOr(installation.graphQLReset, g.graphQLReset)
 	counter := func(resource string, used, limit int, reset int64) {
@@ -205,6 +229,10 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
 		}
+		if installation.failure == workflowsSecondary {
+			secondary()
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
 	case r.Method == http.MethodGet && path == "/rate_limit":
 		counter(githubrate.Core, installation.coreUsed, installation.coreLimit, coreReset)
@@ -212,6 +240,8 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		case rateLimitRefused:
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = fmt.Fprint(w, `{"message":"Service Unavailable"}`)
+		case rateLimitSecondary:
+			secondary()
 		case rateLimitMalformed:
 			_, _ = fmt.Fprint(w, `{"resources":{}}`)
 		default:
@@ -414,8 +444,8 @@ func TestRateReadingIsOneJSONLine(t *testing.T) {
 	if github.listings != 2 {
 		t.Errorf("GitHub listed the App's installations %d times, want once a pass, 2", github.listings)
 	}
-	if github.appReads != 1 {
-		t.Errorf("GitHub was asked GET /app %d times, want once: the App's id and slug are remembered", github.appReads)
+	if github.appReads != 0 {
+		t.Errorf("GitHub was asked GET /app %d times, want none: the installation list names the App's id and slug", github.appReads)
 	}
 	for _, id := range []int64{101, 102} {
 		if listed := github.repositoryListings[id]; listed != 1 {
@@ -904,6 +934,120 @@ func TestARateReadingUsesTheListedAppsCurrentSlug(t *testing.T) {
 	if len(lines) != 1 || lines[0]["app_slug"] != "renamed-app" || lines[0]["error"] != nil {
 		t.Errorf("the reading after the App was renamed is %v, want its freshly listed slug", lines)
 	}
+}
+
+// A line takes the App's id and slug from the installation list, which names both for each
+// installation, so a GET /app GitHub refuses fails no reading: every line still carries its
+// counters and the list's App. GET /app is read only where the list names no App id, once, and
+// remembered.
+func TestARateReadingTakesTheAppFromTheInstallationList(t *testing.T) {
+	for _, row := range []struct {
+		name                       string
+		appRefused, listNamesNoApp bool
+		appID                      string
+		appReads                   int
+	}{
+		{"GET /app refused, the list naming the App", true, false, "4242", 2},
+		{"the list naming no App id", false, true, "4242", 1},
+		{"GET /app refused, the list naming no App id", true, true, "", 2},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			start := time.Now().Truncate(time.Second)
+			github, base := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
+				rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 11, coreLimit: 5000, graphQLUsed: 12, graphQLLimit: 5000})
+			github.appRefused, github.listNamesNoApp = row.appRefused, row.listNamesNoApp
+			var written logtest.Buffer
+			lines := readPasses(t, rateReadingClient(t, base), &written, &steppedClock{at: start, passes: 2})
+			if len(lines) != 2 {
+				t.Fatalf("the passes logged %d lines, want 2:\n%s", len(lines), written.String())
+			}
+			for _, line := range lines {
+				if _, failed := line["error"]; failed || line["core_used"] != float64(11) || line["graphql_used"] != float64(12) {
+					t.Errorf("the line is %v, want both counters and no error", line)
+				}
+				if line["app_id"] != row.appID || line["app_slug"] != "example-app" {
+					t.Errorf("the line names App %v %v, want %q example-app", line["app_id"], line["app_slug"], row.appID)
+				}
+			}
+			github.mu.Lock()
+			defer github.mu.Unlock()
+			if want := map[bool]int{true: row.appReads, false: 0}[row.listNamesNoApp]; github.appReads != want {
+				t.Errorf("GitHub was asked GET /app %d times, want %d", github.appReads, want)
+			}
+		})
+	}
+}
+
+// A secondary limit GitHub answers an installation's token with holds that installation's
+// reading in this process until it ends: GitHub answers installation 101's GET /rate_limit with a
+// secondary limit at the first pass, the before-reset pass 25 s later, inside the minute GitHub
+// asked for, sends 101 nothing and writes its line with an error naming the limit and its end,
+// while installation 102 is read, and the pass after the limit ended reads 101 again. A secondary
+// limit answered to the workflows read stops the same pass's GET /rate_limit too.
+func TestASecondaryLimitHoldsItsInstallationsReadingUntilItEnds(t *testing.T) {
+	t.Run("across passes", func(t *testing.T) {
+		start := time.Now().Truncate(time.Second)
+		github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
+			rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 11, coreLimit: 5000, graphQLLimit: 5000, failure: rateLimitSecondary},
+			rateInstallation{id: 102, owner: "example-org", repository: "example-org/gadgets", coreUsed: 21, coreLimit: 5000, graphQLLimit: 5000,
+				coreReset: start.Add(time.Hour).Unix()},
+		)
+		calls := []int{}
+		clock := &steppedClock{at: start, passes: 3, between: func(pass int) {
+			github.mu.Lock()
+			calls = append(calls, github.tokenCalls[101])
+			if pass == 2 {
+				// The third pass is in the core counter's next hour.
+				github.coreReset = start.Add(2 * time.Hour).Unix()
+			}
+			github.mu.Unlock()
+			if pass == 1 {
+				github.change(failing(101, ""))
+			}
+		}}
+		var written logtest.Buffer
+		lines := readPasses(t, rateReadingClient(t, base, githubapp.WithRateCounter(githubrate.NewCounter())), &written, clock)
+		if want := 70*time.Second - githubrate.BeforeReset; clock.waits[0] != want {
+			t.Fatalf("the second pass was due %s after the first, want %s", clock.waits[0], want)
+		}
+		if got := installationsOf(lines); !slices.Equal(got, []string{"101", "102", "101", "102", "101", "102"}) {
+			t.Fatalf("the passes logged installations %v, want 101 and 102 at each of three", got)
+		}
+		if cause, _ := lines[0]["error"].(string); !strings.Contains(cause, "403") {
+			t.Errorf("the first pass's line of 101 is %v, want GitHub's secondary limit as its error", lines[0])
+		}
+		if len(calls) != 2 || calls[1] != calls[0] {
+			t.Errorf("installation 101's token calls after each pass were %v, want none in the second pass", calls)
+		}
+		held, _ := lines[2]["error"].(string)
+		if !strings.Contains(held, "secondary rate limit") || !strings.Contains(held, "installation 101") || !strings.Contains(held, "until 20") {
+			t.Errorf("the second pass's line of 101 has error %q, want the secondary limit and its end", held)
+		}
+		if _, present := lines[2]["core_used"]; present {
+			t.Errorf("the held line carries a counter: %v", lines[2])
+		}
+		if _, failed := lines[3]["error"]; failed {
+			t.Errorf("installation 102's line in the second pass is %v, want a reading: the limit is 101's alone", lines[3])
+		}
+		if _, failed := lines[4]["error"]; failed || lines[4]["core_used"] != float64(11) {
+			t.Errorf("the third pass's line of 101, after the limit ended, is %v, want a reading", lines[4])
+		}
+	})
+	t.Run("within a pass", func(t *testing.T) {
+		start := time.Now().Truncate(time.Second)
+		github, base := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
+			rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000, failure: workflowsSecondary})
+		var written logtest.Buffer
+		lines := readPasses(t, rateReadingClient(t, base, githubapp.WithRateCounter(githubrate.NewCounter())), &written, &steppedClock{at: start, passes: 1})
+		if cause, _ := lines[0]["error"].(string); len(lines) != 1 || !strings.Contains(cause, "secondary rate limit") {
+			t.Errorf("the pass logged %v, want one line whose error names the secondary limit", lines)
+		}
+		github.mu.Lock()
+		defer github.mu.Unlock()
+		if github.tokenCalls[101] != 2 {
+			t.Errorf("installation 101's token made %d calls, want 2, the listing and the workflows read: GET /rate_limit is held", github.tokenCalls[101])
+		}
+	})
 }
 
 // counts is want as the JSON object a line carries it as: each count a number.

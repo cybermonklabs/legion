@@ -133,12 +133,14 @@ const tokenExpirySlack = 5 * time.Minute
 // dispatch inspects. AccountLogin (the installation's own account -- a user or an org) is set
 // only by ListInstallations (GET /app/installations), which is account-less in its own answer
 // shape; RepositoryToken's own installation()/DeliveryPermissions() lookups never set it, since
-// they already know the account from the owner/repo they resolved. Permissions is the part of the
+// they already know the account from the owner/repo they resolved. AppID is the App's numeric id
+// as the installation object names it, 0 where it names none. Permissions is the part of the
 // installation's permissions Dispatch reads; Granted is every permission GitHub named for it, with
 // its access, as GitHub named it (the rate reading logs them), and is empty, never nil, where
 // GitHub named none.
 type Installation struct {
 	ID           int64
+	AppID        int64
 	AppSlug      string
 	Permissions  auth.AppPerms
 	Granted      map[string]string
@@ -506,7 +508,10 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
 	}
-	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions.read, Granted: payload.Permissions.granted()}, nil
+	return Installation{
+		ID: payload.ID, AppID: payload.AppID, AppSlug: payload.AppSlug, Permissions: payload.Permissions.read,
+		Granted: payload.Permissions.granted(),
+	}, nil
 }
 
 // installationPayload is GitHub's one object shape for an installation, shared by
@@ -515,6 +520,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 // repo-scoped lookup already knows the account from its own owner/repo argument.
 type installationPayload struct {
 	ID      int64  `json:"id"`
+	AppID   int64  `json:"app_id"`
 	AppSlug string `json:"app_slug"`
 	Account struct {
 		Login string `json:"login"`
@@ -523,19 +529,33 @@ type installationPayload struct {
 }
 
 // installationPermissions is an installation's permissions object as GitHub answers it, decoded
-// once into the part Dispatch reads (auth.AppPerms) and once whole, every permission with its
-// access.
+// once into the part Dispatch reads (auth.AppPerms) and once whole, every permission whose access
+// is a string with its access.
 type installationPermissions struct {
 	read  auth.AppPerms
 	named map[string]string
 }
 
-// UnmarshalJSON decodes GitHub's permissions object into both its forms.
+// UnmarshalJSON decodes GitHub's permissions object into both its forms. The whole form is read
+// as values of any kind and keeps the strings: GitHub documents a string for every permission
+// today, and a value of another kind, a permission GitHub adds later, must fail no decode of an
+// installation, which every path that resolves one shares (RepositoryToken, DeliveryPermissions,
+// CheckSource, Installed).
 func (p *installationPermissions) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &p.read); err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &p.named)
+	var named map[string]any
+	if err := json.Unmarshal(data, &named); err != nil {
+		return err
+	}
+	p.named = make(map[string]string, len(named))
+	for permission, access := range named {
+		if access, ok := access.(string); ok {
+			p.named[permission] = access
+		}
+	}
+	return nil
 }
 
 // granted is every permission GitHub named, an empty map where it named none.
@@ -604,8 +624,8 @@ func (c *Client) listInstallations(ctx context.Context) ([]Installation, error) 
 		}
 		for _, entry := range payload {
 			installations = append(installations, Installation{
-				ID: entry.ID, AppSlug: entry.AppSlug, Permissions: entry.Permissions.read, Granted: entry.Permissions.granted(),
-				AccountLogin: entry.Account.Login,
+				ID: entry.ID, AppID: entry.AppID, AppSlug: entry.AppSlug, Permissions: entry.Permissions.read,
+				Granted: entry.Permissions.granted(), AccountLogin: entry.Account.Login,
 			})
 		}
 		if len(installations) > maxInstallations {
@@ -1013,6 +1033,18 @@ func (c *Client) OwnCalls(installationID int64) (core, graphql map[string]int) {
 	return c.rate.Own(strconv.FormatInt(installationID, 10))
 }
 
+// SecondaryUntil is the end of the latest secondary limit GitHub answered one of installation
+// id's tokens with, as the client's Counter noted it from GitHub's answer
+// (githubrate.Counter.SecondaryUntil), and the zero time when none was or the client has no
+// Counter. The Counter is the process's, so the limits every client of the process that counts
+// through it met are here, and another process's are not.
+func (c *Client) SecondaryUntil(installationID int64) time.Time {
+	if c == nil || c.rate == nil {
+		return time.Time{}
+	}
+	return c.rate.SecondaryUntil(strconv.FormatInt(installationID, 10))
+}
+
 func (c *Client) do(ctx context.Context, scope, method, target, authorization string) ([]byte, int, http.Header, error) {
 	return c.doLimited(ctx, scope, method, target, authorization, responseLimit)
 }
@@ -1067,10 +1099,15 @@ func (c *Client) keepAnsweredLimit(ctx context.Context, scope, method, target st
 // limit among them, so a hold would keep the reading from the hour it is most needed for: one in
 // which the installation spent its budget, whose reading before the reset would otherwise be an
 // error with no count. GitHub asks that a client send nothing while limited, and this read does
-// send: at most two core requests of a held installation a pass, a pass every ten minutes and
-// before each reset. A limit GitHub answers it with is noted and recorded under the
-// installation's scope as Read's is (keepAnsweredLimit), so every other read of the installation
-// holds, and a refused answer is the caller's, with its status and its headers, never an error.
+// send past a primary limit: one core request of a held installation a pass (two at its first pass
+// and after a 404, when its repository is listed again), and a pass every ten minutes and before
+// each counter reset of every installation, so about 6 + 2N core requests of a held installation
+// an hour from each process reading, N being the App's installations. The reading sends nothing
+// while a secondary limit holds the installation (SecondaryUntil), since GitHub may ban an
+// integration that goes on through one. A limit GitHub answers it with is noted and recorded under
+// the installation's scope as Read's is (keepAnsweredLimit), so every other read of the
+// installation holds, and a refused answer is the caller's, with its status and its headers, never
+// an error.
 func (c *Client) ReadPastHold(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
