@@ -37,6 +37,7 @@ const NEW_IN_THE_STUBBED_LAYER =
 
 /** The stubbed spec files whose rows were written there from the start, by file. */
 export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
+  "issue-header-layout.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
   "layout-measure.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
   "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
 };

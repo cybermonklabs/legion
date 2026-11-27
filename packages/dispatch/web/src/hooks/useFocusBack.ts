@@ -4,8 +4,9 @@ import { focusOnDocument } from "../features/shell/roving";
 
 /**
  * The control that opened an inline editor, and what gives it the focus back once the editor
- * ends: the issue header's title, message route and parent editors (`IssueHeader`), the new
- * issue page's title (`IssueTitleRow`), a priority's fields drawn closed (`InPlaceField`), a
+ * ends: the issue header's title (`IssueHeader`), the message route and parent editors of its
+ * Details (`IssueRouteDetails`, `IssueParentDetails`), the new issue page's title
+ * (`IssueTitleRow`), a priority's fields drawn closed (`InPlaceField`), a
  * decision's Change, whose form its Cancel ends (`DecisionActions`), the Priorities page's New
  * priority, whose form its Cancel and its submit end (`NewPriority`), the Priorities page's empty
  * state, which the first priority added from it ends as it lands, with the table's New priority

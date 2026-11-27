@@ -96,6 +96,7 @@ import {
   seedCommentThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { openIssueDetails } from "./issue-details";
 import { gotoIssue, marginShell } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -1278,6 +1279,8 @@ test("k-choice-writes-on-enter: on the issue page the repository's keys only cha
   await page.setViewportSize(WIDE);
   const writes = issueWrites(page, issueKey);
   await openIssue(page, issueKey, title);
+  // The repository is a row of the header's Details, which the reader opens.
+  await openIssueDetails(page);
   await choiceWritesOnEnter(page, {
     body: (choice) => ({ repo: choice }),
     // Inherit, CORE's default and the issue's own, which the issue holds (`seedChoices`).
@@ -1565,6 +1568,8 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
   const { askId, issueKey, title } = await seedChoices();
   await page.setViewportSize(WIDE);
   await openIssue(page, issueKey, title);
+  // The repository is a row of the header's Details, which the reader opens.
+  await openIssueDetails(page);
   for (const colorScheme of THEMES) {
     await page.emulateMedia({ colorScheme });
     const theme = `the ${colorScheme} theme`;
@@ -4695,6 +4700,8 @@ test("k-list-focus: on today's issue page, Enter on an assignee or a repository 
     writes,
     1
   );
+  // The repository is a row of the header's Details, which the reader opens.
+  await openIssueDetails(page);
   await singlePickFocus(
     page,
     "the header's repository list",
@@ -10689,6 +10696,8 @@ test('k-choice-writes-on-enter: on a phone-width page, Use "owner/repo" in the h
   const { issueKey, title } = await seedChoices();
   await page.setViewportSize({ height: 664, width: 390 });
   await openIssue(page, issueKey, title);
+  // The repository is a row of the header's Details, which the reader opens.
+  await openIssueDetails(page);
   const trigger = page.getByTestId("issue-header").getByRole("button", { name: /^Repository/ });
   await expect(trigger, step("the header draws its repository control")).toBeVisible();
   await trigger.click();

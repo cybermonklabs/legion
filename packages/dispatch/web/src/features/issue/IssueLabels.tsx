@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
+import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
 import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
@@ -121,8 +122,10 @@ export interface IssueLabelsProps {
 }
 
 /** The issue header's labels: the current chips and the shared `MultiSelect`, which stages a
- *  draft while open and saves the final draft once, when it closes. Inside `NoTooltips`
- *  (`components/tooltips.tsx`) it says the new issue page's words with their marks. */
+ *  draft while open and saves the final draft once, when it closes. Its groups, in this order:
+ *  the chips with their "+N" (outside `NoTooltips`, at most 10 before it), then the control that
+ *  edits them. Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words
+ *  with their marks. */
 export function IssueLabels({
   chipClassName,
   disabled,
@@ -203,41 +206,41 @@ export function IssueLabels({
     }
     changeDraft([...draft, label]);
   };
+  const chips = displayLabels.map((label) => (
+    <span
+      className={
+        page === null
+          ? chipClassName === undefined
+            ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+            : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
+          : chipClassName === undefined
+            ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
+            : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
+      }
+      key={label}
+      {...page?.authorText}
+    >
+      {label}
+    </span>
+  ));
 
   return (
     <>
       <div
-        // Inside `NoTooltips` the rail's labels wrap with or without a chip shape of the host's:
-        // a label is a value, and a line that keeps its width pushes a long one past its row.
         className={
           variant === "rail"
-            ? chipClassName === undefined && page === null
-              ? "relative flex shrink-0 flex-nowrap items-center gap-1"
-              : "relative flex min-w-0 flex-wrap items-center gap-1"
+            ? "relative flex min-w-0 flex-wrap items-center gap-1"
             : "relative mt-2 flex flex-wrap items-center gap-2"
         }
         data-testid="issue-labels"
       >
-        {displayLabels.map((label) => (
-          <span
-            // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a
-            // long label anywhere, so a 40-character label with no space wraps inside Details
-            // rather than running past it. Everywhere else it stays whole.
-            className={
-              page === null
-                ? chipClassName === undefined
-                  ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
-                  : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
-                : chipClassName === undefined
-                  ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
-                  : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
-            }
-            key={label}
-            {...page?.authorText}
-          >
-            {label}
-          </span>
-        ))}
+        {page === null ? (
+          <CappedGroup className="contents" label="labels" name="labels">
+            {chips}
+          </CappedGroup>
+        ) : (
+          chips
+        )}
         <MultiSelect
           // Not disabled while it saves what the close committed: a disabled button cannot hold
           // focus, so Escape's return to the trigger would be undone by the save's own render.

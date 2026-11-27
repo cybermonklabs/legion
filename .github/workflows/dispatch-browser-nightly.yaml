@@ -117,12 +117,17 @@ jobs:
   # was folded into another since), 240 s, and a layout reading costs 1.8 times on a shard what
   # it costs in that pod (2.9 s, run 45301444362, against 1.6 s), so 432 s on the runner. With the
   # other rows' 251 s there (nightly runs 45303170467 and 45159394267), the step's maximum is
-  # 683 s, and 683 x 1.15 = 785 s -> 14 min, under the 18. The Chromium install keeps the 4
-  # minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of unbudgeted steps
-  # round it to 26.
+  # 683 s. The three fix pull requests of dispatch://INFRA-5200 add states to their routes'
+  # layout rows, read in that pod: the issue page's 90 readings and two header rows took 193 s
+  # (its recording run of 2026-11-24); the Inbox's 10 readings 17 s (24.2 and 25.6 s against
+  # 7.8 s without them); the other pages' 20 readings 32 s at 1.6 s a reading. That is 242 s in
+  # the pod and 436 s on the runner, so the step's maximum is 683 + 436 = 1119 s, and
+  # 1119 x 1.15 = 1287 s -> 22 min. This edit carries all three, so none of the others edits
+  # this line. The Chromium install keeps the 4 minutes the multiprocess job's own gives it.
+  # 22 + 4 = 26, and 200 s of unbudgeted steps round it to 30.
   re-record:
     runs-on: ubuntu-24.04
-    timeout-minutes: 26
+    timeout-minutes: 30
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the
@@ -173,7 +178,7 @@ jobs:
         run: bunx playwright install chromium
         working-directory: packages/dispatch
       - name: Re-record every stubbed row against the real harness
-        timeout-minutes: 18
+        timeout-minutes: 22
         # Into a directory of its own, never over the committed set: a recording compared with
         # itself can never differ, so the committed recording that no row writes any more -
         # a row deleted, or one that stopped reading what it read - would be found by nobody.

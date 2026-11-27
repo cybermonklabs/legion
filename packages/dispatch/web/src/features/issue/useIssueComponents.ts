@@ -18,6 +18,8 @@ export interface IssueComponentsWrite {
    *  save does, until the next attempt starts. */
   error: string | null;
   pending: boolean;
+  /** Whether `error` says a save the reader stopped rather than one Dispatch refused. */
+  stopped: boolean;
   /** Saves the attachment; resolves `true` once the server accepted it. */
   submit: (input: IssueComponentsInput) => Promise<boolean>;
 }
@@ -124,6 +126,7 @@ export function useIssueComponents(
             })
           : mutation.error.message,
     pending: mutation.isPending && !mutation.late,
+    stopped: mutation.error instanceof SendStoppedError,
     submit: async (input) => {
       try {
         await mutation.mutateAsync(input);

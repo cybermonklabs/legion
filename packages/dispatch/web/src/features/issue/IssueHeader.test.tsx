@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOpen, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { recordEscapes } from "../../__tests__/record-escapes";
@@ -288,6 +289,8 @@ test("Enter and Escape that end an IME composition in the title's editor save no
 test("an Escape that ends an IME composition in Safari, at keyCode 229, keeps the route's and the parent's editors open on their drafts", async () => {
   const { unmount, user } = header();
   try {
+    // The route and the parent are rows of the header's Details, which the reader opens.
+    await openIssueDetails(user);
     for (const [opener, box, draft] of [
       ["Messages default to no route", "Message route", "role:reviewer"],
       ["None, set parent issue", "Parent", "CORE-2"],
@@ -319,6 +322,8 @@ test("the Escape that closes the title's, the message route's or the parent's ed
     await user.keyboard("{Escape}");
     expect(title, "the title's editor").not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: base.title })).toBeInTheDocument();
+    // The route and the parent are rows of the header's Details, which the reader opens.
+    await openIssueDetails(user);
     for (const [opener, box, draft] of [
       ["Messages default to no route", "Message route", "role:reviewer"],
       ["None, set parent issue", "Parent", "CORE-2"],
@@ -538,6 +543,8 @@ test("Escape and Enter in the title's editor give the focus back to Edit title, 
 test("Escape, Cancel and a save in the message route's and the parent's editors give the focus back to the control that opened them", async () => {
   const { patches, unmount, user } = header();
   try {
+    // The route and the parent are rows of the header's Details, which the reader opens.
+    await openIssueDetails(user);
     let saves = 0;
     for (const [opener, box, draft] of [
       [/^Messages default to /, "Message route", "role:reviewer"],
@@ -576,18 +583,6 @@ test("a closed issue's title is its heading alone, with no Edit title button", a
     await user.click(heading);
     await afterFrameAndTasks();
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
-  } finally {
-    unmount();
-  }
-});
-
-// The details line scrolls sideways, and Firefox makes a box that scrolls a Tab stop of its own,
-// which here would read as nothing: the line's controls are its stops.
-test("the details line that scrolls sideways is no Tab stop of its own", async () => {
-  const { unmount } = header();
-  try {
-    await editTitleButton();
-    expect(screen.getByTestId("issue-metadata-rail")).toHaveAttribute("tabindex", "-1");
   } finally {
     unmount();
   }

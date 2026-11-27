@@ -9,9 +9,6 @@ const badgeSelectFrame = "relative inline-flex min-h-11 shrink-0 items-center ro
  *  it, whose trigger shows the badge (the priority, the issue header's assignee, an ask card's
  *  hand-on, an Inbox Snooze: `badgeSelectTrigger`). */
 export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
-/** The same wrapper in the issue header's details rail (the repository), 28 px from `md` like
- *  the rail's other controls, so it never makes the rail's row taller. */
-export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The same wrapper in the new issue page's header properties line, where the controls are the
  *  line's own height, as the pictures draw them: 24 px, the least a touch target may be (WCAG
  *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
@@ -55,10 +52,6 @@ export const badgeSelectPageTrigger = `${badgeSelectTrigger} min-w-0 max-w-full`
  *  the trigger is the 44 px target the select laid over it was; from 1280 px it is the wrapper's
  *  height. It narrows with its wrapper, so the value inside it wraps within the line. */
 export const badgeSelectHeaderTrigger = `${badgeSelectTriggerFrame} min-w-0 max-w-full max-xl:-my-2.5`;
-/** The same trigger in `badgeSelectRailWrapper` (the issue header's repository), which is 28 px
- *  from `md`: there the 44 px trigger overhangs it by 8 px above and below, so the rail's line is
- *  28 px from `md` (`md:min-h-7`), the height of the rail's other controls. */
-export const badgeSelectRailTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-2`;
 
 /** The handlers a badge-select wrapper spreads. A press on the trigger, or in the list it opens
  *  (portalled, but a React child of the wrapper), is kept out of the row, card or header under

@@ -20,7 +20,13 @@ import type {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { IssueComponentsLine } from "./IssueComponentsLine";
+import {
+  ADD_SOURCE,
+  ADD_SOURCE_PATH,
+  IssueComponentsLine,
+  NO_SOURCE,
+  SOURCES_LOADING,
+} from "./IssueComponentsLine";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -172,20 +178,102 @@ function renderLine(
   };
 }
 
-test("IssueComponentsLine reads Not attached, and stays read-only without an architecture source", async () => {
+// An answer of no source makes the line read-only, and says why and where a source is added
+// (dispatch://INFRA-5200): the reader sees the reason the picker is not there.
+test("IssueComponentsLine reads Not attached, and without an architecture source says why it is read-only and links to Settings", async () => {
   const view = renderLine(
     { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe("Components:Not attached");
-    expect(view.q.queryByRole("link")).not.toBeInTheDocument();
     await waitFor(() => expect(view.listProjectArchitectureSources).toHaveBeenCalledTimes(1));
+    // It is the value of the Components row of the header's Details, which names it.
+    await waitFor(() =>
+      expect(view.q.getByTestId("issue-components").textContent).toBe(
+        `Not attached${NO_SOURCE} ${ADD_SOURCE}`
+      )
+    );
+    expect(view.q.getByRole("link", { name: ADD_SOURCE })).toHaveAttribute("href", ADD_SOURCE_PATH);
     expect(
       view.q.queryByRole("button", { name: "Edit components of CORE-7" })
     ).not.toBeInTheDocument();
     // No source: the tree is never asked for.
     expect(view.getArchitecture).not.toHaveBeenCalled();
+  } finally {
+    view.unmountAll();
+  }
+});
+
+/** The line for an issue with no components of its own, over a sources read `read` answers. */
+function renderOverSources(read: () => Promise<ArchitectureSource[]>) {
+  const listProjectArchitectureSources = spyOn(api, "listProjectArchitectureSources");
+  listProjectArchitectureSources.mockImplementationOnce(read);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <IssueComponentsLine
+          issue={{
+            components: {
+              mode: "inherit",
+              ids: [],
+              unknown: [],
+              reason: null,
+              inherited_from: null,
+            },
+            key: "CORE-7",
+            project: "CORE",
+            status: "todo",
+            title: "Ship",
+          }}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    listProjectArchitectureSources,
+    q: within(view.container),
+    unmountAll: () => {
+      view.unmount();
+      listProjectArchitectureSources.mockRestore();
+    },
+  };
+}
+
+// While the sources read is out the line says so and offers no control: a picker drawn then
+// would go again, with no word, when the answer is no source (dispatch://INFRA-5200).
+test("while the sources read is out the line says it is loading and offers no control", async () => {
+  const answer = Promise.withResolvers<ArchitectureSource[]>();
+  const view = renderOverSources(() => answer.promise);
+  try {
+    expect(view.q.getByRole("status")).toHaveTextContent(SOURCES_LOADING);
+    expect(view.q.queryByRole("button")).not.toBeInTheDocument();
+    answer.resolve([source]);
+    expect(await view.q.findByRole("button", { name: "Edit components of CORE-7" })).toBeDefined();
+    expect(view.q.queryByText(SOURCES_LOADING)).not.toBeInTheDocument();
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// A failed read says the components are unavailable, with Retry, rather than taking the editor
+// away without a word; the retried answer offers the picker (dispatch://INFRA-5200, c-review F6).
+test("a failed source read says Components unavailable with Retry, and a retried answer offers the picker", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<ArchitectureSource[]>();
+  const view = renderOverSources(() => answer.promise);
+  const { q } = view;
+  try {
+    answer.reject(
+      new NetworkError("/api/v1/projects/CORE/architecture-sources", new Error("offline"))
+    );
+    expect(await q.findByText(/Components unavailable/)).toBeDefined();
+    expect(q.queryByRole("button", { name: "Edit components of CORE-7" })).not.toBeInTheDocument();
+
+    view.listProjectArchitectureSources.mockResolvedValue([source]);
+    await user.click(q.getByRole("button", { name: "Retry" }));
+    expect(await q.findByRole("button", { name: "Edit components of CORE-7" })).toBeDefined();
+    expect(q.queryByText(/Components unavailable/)).not.toBeInTheDocument();
   } finally {
     view.unmountAll();
   }
@@ -225,14 +313,16 @@ test("IssueComponentsLine shows a none attachment with its reason, drawn as the 
   );
   try {
     // The reason draws through the one renderer, which loads its engine on the first body of the
-    // page, so the words arrive a commit after the line.
+    // page, so the words arrive a commit after the line. Once the project's sources answered that
+    // there are none, the line is its words and why it is read-only; the one link is the one to
+    // where a source is added.
     await waitFor(() =>
       expect(view.q.getByTestId("issue-components").textContent).toBe(
-        "Components:None — hiring, not code"
+        `None — hiring, not code${NO_SOURCE} ${ADD_SOURCE}`
       )
     );
     expect(within(view.q.getByTestId("issue-components")).getByText("not").tagName).toBe("STRONG");
-    expect(view.q.queryByRole("link")).not.toBeInTheDocument();
+    expect(view.q.getAllByRole("link").map((link) => link.textContent)).toEqual([ADD_SOURCE]);
   } finally {
     view.unmountAll();
   }
@@ -251,9 +341,11 @@ test("IssueComponentsLine draws a none attachment's reason from the tree the iss
     reasonTree
   );
   try {
+    // The line is the value of the Components row of the header's Details, which names it, and
+    // once the project's sources answered that there are none it says why it is read-only.
     await waitFor(() =>
       expect(view.q.getByTestId("issue-components").textContent).toBe(
-        "Components:None — hiring, not code, for now"
+        `None — hiring, not code, for now${NO_SOURCE} ${ADD_SOURCE}`
       )
     );
     expect(within(view.q.getByTestId("issue-components")).getByText("not").tagName).toBe("STRONG");
@@ -307,7 +399,7 @@ test("with architecture sources the line offers the picker with every source's c
   }
 });
 
-test("an explicit set naming components of two sources shows each as a bare id chip", () => {
+test("an explicit set naming components of two sources shows each as a bare id chip", async () => {
   const view = renderLine(
     {
       mode: "explicit",
@@ -319,8 +411,12 @@ test("an explicit set naming components of two sources shows each as a bare id c
     tree
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:dispatch-serverinfra-cluster"
+    // Each chip is its bare id; once the project's sources answered, the "+" after them is the
+    // picker's trigger for the issue's own set.
+    await waitFor(() =>
+      expect(view.q.getByTestId("issue-components").textContent).toBe(
+        "dispatch-serverinfra-cluster+"
+      )
     );
   } finally {
     view.unmountAll();
