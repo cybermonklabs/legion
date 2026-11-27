@@ -11,8 +11,8 @@ const (
 	// a test sets Pace to zero and waits for nothing.
 	RequestPace = 500 * time.Millisecond
 
-	// FastestRequestPace is the shortest gap a pass will ever leave between its requests,
-	// however much work it has to pace itself over: ten requests a second. GitHub's secondary
+	// FastestRequestPace is the normal floor for the gap between requests: ten a second. An
+	// explicitly shorter Pace still takes precedence. GitHub's secondary
 	// rate limits allow an App no more than 900 points a minute and a read of this kind costs
 	// one point, so ten a second sits inside that limit with a third of it to spare for the
 	// other readers the App pays for -- the listener's own reads, the webhook redelivery sweep,
@@ -31,10 +31,10 @@ const (
 // work left is the handful of heads one query cannot hold and the gap is usually the ceiling.
 // The share is nine tenths of the bound, the tenth left over being the round trips themselves.
 //
-// The gap is clamped at both ends. FastestRequestPace is the floor whatever the arithmetic says,
-// because the secondary limit it sits inside is the App's and this pass is not the only reader
-// the App pays for; Pace is the ceiling, so the pass is never slower than the pause a deployment
-// configures and the work only ever buys GitHub more room, never less.
+// The gap is clamped at both ends. FastestRequestPace is the normal floor, because the secondary
+// limit it sits inside is the App's and this pass is not the only reader the App pays for.
+// Pace is the ceiling and takes precedence when it is shorter than the floor, so the pass is
+// never slower than the pause a deployment configures.
 //
 // The passes after a pass that its own bound ended before it reached a head -- read one whole or
 // gave one up (counts.heads) -- read at the floor until one reaches a head (Reconciler.starved).
@@ -66,11 +66,9 @@ func (r *Reconciler) gap(rows int) time.Duration {
 	}
 	work := r.restWork()
 	if r.known() == 0 && work == 0 {
-		// The first pass of a process knows of no work yet, and the floor is the safe answer to
-		// that: it is the fastest this pass is ever allowed to read, which is inside GitHub's
-		// secondary limit however much work there turns out to be, and the pass after it knows
-		// the real count and paces itself by it.
-		return FastestRequestPace
+		// The first pass knows of no work yet, so it uses the floor capped by Pace. The next pass
+		// knows the real count and paces itself by it.
+		return min(FastestRequestPace, r.Pace)
 	}
 	expected := work + rows
 	if expected == 0 {
@@ -81,7 +79,7 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		// is the answer to no expected work, as it is above, and the arithmetic below would
 		// divide by zero: nothing recovers a panic of the pass's goroutine, so it would take the
 		// process down.
-		return FastestRequestPace
+		return min(FastestRequestPace, r.Pace)
 	}
 	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
 }
