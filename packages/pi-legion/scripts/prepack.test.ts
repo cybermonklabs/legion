@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as path from "node:path";
+import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
+const REPO_ROOT = path.resolve(PACKAGE_ROOT, "../..");
 const manifest: {
   readonly name: string;
   readonly omp?: {
@@ -56,4 +59,35 @@ describe("omp.skills / prepack manifest contract", () => {
       ]);
     });
   });
+});
+
+describe("the e2e pack (scripts/e2e/lib/pack-plugin.sh)", () => {
+  const work = temporaryDirectory("pi-legion-pack");
+  // Catches: a pack that writes this checkout's manifest, even for the seconds it runs. A test of
+  // this checkout that reads the committed manifest while a pack runs beside it (a skill-scenario
+  // rig row builds a profile from this checkout under `bun test --parallel`) read the rewrite:
+  // src/daemon-api-version.test.ts got `legion: { daemonApiVersion: <this tree's contract> }` and
+  // took two merge groups out of the queue. Every write moves the file's change time, a rewrite that
+  // puts the bytes back included, so the row fails such a pack too.
+  test("packs from a copy: the checkout's manifest keeps its bytes and its change time, and the packed one declares this tree's contract", () => {
+    const file = path.join(PACKAGE_ROOT, "package.json");
+    const before = { bytes: readFileSync(file, "utf8"), ctime: statSync(file).ctimeMs };
+    const out = path.join(work, "out");
+    const pack = Bun.spawnSync(
+      ["bash", path.join(REPO_ROOT, "scripts/e2e/lib/pack-plugin.sh"), "pi-legion", out],
+      { stderr: "pipe" }
+    );
+    expect({
+      exit: pack.exitCode,
+      stderr: pack.exitCode === 0 ? "" : pack.stderr.toString(),
+    }).toEqual({ exit: 0, stderr: "" });
+    const tarball = pack.stdout.toString().trim();
+    const packed = JSON.parse(
+      Bun.spawnSync(["tar", "xzOf", tarball, "package/package.json"]).stdout.toString()
+    ) as PluginManifest;
+    expect(packed.legion?.daemonApiVersion).toBe(
+      daemonContract(JSON.parse(before.bytes) as PluginManifest, import.meta.dir)
+    );
+    expect({ bytes: readFileSync(file, "utf8"), ctime: statSync(file).ctimeMs }).toEqual(before);
+  }, 120_000);
 });

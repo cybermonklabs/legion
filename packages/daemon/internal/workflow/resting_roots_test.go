@@ -467,7 +467,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		var narrowed string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.GatedSteps(), ancestor)
-			narrowed = NarrowRootTask(read, start.Entry, record.KeptDecisions{})
+			narrowed = NarrowRootTask(read, start.Entry, "")
 			return err
 		})
 		if narrowed != start.Task {

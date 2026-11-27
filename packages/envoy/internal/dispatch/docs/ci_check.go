@@ -159,9 +159,10 @@ func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
 
 // CheckBlockOf is the check block node holds, with the attributes a check block carries, each as
 // written: its id, `ci_check`, run, `when`, negative control, surface, subject and program, the
-// last two "" where the block names none. Every reader of a check block's attributes comes here:
-// the four rules through CheckAttributesOf, settlement and the results routes, which serve the
-// block. The rules read it through CheckAttributesOfBlock.
+// last two "" where the block names none, and `serves`, the references it names in its order (the
+// parse splits the attribute's text at each space, pmdoc.ParseBlockPointerValue). Every reader of a
+// check block's attributes comes here: the four rules through CheckAttributesOf, settlement and the
+// results routes, which serve the block. The rules read it through CheckAttributesOfBlock.
 func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	var check model.CheckBlock
 	check.BlockID, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
@@ -170,6 +171,7 @@ func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	check.When, _ = node.Attrs["when"].(string)
 	check.NegativeControl, _ = node.Attrs["negative_control"].(string)
 	check.Surface, _ = node.Attrs["surface"].(string)
+	check.Serves, _ = node.Attrs["serves"].([]string)
 	check.Subject, _ = node.Attrs["subject"].(string)
 	check.Program, _ = node.Attrs["program"].(string)
 	// The results read served a blank `when` as before_merge before ci_check existed, so the

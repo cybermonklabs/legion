@@ -6,9 +6,9 @@
  *  (packages/dispatch/README.md, "The stubbed layer"): the HAR answers the HTTP reads, and
  *  `e2e/layout-sockets.ts` answers the sockets from the frames the recording run kept.
  *
- *  A row fails on a breach `e2e/layout-breaches.ts` does not accept, on an entry its readings did
- *  not match exactly, and on a page that drew too little. Each reading prints one `LAYOUT …` line
- *  to stdout. Re-record after a change to the stress layer or to what a page reads:
+ *  A row fails on any breach a reading finds, on a group the route must mark and the page does
+ *  not, and on a page that drew too little. Each reading prints one `LAYOUT …` line to stdout.
+ *  Re-record after a change to the stress layer or to what a page reads:
  *  `bun run e2e:stub:record -- layout-rule.stub`. */
 import { expectTimeout } from "./expect-timeout";
 import { checkLayout, layoutRowTimeoutMs } from "./layout-check";
@@ -22,7 +22,7 @@ import { stubbed } from "./stub/stub-test";
 const test = stubbed(() => seedLayoutStress({ boundMs: expectTimeout }));
 
 // The pages format dates and numbers in the browser's language and time zone, so the text widths
-// the list is exact about would move with the host's; these pin them, as `going-operators.e2e.ts`
+// a reading measures would move with the host's; these pin them, as `going-operators.e2e.ts`
 // pins its time zone.
 test.use({ locale: "en-US", timezoneId: "UTC" });
 
@@ -41,7 +41,7 @@ for (const route of layoutRoutes) {
       await checkLayout(page, route, scene);
     } finally {
       // A recording run keeps what the sockets carried even when the row's own judgement fails,
-      // as its HAR is kept: a recording is made before the breach list that judges it.
+      // as its HAR is kept: a recording is made before the judgement that reads it.
       keep();
     }
   });

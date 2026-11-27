@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
+import { screen, waitFor } from "@testing-library/react";
 
 import type { Message } from "../../api/types";
+import { KEY } from "../decision-card/decision-fixture";
+import { conversationPath } from "./decisions-filter/decisions-parts";
 import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import type { NodeType } from "./page-words";
+import { type NodeType, PRESET_ORDER, type Preset } from "./page-words";
+import { drawStage, stubReads } from "./slots/stage-fixtures";
+import { CHORDS } from "./useIssueKeymap";
 
 /** A message of the issue, which the rows below give an author and an id. */
 const messageFixture: Message = {
@@ -52,7 +57,8 @@ const tree = node("CORE-1", "issue", {
 });
 
 test("each control of the filter row carries its own address (R2, R20)", () => {
-  expect(presetPath("CORE-1", "conversation")).toBe("/issues/CORE-1");
+  expect(presetPath("CORE-1", "dashboard")).toBe("/issues/CORE-1/dashboard");
+  expect(presetPath("CORE-1", "conversation")).toBe("/issues/CORE-1/conversation");
   expect(presetPath("CORE-1", "spec")).toBe("/issues/CORE-1/spec");
   expect(presetPath("CORE-1", "verification")).toBe("/issues/CORE-1/verification");
   expect(presetPath("CORE-1", "plan")).toBe("/issues/CORE-1/plan");
@@ -60,13 +66,11 @@ test("each control of the filter row carries its own address (R2, R20)", () => {
 });
 
 test("the address says which filter it opens, which document, and which node it names", () => {
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", "spec").preset).toBe(
-    "conversation"
-  );
+  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", "spec").preset).toBe("dashboard");
   expect(issueAddress({ key: "CORE-1", kind: "conversation" }, "", "", "spec").preset).toBe(
     "conversation"
   );
-  for (const kind of ["spec", "verification", "plan", "decisions"] as const) {
+  for (const kind of ["dashboard", "spec", "verification", "plan", "decisions"] as const) {
     expect(issueAddress({ key: "CORE-1", kind }, "", "", "spec").preset).toBe(kind);
   }
   // A route naming the issue's own spec by its slug opens the spec itself, in place of the
@@ -98,6 +102,97 @@ test("the address says which filter it opens, which document, and which node it 
     });
     expect(item.document, `/${kind}s/<id> opens a document`).toBeUndefined();
     expect(item.preset, `/${kind}s/<id> opens a filter`).toBe("conversation");
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): the issue's own address opens Dashboard where it
+// names no node and no words filter, as `/dashboard` does, and Conversation at what it names
+// where it names a block (`#b-`), an ask (`?ask=`), a comment (`?comment=`) or words (`?q=`), as
+// Conversation's own address does.
+test("the issue's own address opens Dashboard unless it names a node or words, and each of those opens Conversation at it", () => {
+  const own = { key: "CORE-1", kind: "issue" } as const;
+  for (const [address, route, search, hash, preset, target, filter] of [
+    ["/issues/CORE-1", own, "", "", "dashboard", undefined, ""],
+    [
+      "/issues/CORE-1/dashboard",
+      { key: "CORE-1", kind: "dashboard" },
+      "",
+      "",
+      "dashboard",
+      undefined,
+      "",
+    ],
+    [
+      "/issues/CORE-1/conversation",
+      { key: "CORE-1", kind: "conversation" },
+      "",
+      "",
+      "conversation",
+      undefined,
+      "",
+    ],
+    ["/issues/CORE-1#b-r3", own, "", "#b-r3", "conversation", { id: "r3", kind: "block" }, ""],
+    [
+      "/issues/CORE-1?ask=ask-9",
+      own,
+      "?ask=ask-9",
+      "",
+      "conversation",
+      { id: "ask-9", kind: "item" },
+      "",
+    ],
+    [
+      "/issues/CORE-1?comment=comment-7",
+      own,
+      "?comment=comment-7",
+      "",
+      "conversation",
+      { id: "comment-7", kind: "item" },
+      "",
+    ],
+    ["/issues/CORE-1?q=routes", own, "?q=routes", "", "conversation", undefined, "routes"],
+    [
+      "/issues/CORE-1/conversation#b-r3",
+      { key: "CORE-1", kind: "conversation" },
+      "",
+      "#b-r3",
+      "conversation",
+      { id: "r3", kind: "block" },
+      "",
+    ],
+  ] as const) {
+    const opened = issueAddress(route, search, hash, "spec");
+    expect(opened.preset, `${address} opens another view`).toBe(preset satisfies Preset);
+    expect(opened.target, `${address} names another node`).toEqual(target);
+    expect(opened.filter, `${address} narrows to other words`).toBe(filter);
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Conversation's own address is `/conversation`,
+// since the issue's own opens Dashboard, and every place of the page that writes an address for
+// Conversation writes that one: the view row's control (`presetPath`), the Decisions view's link
+// to a node in the conversation (`conversationPath`), the chords that turn the views off and
+// `t c` (`useIssueKeymap.ts`), and the way back from a line that says an address names nothing
+// the issue holds (`slots/body.tsx`).
+test("Conversation's address is /conversation from each place that writes it", async () => {
+  const conversation = `/issues/${KEY}/conversation`;
+  expect(presetPath(KEY, "conversation")).toBe(conversation);
+  expect(conversationPath({ reference: `dispatch://${KEY}/spec#b-r1` })).toBe(
+    `${conversation}#b-r1`
+  );
+  for (const chord of CHORDS) {
+    const active = PRESET_ORDER.find((view) => view === chord.tab);
+    if (active === undefined) throw new Error(`the chord ${chord.keys} names no view`);
+    expect(chord.path(KEY, active), `${chord.keys} on its own view`).toBe(conversation);
+  }
+  const reads = stubReads();
+  const view = drawStage("#b-no-such-block", { preset: "conversation" });
+  try {
+    const back = await waitFor(() => screen.getByRole("link", { name: `Back to ${KEY}` }));
+    expect(back.getAttribute("href")).toBe(conversation);
+  } finally {
+    view.unmount();
+    for (const spy of reads) spy.mockRestore();
   }
 });
 

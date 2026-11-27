@@ -57,9 +57,9 @@ var (
 //
 // `filtered` is the matched issues read back by their places in one array (generate_subscripts)
 // rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
-// generate_subscripts plans, as priorityMemberTerms sizes its seed, rather than at the one issue
-// the generic plan estimates through issueListFilters' arms: each join that attaches a value to
-// the matched issues then reads its grouped term once rather than once for each issue. The array
+// generate_subscripts plans, rather than at the one issue the generic plan estimates through
+// issueListFilters' arms: each join that attaches a value to the matched issues then reads its
+// grouped term once rather than once for each issue. The array
 // holds each matched row's address (ctid), which the read takes back in the same statement and so
 // under the same snapshot. It holds addresses rather than keys because Postgres finds an element
 // of fixed width at its place at once, and the n-th key of an array of text only by reading the
@@ -237,7 +237,7 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // `advances` groups the two back onto the subject. The ids are the asserted relations to live
 // priorities alone: a relation whose last word is a retraction is no relation now, and a priority
 // whose state is `gone` is no priority, so the join to priority_nodes leaves it out of both
-// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityRelationsQuery
+// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityMemberTerms
 // out of the priorities read. Without it the issue read and every listing row would name a
 // priority that `advances=none` and the first fault already count as none. Depth 0 answers the
 // issue's own ids and the revision, and every greater depth answers what it inherits.
@@ -339,8 +339,9 @@ var issueAdvancesFilterTerms = `advances_relations as (
 // rows, the live `advances` relations as the issues' own rows state them, and keys a term of the
 // issues to read. An issue carries every priority it or an issue above it states, so a relation
 // is carried from above exactly when an issue on the stating issue's parent chain states the same
-// priority. It is the one writing of the rule both the second fault (priorityBacklogQuery) and the
-// listing's `?own=true` (issueAdvancesFilterTerms) read.
+// priority. The listing's `?own=true` (issueAdvancesFilterTerms) reads it; the second fault of the
+// priorities read writes the same rule over its own seed, shaped for its plans
+// (priorityBacklogTerms).
 //
 // `advances_above` climbs from each key to every issue above it, bounded by parentDepthCap like
 // every walk of the chain, so a raced reparent that ever committed a cycle still terminates.

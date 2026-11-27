@@ -40,15 +40,18 @@ func init() {
 
 // agentActionBodies is one AgentActionResponse per state of agentActionStates, the sources of
 // suspendSources taken in turn for `suspendedBy` and, one further on, for `suspensionHeldBy`: there
-// are more states than sources, so every source is carried at both keys.
+// are more states than sources, so every source is carried at both keys. Each carries the retry's
+// `phaseNotRestarted` too, which the claim start entry added (claimStartContract), so the records
+// from that entry on describe it and shapeAnswer takes it off every record below.
 func agentActionBodies() []any {
 	bodies := make([]any, 0, len(agentActionStates))
 	for i, state := range agentActionStates {
 		bodies = append(bodies, AgentActionResponse{
-			State:            state.Value,
-			SuspendedBy:      suspendSources[i%len(suspendSources)].Value,
-			SuspensionHeld:   true,
-			SuspensionHeldBy: suspendSources[(i+1)%len(suspendSources)].Value,
+			State:             state.Value,
+			SuspendedBy:       suspendSources[i%len(suspendSources)].Value,
+			SuspensionHeld:    true,
+			SuspensionHeldBy:  suspendSources[(i+1)%len(suspendSources)].Value,
+			PhaseNotRestarted: "legion-legion-legion-209-tester stays failed, and the start of its phase testing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state",
 		})
 	}
 	return bodies
