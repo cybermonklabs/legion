@@ -540,22 +540,26 @@ check "keeps it a failure" \
 
 echo "case: every job that restates its legs' result writes the words runner-shutdown.sh reads"
 # The marker is read by its words, so a job whose error is reworded would hide its legs' shutdowns
-# again with every check green: each such step of the three files whose jobs run in legs must hold
-# them.
+# again with every check green: each such step of every workflow must hold them. The steps are
+# found across .github/workflows by their name, so a new legs job's restating step is held the
+# moment it is written, and the count is checked against the files known to have one, so a scan
+# that found none could not pass.
 marker=$(sed -n "s/^RUNNER_SHUTDOWN_RESTATED=\"\(.*\)\"\$/\1/p" "$script_dir/runner-shutdown.sh")
 check "runner-shutdown.sh spells the marker" "$(is "$([ -n "$marker" ] && echo set)" set)"
-restating() { # restating <workflow>: how many restating steps the file has, and how many write the marker
-  MARKER="$marker" python3 -c '
-import os, sys, yaml
-document = yaml.safe_load(open(sys.argv[1]))
-steps = [step for job in document["jobs"].values() for step in job.get("steps", [])
-         if step.get("name") == "Pass only when every leg passed"]
-print(len(steps), sum(os.environ["MARKER"] in step.get("run", "") for step in steps))
-' "$script_dir/../workflows/$1"
-}
-check "both restating steps of ci-job-daemon-go.yaml write it" "$(is "$(restating ci-job-daemon-go.yaml)" "2 2")"
-check "envoy-go's restating step writes it" "$(is "$(restating ci-job-envoy-go.yaml)" "1 1")"
-check "envoy-go-race's restating step writes it" "$(is "$(restating ci-job-envoy-go-race.yaml)" "1 1")"
+held=$(MARKER="$marker" python3 -c '
+import os, sys, yaml, pathlib
+found = {}
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.yaml")):
+    document = yaml.safe_load(path.read_text()) or {}
+    for job in (document.get("jobs") or {}).values():
+        for step in (job or {}).get("steps", []) or []:
+            if step.get("name") == "Pass only when every leg passed":
+                count, marked = found.get(path.name, (0, 0))
+                found[path.name] = (count + 1, marked + (os.environ["MARKER"] in step.get("run", "")))
+print(" ".join(f"{name}={count}/{marked}" for name, (count, marked) in sorted(found.items())))
+' "$script_dir/../workflows")
+check "every restating step writes it: daemon-go's two, envoy-go's, envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs's" \
+  "$(is "$held" "ci-job-daemon-go.yaml=2/2 ci-job-envoy-go-race-api.yaml=1/1 ci-job-envoy-go-race-docs.yaml=1/1 ci-job-envoy-go-race.yaml=1/1 ci-job-envoy-go.yaml=1/1")"
 
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not

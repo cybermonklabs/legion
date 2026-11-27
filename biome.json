@@ -22,6 +22,8 @@
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/contracts/src/dashboard-pages.json",
       "!!packages/envoy/internal/dispatch/text/dashboard-pages.json",
+      "!!packages/envoy/internal/dispatch/api/testdata/golden_delivery",
+      "!!packages/envoy/internal/dispatch/legion/metrics/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
       "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",

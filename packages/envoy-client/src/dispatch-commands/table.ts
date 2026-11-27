@@ -25,6 +25,7 @@ import {
   sendToAgentCommand,
   suggestCommand,
 } from "./conversation";
+import { deployCommand, deploysCommand } from "./deploy";
 import {
   artifactCommand,
   artifactDryRun,
@@ -158,6 +159,8 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
+  dispatch_deploy: acting(deployCommand),
+  dispatch_deploys: acting(deploysCommand),
   // `content` is the text `dispatch artifact` stores as a Markdown document, and `path` names the
   // file it uploads, which it stores as one when the file is Markdown.
   dispatch_artifact: {

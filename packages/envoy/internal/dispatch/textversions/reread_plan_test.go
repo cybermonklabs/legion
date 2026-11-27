@@ -21,8 +21,8 @@ const rereadIndexMigration = "../store/migrations/20261121160853_events_post_tex
 // types and 200 of those, analyzed, the generic plan a cached statement settles on, sequential
 // scans left on, reads events through that index alone.
 func TestTheReReadsLogReadUsesItsIndex(t *testing.T) {
-	for stored := range rulesVersion {
-		types := currentRules.changeTypes(rereadTypes(stored, rulesVersion))
+	for stored := range RulesVersion {
+		types := currentRules.changeTypes(rereadTypes(stored, RulesVersion))
 		if want := "'" + strings.Join(types, "', '") + "'"; rereadLogTypes != want {
 			t.Errorf("rereadLogTypes is %s; a re-read after rules version %d reads %s", rereadLogTypes, stored, want)
 		}

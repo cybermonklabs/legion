@@ -33,6 +33,9 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DeployInput,
+  DeployResponse,
+  DeploysResponse,
   DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
@@ -107,6 +110,7 @@ import {
   TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { mayHaveReachedServer, outage, retryAfterMs } from "@legion/contracts/http-status";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { type ApproveRoute, credentialDeadline, type RequestCredential } from "./bearer";
@@ -216,7 +220,7 @@ export class DispatchGatewayError extends DispatchServiceError {
   readonly transient: boolean;
   /**
    * Whether the request may have reached Dispatch before the gateway answered, so a write may
-   * have taken effect (`reachesDispatch`).
+   * have taken effect (`mayHaveReachedServer`: after a 5xx or a 408).
    */
   readonly mayHaveReachedDispatch: boolean;
 
@@ -233,7 +237,7 @@ export class DispatchGatewayError extends DispatchServiceError {
   ) {
     super(`HTTP_${status}`, status, message);
     this.transient = gatewayClears(status);
-    this.mayHaveReachedDispatch = reachesDispatch(status);
+    this.mayHaveReachedDispatch = mayHaveReachedServer(status);
   }
 }
 
@@ -344,11 +348,12 @@ export class DispatchWriteUnsettledError extends Error {
     unanswered?: string
   ) {
     let answer: string;
-    // A 5xx can itself come after Dispatch committed the write, and so can a refusal Cipher's
-    // proxy wrote itself (`DispatchProxyRefusalError`), whose own text names the attempt that may
-    // have left the proxy; any other refusal says the landing was an earlier attempt's.
+    // A 5xx or a 408 can itself come after Dispatch committed the write (`mayHaveReachedServer`),
+    // and so can a refusal Cipher's proxy wrote itself (`DispatchProxyRefusalError`), whose own
+    // text names the attempt that may have left the proxy; any other refusal says the landing was
+    // an earlier attempt's.
     let why =
-      (last instanceof DispatchServiceError && last.status >= 500) ||
+      (last instanceof DispatchServiceError && mayHaveReachedServer(last.status)) ||
       last instanceof DispatchProxyRefusalError
         ? "an attempt of the write may have reached Dispatch"
         : "an earlier attempt of the write may have reached Dispatch";
@@ -738,14 +743,6 @@ function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
   return promise;
 }
 
-/** The wait an answer's `Retry-After` asks for, in delta-seconds or as an HTTP date; 0 for none. */
-function retryAfterMs(response: Response): number {
-  const value = response.headers.get("Retry-After")?.trim() ?? "";
-  if (/^\d+$/.test(value)) return Number(value) * 1_000;
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
-}
-
 /** A request body encoded once, so every attempt of a write sends the bytes the first one did. */
 interface EncodedBody {
   readonly content: string | Uint8Array<ArrayBuffer>;
@@ -988,9 +985,13 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   };
 }
 
-/** Whether `storedStatus` (request_keys.go:1335-1341) keeps this answer under the key. */
+/** Whether `storedStatus` (the Envoy module's `internal/dispatch/api/request_keys.go:1473-1475`)
+ *  keeps this answer under the key, which this mirrors: a 4xx that is neither a 401 nor an outage
+ *  (`outage`: a 408 or a 429). An outage does reach it: `answerEvent` hands no text refusal to
+ *  `retriesUnderKey`, whatever its status, and the keyed layer answers a text refusal with the
+ *  key, as it answers every handler's answer to a keyed write. */
 function isStoredKeyStatus(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+  return status >= 400 && status < 500 && status !== 401 && !outage(status);
 }
 
 /**
@@ -1017,10 +1018,11 @@ function isStoredKeyStatus(status: number): boolean {
  * could land unkeyed. The key decides only how a final answer reads; every retry goes regardless.
  *
  * A write sent through Cipher's proxy (`proxied`) first reads whether the answer is the proxy's own
- * (`Cipher-Proxy-Code`): `proxy-refused` for a 4xx and `proxy-failed` for a 5xx it wrote before
- * any byte left it (`Cipher-Proxy-Forwarded: false`), and `proxy-unsettled` for one it wrote after
- * the write may have reached Dispatch (`unknown`, or no such header). A service's answer it carried
- * has no code, and is read as Dispatch's.
+ * (`Cipher-Proxy-Code`). One it wrote before any byte left it (`Cipher-Proxy-Forwarded: false`) is
+ * `proxy-failed` for an outage (`outage`: a 408, a 429 or a 5xx), which is asked again under the
+ * key, and `proxy-refused` for any other status, which the same placeholder would get again. One
+ * it wrote after the write may have reached Dispatch (`unknown`, or no such header) is
+ * `proxy-unsettled`. A service's answer it carried has no code, and is read as Dispatch's.
  */
 function answerEvent(
   answer: WriteAnswer,
@@ -1032,7 +1034,7 @@ function answerEvent(
   const { status } = answer.response;
   if (proxied && answer.response.headers.get(PROXY_CODE_HEADER) !== null) {
     if (answer.response.headers.get(PROXY_FORWARDED_HEADER) !== "false") return "proxy-unsettled";
-    return status >= 500 ? "proxy-failed" : "proxy-refused";
+    return outage(status) ? "proxy-failed" : "proxy-refused";
   }
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
@@ -1054,7 +1056,7 @@ function answerEvent(
     answer.error !== undefined && answer.response.headers.has(TEXT_REFUSAL_HEADER);
   if (!textRefusal && retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
-    return status >= 500 ? "server-error" : "try-later";
+    return mayHaveReachedServer(status) ? "may-have-run" : "try-later";
   }
   if (answer.replayed || answer.code === IDEMPOTENCY_KEY_COMMITTED) return "judged";
   if (answer.keyEcho !== requestKey || !isStoredKeyStatus(status)) return "unjudged";
@@ -1176,43 +1178,26 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
  * twice: a keyed write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and
  * `#route` gives every 2xx's body that is not Dispatch's JSON back as it came, or refuses one that
  * holds a credential it presented (`DispatchCredentialEchoError`). A write answered so may already
- * have taken effect only when the request reached Dispatch (`reachesDispatch`), where a blind
- * retry could apply it twice; otherwise it did not, and a retry may succeed as for a read.
+ * have taken effect only when the request may have reached Dispatch (`mayHaveReachedServer`: after
+ * a gateway's 5xx or 408, not its 429), where a blind retry could apply it twice; otherwise it did
+ * not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(method: string, status: number): string {
   if (!gatewayClears(status)) {
     return "a retry gets the same answer until the Dispatch URL, or whatever answers in its place, is fixed";
   }
   if (method === "GET" || (status >= 200 && status < 300)) return "a retry may succeed";
-  return reachesDispatch(status)
+  return mayHaveReachedServer(status)
     ? "the write may or may not have reached Dispatch: check whether it took effect before retrying it"
     : "the write did not reach Dispatch, and a retry may succeed";
 }
 
-/** Whether a gateway's answer with `status` can clear on asking again: one that can on its own
- *  (`transientStatus`), or a 2xx something in Dispatch's place wrote, which a later request can
- *  get past once whatever is in the way is. */
+/** Whether a gateway's answer with `status` can clear on asking again: an outage (`outage`: a
+ *  gateway's 5xx, a timeout or a rate limit), which can on its own, or a 2xx something in
+ *  Dispatch's place wrote, which a later request can get past once whatever is in the way is. Any
+ *  other status answers the same request the same way. */
 function gatewayClears(status: number): boolean {
-  return transientStatus(status) || (status >= 200 && status < 300);
-}
-
-/**
- * Whether a status that did not come from Dispatch can clear on its own: a gateway's 5xx, a
- * timeout or a rate limit can; any other status answers the same request the same way.
- */
-export function transientStatus(status: number): boolean {
-  return status >= 500 || status === 408 || status === 429;
-}
-
-/**
- * Whether a gateway that answered with `status` may have forwarded the request to Dispatch first:
- * only after a 5xx, which a gateway sends when the upstream failed, timed out or dropped the
- * connection, possibly once Dispatch had the request. A 408 or 429 is the gateway's own timeout on
- * the client's request or its own rate limit, and any other status its own refusal, each sent
- * before it forwards anything.
- */
-function reachesDispatch(status: number): boolean {
-  return status >= 500;
+  return outage(status) || (status >= 200 && status < 300);
 }
 
 /** What a `DispatchClient` is built with beside its URL, its credential and its fetch. */
@@ -2014,11 +1999,10 @@ export class DispatchClient {
     }
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it, and
-   *  for a check CI proves the one result Dispatch derives from its check run.
-   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
-   *  proves, at the issue's newest pull request head as on every read. */
+  /** Each check's complete results, compared with each open head or the final head of the last
+   *  pull request to merge. A branch result must hold its work's merge. The newest such result
+   *  decides, unless a pass and a fail both count at that commit. A live check reads its
+   *  program's current deploy. `at` names one 40-hex commit and leaves today's deploy out. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",
@@ -2026,6 +2010,16 @@ export class DispatchClient {
       undefined,
       at === undefined ? undefined : { at }
     );
+  }
+
+  /** Record a build using the credential's own writer, never an actor selected in the body. */
+  async recordDeploy(input: DeployInput): Promise<DeployResponse> {
+    return this.#json("POST", ["api", "v1", "deploys"], input);
+  }
+
+  /** Each program's current deploy, including its source and the GitHub attempt when known. */
+  async deploys(repo: string): Promise<DeploysResponse> {
+    return this.#json("GET", ["api", "v1", "deploys"], undefined, { repo });
   }
 
   /**
@@ -2982,7 +2976,7 @@ export class DispatchClient {
           sent,
         };
       }
-      const heard = { retryAfterMs: retryAfterMs(response) };
+      const heard = { retryAfterMs: retryAfterMs(response.headers) };
       // Its headers came: an echo of the key counts for the call whether or not the body follows.
       if (response.headers.get(IDEMPOTENCY_KEY_HEADER) === key) progress.keyEchoed = true;
       let answer: WriteAnswer;

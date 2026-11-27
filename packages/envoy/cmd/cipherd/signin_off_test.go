@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -95,7 +96,7 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	public.route(t, on)
 	pods := f.pods(t, base)
 	pod := pods.Enroll(pods.LogIn(approvalLauncherService, approvalLauncherAccount), "pod-a", approvalPodAccount)
-	var left ciphertest.RequestReply
+	var left podclient.RequestReply
 	t.Run("control: with the switch unset a request waits on the owner's page", func(t *testing.T) {
 		if len(recordsWith(on.Boot, "approval sign-in on", nil)) != 1 || len(recordsWith(on.Boot, "approval sign-in off", nil)) != 0 {
 			t.Fatalf("the control's boot log does not say the approval sign-in is on:\n%s", on.Boot)
@@ -158,7 +159,7 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	})
 
 	t.Run("the request the sign-in-on run left pending is denied by the sweep", func(t *testing.T) {
-		reply := testwait.UntilPolling(t, 100*time.Millisecond, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (ciphertest.RequestReply, bool) {
+		reply := testwait.UntilPolling(t, 100*time.Millisecond, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (podclient.RequestReply, bool) {
 			reply := pods.State(pod, left.RequestID)
 			return reply, reply.State != "pending"
 		})

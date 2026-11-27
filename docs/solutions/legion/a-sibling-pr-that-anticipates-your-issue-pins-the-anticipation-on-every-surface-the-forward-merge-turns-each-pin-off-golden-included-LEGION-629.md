@@ -40,15 +40,22 @@ Extends docs/solutions/legion/long-lived-branch-mechanics-jj-new-and-merge-not-r
   not the issue (`CheckImage renders it installed`) is found only by the vocabulary grep. Give every
   hit a disposition in the merge commit: the sentence goes, the mechanism may stay for a later row
   (an empty `Awaits` with a test that no row uses it), the test is re-aimed at the landed state.
-- The daemon's state golden is cross-language and cross-package:
-  `packages/daemon/internal/api/state_golden_test.go` writes
-  `packages/contracts/fixtures/daemon-api/state.json` and fails when the fixture differs from what
-  Go now renders; `packages/contracts/src/legion-api.test.ts` parses that fixture through the strict
-  schema and pins row values by literal. A change to anything `populatedState()` renders — the
-  capability table, `Deployment.Report`, any `api.State` field — stales the fixture while the
-  package you changed stays green, since the Go test is in `internal/api` and the bun test in another
-  package. Regenerate with `go test -run TestStateGolden ./internal/api/ -args -update` (the flag
-  is the test binary's: after `-args`, not before the package path), then re-aim the bun test's
+- The daemon's state fixtures are cross-language and cross-package:
+  `packages/daemon/internal/daemon/state_fixtures_test.go` composes
+  `packages/contracts/fixtures/daemon-api/state.json` from the daemon's own state source over a
+  seeded database, `packages/daemon/internal/api`'s goldens write `state-narrowed-repositories.json`
+  and `issue-record.json` from it, and each test fails when its fixture differs from what Go now
+  renders.
+  `packages/contracts/src/legion-api.test.ts` parses that fixture through the strict schema and
+  pins row values by literal. A change to anything the populated state renders — the capability
+  table, `Deployment.Report`, any `api.State` field — stales the fixture while the package you
+  changed stays green, since the Go tests are in `internal/daemon` and `internal/api` and the bun
+  test in another package. Regenerate with the two commands of `apifixture.StateFixturesRewrite`,
+  in this order, in `packages/daemon` with `LEGION_TEST_PG_DSN` set:
+  `go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update`,
+  then `go test ./internal/api/ -run Golden -update` (`-update` is the test binary's flag, so it
+  goes after the package path). A `-run` pattern that matches no test exits 0 and writes nothing,
+  so copy the commands from that constant, not from an older note. Then re-aim the bun test's
   literals and run `bun test packages/contracts/src/legion-api.test.ts`. Both are in CI's `test`
   job; a pod lane that names only the packages it changed never runs them.
 
