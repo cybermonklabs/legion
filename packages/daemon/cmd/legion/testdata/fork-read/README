@@ -36,12 +36,13 @@ and `organization`:
   - the host of the homepage -> acme.example;
   - content-length, set to the body's length after these replacements.
 
-The captures were made on 2026-11-19 between 22:13:13Z and 22:13:36Z, in an INFRA issue pod, with
-this command and the implement App's installation token on curl's standard input:
+The captures were made on 2026-11-19 between 22:13:13Z and 22:13:36Z, in an issue pod, with
+the implement App's read-only installation token for that one repository on curl's standard
+input. A capture made again asks for a read profile of that App narrowed to the repository, here
+the deployment's GITHUB_READ, whose variable curl spends inside the command it runs:
 
-  agent-secrets LEGION_IMPLEMENT_APP --github-owner cybermonklabs --github-repo legion \
-    --github-read-only --github-token --ttl 15m --reason '<why>' -- sh -c \
-    'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | /usr/bin/curl -q --no-netrc -sS \
+  agent-secrets GITHUB_READ --target cybermonklabs/legion --ttl 15m --reason '<why>' -- sh -c \
+    'printf "Authorization: Bearer %s\n" "$GITHUB_READ" | /usr/bin/curl -q --no-netrc -sS \
      --include --proto =https -H @- -H "Accept: application/vnd.github+json" \
      -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/<repository>'
 

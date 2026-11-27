@@ -1,0 +1,19 @@
+# proxy-trailers-only-flushed: statusWriter.FlushError flushes an answer with no body as it
+# flushes any other, so ReverseProxy's own flush can send such an answer's headers alone and the
+# end of its stream after: a gRPC Trailers-Only status then reaches its client as no status.
+# must fail: TestAnAnswerWithNoBodyReachesTheCommandWhole
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -995,9 +995,7 @@
+ // at all: the call fails with "server closed the stream without sending trailers" and not with
+ // the service's own status.
+ func (w *statusWriter) FlushError() error {
+-	if w.whole.Load() {
+-		return nil
+-	}
++	// MUTANT: an answer with no body is flushed as any other is.
+ 	return http.NewResponseController(w.ResponseWriter).Flush()
+ }
+ 

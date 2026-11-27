@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // recordInvocations names the `legion` of the release before this table's change: with it, the
@@ -35,9 +36,7 @@ var recordInvocations = flag.String("record-invocations", "", "a legion binary o
 // status and stdout sha256 the release before gave it (`-` for a caller that reads the new
 // output); the argv the caller runs now; and where that argv moved — `this-pr` in the change that
 // moved the command, `pin-pr:<pin>` in the deployment repository's pin of the release that holds
-// it, or `unchanged`. A row whose exit this repository changed on purpose carries the new exit:
-// the two `workspace-init fetch` rows carry 3, the exit for a cause outside the issue's volume
-// (workspace.InitExitOutsideVolume).
+// it, or `unchanged`. A row whose exit this repository changed on purpose carries the new exit.
 const invocationsTable = "testdata/invocations.tsv"
 
 // absentRoot is where every absolute path a row names is moved to, a directory no machine has:
@@ -61,6 +60,7 @@ var placeholderValues = map[string]string{
 	"database":         "sessions",
 	"user":             "legion-sessions@acme.iam",
 	"account":          "legion-sessions@acme.iam.gserviceaccount.com",
+	"audience":         "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/legion-pool/providers/legion-cluster",
 	"workloadPool":     "acme.svc.id.goog",
 	"identityProvider": "https://container.googleapis.com/v1/projects/acme/locations/region/clusters/legion",
 	"contract":         "1",
@@ -125,6 +125,7 @@ type invocation struct {
 // the caller's own test reads the output. A row whose exit was changed on purpose carries the new
 // exit in old_exit (invocationsTable), and the run is compared with that.
 func TestInvocationTable(t *testing.T) {
+	t.Parallel()
 	rows := readInvocations(t)
 	if len(rows) == 0 {
 		t.Fatalf("%s holds no row: UNKNOWN, nothing was compared", invocationsTable)
@@ -277,11 +278,14 @@ func splitWords(line string) ([]string, error) {
 // exit status, the sha256 of its standard output and its standard error. The checker keeps the
 // image hook's row comparable with the release before: under it the guard refuses a push for
 // want of a check, as every release did, where with no checker it would run its rules alone. A
-// run still going after twenty seconds is an error: a call that waits on something is no call the
-// table can compare.
+// run still going when what is left of the test binary's deadline less testBoundMargin has passed
+// is killed and fails the test by name: a call that waits on something is no call the table can
+// compare, and no row after it has time left to run. A call that a loaded machine makes slow
+// passes; a fixed twenty seconds failed one.
 func runInvocation(t *testing.T, legion string, args []string) (code int, digest, stderr string, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	limit := testwait.Bounded(t, 1<<60, testBoundMargin)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, legion, args...)
 	home := t.TempDir()
@@ -291,11 +295,12 @@ func runInvocation(t *testing.T, legion string, args []string) (code int, digest
 	var stdout, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &errb
 	err = cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("legion %q still ran when its limit of %s, %s before the test binary's deadline, passed: %s", args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
+	}
 	sum := sha256.Sum256(stdout.Bytes())
 	var exit *exec.ExitError
 	switch {
-	case ctx.Err() != nil:
-		return 0, "", "", fmt.Errorf("still running after 20s")
 	case err == nil:
 		return 0, hex.EncodeToString(sum[:]), errb.String(), nil
 	case errors.As(err, &exit) && exit.ExitCode() >= 0:

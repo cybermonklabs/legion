@@ -36,6 +36,7 @@ import (
 // and not changing reports the same numbers, which an id built from those numbers would have
 // ApplyFact drop as already applied (volumeTrimReports.report).
 func TestAVolumeReportThroughTheDaemonsGlueReachesTheArchitectEverySweep(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := testpg.ClonePool(t, "legion_volume_glue_test")
 	st, err := store.Open(ctx, raw.Config().ConnString())

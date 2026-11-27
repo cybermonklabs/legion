@@ -1,0 +1,17 @@
+# proxy-leftover-basic-padded-only: a Basic credential is read only with its base64 padded, so a
+# placeholder inside one with no padding goes upstream.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -136,7 +136,8 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
+ 	}
+ 	if scheme, payload, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "basic") {
+ 		payload = strings.Trim(payload, " \t")
+-		for _, encoding := range [...]*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
++		// MUTANT: a Basic credential is read only with its base64 padded.
++		for _, encoding := range [...]*base64.Encoding{base64.StdEncoding} {
+ 			if decoded, err := encoding.DecodeString(payload); err == nil {
+ 				return placeholderInPrefixes(string(decoded), prefixes)
+ 			}

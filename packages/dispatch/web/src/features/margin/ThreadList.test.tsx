@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,9 +6,17 @@ import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import type { Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ThreadList } from "./ThreadList";
 import type { Thread } from "./useMarginItems";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function comment(id: string, body: string, resolved = false): Comment {
   return {
@@ -313,5 +321,30 @@ test("an anchored card's placement ignores the margin's own scroll", () => {
     rect.mockRestore();
     mark.remove();
     scrollport.remove();
+  }
+});
+
+// The anchored region stands as tall as its lowest card, and follows a card's height the moment
+// the card changes, not at the next render. A reply composer's picker opens inside a card and
+// closes again with no render of the list: a region that read the cards' heights at render kept
+// the open height until an unrelated render - the hover a pointer makes on its way to Send - read
+// it again, and the margin's scroll clamped under the press, so the click missed the button.
+test("the anchored region follows its card's height when the card resizes, with no render", () => {
+  const resize = installResizeObserver();
+  let height = 300;
+  const view = renderList();
+  try {
+    const wrapper = screen.getByTestId("margin-comment-open").parentElement;
+    if (wrapper === null) throw new Error("the card has no wrapper");
+    Object.defineProperty(wrapper, "offsetHeight", { configurable: true, get: () => height });
+    resize.resize(wrapper);
+    const region = screen.getByRole("region", { name: "Anchored comments" });
+    expect(region.style.minHeight).toBe(`${180 + 300 + 8}px`);
+    height = 250;
+    resize.resize(wrapper);
+    expect(region.style.minHeight).toBe(`${180 + 250 + 8}px`);
+  } finally {
+    view.unmount();
+    resize.restore();
   }
 });

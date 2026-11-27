@@ -31,6 +31,13 @@ export interface ControlSubscriptionOptions {
    * is taken at once.
    */
   readonly admitted?: (session: string) => Promise<void>
+  /**
+   * Whether a viewer can take this session: false where the session's inbound is the listener's
+   * relay socket (`ENVOY_INBOUND=listener`), which carries no agent stream
+   * (`@legion/envoy-client/listener-relay`), so the control subject is never taken, no viewer arms
+   * the view's publisher, and no frame goes out. True by default.
+   */
+  readonly liveView?: boolean
   /** Where a failure that must not stop the session is written. */
   readonly warn: (text: string) => void
   /**
@@ -108,7 +115,7 @@ export function controlSubscription(options: ControlSubscriptionOptions): Contro
   /** Takes the control subject on the connection held now. A closed one throws on a subscribe, so
    *  the subject waits for the connection the server swaps in (`useConnection`). */
   function subscribe(): void {
-    if (stopped || connection.isClosed()) return
+    if (stopped || options.liveView === false || connection.isClosed()) return
     subscription?.unsubscribe()
     const forSession = options.session()
     const taken = connection.subscribe(agentStreamControlSubject(forSession))

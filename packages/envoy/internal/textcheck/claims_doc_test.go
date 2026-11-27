@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads docs/kubernetes.md TestTheClaimExtractIsTheGuidesClaimList reads it under ../../../..
+//ci:reads packages/envoy/internal/cipher/oauth/claims_doc_extract.txt extractLines reads the committed copy it holds the guide's list to (extractLines, called with it in TestTheClaimExtractIsTheGuidesClaimList)
+
 import (
 	"errors"
 	"fmt"
@@ -11,11 +14,11 @@ import (
 )
 
 // The claim list under "The Dispatch identity the broker can issue" in docs/kubernetes.md is what
-// a resource server writes its authorization against, and internal/broker/oauth holds the claims
+// a resource server writes its authorization against, and internal/cipher/oauth holds the claims
 // an exchanged token carries to it. That comparison is in two halves, because a test that reads
 // the guide puts the guide in its job's filter — a declared read applies to every compiled source
 // file of a run — and a documentation-only edit would then start the whole envoy Go lane. The
-// product half compares the exchange with internal/broker/oauth/claims_doc_extract.txt, a copy of
+// product half compares the exchange with internal/cipher/oauth/claims_doc_extract.txt, a copy of
 // the list committed beside it; this half holds that copy to the guide's own bullets. Neither
 // half alone is the guarantee: together they are the one the single test used to give.
 //
@@ -39,7 +42,7 @@ const (
 	claimsDocSeparator = " — "
 	// claimsExtract is the committed copy, read from the package it is about. The guide is at the
 	// repository root, four directories above this one.
-	claimsExtract   = "../broker/oauth/claims_doc_extract.txt"
+	claimsExtract   = "../cipher/oauth/claims_doc_extract.txt"
 	kubernetesGuide = "../../../../docs/kubernetes.md"
 )
 
@@ -47,6 +50,7 @@ const (
 // edit to either side alone fails here: a claim added to the guide and not to the copy would
 // otherwise never reach the exchange's own check, which reads the copy and not the guide.
 func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
+	t.Parallel()
 	doc, err := os.ReadFile(filepath.FromSlash(kubernetesGuide))
 	if err != nil {
 		// A skip here would be an absence that reads exactly like a pass, and a silent absence is
@@ -62,7 +66,7 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 		t.Fatalf("%s and docs/kubernetes.md's claim list disagree:\n"+
 			"  the extract: %s\n"+
 			"  the guide:   %s\n"+
-			"the extract is the copy internal/broker/oauth checks the exchange against, so the "+
+			"the extract is the copy internal/cipher/oauth checks the exchange against, so the "+
 			"guide answers for the code only while the two are equal; change them in one commit",
 			claimsExtract, strings.Join(extracted, ", "), strings.Join(documented, ", "))
 	}
@@ -182,6 +186,7 @@ func claimListNames(doc string) ([]string, error) {
 // onto an indented line is still one item; and the list ends at the prose under it, so a later
 // list in the same section is never read as the claims.
 func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
+	t.Parallel()
 	const intro = claimsDocHeading + "\n\nAn issued token carries these claims and no others:\n\n"
 	const after = "\nThe subject token's own kind decides those claims.\n\n- `other` — a later list, not a claim.\n"
 	want := []string{"session", "person", "project_scope", "project"}
@@ -221,6 +226,7 @@ func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
 // after the list, where both readings have ended it, change nothing it reads; a guide with no list
 // fails in both readings alike, with the written reading's refusal.
 func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
+	t.Parallel()
 	const (
 		prose = "An issued token carries these claims and no others:\n\n"
 		intro = claimsDocHeading + "\n\n" + prose

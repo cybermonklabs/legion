@@ -117,9 +117,13 @@ printf '%s\n' "$1" >>"$SLEEP_LOG"
 `
 
 // fetch runs the script against f, writing to a key file that already exists, empty and mode
-// 0600, as the cloud-config's bootcmd leaves it.
+// 0600, as the cloud-config's bootcmd leaves it. It fails the test at once without curl, jq or
+// base64 on this machine (tool), which the script calls at every attempt.
 func fetch(t *testing.T, f *fakeGCP) fetchRun {
 	t.Helper()
+	for _, name := range []string{"curl", "jq", "base64"} {
+		tool(t, name)
+	}
 	scriptDir := t.TempDir()
 	script := filepath.Join(scriptDir, "fetch-secret")
 	require.NoError(t, os.WriteFile(script, []byte(fetchScript(t)), 0o700))
@@ -130,7 +134,7 @@ func fetch(t *testing.T, f *fakeGCP) fetchRun {
 	out := filepath.Join(dir, "tailnet-auth-key")
 	require.NoError(t, os.WriteFile(out, nil, 0o600))
 
-	cmd := shellCommand(t, script, out, fetchSecret)
+	cmd := gcp.ShellCommand(t, script, out, fetchSecret)
 	cmd.Env = []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"SLEEP_LOG=" + sleepLog,

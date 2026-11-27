@@ -15,7 +15,7 @@ module: packages/pi-legion
 applies_when:
   - GitHub reports a branch CONFLICTING and the branch has moved or renamed files main has since edited
   - A conflict shows as "2-sided conflict including 1 deletion" at a path the branch deleted
-  - Main bumped a version, contract number or lockfile the branch's manifests copy
+  - Main bumped a version or lockfile the branch's manifests copy
 related_issues:
   - "LEGION-247"
   - "sjawhar/legion#1831"
@@ -34,10 +34,11 @@ Extends docs/solutions/legion/long-lived-branch-mechanics-jj-new-and-merge-not-r
   marker at all. After resolving, list main's additions in every directory you moved
   (`jj diff --from <last base> --to main@origin --name-only`) and move each to its new home with
   its imports fixed.
-- Main's serials win: take main's manifest versions, contract numbers and lockfile, then
-  regenerate the lockfile (`bun install`) and set the copies your branch made (a second manifest
-  that must match the first) to the same values. A plan that pinned a number main has since
-  moved is overtaken, not departed from; record it in the handoff.
+- Main's serials win: take main's manifest versions and lockfile, then regenerate the lockfile
+  (`bun install`) and set the copies your branch made (a second manifest that must match the
+  first) to the same values. A plan that pinned a number main has since moved is overtaken, not
+  departed from; record it in the handoff. A contract number was one of those serials until
+  dispatch://INFRA-1569; no manifest commits one since, and a contract change adds an entry.
 - The merged head is a new head: re-run the real-surface proof and the real-binary suites there,
   on the pinned binary the merged tree names, and record the fingerprint before and after
   (`changed` is the expected answer when main's edits were ported).

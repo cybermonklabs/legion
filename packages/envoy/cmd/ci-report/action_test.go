@@ -1,5 +1,7 @@
 package main
 
+//ci:reads .github/actions/dispatch-results/action.yml actionPath joins ../../../../.github/actions/dispatch-results/action.yml, which TestTheActionRunsTheReporter reads and whose steps it runs
+
 import (
 	"errors"
 	"maps"

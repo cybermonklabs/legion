@@ -20,6 +20,7 @@ import (
 // element stays. Each refusal writes one WARN line, which names the elements the document holds
 // and carries nothing of the error (requireNewerContentWarnings).
 func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, resident := range []bool{true, false} {
 		name := "stored"
 		if resident {
@@ -135,6 +136,7 @@ func requireNewerContentWarnings(t *testing.T, logs *logtest.Recorder, least int
 // holding newer content: after it, the document answers 409 DOC_NEWER_CONTENT naming the element.
 // Without DISPATCH_TEST_HOOKS the route is not mounted, and the document is unchanged.
 func TestTheNewerContentHookWritesAnElementThisBuildDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	for _, hooks := range []bool{true, false} {
 		handler, _, _ := newTestServer(t, testServerOptions{testHooks: hooks})
 		issue := createArtifactIssue(t, handler)

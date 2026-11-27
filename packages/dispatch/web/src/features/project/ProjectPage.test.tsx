@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -18,8 +18,15 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function LocationProbe() {
   const location = useLocation();
@@ -103,6 +110,7 @@ function renderPage(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ],
   login: string | null = "alice",
@@ -246,6 +254,35 @@ test("any other failure of the source lookup is shown, never silently turned int
     expect(screen.queryByRole("tab", { name: "Issues" })).not.toBeInTheDocument();
   } finally {
     page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: on Issues, the Architecture tab exists only
+// once the source read says there is a source, so Navigation says the read is still out, or that
+// it failed and can be retried, rather than gaining a tab from a read the reader never saw.
+test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
+  const user = userEvent.setup();
+  const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");
+  try {
+    expect(await screen.findByText("Checking for an architecture…")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+  } finally {
+    pending.restore();
+  }
+
+  const failed = renderPage("/projects/CORE/issues", undefined, "alice", [], new ApiError(500, {}));
+  try {
+    const alert = await screen.findByText(/^Could not check for an architecture\./);
+    expect(alert).toHaveAttribute("role", "alert");
+    failed.listProjectArchitectureSources.mockResolvedValue([coreSource]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("tab", { name: "Architecture" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not check for an architecture.")).not.toBeInTheDocument();
+  } finally {
+    failed.restore();
   }
 });
 
@@ -605,6 +642,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Core",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
       {
         created_at: "2026-09-10T00:00:00Z",
@@ -612,6 +650,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Other",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
     ]
   );

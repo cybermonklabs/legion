@@ -1,0 +1,5 @@
+kind: Added
+body: The new `DISPATCH_EVENT_TYPES` lists each event type of the `EventType` union once, sorted, with the compiler holding it to the union, and `scripts/gen-go.ts` writes it into envoy's Go contracts as `DispatchEventTypes`. The new `isEventType(value)` says whether a string names a member of that union, so a reader of an event frame can narrow its `type`; Dispatch's web client uses it in place of its own list of the types.
+time: 2026-11-20T07:20:58.082849184Z
+custom:
+    Issue: pr4568

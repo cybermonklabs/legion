@@ -62,6 +62,8 @@ func (stillClock) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, t
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
 
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
+
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type stopped struct{}
@@ -251,13 +253,13 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			Timeouts: supervise.Timeouts{
 				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 			},
-			PluginContract:     DaemonAPIVersion,
+			PluginContract:     DaemonAPIVersion(),
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
-				if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					issue, err = record.NewStore().Issue(ctx, tx, c.Tree)
 					return err
@@ -427,7 +429,7 @@ func (h *harness) stored(token claim.Token) supervise.Claim {
 // recordIssue writes a workflow issue, as admission would have.
 func (h *harness) recordIssue(issue record.Issue) {
 	h.t.Helper()
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
 		h.t.Fatalf("record issue %s: %v", issue.Key, err)
 	}
 }
@@ -436,7 +438,7 @@ func (h *harness) register(bootToken, session string) *httptest.ResponseRecorder
 	h.t.Helper()
 	return h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion,
+		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion(),
 	}, nil)
 }
 
@@ -479,7 +481,7 @@ func (h *harness) registerContract(bootToken, session string, contract int, rela
 		AgentID: "agent-" + session, PluginContract: contract,
 	}, nil)
 	want := http.StatusOK
-	if contract != DaemonAPIVersion && relaunchable {
+	if contract != DaemonAPIVersion() && relaunchable {
 		want = http.StatusConflict
 	}
 	if recorder.Code != want {
@@ -562,7 +564,7 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 	if err != nil {
 		t.Fatalf("project token of %s: %v", project, err)
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, tree, treelifecycle.AuthorityWorkflow)
 		return err
 	}); err != nil {

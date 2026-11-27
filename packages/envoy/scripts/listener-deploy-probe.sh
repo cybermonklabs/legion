@@ -18,7 +18,8 @@
 # Verdict: a target fails when /v1/sessions answers anything but 200 at a tick where its /healthz
 # answered 200 (whatever its status, "starting" included), or when it never answers /v1/sessions 200
 # at all. A /v1 request that times out, or whose connection closes or resets without an answer,
-# counts as a non-200 answer. One that never connects right after /healthz answered (curl exit 7) is
+# counts as a non-200 answer (each request may take --request-timeout seconds, 3 by default, its
+# connection 1 s of them). One that never connects right after /healthz answered (curl exit 7) is
 # counted and shown, not judged a refusal: a listener that stops closes its listening socket first,
 # so that is the task stopping between the tick's two requests. A target that never answers
 # /healthz is unreached: named, not failed. With --dispatch-*, the run also fails when a Dispatch
@@ -49,6 +50,9 @@ Options:
   --token-file PATH          File holding the listener's /v1 bearer (default: $ENVOY_TOKEN_FILE;
                              otherwise $ENVOY_TOKEN; otherwise no bearer).
   --interval SECONDS         Seconds between ticks (default 1).
+  --request-timeout SECONDS  Seconds each request may take, its connection included; a decimal
+                             is allowed (default 3, under Dispatch's 5 s client timeout; the
+                             connection alone gets 1).
   --duration SECONDS         Seconds to run, duration/interval ticks; 0 runs until Ctrl-C
                              (default 300).
   --send-to SESSION          Also POST /v1/messages/send to this session at every target each
@@ -82,6 +86,7 @@ targets_arg=""
 token_file="${ENVOY_TOKEN_FILE:-}"
 interval=1
 duration=300
+request_timeout=3
 send_to=""
 dispatch_url=""
 dispatch_token_file=""
@@ -96,14 +101,16 @@ while (($#)); do
       usage
       exit 0
       ;;
-    --url | --targets | --token-file | --interval | --duration | --send-to | --dispatch-url | \
-      --dispatch-token-file | --dispatch-issue | --dispatch-session | --dispatch-mode | --dispatch-every)
+    --url | --targets | --token-file | --interval | --request-timeout | --duration | --send-to | \
+      --dispatch-url | --dispatch-token-file | --dispatch-issue | --dispatch-session | \
+      --dispatch-mode | --dispatch-every)
       (($# >= 2)) || die_usage "$1 needs a value"
       case "$1" in
         --url) url="$2" ;;
         --targets) targets_arg="$2" ;;
         --token-file) token_file="$2" ;;
         --interval) interval="$2" ;;
+        --request-timeout) request_timeout="$2" ;;
         --duration) duration="$2" ;;
         --send-to) send_to="$2" ;;
         --dispatch-url) dispatch_url="$2" ;;
@@ -131,6 +138,8 @@ if [[ -z "$port" ]]; then
 fi
 [[ "$interval" =~ ^[1-9][0-9]*$ ]] || die_usage "--interval must be a whole number of seconds >= 1"
 [[ "$duration" =~ ^[0-9]+$ ]] || die_usage "--duration must be a whole number of seconds >= 0"
+[[ "$request_timeout" =~ ^[0-9]+(\.[0-9]+)?$ && "$request_timeout" =~ [1-9] ]] ||
+  die_usage "--request-timeout must be a number of seconds > 0, got $request_timeout"
 id_shape='^[A-Za-z0-9._:-]+$'
 [[ -z "$send_to" || "$send_to" =~ $id_shape ]] || die_usage "--send-to is not a session id: $send_to"
 targets=()
@@ -204,7 +213,7 @@ field() {
 # to resolve it as any client would.
 request() {
   local base="$1" target="$2" method="$3" path="$4" header="$5" body="${6:-}" code exit_code=0
-  local args=(-sS -o "$body_file" -w '%{http_code}' --connect-timeout 1 --max-time 3 -X "$method" -H "@${header}")
+  local args=(-sS -o "$body_file" -w '%{http_code}' --connect-timeout 1 --max-time "$request_timeout" -X "$method" -H "@${header}")
   [[ -z "$target" ]] || args+=(--resolve "${host}:${port}:${target}")
   [[ -z "$body" ]] || args+=(-H 'Content-Type: application/json' --data "$body")
   : >"$body_file"
@@ -216,8 +225,8 @@ request() {
 
 # no_answer prints why the last request drew no whole answer, from curl's exit code: a name that
 # did not resolve (6), nothing listening at the address (7), a timeout (28: the 1 s connect or the
-# 3 s the probe allows a request), or a connection closed (52) or reset (56) without an answer,
-# which is what Go's net/http does when a handler panics.
+# --request-timeout the probe allows a request), or a connection closed (52) or reset (56) without
+# an answer, which is what Go's net/http does when a handler panics.
 no_answer() {
   local exit_code
   exit_code="$(<"$exit_file")"

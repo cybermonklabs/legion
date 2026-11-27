@@ -14,16 +14,16 @@
 // the token client has said what its trade came to. So the time a row reads is the code's own,
 // to the millisecond, however loaded the machine.
 
-import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import {
   RegistrationPendingError,
   TradeRetryingError,
   TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/token-errors";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubDispatch } = brokerStandIns("dispatch-credential-deadline");
@@ -32,8 +32,10 @@ beforeEach(() => {
   jest.useFakeTimers();
 });
 
-// A fake clock left behind stops the timers of every file the same worker runs after this one.
+// A fake clock left behind stops the timers of every file the same worker runs after this one, and
+// a system time left moved skews every clock read after it.
 afterEach(() => {
+  setSystemTime();
   jest.useRealTimers();
 });
 
@@ -73,7 +75,8 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
         renewing = true;
         return await new Promise<Response>(() => {});
       }
-      // Good for 200 s: inside the 5-minute renewal window from the first.
+      // Good for 200 s, so the client renews it at its half life (`renewalAt`): the row moves the
+      // clock past that before the second call, while the token is still live.
       return Response.json({
         access_token: fixtureSecret("live"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -99,6 +102,7 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
       {}
     );
   await call();
+  setSystemTime(new Date(Date.now() + 150_000));
   const started = performance.now();
   const second = call();
   let answered = false;
@@ -145,7 +149,6 @@ test.each([
 ] as const)(
   "a write whose credential meets %s ends with the credential's error inside a deadline shorter than its pacing",
   async (_, mode, failure, endsAt) => {
-    forgetKeyedLayerMemory();
     // The token client says what a trade came to at the wait after it, and the broker that never
     // answers has the trade: past either, only timers are left to happen.
     let read = false;

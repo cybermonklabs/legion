@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -139,6 +141,9 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 		if row.Site == SiteLive && state.Detail != "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: "+row.Summary {
 			t.Errorf("%s: detail %q, want it to say a claimed session reports the row while it runs, then the summary", state.Name, state.Detail)
 		}
+		if row.Site == SiteDeployment && state.Detail != "the daemon reports it from "+row.MeasuredFrom+": "+row.Summary {
+			t.Errorf("%s: detail %q, want it to say what the daemon measures the row from, then the summary", state.Name, state.Detail)
+		}
 	}
 	got := byName(states)
 	for name, want := range map[Name]string{
@@ -151,6 +156,8 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 			s.pin + " pins @anthropic-ai/claude-code " + capabilitiestest.ClaudeCodeVersion + " with the sha512 integrity of @anthropic-ai/claude-code-linux-x64; " +
 			s.onPATH("npm", "node"),
 		RepositoryExtensions: "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: loads the Oh My Pi extensions the repository it works carries",
+		ResourceLimits:       "the daemon reports it from the deployment's configuration: runs within the CPU and memory the deployment's pod resources give it",
+		RepositoryCacheRoom:  "the daemon reports it from each repository cache's last health read: fills its workspace from a repository cache with room on its volume to fetch and repack the clone",
 	} {
 		if got[name].Detail != want {
 			t.Errorf("%s: detail %q, want %q", name, got[name].Detail, want)
@@ -811,6 +818,125 @@ func TestReadModelFallback(t *testing.T) {
 	})
 }
 
+// scriptedOmp is an omp that answers `--version` and `--help` by printing version and help, and
+// exits code on either; any other argv is refused as the fake omp refuses one. It prints with the
+// shell's own printf, since the stubs' PATH holds no cat.
+func scriptedOmp(t *testing.T, version, help string, code int) string {
+	t.Helper()
+	quoted := func(text string) string { return "'" + strings.ReplaceAll(text, "'", `'\''`) + "'" }
+	omp := filepath.Join(t.TempDir(), "omp")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"--version) printf '%s\\n' " + quoted(version) + "; exit " + strconv.Itoa(code) + " ;;\n" +
+		"--help) printf '%s\\n' " + quoted(help) + "; exit " + strconv.Itoa(code) + " ;;\n" +
+		"*) echo \"fake omp: unexpected argv: $*\" >&2; exit 64 ;;\nesac\n"
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return omp
+}
+
+// withoutSessionID is the flags table of a fork release before the flag
+// (v18.18.6-sami.20261117-013345, as its `omp --help` prints it): flags that begin with the words
+// and mention sessions, and none that is --session-id.
+const withoutSessionID = `omp v18.18.6
+
+FLAGS
+  -c, --continue                        Continue previous session
+  -r, --resume=<value>                  Resume a session (by ID prefix, path, or picker if omitted)
+      --restore=<value>                 Resume a session as --resume does, then go on with what its last process left unfinished
+      --session-dir=<value>             Directory for session storage and lookup
+      --no-session                      Don't save session (ephemeral)
+
+Plugin Options:
+  --plugin-dir <path>        Load plugin from directory (repeatable)`
+
+// ReadSessionIDFlag is taken when a line of Oh My Pi's help names --session-id in its flag column
+// — with its value, after a short flag, or alone at the line's end — and absent when the help
+// lists no such flag, though a description mentions the words or a longer flag begins with them.
+func TestReadSessionIDFlagReadsTheFlagColumnOfTheHelp(t *testing.T) {
+	s := newStubs(t)
+	for name, testCase := range map[string]struct {
+		help, want string
+	}{
+		"the first release with the flag": {withoutSessionID + "\n      --session-id=<value>              Start a new session under this id (a lowercase UUID); refused when a stored session already holds it", bootprobe.SessionIDFlagTaken},
+		"after a short flag":              {withoutSessionID + "\n  -s, --session-id=<value>  Start a new session under this id", bootprobe.SessionIDFlagTaken},
+		"alone at the line's end":         {"FLAGS\n      --session-id", bootprobe.SessionIDFlagTaken},
+		"a release before the flag":       {withoutSessionID, bootprobe.SessionIDFlagAbsent},
+		"the words in a description":      {withoutSessionID + "\n      --fork=<value>   Start a session under a new id, as --session-id does", bootprobe.SessionIDFlagAbsent},
+		"a longer flag":                   {withoutSessionID + "\n      --session-id-file=<value>   Read the session id from a file", bootprobe.SessionIDFlagAbsent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img := s.image()
+			img.Launch = scriptedOmp(t, "omp/18.18.6", testCase.help, 0)
+			got, err := ReadSessionIDFlag(context.Background(), img)
+			if err != nil || got != testCase.want {
+				t.Errorf("ReadSessionIDFlag = %q, %v, want %q", got, err, testCase.want)
+			}
+		})
+	}
+}
+
+// A help Oh My Pi did not give — a run that fails, prints nothing, or cannot start — is an error
+// naming the command and what it printed, never a state: the probe writes it as unread.
+func TestReadSessionIDFlagIsAnErrorWhenTheHelpIsNotRead(t *testing.T) {
+	s := newStubs(t)
+	for name, testCase := range map[string]struct {
+		launch func(t *testing.T) string
+		want   func(launch string) string
+	}{
+		"a failing command": {
+			func(t *testing.T) string { return scriptedOmp(t, "omp/18.18.6", "Error: the profile is locked", 1) },
+			func(launch string) string { return launch + " --help exited 1: Error: the profile is locked" },
+		},
+		"no help": {
+			func(t *testing.T) string { return scriptedOmp(t, "omp/18.18.6", "", 0) },
+			func(launch string) string { return launch + " --help printed no help: " },
+		},
+		"a launch that cannot run": {
+			func(*testing.T) string { return "/nonexistent/omp" },
+			func(launch string) string { return launch + " --help exited 127" },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img := s.image()
+			img.Launch = testCase.launch(t)
+			got, err := ReadSessionIDFlag(context.Background(), img)
+			if want := testCase.want(img.Launch); err == nil || got != "" || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("ReadSessionIDFlag = %q, %v, want no state and an error beginning %q", got, err, want)
+			}
+		})
+	}
+}
+
+// ReadOmpVersion is the first line Oh My Pi printed for --version, trimmed, read through the
+// launch as a shell fragment; a run that fails or prints nothing is an error naming the command.
+func TestReadOmpVersion(t *testing.T) {
+	s := newStubs(t)
+	t.Run("the first line", func(t *testing.T) {
+		img := s.image()
+		img.Launch = "/usr/bin/env LEGION_TEST_UNUSED=1 " + scriptedOmp(t, "  omp/18.18.6  \nbuilt from sami.20261117-074351", withoutSessionID, 0)
+		if got, err := ReadOmpVersion(context.Background(), img); err != nil || got != "omp/18.18.6" {
+			t.Errorf("ReadOmpVersion = %q, %v, want %q", got, err, "omp/18.18.6")
+		}
+	})
+	t.Run("a failing command", func(t *testing.T) {
+		img := s.image()
+		img.Launch = scriptedOmp(t, "omp: cannot read its install", withoutSessionID, 1)
+		_, err := ReadOmpVersion(context.Background(), img)
+		if want := img.Launch + " --version exited 1: omp: cannot read its install"; err == nil || err.Error() != want {
+			t.Errorf("ReadOmpVersion = %v, want %q", err, want)
+		}
+	})
+	t.Run("no version", func(t *testing.T) {
+		img := s.image()
+		img.Launch = scriptedOmp(t, " ", withoutSessionID, 0)
+		_, err := ReadOmpVersion(context.Background(), img)
+		if want := img.Launch + " --version printed no version: "; err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("ReadOmpVersion = %v, want an error beginning %q", err, want)
+		}
+	})
+}
+
 // envValue is name's value in env, the last assignment winning as it does for the process env
 // starts.
 func TestEnvValueTakesTheLastAssignment(t *testing.T) {
@@ -847,5 +973,54 @@ func TestStateStringIsTheProbeLine(t *testing.T) {
 	state := State{Name: Browser, Status: StatusPresent, Detail: "x"}
 	if want := "probe-image: capability browser: present (x)"; state.String() != want {
 		t.Errorf("State.String() = %q, want %q", state.String(), want)
+	}
+}
+
+// A check's output is quoted without the words of the daemon's launch prefix, nor the value of a
+// NAME=value word (omplaunch.PrefixMasked): a prefix that fails can echo the credential it carries.
+// The token is made up; the command echoes the word and the value as such a prefix would.
+func TestACheckQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
+	const value = "madeUpPrefixToken0123456789"
+	img := Image{Prefix: []string{"env", "OMP_TOKEN=" + value}, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+	r := img.run(context.Background(), "sh", "-c", `echo "OMP_TOKEN=`+value+` refused: `+value+`" >&2; exit 1`)
+	if got := r.failure(); strings.Contains(got, value[:10]) || !strings.Contains(got, "<prefix word 1> refused: <prefix word 1>") {
+		t.Fatalf("the check quoted %q, want the prefix's word and value as <prefix word 1>", got)
+	}
+}
+
+// ReadModelFallback's, ReadOmpVersion's, ReadSessionIDFlag's and CheckOverlays' refusals, which
+// run the daemon's own launch under tmux, name it as Image.Shown and quote a failing launch
+// prefix's output without its words: a wrapper handed a made-up token as `--token=<token>` that
+// echoes its argument and exits 3, as a refusing proxy would, and one that echoes it and exits 0
+// having printed nothing on stdout, which each of the three reads refuses as no answer.
+func TestTheLaunchChecksQuoteNoWordOfTheLaunchPrefix(t *testing.T) {
+	const token = "madeUpPrefixToken0123456789"
+	dir := t.TempDir()
+	overlay := filepath.Join(dir, "overlay.yml")
+	if err := os.WriteFile(overlay, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, exit := range []int{3, 0} {
+		wrapper := filepath.Join(dir, fmt.Sprintf("madeup-wrapper-%d", exit))
+		if err := os.WriteFile(wrapper, []byte(fmt.Sprintf("#!/bin/sh\necho \"wrapper: refusing $1\" >&2\nexit %d\n", exit)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{wrapper, "--token=" + token}
+		img := Image{Launch: omplaunch.WithPrefix(prefix, "omp"), Shown: omplaunch.WithPrefixShown(prefix, "omp"), Prefix: prefix,
+			Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+		_, fallbackErr := ReadModelFallback(context.Background(), img)
+		_, versionErr := ReadOmpVersion(context.Background(), img)
+		_, flagErr := ReadSessionIDFlag(context.Background(), img)
+		printed := map[string]string{"ReadModelFallback": fmt.Sprint(fallbackErr), "ReadOmpVersion": fmt.Sprint(versionErr),
+			"ReadSessionIDFlag": fmt.Sprint(flagErr)}
+		if exit != 0 {
+			refused, overlaysErr := CheckOverlays(context.Background(), img, []string{overlay}, []string{overlay})
+			printed["CheckOverlays"] = refused + fmt.Sprint(overlaysErr)
+		}
+		for name, got := range printed {
+			if strings.Contains(got, token[:10]) || !strings.Contains(got, "wrapper: refusing <prefix word 1>") {
+				t.Errorf("a wrapper that exits %d: %s quoted %q, want the prefix's argument as <prefix word 1>", exit, name, got)
+			}
+		}
 	}
 }

@@ -38,22 +38,42 @@ export const ActorOriginSchema = z
 
 export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 
-/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
- *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
- *  the credential's own person on every route a person reaches through the dashboard, and
- *  `approve` settles what a person settles — a document review, the answer of an approval ask, a
- *  machine-login decision or revoke, and minting, changing or revoking a personal token. A
- *  credential holding `approve` holds `person` too. */
-export const DISPATCH_SCOPES = ["person", "approve"] as const;
+/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson`,
+ *  `model.ScopeApprove` and `model.ScopeP0` and the `agent_tokens.scopes` check that stores them.
+ *  `person` acts as the credential's own person on every route a person reaches through the
+ *  dashboard. `approve` settles what a person settles: a document review, a decision's Keep, the
+ *  answer of an approval ask, a machine-login decision, a credential-grant, machine-login or
+ *  sign-in revoke, and minting, changing or revoking a personal token. `p0` lets a credential make
+ *  an issue's own priority 0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). A browser
+ *  sign-in holds all three. A personal token holds `p0` only where its maker gave it, and may hold
+ *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too.
+ *  No broker-issued token, shared token or service-account token holds `p0`, and of the
+ *  broker-issued tokens only the approve-only token, which no machine holds, holds `approve`. */
+export const DISPATCH_SCOPES = ["person", "approve", "p0"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
+
+/** The scope words a personal token can carry, which the agent token list names and `scopes` in
+ *  `GET /api/v1/whoami` names for it: the three of `DISPATCH_SCOPES` and `read`. A token that
+ *  holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or
+ *  beside `person`, never beside `approve` or `p0`. No mint gives `p0` by default. `read` is a
+ *  mark on the token and not a scope a credential acts under, so no act records it, and
+ *  `DISPATCH_SCOPES` and `ActorActSchema` keep `person`, `approve` and `p0` alone.
+ *  `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
+ *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
+ *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
+ *  records it either, and no personal token can hold it. */
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "p0", "read"] as const;
+export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
 
 /** The agent that made an act for the person it acts for: the session a broker-issued token
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
  *
- *  `scopes` is the set that credential held at the act, recorded with it and never read back
- *  from the token: a person who narrows a token afterwards narrows what it may do next, and
- *  does not un-approve what it approved while it held `approve`.
+ *  `scopes` is the set of `DISPATCH_SCOPES` (`person`, `approve`, `p0`) that credential held at
+ *  the act (a Legion daemon's `legion-status` and `read` are never recorded), recorded with it and
+ *  never read back from the token. A person who narrows a token afterwards narrows what it may do
+ *  next, and does not undo what it did while it held `approve` or `p0`. `p0` lets a credential
+ *  make an issue's own priority 0, and no mint gives it by default.
  *
  *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
  *  token's own session); a session a personal token's request named is recorded without it. */
@@ -91,11 +111,12 @@ export const ActorSchema = z.union([
       /** The subject of the verified service token that authenticated the write
        *  (`system:serviceaccount:<namespace>:<name>`); absent under any other bearer. */
       service: z.string().optional(),
-      /** The one project key the write's credential may write. The server reads it from an
+      /** The project key the write's credential's token names. The server reads it from an
        *  access token the secrets broker issued for that project and never from a body, as it
        *  reads `service` from a service token; it is absent under every credential that names
        *  none, a browser cookie, a personal token and a broker token scoped to its person
-       *  included. */
+       *  included. A token that names a project also writes other projects' objects, as a
+       *  credential that names none does, except in a private project it does not name. */
       project: z.string().optional(),
       proven: z.literal(true).optional(),
     })
@@ -104,6 +125,20 @@ export const ActorSchema = z.union([
    *  (`{kind: "system", id: "architecture-importer"}`). */
   z.strictObject({ kind: z.literal("system"), id: z.string() }).readonly(),
 ]);
+
+/**
+ * The actor and the act exactly as Dispatch writes them: what `ActorSchema` and `ActorActSchema`
+ * parse, which is what every `DispatchEvent` payload of this package carries.
+ *
+ * They are deliberately not the contract's `Actor` and `ActorAct`, which are the OpenAPI
+ * document's reading and keep the plain names: that reading's `kind` is a `string` and its
+ * optional fields do not carry `undefined`, so neither type is assignable to the other
+ * (`dispatch-api-spellings.test.ts`). A renderer handed an actor from a payload names these, as
+ * one handed an actor from a served row names `Actor`.
+ */
+export type WrittenActorAct = z.output<typeof ActorActSchema>;
+
+export type WrittenActor = z.output<typeof ActorSchema>;
 
 /**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.
@@ -253,24 +288,36 @@ export const ProjectSchema = z
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
+    /** The project's default repository, `owner/name`: an issue that names no repository, and
+     *  whose parent chain names none, resolves to it.
+     *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
+     *  project has none, and from a Dispatch older than the field. */
+    default_repo: z.string().optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();
 
+/** A row of `GET /api/v1/settings/repo-projects`, the one route that still reads the repository
+ *  mapping. Nothing writes the rows now: they stay as the migration of `Project.default_repo`
+ *  left them, for the Legion daemons that read the route at boot, and the next release removes
+ *  the route. The retained event `settings.repo_project.updated` carries one as `mapping`. */
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
     project: z.string(),
-    /** The project's default repository: an issue with no repository of its own and none on its
-     *  parent chain resolves to it. At most one mapping of a project is its default. */
+    /** Whether the row was its project's default repository. The migration copied each default
+     *  to `Project.default_repo`, which is what an issue resolves to now. */
     default: z.boolean(),
     /** The full `owner/name` this repository is called today, null for one that was never
-     *  renamed. Dispatch holds both names of a renamed repository and canonicalises every
-     *  comparison through this field, so an issue recorded under the old name is held to a pull
-     *  request on the new one. `PUT /api/v1/settings/repo-projects/{owner}/{repo}` takes it:
-     *  absent or null leaves the stored pair alone, `""` clears it. Optional here because a
-     *  client written before the field existed builds this shape without it; Dispatch always
-     *  answers it. */
+     *  renamed. Dispatch reads each pair once at boot: it writes the new name in place of the old
+     *  one in every stored repository field, and compares a repository under the new name.
+     *  Optional here because a client written before the field existed builds this shape
+     *  without it; Dispatch always answers it. */
     renamed_to: z.string().nullable().optional(),
     created_by: ActorSchema,
     created_at: z.string(),
@@ -300,6 +347,9 @@ export const ArchitectureSourceSchema = z
   })
   .readonly();
 
+/** `settings.repo_project.updated`: a write of the repository mapping, which no build makes
+ *  now. The events an earlier build stored stay as history, so the type stays for them.
+ *  `deleted` is true for a write that removed the mapping, and false for one that set it. */
 export const RepoProjectUpdatedEventPayloadSchema = z
   .strictObject({ mapping: RepoProjectSchema, deleted: z.boolean() })
   .readonly();
@@ -375,3 +425,26 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it. It is owned by
+ *  the project and wakes nobody. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;

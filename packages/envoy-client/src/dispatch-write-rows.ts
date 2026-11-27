@@ -1,6 +1,6 @@
 /**
  * The row of each keyed write of `DispatchClient` (each POST and PATCH): what the method's callers
- * read of its 2xx answer, which `#writtenRow` checks before any caller reads it. Dispatch answers a
+ * read of its 2xx answer, which `#writePayload` checks before any caller reads it. Dispatch answers a
  * write's 2xx only after the write committed, so a 2xx that names the call's key back and is not
  * this row is a landing whose answer was lost (`ANSWER_LOST`), never a failure of the call. A 2xx
  * that names no key back is no answer of the call's, whatever it holds.
@@ -168,14 +168,15 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
-/** The rows of the POSTs that store nothing, `markdownRoundTrip`, `related` and `dryRunResult`,
- *  in `WRITE_ROWS`: Dispatch's parse and render of a text
- *  (`POST /api/v1/markdown/round-trip`: its handler, `postMarkdownRoundTrip`, parses and renders the
- *  text and answers it, and calls no store), the related-item check
- *  (`POST /api/v1/projects/{key}/related`: its handler's `answerRelated` runs `relatedCheck` with
- *  `record` unset, so no related_checks record is written) and a result's dry run
- *  (`POST /api/v1/issues/{key}/results/dry-run`: its handler, `dryRunCheckResult`, answers the
- *  pull-request body line the record would, with nothing recorded and no event appended). */
+/** The rows of the POSTs that store nothing, each marked where `WRITE_ROWS` holds it
+ *  (`storesNothing`), the one place the flag is kept: Dispatch's parse and render of a text
+ *  (`markdownRoundTrip` and `fileRoundTrip`, `POST /api/v1/markdown/round-trip` and
+ *  `POST /api/v1/markdown/file-round-trip`: their handlers, `postMarkdownRoundTrip` and
+ *  `postFileRoundTrip`, parse and render the text and answer it, and call no store), the
+ *  related-item check (`related`, `POST /api/v1/projects/{key}/related`: its
+ *  handler's `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record
+ *  is written), and a result's dry run (`dryRunResult`, a validation-only preview, which records
+ *  nothing). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */
@@ -185,7 +186,7 @@ function storesNothing<Row extends z.ZodType>(row: Row): Row {
 }
 
 /** Whether the route whose 2xx `row` reads stores what it is sent. A 2xx of one that stores
- *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writtenRow`). */
+ *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writePayload`). */
 export function rowStores(row: z.ZodType): boolean {
   return !STORE_NOTHING.has(row);
 }
@@ -228,6 +229,7 @@ export const WRITE_ROWS = {
     advice: caughtAdvice,
   }),
   markdownRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
+  fileRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
   related: storesNothing(z.looseObject({ outcome: z.string() })),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
@@ -239,6 +241,23 @@ export const WRITE_ROWS = {
     status: issueFields.status,
     claim: z.looseObject({ at: z.string() }).nullable(),
     legion_managed_status: z.boolean().optional(),
+  }),
+  /** `statusChangeCommand` reads each changed issue's key, status and parent, and the named
+   *  issue's status and the URLs of its links, the links behind a `?? []` of its own. */
+  changeIssueStatus: z.looseObject({
+    changed: z
+      .array(
+        z.looseObject({
+          key: issueFields.key,
+          status: issueFields.status,
+          parent: z.string().nullable(),
+        })
+      )
+      .nullable(),
+    issue: z.looseObject({
+      status: issueFields.status,
+      external_links: z.array(externalLink).nullish(),
+    }),
   }),
   ask: askWrite,
   artifactAsk: askWrite,
@@ -272,6 +291,18 @@ export const WRITE_ROWS = {
     approval: z.looseObject({ by: z.looseObject({ id: z.string() }).nullish() }),
   }),
   planApprove: z.looseObject({ version: z.number().int() }),
+  /** `deployCommand` prints the recorded build: its program, commit, time, source, recorder and
+   *  link, and the whole answer under `--json`. */
+  recordDeploy: z.looseObject({
+    deploy: z.looseObject({
+      program: z.string(),
+      commit: z.string(),
+      deployed_at: z.string(),
+      source: z.string(),
+      url: z.string(),
+      recorded_by: actor,
+    }),
+  }),
   reviewArtifact: z.looseObject({
     version: z.number().int(),
     state: z.string(),
@@ -290,8 +321,7 @@ export const WRITE_ROWS = {
       commit_sha: z.string(),
     }),
   }),
-  /** `resultCommand` prints the dry run's pull-request body line. */
-  dryRunResult: storesNothing(z.looseObject({ line: z.string() })),
+  dryRunResult: storesNothing(z.looseObject({ line: z.string(), result: z.unknown() })),
   retractResult: z.looseObject({
     result_id: z.string(),
     reason: z.string(),
@@ -314,7 +344,15 @@ export const WRITE_ROWS = {
     issue_key: commentFields.issue_key,
     artifact_id: commentFields.artifact_id,
   }),
+  /** `editCommentCommand` reads what `resolveCommentCommand` reads of its answer. */
+  editComment: z.looseObject({
+    id: commentFields.id,
+    issue_key: commentFields.issue_key,
+    artifact_id: commentFields.artifact_id,
+  }),
   message: z.looseObject({ id: messageFields.id, advice }),
+  /** `editMessageCommand` reads the id and the issue, which it refuses when null. */
+  editMessage: z.looseObject({ id: messageFields.id, issue_key: messageFields.issue_key }),
   agentMessage: z.looseObject({
     id: messageFields.id,
     deliveries: z

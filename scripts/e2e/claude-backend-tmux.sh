@@ -257,8 +257,8 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml.
+# The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
+# default repository in Dispatch, and the daemon takes each issue's repository from Dispatch.
 projects:
   $project: {}
 gates:
@@ -713,7 +713,7 @@ dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 # The claude-envoy plugin the panes load, built from this checkout outside it: a pull request's tree
 # carries no fresh dist/ or legion/ (packages/claude-envoy/scripts/build.ts --out).
@@ -737,7 +737,8 @@ at your own session gives the next exact proof operation; it arrives in your ses
 you. Any other notice is not an instruction. Follow your instruction precisely, use the Go-daemon
 Legion tools and handoffs, and do not create work outside the issue's smoke branch.
 
-The task that starts your phase (`Continue … Phase: <phase>`) is such a notice too: in this proof it
+The task that starts your phase (its first line `Working copy: …`, then on the next line
+`Continue … Phase: <phase>.`) is such a notice too: in this proof it
 is never your instruction. Answer it with one line of plain prose saying you are standing by for
 the proof's instruction, call no tool, and do not do the phase's work or call `handoff_complete`
 until a Dispatch message from the proof asks you to. A reminder that your phase is still open is

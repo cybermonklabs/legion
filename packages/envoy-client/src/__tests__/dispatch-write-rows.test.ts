@@ -1,7 +1,7 @@
 // Every keyed write of the client (`#write`, `#writeAnswer`, `#upload`: each POST and PATCH) reads
 // its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
 // whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
-// answer it gives a keyed write, on every write route. A 2xx that names it back is Dispatch's: its
+// answer it gives a keyed write (each POST and PATCH). A 2xx that names it back is Dispatch's: its
 // row is the answer, and a body that gives no row is a landing whose answer was lost
 // (`ANSWER_LOST`). Any other 2xx, one that names no key back or another request's, is not
 // Dispatch's answer to the call, whatever it holds, so the write's outcome is unknown. A route that
@@ -27,6 +27,7 @@ import { bearerCredential } from "../bearer";
 import {
   DISPATCH_ANSWER_LOST,
   DispatchAnswerMissingError,
+  DispatchAnswerNotKeptError,
   DispatchClient,
   type DispatchLandedCode,
   DispatchWriteLandedError,
@@ -69,9 +70,26 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.markdownRoundTrip("# A heading\n"),
   },
   {
+    method: "fileRoundTrip",
+    route: "POST /api/v1/markdown/file-round-trip",
+    call: (client) => client.fileRoundTrip(new TextEncoder().encode("# A heading\n")),
+  },
+  {
     method: "related",
     route: "POST /api/v1/projects/{key}/related",
     call: (client) => client.related("ACME", { title: "A title" }),
+  },
+  {
+    method: "dryRunResult",
+    route: "POST /api/v1/issues/{key}/results/dry-run",
+    call: (client) =>
+      client.dryRunResult("ACME-1", {
+        check: "k1",
+        role: "implementer",
+        verdict: "pass",
+        commit: "1".repeat(40),
+        actor,
+      }),
   },
   {
     method: "updateIssue",
@@ -84,6 +102,11 @@ const CASES: readonly WriteRowCase[] = [
     variant: "writing components",
     call: (client) =>
       client.updateIssue("ACME-1", { components: { mode: "explicit", ids: ["web"] }, actor }),
+  },
+  {
+    method: "changeIssueStatus",
+    route: "POST /api/v1/issues/{key}/status-change",
+    call: (client) => client.changeIssueStatus("ACME-1", { status: "in_progress", actor }),
   },
   {
     method: "claimIssue",
@@ -132,6 +155,17 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.planApprove("doc-1", { actor, version: 2 }),
   },
   {
+    method: "recordDeploy",
+    route: "POST /api/v1/deploys",
+    call: (client) =>
+      client.recordDeploy({
+        repo: "acme/widgets",
+        program: "widgets",
+        commit: "c8".repeat(20),
+        source: "github",
+      } as Parameters<DispatchClient["recordDeploy"]>[0]),
+  },
+  {
     method: "reviewArtifact",
     route: "POST /api/v1/artifacts/{id}/versions/{number}/reviews",
     call: (client) => client.reviewArtifact("doc-1", 2, { state: "approved" }),
@@ -147,18 +181,6 @@ const CASES: readonly WriteRowCase[] = [
         verdict: "pass",
         commit: "c8".repeat(20),
       } as Parameters<DispatchClient["recordResult"]>[1]),
-  },
-  {
-    method: "dryRunResult",
-    route: "POST /api/v1/issues/{key}/results/dry-run",
-    call: (client) =>
-      client.dryRunResult("ACME-1", {
-        actor,
-        check: "probe",
-        role: "tester",
-        verdict: "pass",
-        commit: "c8".repeat(20),
-      } as Parameters<DispatchClient["dryRunResult"]>[1]),
   },
   {
     method: "retractResult",
@@ -237,6 +259,11 @@ const CASES: readonly WriteRowCase[] = [
     },
   },
   {
+    method: "editMessage",
+    route: "PATCH /api/v1/messages/{id}",
+    call: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
+  },
+  {
     method: "deliveryReply",
     route: "POST /api/v1/messages/{id}/reply",
     call: (client) =>
@@ -268,6 +295,11 @@ const CASES: readonly WriteRowCase[] = [
     method: "resolveComment",
     route: "POST /api/v1/comments/{id}/resolve",
     call: (client) => client.resolveComment("comment-1", actor),
+  },
+  {
+    method: "editComment",
+    route: "PATCH /api/v1/comments/{id}",
+    call: (client) => client.editComment("comment-1", { body: "Corrected.", actor }),
   },
   {
     method: "writeHandoff",
@@ -329,7 +361,7 @@ function dispatchAnswering(
       }
       return new Response(body, { status, headers });
     },
-    echo === "none" ? { noKeyedLayer: true } : { judged: () => true }
+    echo === "none" ? { namesNoKey: true } : { judged: () => true }
   );
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -351,7 +383,8 @@ function dispatchAnswering(
 }
 
 /** What the call made of the answer: the answer, the landing's code, an outcome it cannot know,
- *  the answer missing from a call that stores nothing, or the error. */
+ *  the answer missing from a call that stores nothing, the answer Dispatch kept no copy of for a
+ *  call that stores nothing, or the error. */
 async function outcome(
   row: WriteRowCase,
   status: number,
@@ -366,6 +399,7 @@ async function outcome(
   } catch (error) {
     if (error instanceof DispatchWriteLandedError) return { sent, landed: error.code };
     if (error instanceof DispatchAnswerMissingError) return { sent, missing: error.code };
+    if (error instanceof DispatchAnswerNotKeptError) return { sent, notKept: error.code };
     if (writeOutcomeUnknown(error)) return { sent, unknown: true };
     return {
       sent,
@@ -441,10 +475,11 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     expect(driven).toEqual(Object.keys(WRITE_ROWS).sort());
   });
 
-  test("the routes that store nothing are the round trip, the related-item check and a result's dry run", () => {
+  test("the round trip, related-item check and dry-run result store nothing", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
     expect(stores.map(([method]) => method).sort()).toEqual([
       "dryRunResult",
+      "fileRoundTrip",
       "markdownRoundTrip",
       "related",
     ]);
@@ -530,7 +565,7 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
     const status = first.status;
     const least = instance(first.schema, "least");
-    // Dispatch's keyed layer names the key back on every answer of every write route
+    // Dispatch's keyed layer names the key back on every answer of every POST and PATCH route
     // (`TestEveryKeyedAnswerNamesItsKey`, packages/envoy/internal/dispatch/api/
     // request_keys_test.go), so its own least answer naming no key back came from something in its
     // place: it is no answer of the call's, whatever it holds, and the client compares none of it
@@ -555,22 +590,29 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     });
     // Dispatch keeps an answer up to 1 MiB; a repeat under the key of a larger one is a replayed
     // 2xx reading ANSWER_NOT_KEPT (`keyedAnswerKept`, request_keys.go). A route that stores
-    // nothing made nothing, so it is the missing answer there, and a landing only where the route
-    // stores.
-    const notKept: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+    // nothing made nothing, so it is no landing there: the call is asked once more under a new
+    // key (`#writingNothing`), and the same replay to that ask is a DispatchAnswerNotKeptError. It
+    // is a landing only where the route stores.
+    const notKept: { landed?: DispatchLandedCode; notKept?: string } = rowStores(
       WRITE_ROWS[row.method]
     )
       ? { landed: IDEMPOTENCY_ANSWER_NOT_KEPT }
-      : { missing: DISPATCH_ANSWER_LOST };
-    test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "ANSWER_NOT_KEPT" : "no answer"}`, async () => {
+      : { notKept: IDEMPOTENCY_ANSWER_NOT_KEPT };
+    test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "a landing" : "asked again under a new key, then not kept"}`, async () => {
       const body = JSON.stringify({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" });
       const got = await outcome(row, status, "application/json", body, "this", {
         "Idempotency-Replayed": "?1",
       });
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+      expect({
+        landed: got.landed,
+        unknown: got.unknown,
+        missing: got.missing,
+        notKept: got.notKept,
+      }).toEqual({
         landed: undefined,
         unknown: undefined,
         missing: undefined,
+        notKept: undefined,
         ...notKept,
       });
     });
@@ -594,21 +636,21 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     });
     for (const echo of ["this", "none"] as const) {
       const named = echo === "this" ? "naming its key back" : "naming no key back";
-      for (const [name, type, body, json] of [
-        ["an HTML page", "text/html", "<html><body>not json</body></html>", false],
-        ["an empty body", "application/json", "", false],
-        ["JSON null", "application/json", "null", true],
+      for (const [name, type, body] of [
+        ["an HTML page", "text/html", "<html><body>not json</body></html>"],
+        ["an empty body", "application/json", ""],
+        ["JSON null", "application/json", "null"],
         // `{}` is the row of a method no caller reads the answer of, so it is that call's answer
         // where it names the key back, and no answer where it names none.
         ...(READS_NOTHING[row.method] && echo === "this"
           ? []
-          : [["the JSON {}", "application/json", "{}", true] as const]),
+          : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
-        // A 2xx that is no JSON is no answer of Dispatch's whatever key it names back (the write
-        // table's `foreign-2xx`, write-outcome.ts): a write that stores may have reached Dispatch
-        // behind it, so its outcome is unknown, and one that stores nothing made nothing.
+        // A body that is empty or not JSON-typed is no answer Dispatch writes to a keyed write
+        // (`foreign-2xx`, write-outcome.ts), whatever key it names back, so it is read as one that
+        // names none; JSON that is not the row, named back, is a landing whose answer was lost.
         const expected =
-          json || !rowStores(WRITE_ROWS[row.method]) ? noAnswer(row, echo) : { unknown: true };
+          body === "" || type !== "application/json" ? noAnswer(row, "none") : noAnswer(row, echo);
         const reads =
           "landed" in expected ? "ANSWER_LOST" : "missing" in expected ? "no answer" : "unknown";
         test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {

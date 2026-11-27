@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"testing"
@@ -10,13 +11,15 @@ import (
 )
 
 // guardKeep is what this package's guard keeps beyond fixtureenv's own test inputs: the operator's
-// inputs to the gated real-GitHub proof, each naming a repository or a binary and neither of them
-// a credential. LEGION_REAL_GITHUB gates the proof, and LEGION_GH_PATH names the real gh where a
-// pane's or a pod's own `gh` is the `legion gh` wrapper in front of it. Kept, the operator
-// commands of scripts/e2e/README.md still run under the guard. LEGION_TEST_PG_DSN and the four
-// LEGION_E2E_*_APP_* inputs the App lib reads need no entry: fixtureenv's own testInput keeps
-// every LEGION_TEST_ and LEGION_E2E name by prefix.
-var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH"}
+// inputs to the gated proofs, each naming a repository or a binary or switching a reading on, and
+// none of them a credential. LEGION_REAL_GITHUB gates the real-GitHub proof, and LEGION_GH_PATH
+// names the real gh where a pane's or a pod's own `gh` is the `legion gh` wrapper in front of it.
+// Kept, the operator commands of scripts/e2e/README.md still run under the guard.
+// LEGION_OWED_TIMING gates the owed route's timed reading on a large tree
+// (TestClaimOwedTimingOnAChainOf1024Issues), which a person runs to read the time the suite does
+// not hold. LEGION_TEST_PG_DSN and the four LEGION_E2E_*_APP_* inputs the App lib reads need no
+// entry: fixtureenv's own testInput keeps every LEGION_TEST_ and LEGION_E2E name by prefix.
+var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH", owedTimingEnabled}
 
 // guardedAtStart is what TestMain's own Guard kept, read before any test of this package ran.
 // TestTheGuardTestMainRanKeptTheGatedProofsInputs reads it rather than the live state, which a
@@ -31,30 +34,50 @@ var guardedAtStart []string
 // It then drops the migrated template testStore clones its databases from (testpg.Main), which
 // wraps the run: the guard decides the environment the tests and the template's migration both
 // run in.
+//
+// It ends with the two censuses of the pairs this run made: the answer id each door wrote, held
+// to the answer table (routeAnswerProblems), and the type each door decoded a body into, held to
+// the table of plugin request types (requestDecodedProblems). They are read here and nowhere
+// else because no one case drives every door: the pairs are made by the tests of the routes
+// themselves.
 func TestMain(m *testing.M) {
 	fixtureenv.MustGuard(guardKeep...)
 	guardedAtStart = fixtureenv.Kept()
-	os.Exit(testpg.Main("legion_api_test", m.Run))
+	os.Exit(testpg.Main("legion_api_test", func() int { return withRouteCensus(m.Run()) }))
 }
 
-// TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the two
-// names its gated proof reads, from what that Guard recorded rather than from a Guard of its own.
+// withRouteCensus is code, or 1 where a write of this run made a pair the answer table does not
+// name or a decode made a pair the request table does not name. A run of one test holds that
+// test's own pairs to the tables and no others, which reports no pair the run never made.
+func withRouteCensus(code int) int {
+	problems := append(routeAnswerProblems(), requestDecodedProblems()...)
+	for _, problem := range problems {
+		fmt.Fprintln(os.Stderr, "FAIL: "+problem)
+	}
+	if len(problems) > 0 {
+		return 1
+	}
+	return code
+}
+
+// TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the three
+// names its gated proofs read, from what that Guard recorded rather than from a Guard of its own.
 // Without it, a TestMain that called fixtureenv.Guard() with no names would leave every test of
 // this package green — TestTheGuardKeepsTheGatedProofsInputs below runs its own Guard with
 // guardKeep, so it answers for the list rather than for the entry point — and the loss would show
 // only as an operator's gated proof skipping, with nothing red (dispatch://INFRA-917 R1).
 func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
-	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
+	want := []string{"LEGION_GH_PATH", "LEGION_OWED_TIMING", "LEGION_REAL_GITHUB"}
 	kept := slices.Sorted(slices.Values(guardedAtStart))
 	if !slices.Equal(kept, want) {
 		t.Errorf("TestMain's guard kept %q, want the gated proofs' inputs %q", kept, want)
 	}
 }
 
-// TestTheGuardKeepsTheGatedProofsInputs holds guardKeep to the inputs the gated proof reads: with
-// each of the two set to a value of this test's, and a pod's own GIT_DIR, GIT_CONFIG_COUNT and
-// GH_TOKEN planted beside them, a Guard of guardKeep leaves both as the test set them and takes
-// the pod's three out. The two are written out here rather than read from guardKeep, so that
+// TestTheGuardKeepsTheGatedProofsInputs holds guardKeep to the inputs the gated proofs read: with
+// each of the three set to a value of this test's, and a pod's own GIT_DIR, GIT_CONFIG_COUNT and
+// GH_TOKEN planted beside them, a Guard of guardKeep leaves all three as the test set them and
+// takes the pod's three out. The three are written out here rather than read from guardKeep, so that
 // dropping a name from guardKeep fails this test naming it. Guard writes the package state
 // the rest of the run reads (RequireGuarded reads what the last Guard kept), so the cleanup runs
 // the package's own Guard again, as internal/fixtureenv's own guard test does.
@@ -67,6 +90,7 @@ func TestTheGuardKeepsTheGatedProofsInputs(t *testing.T) {
 	inputs := map[string]string{
 		"LEGION_REAL_GITHUB": "1",
 		"LEGION_GH_PATH":     "/usr/local/bin/gh",
+		"LEGION_OWED_TIMING": "1",
 	}
 	pod := map[string]string{
 		"GIT_DIR":          "/legion/repos/acme/widgets/.git",

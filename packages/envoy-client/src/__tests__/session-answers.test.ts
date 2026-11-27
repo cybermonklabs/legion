@@ -161,6 +161,54 @@ describe("renderSessionAnswers", () => {
     );
   });
 
+  // No read of a deleted post gives any part of its body: the server sends a deleted reply's text
+  // empty, with the delete's mark beside it (`sessionanswers.go`), so the head line ends with the
+  // deleted line and no words line follows it, for a comment's reply and a message's alike.
+  test("a deleted reply prints the deleted line and no words", () => {
+    const issue = { issue: { key: "CORE-7", title: "People's answers on every request" } };
+    const deletedComment: SessionAnswer = {
+      kind: "comment",
+      relation: "replied_on_your_ask",
+      id: "c-2",
+      at: "2026-10-27T10:30:00Z",
+      deleted_at: "2026-10-27T11:15:00Z",
+      deleted_by: { kind: "user", id: "ben@example.com" },
+      author: { kind: "user", id: "ben@example.com" },
+      text: "",
+      ask: { id: "ask-1", question: "Which format should the list use?" },
+      owner: issue,
+      ref: "dispatch://CORE-7/comment/c-2",
+      href: "/issues/CORE-7#comment-c-2",
+    };
+    const deletedMessage: SessionAnswer = {
+      kind: "message",
+      relation: "replied_to_your_message",
+      id: "m-2",
+      at: "2026-10-27T10:00:00Z",
+      deleted_at: "2026-10-27T10:20:00Z",
+      deleted_by: { kind: "user", id: "cy@example.com" },
+      author: { kind: "user", id: "cy@example.com" },
+      text: "",
+      owner: issue,
+      ref: "dispatch://CORE-7/message/m-2",
+      href: "/issues/CORE-7#message-m-2",
+    };
+
+    expect(renderSessionAnswerItem(deletedComment)).toBe(
+      [
+        "2026-10-27T10:30:00Z · user ben@example.com · replied on your ask · Deleted by user ben@example.com at 2026-10-27T11:15:00Z",
+        "dispatch://CORE-7/comment/c-2 · CORE-7: People's answers on every request",
+        "Question: Which format should the list use?",
+      ].join("\n")
+    );
+    expect(renderSessionAnswerItem(deletedMessage)).toBe(
+      [
+        "2026-10-27T10:00:00Z · user cy@example.com · replied to your message · Deleted by user cy@example.com at 2026-10-27T10:20:00Z",
+        "dispatch://CORE-7/message/m-2 · CORE-7: People's answers on every request",
+      ].join("\n")
+    );
+  });
+
   test("a list of 7,998 or 7,999 characters is whole; at 8,000 its one item is left out", () => {
     for (const target of [7_998, 7_999]) {
       const item = sizedItem("fits", target);
@@ -828,21 +876,37 @@ describe("readSessionAnswers", () => {
   });
 
   // A password holding an unencoded '@' names no host, and the URL parser reads the password's
-  // tail as one. The runtime's own fetch (no stand-in) fails to resolve it and names it in its
-  // message; the line both plugins add to every model request names the failure by its class and
-  // the URL by its fixed phrase (#4140, B1). The read waits for that failure, not the 800 ms a
-  // model request waits: on a loaded machine the resolver's answer comes later than that, and a
-  // read that ran out first names no failure at all.
+  // tail as one. Resolving it fails, and the runtime's error names the host it was handed; the line
+  // both plugins add to every model request names the failure by its class and the URL by its
+  // fixed phrase (#4140, B1). The fetch is a stand-in that throws what Bun's own fetch throws for a
+  // name that does not resolve (measured on Bun 1.4.4: a TypeError `getaddrinfo ENOTFOUND <host>`,
+  // with that code and syscall), for the host the URL parser read, so the row asks no DNS server
+  // and does not wait on how fast the machine's DNS answers. The read waits 10 s, not the 800 ms a
+  // model request waits, so a loaded machine's slow turn of the event loop is not a read that ran
+  // out and names no failure at all.
   test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
     const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
     const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: ({ url: { hostname } }) => {
+        throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${hostname}`), {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+          hostname,
+          errno: 4,
+        });
+      },
+    });
     const read = await readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
+      fetchImpl,
       now: () => NOW,
       deadlineMs: 10_000,
     });
+    // The error the read was given named the password's tail, so the check below can fail.
+    expect(calls.map((call) => call.url.hostname)).toEqual([`ssword${tail}.invalid`.toLowerCase()]);
     expect(read.text).toContain(
       `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
     );

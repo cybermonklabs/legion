@@ -3,17 +3,18 @@
 # that says which of the repository's skills/ each ships. npm and bun run `prepack` with the package
 # root as the working directory, so the manifest is $PWD/package.json: the script reads the plugin's
 # name and its one extension entry from there, builds that entry into dist/, writes the notices of
-# every package the bundle inlines, and stages the plugin's own skill directories into dist/skills,
-# which the manifest's `omp.skills` names and `postpack` removes again.
+# every package the bundle inlines, stages its skills into dist/skills (`omp.skills`; `postpack`
+# removes them), and takes group and other write from every shipped path, whatever the umask.
 #
 #   scripts/pi-plugin-prepack.sh                                    as a plugin's prepack
 #   scripts/pi-plugin-prepack.sh --stage-skills <package name> <dest dir>
 #
-# The contract with whoever packs: the release workflow, the worker image and the e2e pack step
-# rewrite `omp.extensions` to the packed bundle, ["dist/<entry>.js"], before packing and restore the
-# committed manifest afterwards. Packing with the source manifest, ["extensions/<entry>.ts"], would
-# publish a package whose extension file is absent from the tarball (`files` ships dist/ only), so
-# the script refuses any other list, naming the one it found and the one it requires.
+# The contract with whoever packs: the release workflow and the worker image, in a tree they then
+# discard, and the e2e pack step, in a staged copy of the package, rewrite `omp.extensions` to the
+# packed bundle, ["dist/<entry>.js"], before packing. Packing with the source manifest,
+# ["extensions/<entry>.ts"], would publish a package whose extension file is absent from the
+# tarball (`files` ships dist/ only), so the script refuses any other list, naming the one it found
+# and the one it requires.
 #
 # The partition lives here, keyed by package name, rather than in a manifest field the daemon's
 # boot gate would then have to know: the Envoy plugin ships what every session uses, the reviewer's
@@ -83,7 +84,7 @@ name=$(jq -r '.name' package.json)
 plugin "$name"
 required="[\"dist/$entry.js\"]"
 if ! jq -e --arg bundle "dist/$entry.js" '.omp.extensions == [$bundle]' package.json >/dev/null; then
-  refuse "refusing to pack $name with omp.extensions=$(jq -c '.omp.extensions' package.json); rewrite it to $required first (the release, the worker image and the e2e pack step do, then restore the committed manifest)"
+  refuse "refusing to pack $name with omp.extensions=$(jq -c '.omp.extensions' package.json); rewrite it to $required first (the release and the worker image do in a tree they discard, the e2e pack step in a staged copy)"
 fi
 
 # The Envoy plugin ships the Dispatch CLI as a second bundle, built by envoy-client's
@@ -101,3 +102,24 @@ else
 fi
 rm -rf dist/skills
 stage_skills dist/skills
+
+# The tarball keeps each file's mode as it is on disk, and that mode is the packer's umask's: a
+# checkout and a build under umask 0002, which a systemd user unit runs with, give 0775 and 0664
+# where umask 022 gives 0755 and 0644. So every path the pack ships loses group and other write
+# here: each entry of the manifest's `files`, and the files `bun pm pack` ships whatever `files`
+# says (bun 1.4.4's pack_command.rs: the manifest and the package root's README*, LICENSE* and
+# LICENCE* files). Every user gets read, search on each directory, and execute on each file that
+# is already executable (chmod's X). The published modes are then the same whoever packs. `files`
+# must list paths that exist: a glob or a missing entry would ship, or not, with the packer's
+# modes and no word, so each is refused by name.
+files_list=$(jq -r '.files | if type == "array" then .[] else empty end' package.json) ||
+  refuse "$name's package.json could not be read for its files list"
+[ -n "$files_list" ] || refuse "$name's package.json has no files list, or an empty one, to normalize the shipped modes of"
+mapfile -t listed <<<"$files_list"
+shopt -s nullglob nocaseglob
+always=(package.json README* LICENSE* LICENCE*)
+shopt -u nullglob nocaseglob
+for shipped in "${listed[@]}"; do
+  [ -e "$shipped" ] || refuse "$name's files entry \"$shipped\" is not a path in $PWD; list only paths that exist, so their packed modes can be set"
+done
+chmod -R go-w,a+rX -- "${listed[@]}" "${always[@]}"

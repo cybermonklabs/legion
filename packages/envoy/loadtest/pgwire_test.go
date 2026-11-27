@@ -138,7 +138,7 @@ func TestProxyCountsTheDocumentAdvisoryLockAsRoomWork(t *testing.T) {
 		{`SELECT pg_advisory_unlock(hashtext($1))`, true},
 		{`select pg_advisory_xact_lock($1)`, false}, // the events commit-order lock
 		{`select pg_advisory_xact_lock(hashtext('issue-rank:' || $1))`, false},
-		{`select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))`, false},
+		{`select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies'), hashtext($1))`, false},
 	} {
 		counters, c := startedConn(t)
 		msgs := append(statement(tc.sql), &pgproto3.Sync{})

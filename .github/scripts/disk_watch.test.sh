@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
+# Tests for `disk_watch.py`, whose `start` writes the state file and leaves a sampler that outlives it,
 # the sampler's least value falls when the watched file system fills, it writes a tick of the
 # series every second it is given and keeps the least memory and the greatest load it has seen,
 # a sampler held off the CPU leaves the seconds it never ran in out of the series rather than
@@ -12,8 +12,9 @@
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
 # database), and it proves the two tools are named and skipped rather than failing the step. The
 # two margins are driven from state files written here by hand, so the numbers in the line are
-# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes,
-# and the stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
+# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes
+# to a tmpfs only it can see (it says SKIP where the kernel refuses an unprivileged mount), and the
+# stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
 # Run from anywhere: .github/scripts/disk_watch.test.sh
@@ -26,6 +27,41 @@ watch="$script_dir/disk_watch.py"
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# Every process this script starts runs in a PID namespace whose first process is this script, so
+# no sampler that `start` detaches can outlive it: when the first process of a PID namespace exits,
+# by any path and a SIGKILL included, the kernel kills every other process in it. --mount-proc
+# gives the namespace its own /proc, so the pids `start` writes, the ones `report` signals and the
+# ones this script reads in /proc are one numbering. Inside, the script is that first process, so
+# `$$` is 1 there and nowhere else.
+# The process the caller started stays this bash, waiting on the unshare it started: unshare
+# --fork blocks SIGTERM and SIGINT in its waiting parent and passes neither on, so a caller that
+# signals the pid it started (kill <pid>, a runtime's cancel) would otherwise not stop the test.
+# This bash turns a SIGTERM, SIGINT or SIGHUP into a SIGKILL of that unshare. unshare's
+# --kill-child then sends the first process a SIGKILL, and setpriv's --pdeathsig does the same to
+# the unshare when this bash itself is SIGKILLed, so every way to stop the started pid ends the
+# namespace and the samplers in it. Where the kernel refuses an unprivileged namespace, a run by
+# hand goes on without one and says so, and CI, whose job allows them first (ci-job-test.yaml),
+# fails instead.
+if [ "$$" -ne 1 ]; then
+  namespace=(setpriv --pdeathsig KILL unshare --user --map-root-user --mount --pid --fork --kill-child --mount-proc)
+  if namespace_out=$("${namespace[@]}" true 2>&1); then
+    "${namespace[@]}" "$BASH" "${BASH_SOURCE[0]}" "$@" &
+    namespace_pid=$!
+    # `|| true`: errexit applies inside a trap, and the wait on the unshare just killed returns 137.
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 143' TERM
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 130' INT
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 129' HUP
+    namespace_status=0
+    wait "$namespace_pid" || namespace_status=$?
+    exit "$namespace_status"
+  elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+    check "the kernel granted this script a PID namespace, which the job's step before this one allows: ${namespace_out%%$'\n'*}" false
+    summary "disk_watch.py"
+  else
+    echo "  NOTE: no PID namespace for this script (${namespace_out%%$'\n'*}), so a sampler it starts can outlive a SIGKILL of it"
+  fi
+fi
 
 work=$(mktemp -d)
 pid=""
@@ -77,6 +113,17 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 
 # alive <pid>: true/false for check.
 alive() { kill -0 "$1" 2>/dev/null && echo true || echo false; }
+
+# state_of <pid>: the state the kernel gives the process (`T` for stopped), read straight from
+# /proc/<pid>/stat by the shell, or '' once the process is gone. Not `ps`: it opens the stat file
+# of every process on the machine, and on a dev box running 16,530 of them one `ps -o state= -p`
+# took 0.66 to 0.71 s, so the stop's second, read after it, came out a second past the stop.
+state_of() {
+  local stat=""
+  read -r stat <"/proc/$1/stat" 2>/dev/null || true
+  stat=${stat##*) }
+  echo "${stat%% *}"
+}
 
 # line_of <text> <regex>: the number of the first line that matches, or '' when none does. The
 # cases that read it are about the order the report prints its lines in, not their wording. It
@@ -155,17 +202,131 @@ echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
 echo "case: the least value falls when the watched file system fills"
-dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
-least=$before
-for _ in $(seq 20); do
-  sleep 0.5
-  least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
-done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
-check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
-rm -f "$watched/filler"
+# What this proves is that the sampler reads the free space of the file system it watches while
+# that file system fills, and keeps the fall as the least it has seen. On a file system other
+# writers share, the fall it sees is the sum of every writer's: on a shared dev box disk the free
+# space moved by up to 1,300 MiB in 20 s, so another writer freeing more than 64 MiB hid the case's
+# write and failed this case, and another writer filling - or the sampler's own state and series
+# files beside the watched directory - let it pass with no reading of the case's write at all. So
+# the case watches a tmpfs that only it can see: mounted in unprivileged user, mount and PID
+# namespaces, with the sampler started inside them and the state file outside, on $work. The one
+# write that tmpfs ever takes is the case's 64 MiB, so the least free must fall by all of it.
+# Where the kernel refuses an unprivileged mount, there is no file system only this case writes:
+# a run by hand says SKIP and counts nothing rather than measuring a shared one, and CI, whose job
+# turns Ubuntu's AppArmor restriction off first (ci-job-test.yaml), fails the case instead.
+private="$work/private"
+private_state="$work/private.json"
+private_ready="$work/private.status"
+private_log="$work/private.log"
+mkdir "$private"
+# ended <pid>: true once the process is gone from this script's /proc or is a zombie. The script's
+# own PID namespace has its own /proc, so the pid of a process it started is the one read there.
+ended() {
+  local stat=""
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 0
+  stat=${stat##*) }
+  [ "${stat%% *}" = Z ]
+}
+if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
+  # The namespaces live exactly as long as this script holds the pipe below open. Their first
+  # process waits on it, and when the first process of a PID namespace exits the kernel kills every
+  # other process in it: the sampler with it, and the tmpfs with the mount namespace. Only this
+  # script holds the write end (the sampler that `start` launches inherits none of its
+  # descriptors), so the namespaces end when the case closes it, or when this script exits by any
+  # path, a SIGKILL that no trap sees included; no sampler is left on its 5,400 s backstop. The pid
+  # in the state file is the sampler's pid inside its own PID namespace, so nothing here signals
+  # it: `report`, which would, is left to the cases of the shared sampler. What the namespace's
+  # commands print goes to $private_log, and is printed below when the setup fails.
+  # The write waits for the sampler's first sample: the sampler appends its first series line only
+  # once that sample's readings are in, so the write comes after a reading taken before it, and a
+  # watch that reads the disk once and repeats that reading fails the fall below whatever the
+  # timing. Without the wait, a first reading that came after the write - one held 0.6 s did - let
+  # such a watch pass. No wait in this case has a clock of its own, since a loaded machine can take
+  # any time to start the sampler or to run it: the inner one ends on the first series line, on
+  # the sampler leaving the process table (status 93; it is an orphan, so its exit code cannot be
+  # read), or on the pipe closing (status 94), each read in the namespace's own /proc; the outer
+  # one ends on the status file or on the namespace ending; below, the fall is read until it shows
+  # or three passes have followed the write, and the close waits for the namespace to end. Each
+  # wait out here has one bound, a hang guard of 300 s by the clock ($SECONDS), that only a hung
+  # mount, start or sampler reaches, and reaching it fails the case by name. The pipe is read from
+  # the shell's first line by a `cat` of its own, which ends when the pipe closes, and the shell
+  # looks at that `cat` in two places only: the wait for the first series line and its last step.
+  # So a closed pipe cuts no step short, a held mount or start included. The shell runs on to that
+  # wait, which ends it with status 94 (93 if the sampler is gone first); or, if the first series
+  # line is there by then, it passes the wait, writes, records status 0 and ends at its last step,
+  # which returns at once. A mount, start or write that fails still ends it with that step's
+  # status (90, 91, 92).
+  exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c '
+    exec >"$7" 2>&1 3<&0
+    cat <&3 >/dev/null &
+    reader=$!
+    gone() { st=""; read -r st 2>/dev/null <"/proc/$1/stat" || return 0; st=${st##*) }; [ "${st%% *}" = Z ]; }
+    mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
+    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || { echo 91 >"$6"; exit; }
+    sp=$(sed -n "s/.*\"sampler_pid\": *\([0-9][0-9]*\).*/\1/p" "$5")
+    until [ -s "$5.series" ]; do
+      if [ -z "$sp" ] || gone "$sp"; then echo "the sampler (pid ${sp:-unknown}) left before its first sample"; echo 93 >"$6"; exit; fi
+      if gone "$reader"; then echo "the pipe closed before the sampler'"'"'s first sample"; echo 94 >"$6"; exit; fi
+      sleep 0.05
+    done
+    dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
+    echo 0 >"$6"
+    wait "$reader"
+  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready" "$private_log")
+  private_ns=$!
+  private_guard=""
+  deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    [ -s "$private_ready" ] && break
+    ended "$private_ns" && break
+    sleep 0.2
+  done
+  [ -s "$private_ready" ] || ended "$private_ns" || private_guard=", none within the 300 s hang guard"
+  private_status=$(tr -d '\n' 2>/dev/null <"$private_ready" || true)
+  check "start watched a tmpfs only this case writes, and the case wrote 64 MiB on it" \
+    "$(is "$private_status" 0)"
+  if [ "$private_status" = 0 ]; then
+    private_before=$(field "$private_state" before_kb)
+    # The fall is read until it shows, or until three passes of the sampler have appended a line
+    # since the write: each pass reads the machine after the one before it appended, and writes the
+    # state before the next one appends, so by the third line the state holds a reading taken after
+    # the write. A sampler that stops passing meets the 300 s hang guard instead.
+    private_lines=$(grep -c '' "$private_state.series" || true)
+    fell=0
+    deadline=$((SECONDS + 300))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      grown=$(($(grep -c '' "$private_state.series" || true) - private_lines))
+      fell=$((private_before - $(field "$private_state" least_kb)))
+      if [ "$fell" -ge 65536 ] || [ "$grown" -ge 3 ]; then break; fi
+      sleep 0.2
+    done
+    check "least_kb fell by at least the 64 MiB written, 65536 kB below before_kb" \
+      "$([ "$fell" -ge 65536 ] && echo true || echo false)"
+    check "before_kb is unchanged" "$(is "$(field "$private_state" before_kb)" "$private_before")"
+    # The sampler is seen from here by its command line, which names the case's own private path:
+    # it must be seen while the namespaces live, or its absence after them would prove nothing.
+    check "the sampler runs in the namespaces, seen by its command line" \
+      "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
+  else
+    printf '    setup status %s%s (90: mount, 91: start, 92: dd, 93: the sampler left before its first sample, 94: the pipe closed before it, none: the namespace ended without a status); its output:\n' \
+      "${private_status:-none}" "$private_guard" >&2
+    sed 's/^/    /' "$private_log" >&2 || true
+  fi
+  exec {private_hold}>&-
+  # Once its unshare has ended, the namespaces' first process has, and the kernel has taken every
+  # other process in them with it, so the sampler is looked for once, after that.
+  deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ended "$private_ns" && break
+    sleep 0.2
+  done
+  check "closing the pipe ended the namespaces, and the sampler in them" \
+    "$(ended "$private_ns" && is "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" "" || echo false)"
+elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+  check "the kernel granted an unprivileged tmpfs mount, which the job's step before this one allows: ${private_out%%$'\n'*}" false
+else
+  echo "  SKIP: the falling-least case (no file system only it writes: the kernel refused an unprivileged tmpfs mount: ${private_out%%$'\n'*})"
+fi
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"
@@ -240,31 +401,48 @@ run_watch start --path "$watched" --state "$stall_state"
 check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
 sleep 3
+# The stop is sent just after the sampler has written the line of the second it is in, while it
+# sleeps towards the next second: the one it was waiting for. A sampler that stamps that pending
+# second instead of reading the clock carries it out of the stall and writes it on waking, and the
+# window of seconds no line may name, read below, then begins at exactly that second. The wait is
+# bounded, because a sampler too starved to write a line inside the second it names gives no such
+# moment: the stop is then sent anyway, and the case says what it could not see.
+for _ in $(seq 120); do
+  [ "$(tail -n 1 "$stall_state.series" | cut -d' ' -f2)" = "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ] && break
+  sleep 0.025
+done
 kill -STOP "$pid"
 # `kill -STOP` only sends the signal, and the series below may be read only once the process
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
 for _ in $(seq 50); do
-  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
+  [ "$(state_of "$pid")" = T ] && break
   sleep 0.1
 done
-check "the kernel has the sampler off the CPU" \
-  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
-# While the sampler is off the CPU it cannot write, so its series file is stable here and its
-# last stamp is the last second it has a line for. The second after that one is the second it
-# was waiting for when the signal landed, and that is where the window of seconds no line may
-# name begins. It cannot begin at a clock read taken after the stop: a sampler that stamps a
-# line before taking its readings carries that pending second out of the stall and writes it
-# on waking, and when the stop lands early in a second - 20 ms in does it - the pending second
-# IS that clock read, so a window starting a second later lets the late line through. Measured
-# against the old sampler with the stop landed 20 ms in: 0 late lines found in 3 of 3 runs,
-# though every run wrote one.
-# One edge: if a stop lands between the stamp and the append in disk_watch.py's `sample`, the
-# current sampler holds that line back, and this window refuses it. That is a false failure of
-# this check, since the sampler read the clock in that second, and the docstring of
-# disk_watch.py accepts that one late line. It is accepted here because the stamp and the
-# append run a few hundred microseconds apart, so about one run in ten thousand meets it.
+check "the kernel has the sampler off the CPU" "$(is "$(state_of "$pid")" T)"
+# The stop's second is read from the clock only after the check above has read `T`, so the stop
+# landed in that second or an earlier one, and every second after it is one the sampler was off
+# the CPU for the whole of. Not before that read: when the polls above all miss the stop and it
+# becomes visible only at the check, a second read before the check can come before the stop, and
+# the sampler's honest lines up to the stop then fall inside the window. When the check did not
+# read `T`, the case has failed already. The window of seconds no line may name begins after this
+# second, not at the second after the sampler's last line: a stop can land after the sampler read
+# the clock and before its line reached the file, and that line - naming a second the sampler did
+# run in, the one it read the clock in - reaches the file on waking. A window begun after the last
+# line refused it.
+stopped_in=$(date -u +%s)
+# While the sampler is off the CPU it cannot write, so its series file is stable here and its last
+# stamp is the last second it has a line for.
 last_before_stall=$(stamps "$stall_state.series" | tail -1)
+# When that line names the stop's own second, the stop landed while the sampler slept, and the
+# window's first second is the one it was waiting for. When it does not, the stop landed before
+# the sampler had written that second, and a line naming a second up to the stop's own may follow
+# on waking whether its clock was read before the stop or the second was carried out pending: this
+# run cannot tell the two apart, and says so rather than passing them as seen.
+if [ "$last_before_stall" != "$stopped_in" ]; then
+  echo "  UNKNOWN: the stop was seen in second $stopped_in, which the sampler had not written (its" \
+    "last line names $last_before_stall), so this run cannot catch a pending second carried out of the stall"
+fi
 sleep 4
 # resumed_at is read before the sampler is let go, so the second it is let go in - which may
 # carry the line it writes on waking - is left out of the window. Reading it inside the stall
@@ -282,11 +460,10 @@ after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[
 # The number of ticks whose second did not move on: a sampler that reads the clock at the
 # wrong moment could stamp two ticks with one second.
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
-# The lines naming a second from the one after the sampler's last stamp to the one before it
-# was let go: seconds it was off the CPU for the whole of, except in the rare edge above. A
-# sampler that stamps before it reads writes exactly one: the tick it was waiting for when the
-# signal landed.
-inside_stall=$(awk -v from="$((last_before_stall + 1))" -v to="$((resumed_at - 1))" \
+# The lines naming a second from the one after the stop to the one before the sampler was let go:
+# seconds it was off the CPU for the whole of. A sampler that stamps the second it was waiting for
+# instead of reading the clock writes exactly one when the stop landed while it slept: that second.
+inside_stall=$(awk -v from="$((stopped_in + 1))" -v to="$((resumed_at - 1))" \
   '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
 # What this proves is that the sampler was running before the stop and came back after it, so
 # the hole below is the stop rather than a sampler that died in it. It cannot ask for a tick in
@@ -299,9 +476,13 @@ check "the stamps follow the real clock: no second is written twice or out of or
 # The window has to hold seconds for the check below it to mean anything, and the four-second
 # stall is what puts them there.
 check "the stall left whole seconds that no line may name" \
-  "$([ "$((resumed_at - 1))" -ge "$((last_before_stall + 1))" ] && echo true || echo false)"
+  "$([ "$((resumed_at - 1))" -ge "$((stopped_in + 1))" ] && echo true || echo false)"
 check "no line names a second the sampler was off the CPU for the whole of" \
   "$(is "$inside_stall" 0)"
+if [ "$inside_stall" != 0 ]; then
+  echo "    the seconds from $((stopped_in + 1)) to $((resumed_at - 1)) are the window; the series:" >&2
+  sed 's/^/    /' "$stall_state.series" >&2
+fi
 
 echo "case: report prints the four numbers and exits 0 for a margin that is ok"
 ok_state="$work/ok.json"

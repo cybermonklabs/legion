@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-title-hook.ts")
 
@@ -12,7 +13,7 @@ async function runHook(
   env: Record<string, string>,
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(raw),
     stdout: "pipe",
     stderr: "pipe",

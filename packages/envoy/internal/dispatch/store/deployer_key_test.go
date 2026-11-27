@@ -1,5 +1,10 @@
 package store
 
+// The deployer's own copy of the migration advisory key, in the shell script beside the Go
+// constant: the test reads both scripts out of packages/envoy/deploy/scripts.
+//ci:reads packages/envoy/deploy/scripts/autodeploy.sh TestTheDeployerTakesTheMigrationKeyThisPackageDefines reads it, the path built under ../../../deploy/scripts, and holds every pg_try_advisory_lock literal of it to migrationLockKey
+//ci:reads packages/envoy/deploy/scripts/autodeploy_test.sh TestTheDeployerTakesTheMigrationKeyThisPackageDefines reads it the same way
+
 import (
 	"os"
 	"path/filepath"
@@ -40,6 +45,7 @@ var deployerKeyScripts = []string{
 // A script whose shape changed so far that no key can be read fails here too. A test that found
 // nothing and passed would report that the keys agree when it had not looked at one.
 func TestTheDeployerTakesTheMigrationKeyThisPackageDefines(t *testing.T) {
+	t.Parallel()
 	for _, script := range deployerKeyScripts {
 		text, err := os.ReadFile(script)
 		if err != nil {

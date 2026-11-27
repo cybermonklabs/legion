@@ -8,57 +8,57 @@
 // write ends.
 //
 // The rule the table holds: once an attempt may have landed, only a 2xx whose body was read whole
-// and that Dispatch's keyed layer answered, or a refusal the keyed layer judged for the write's key
-// (the key echoed back) and that says what became of it, settles the write. Every other way it
-// ends — any other answer, a failure, the deadline, the caller's stop, running out of retries or of
-// time — is `DispatchWriteUnsettledError` carrying the key, and so is an echoed `401` even before
-// that, since it can follow a committed write. Before anything may have landed, a write that ends
-// is told the event's own error: the refusal, the transport's failure, the credential's, the
+// or a final refusal settles the write. Every other way it ends — any other answer, a failure, the
+// deadline, the caller's stop, running out of retries or of time — is
+// `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that
+// ends is told the event's own error: the refusal, the transport's failure, the credential's, the
 // deadline's; but where the deadline or the caller's stop ends the wait after a credential that
-// could not present, or after Dispatch's check of the token answered that it judged nothing, that
-// failure or that answer, since it is why nothing was sent or run.
+// could not present, the credential's failure, since it is why nothing was sent.
 //
 // The cells rest on what Dispatch does (`packages/envoy/internal/dispatch/api/request_keys.go`):
 // every answer its keyed layer gives a keyed POST or PATCH carries the key back, a 5xx included; a
 // repeat under a key is answered from what the key holds (the stored answer, `409 KEY_IN_FLIGHT`,
-// `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored, and a 401 the
-// handler answers releases the key though the handler may have committed (`storedStatus`,
-// `releaseRequestKey`); `422 KEY_REUSED` says only that this request was not run; Dispatch's auth,
-// its check of a broker token (`brokerTokenActor`, `broker_token.go`, which `keyedWrites` runs
-// before it claims the key) and its old builds' "no route" answer before the keyed layer runs. And
-// on what the secrets broker's trade does (`packages/broker-client/src/token-client.ts`): a
-// fail-fast caller is told the trade's last failure at once while the trade goes on in the
-// background (`TradeRetryingError`); a trade not yet answered and a registration still pending are
-// told only once the caller's signal ends.
+// `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored; Dispatch's auth and
+// its old builds' "no route" answer before the keyed layer runs. And on what the secrets broker's
+// trade does (`packages/cipher-client/src/token-client.ts`): a fail-fast caller is told the trade's
+// last failure at once while the trade goes on in the background (`TradeRetryingError`); a trade
+// not yet answered and a registration still pending are told only once the caller's signal ends.
+// And, for a write sent through Cipher's proxy (a person's review, or a CI job's result through
+// the secrets broker's airlock), on what the proxy says of its own answers
+// (`packages/envoy/internal/cipher/proxy/record.go`, `ownAnswer`): each names its code in
+// `Cipher-Proxy-Code`, with `Cipher-Proxy-Forwarded: false` when no byte of the request left the
+// proxy and `unknown` when the request may have reached Dispatch first; a CONNECT it refused opened
+// no tunnel, so nothing of the request left it.
 
 /** Where a write stands between its attempts. A settled write is no state: the call returns. */
 export type WriteState = "nothing-sent" | "may-have-landed";
 
 /** What one step of a write met. */
 export type WriteEvent =
+  /** An echoed auth refusal cannot settle a possibly committed attempt. */
+  | "uncommitted-401"
   /** A 2xx whose body was read whole: Dispatch ran the write, or replayed the answer it stored
    *  under the key. */
   | "applied"
-  /** A non-2xx the keyed layer judged for the key (the key echoed back) and that a repeat cannot
-   *  change: `409 KEY_COMMITTED`, a validation refusal. */
+  /** A non-2xx final refusal, settled even after a possible landing, that names exactly this
+   *  request's key back, as every answer of Dispatch's keyed layer does: an answer marked
+   *  `Idempotency-Replayed: ?1` (a stored or a recovery replay), `409 KEY_COMMITTED`,
+   *  `422 KEY_REUSED` (every attempt of a call carries its bytes, so a key held under another
+   *  digest was claimed by no attempt of it), or a fresh answer with a 4xx Dispatch stores (not
+   *  401, 408 or 429) and none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. It holds once
+   *  every replica runs `b1c42d1d7d`; an older one could land an attempt unkeyed. */
   | "judged"
-  /** A non-2xx nothing judged for the key and not asked again after: a page something in
-   *  Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer ran (`401`,
-   *  `403 READ_ONLY_TOKEN`), a second dead token, a 1xx; and Dispatch's `422 KEY_REUSED`, which
-   *  says only that this request was not run (another request holds the key), and nothing of an
-   *  earlier attempt of the write under it. */
+  /** A non-2xx answer without that proof: a page, a refusal made before the key claim (none
+   *  echoes the key), an answer echoing another key or none, a second dead token, or a 1xx. */
   | "unjudged"
-  /** Dispatch's `401` the keyed layer answered under the key (the key echoed back): a session that
-   *  lapsed while the handler ran, on which the layer releases the key rather than keeping the
-   *  answer (`storedStatus`, request_keys.go). The handler may have committed the write first, so
-   *  it says nothing of whether the write landed, from either state. */
-  | "released"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that carried no key back, from a Dispatch this process knows runs the keyed layer,
-   *  whose every answer to a keyed write carries it: not Dispatch's answer to this write (a
-   *  captive portal's or a proxy's own page), so it says nothing of whether the write ran. */
+  /** A 2xx that is no answer of Dispatch's to this write (a captive portal's or a proxy's own
+   *  page), so it says nothing of whether the write ran: its body is empty or not JSON-typed where
+   *  its status carries one, though every answer Dispatch writes to a keyed write is JSON or a
+   *  bodiless 204 or 205; or it carried no key back, though every Dispatch runs the keyed layer,
+   *  whose every answer to a keyed write carries it. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
@@ -66,13 +66,13 @@ export type WriteEvent =
   /** A 2xx whose body, read whole, is not the JSON its `Content-Type` says (cut short on the way):
    *  asked again under the key as a broken body is. */
   | "body-malformed"
-  /** A 5xx: asked again under the key. It can come after Dispatch committed the write. */
-  | "server-error"
+  /** A 5xx or a 408 (`mayHaveReachedServer`): asked again under the key. A 5xx can come after
+   *  Dispatch committed the write, and a 408 from a hop in front of it after the hop forwarded
+   *  the write. */
+  | "may-have-run"
   /** Dispatch's `409 KEY_IN_FLIGHT`: an earlier attempt still runs under the key. */
   | "in-flight"
-  /** A 408 or 429, or Dispatch's check of a broker token that judged nothing (`429
-   *  BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, answered before the key is claimed):
-   *  asked again under the key; nothing ran. */
+  /** A 429: asked again under the key; nothing ran. */
   | "try-later"
   /** The attempt was cut off for silence (`DispatchWriteRetry.silenceMs`). */
   | "silence"
@@ -110,9 +110,21 @@ export type WriteEvent =
   /** The caller's stop ended a pause, a wait or a presentation: nothing in flight. */
   | "cancelled"
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
-   *  Dispatch is not known to run the keyed layer (a repeat there would be a second write), the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
-  | "exhausted";
+  | "exhausted"
+  /** Cipher's proxy refused the write on its own (a status that is no outage, with
+   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`, or its refusal of the CONNECT):
+   *  nothing of it reached Dispatch, and asking again with the same placeholder gets the same
+   *  answer. */
+  | "proxy-refused"
+  /** Cipher's proxy failed the write on its own before any of it left (an outage, `outage`: a
+   *  408, a 429 or a 5xx, with `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`, or to the
+   *  CONNECT): nothing reached Dispatch, and it is asked again under the key. */
+  | "proxy-failed"
+  /** Cipher's proxy answered on its own after the write may have reached Dispatch
+   *  (`Cipher-Proxy-Code` with `Cipher-Proxy-Forwarded: unknown`, or none): it may have landed, and
+   *  it is asked again under the key, which Dispatch answers from what it stored. */
+  | "proxy-unsettled";
 
 /**
  * What follows an event: `settle` (the answer is the call's: its payload, or the refusal Dispatch
@@ -140,17 +152,16 @@ const nothing = (action: WriteAction): WriteStep => ({ state: "nothing-sent", ac
 export const WRITE_TRANSITIONS: {
   readonly [E in WriteEvent]: { readonly [S in WriteState]: WriteStep };
 } = {
+  "uncommitted-401": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   applied: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   judged: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   unjudged: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
-  // The handler may have committed before the key was released, so it may have landed.
-  released: { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   redirect: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   // Whether a foreign page's sender passed the write on cannot be told, so it may have landed.
   "foreign-2xx": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   "body-broken": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "body-malformed": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
-  "server-error": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
+  "may-have-run": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "in-flight": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "try-later": { "nothing-sent": nothing("retry"), "may-have-landed": landed("retry") },
   silence: { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
@@ -168,12 +179,16 @@ export const WRITE_TRANSITIONS: {
   "cancelled-in-flight": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   cancelled: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   exhausted: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
+  "proxy-refused": { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
+  "proxy-failed": { "nothing-sent": nothing("retry"), "may-have-landed": landed("retry") },
+  "proxy-unsettled": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
 };
 
 /**
- * The step `event` takes a write in `state` to. A call that writes nothing (`writes: false`, a
- * conversion such as the markdown round trip) never leaves `nothing-sent`: no attempt of it can
- * land, so it keeps its answers as they are.
+ * The step `event` takes a write in `state` to. A call whose row stores nothing (`writes` false:
+ * `rowStores`, dispatch-write-rows.ts, false for a conversion, the related-item check and a
+ * result's dry run) never leaves `nothing-sent`: no attempt of it can land, so it keeps its answers
+ * as they are: a no route to the end is the route absent, and a refusal is the refusal.
  */
 export function writeStep(state: WriteState, event: WriteEvent, writes: boolean): WriteStep {
   const step = WRITE_TRANSITIONS[event][state];

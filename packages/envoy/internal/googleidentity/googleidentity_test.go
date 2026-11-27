@@ -199,7 +199,9 @@ func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
 		before := time.Now()
 		email, err := Probe(context.Background())
 		took := time.Since(before)
-		if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || took < ProbeTimeout {
+		// The error prints the failure's class, "timed out", and not the library's text, which
+		// quotes the request URL; the deadline it names is still the one errors.Is finds.
+		if !errors.Is(err, ErrNoMetadataServer) || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") || took < ProbeTimeout {
 			t.Fatalf("Probe = %q, %v after %s; want ErrNoMetadataServer ended by the probe's own deadline, %s or later", email, err, took, ProbeTimeout)
 		}
 		if recorder.calls != 1 || !recorder.hasDeadline {

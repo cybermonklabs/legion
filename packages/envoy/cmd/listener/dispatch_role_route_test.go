@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	dispatchapi "github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -57,8 +57,8 @@ type roleRouteRig struct {
 	listener http.Handler
 	url      string
 	sends    *sendWatch
-	broker   *brokertokentest.StubBroker
-	caller   *brokertokentest.Caller
+	broker   *ciphertokentest.StubBroker
+	caller   *ciphertokentest.Caller
 	// nats is the rig's own NATS account: testnats gives each subtest an account of its own, so
 	// a session a row registers stands in on this one, where the rig's listeners are.
 	nats string
@@ -124,7 +124,7 @@ func newRoleRouteRig(t *testing.T) *roleRouteRig {
 	deliveryLog := startListenerDelivery(t, warm)
 	useDispatchPrincipal(cold, rigDispatchPrincipal)
 
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	accountFile := filepath.Join(t.TempDir(), "listener-account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
 		t.Fatalf("write the listener's own account token: %v", err)
@@ -150,7 +150,7 @@ func newRoleRouteRig(t *testing.T) *roleRouteRig {
 	rig := &roleRouteRig{
 		dispatchRig: &dispatchRig{warm: warm, cold: cold, database: migratedDispatchDatabase(t), deliveryLog: deliveryLog},
 		issuer:      issuer, listener: listener, url: server.URL, sends: sends,
-		broker: broker, caller: brokertokentest.NewCaller(t), nats: testnats.URL(t),
+		broker: broker, caller: ciphertokentest.NewCaller(t), nats: testnats.URL(t),
 	}
 	tokenFile := rig.accountTokenFile(t, issuer.token(t, rigDispatchPrincipal))
 	rig.dispatch = roleRouteDispatchMux(t, rig.database, server.URL, warm.client, func(input *dispatchapi.DepsInput) {
@@ -291,7 +291,7 @@ func (rig *roleRouteRig) roleMention(t *testing.T, key, role, body string) (stri
 		t.Fatalf("the comment mentioning role:%s: status=%d body=%s", role, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
 		stored := decodeRigBody[struct {
@@ -329,7 +329,7 @@ func (rig *roleRouteRig) claim(t *testing.T, sessionID, role string) {
 // so the listener still holds its consumer and the role's claim still names it.
 func (rig *roleRouteRig) crash(t *testing.T, s *rigSession) {
 	t.Helper()
-	s.standIn.conn.Close()
+	s.standIn.close()
 	sessions, err := rig.warm.client.JS().KeyValue(bus.SessionBucket)
 	if err != nil {
 		t.Fatalf("open the session bucket: %v", err)
@@ -432,6 +432,8 @@ func refusedForRole(t *testing.T, what string, response *httptest.ResponseRecord
 // (1), (2), (5) and (6) and one more, (7); (3) and (4) are the reply routes' alone, in
 // internal/dispatch/api.
 func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T) {
+	// Not parallel: it sets GCE_METADATA_HOST for the whole process (t.Setenv in row (11)), and
+	// rows (6) and (7) hold 2 s and 3 s quiet windows (received) for a copy that must not arrive.
 	rig := newRoleRouteRig(t)
 	key := rig.issueKey(t, "Role-route sends")
 

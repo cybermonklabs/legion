@@ -14,11 +14,12 @@ import (
 )
 
 // A keep whose first send went unanswered and whose resend the stream refused as in process may
-// have stored its copy (storeKeptRoleCopy's ownSend), so the 503 a kept role-route send answers says
+// have stored its copy (publishPastInProcess), so the 503 a kept role-route send answers says
 // maybe_stored however the keep then ends: at the end of its window with the stream still answering
 // "in process", or with the next send refused by a full stream. The control is a keep whose every
 // send is answered as the first was, which ends with the unacknowledged error last.
 func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.T) {
+	t.Parallel()
 	unanswered := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
 	for _, row := range []struct {
 		name  string

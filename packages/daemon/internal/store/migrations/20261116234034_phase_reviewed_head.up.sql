@@ -48,7 +48,7 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   update phases set entry_task = regexp_replace(entry_task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where role = 'reviewer';
 --   update pending_task_deliveries set task = regexp_replace(task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where round_named;

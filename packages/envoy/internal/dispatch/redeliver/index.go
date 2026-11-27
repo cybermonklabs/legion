@@ -309,7 +309,7 @@ func (s *Sweeper) backfillIndex(listed map[string][]githubapp.Delivery, now time
 			// this branch could rewrite a record decide still leaves to its claimant.
 			if err := s.indexClaimEnd(stored.guid, stored.record, now); err != nil {
 				s.Logger.Warn("webhook redelivery claim not back-filled into the index; the next sweep reads every record again",
-					"guid", stored.guid, "error", err)
+					"guid", githubapp.ShownBody(stored.guid), "error", err)
 				indexed = false
 			}
 			continue
@@ -320,7 +320,7 @@ func (s *Sweeper) backfillIndex(listed map[string][]githubapp.Delivery, now time
 		// not index, which is what the bucket must not be marked over.
 		if _, written, err := s.writeRecord(stored.guid, &next, stored.revision, now); !written {
 			s.Logger.Warn("webhook redelivery record not back-filled into the index; the next sweep reads every record again",
-				"guid", stored.guid, "error", err)
+				"guid", githubapp.ShownBody(stored.guid), "error", err)
 			indexed = false
 		}
 	}
@@ -332,7 +332,7 @@ func (s *Sweeper) backfillIndex(listed map[string][]githubapp.Delivery, now time
 		_, err = s.state.Put(indexKey, marker)
 	}
 	if err != nil {
-		s.Logger.Warn("webhook redelivery index not marked back-filled; the next sweep reads every record again", "error", err)
+		s.Logger.Warn("webhook redelivery index not marked back-filled; the next sweep reads every record again", "error", bucketErr(err))
 	}
 	return true, nil
 }
@@ -348,7 +348,7 @@ func (s *Sweeper) indexFresh(now time.Time) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the redelivery index marker: %w", err)
+		return false, fmt.Errorf("read the redelivery index marker: %w", bucketErr(err))
 	}
 	var marker indexMarker
 	if err := json.Unmarshal(entry.Value(), &marker); err != nil {
@@ -421,8 +421,8 @@ func (s *Sweeper) writeRecord(guid string, next *record, revision uint64, now ti
 	written, ok, err := s.putRecord(guid, *next, revision)
 	if err != nil {
 		s.Logger.Error("webhook redelivery record not written; the delivery is decided again by the next sweep",
-			"guid", guid, "error", err)
-		return 0, false, fmt.Errorf("%w: record of %s: %w", errNotWritten, guid, err)
+			"guid", githubapp.ShownBody(guid), "error", err)
+		return 0, false, fmt.Errorf("%w: record of %s: %w", errNotWritten, githubapp.ShownBody(guid), err)
 	}
 	if !ok {
 		return 0, false, nil
@@ -439,11 +439,14 @@ func (s *Sweeper) writeRecord(guid string, next *record, revision uint64, now ti
 // writes goes through here, the one the record that names it is written with (writeRecord) and
 // the one a live claim over a record naming no entry is owed, which the index read and the
 // back-fill's scan both write (indexClaimEnd), so a refusal reads the same whichever wrote it.
+// The entry's key holds the delivery's GUID, so the line and the error show the GUID, the key
+// and the bucket's refusal, which quotes the key, as githubapp.ShownBody shows GitHub's text.
 func (s *Sweeper) putPending(guid, key string) error {
 	if _, err := s.state.Put(key, nil); err != nil {
+		err = bucketErr(err)
 		s.Logger.Error("webhook redelivery index entry not written; the delivery is decided again by the next sweep",
-			"guid", guid, "key", key, "error", err)
-		return fmt.Errorf("%w: index entry of %s: %w", errNotWritten, guid, err)
+			"guid", githubapp.ShownBody(guid), "key", githubapp.ShownBody(key), "error", err)
+		return fmt.Errorf("%w: index entry of %s: %w", errNotWritten, githubapp.ShownBody(guid), err)
 	}
 	return nil
 }
@@ -453,6 +456,6 @@ func (s *Sweeper) putPending(guid, key string) error {
 // later sweep reads once more and repairs then, so it is logged and not raised.
 func (s *Sweeper) dropPending(key string) {
 	if err := s.state.Delete(key); err != nil {
-		s.Logger.Warn("webhook redelivery index entry not deleted", "key", key, "error", err)
+		s.Logger.Warn("webhook redelivery index entry not deleted", "key", githubapp.ShownBody(key), "error", bucketErr(err))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -43,7 +44,7 @@ func TestADeathCauseHoldsNoURLCredentialOfItsLogLines(t *testing.T) {
 		"the last line names the death"
 	const cleaned = "pod legion-legion-209 ended: OOMKilled\n" +
 		"fetch https://downloads.example/x failed: 403\n" +
-		"push to https://git.example/acme/widgets refused\n" +
+		"push to https://" + redact.URLWithCredentials + "/acme/widgets refused\n" +
 		"the last line names the death"
 	gone := runtime.Observation{Locator: *m.Claim().Locator, Kind: runtime.Gone, Detail: detail}
 
@@ -78,23 +79,23 @@ func TestADeathCauseHoldsNoURLCredentialOfItsLogLines(t *testing.T) {
 
 // An error answer can quote the error a far side's read met, and that error names the URL it
 // asked: a Dispatch transport error names dispatch_url with its user name, a GitHub one the
-// redirect it followed with its query. Both refusal shapes (writeFailure's coded one and
-// errorBody's) answer the message with every URL's host and path and every other word kept, and
-// no part of the credential.
+// redirect it followed with its query. Both refusal shapes (writeFailure's coded one and refuse's
+// sentence-only one) answer the message with every URL's host and path and every other word kept,
+// and no part of the credential.
 func TestAnErrorAnswerHoldsNoURLCredentialOfItsMessage(t *testing.T) {
 	const message = `Dispatch did not answer the read of handoff record H-7 (Get "https://x/y?token=` + urlCredentialToken + `": EOF), ` +
 		"and the listing at https://" + urlCredentialUserinfo + "@dispatch.example/legion failed too; complete again"
 	const want = `Dispatch did not answer the read of handoff record H-7 (Get "https://x/y": EOF), ` +
-		"and the listing at https://dispatch.example/legion failed too; complete again"
+		"and the listing at https://" + redact.URLWithCredentials + "/legion failed too; complete again"
 	for _, tc := range []struct {
 		name  string
 		write func(w http.ResponseWriter)
 	}{
 		{"a coded refusal", func(w http.ResponseWriter) {
-			writeFailure(w, http.StatusBadGateway, "DISPATCH_READ_FAILED", message)
+			refusalServer().writeFailure(w, refusalRequest(), http.StatusBadGateway, "DISPATCH_READ_FAILED", message)
 		}},
 		{"a claim route's refusal", func(w http.ResponseWriter) {
-			writeJSON(w, http.StatusBadGateway, errorBody(message))
+			refusalServer().refuse(w, refusalRequest(), http.StatusBadGateway, message)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,113 @@
+{
+  "accepted": [
+    {
+      "url": "postgres://tester:not-a-secret%40can%2Fary@127.0.0.1:5999/postgres?sslmode=disable",
+      "password": "not-a-secret@can/ary",
+      "bare": "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable"
+    },
+    {
+      "url": "postgres://tester:not-a-secret%40%2Fw%25rd@127.0.0.1:5999/postgres?sslmode=disable",
+      "password": "not-a-secret@/w%rd",
+      "bare": "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable"
+    },
+    {
+      "url": "postgresql://tester@127.0.0.1:5999/session?sslmode=disable&password=not-a-secret%26x",
+      "password": "not-a-secret&x",
+      "bare": "postgresql://tester@127.0.0.1:5999/session?sslmode=disable"
+    },
+    {
+      "url": "postgresql://tester:not-a-secret-userinfo@[::1]:5432,db.test/dispatch?pass%77ord=not-a-secret-first&sslmode=disable&password=not-a-secret-q%26uery&application_name=a%3Db",
+      "password": "not-a-secret-q&uery",
+      "bare": "postgresql://tester@[::1]:5432,db.test/dispatch?sslmode=disable&application_name=a%3Db"
+    },
+    {
+      "url": "postgres://tester:not-a-secret@[2001:db8::1]:5432/dispatch",
+      "password": "not-a-secret",
+      "bare": "postgres://tester@[2001:db8::1]:5432/dispatch"
+    },
+    {
+      "url": "postgres://tester:not-a-secret@db1.test:5432,db2.test:5433,[::1]/dispatch?target_session_attrs=read-write",
+      "password": "not-a-secret",
+      "bare": "postgres://tester@db1.test:5432,db2.test:5433,[::1]/dispatch?target_session_attrs=read-write"
+    },
+    {
+      "url": "postgres://[::1]:5999,127.0.0.1?password=not-a-secret&dbname=dispatch",
+      "password": "not-a-secret",
+      "bare": "postgres://[::1]:5999,127.0.0.1?dbname=dispatch"
+    },
+    {
+      "url": "postgresql://te%73ter:not-a-secret%25x@db.test",
+      "password": "not-a-secret%x",
+      "bare": "postgresql://te%73ter@db.test"
+    },
+    {
+      "url": "postgres://tester:%EF%BB%BFnot-a-secret@127.0.0.1/postgres",
+      "password": "\ufeffnot-a-secret",
+      "bare": "postgres://tester@127.0.0.1/postgres"
+    },
+    {
+      "url": "postgres://tester@127.0.0.1/postgres?%EF%BB%BFpassword=not-a-secret&sslmode=disable",
+      "password": null,
+      "bare": "postgres://tester@127.0.0.1/postgres?%EF%BB%BFpassword=not-a-secret&sslmode=disable",
+      "libpq_refuses": "invalid URI query parameter"
+    },
+    {
+      "url": "postgres://tester@127.0.0.1:5999/postgres?password=&sslmode=disable",
+      "password": "",
+      "bare": "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable"
+    },
+    {
+      "url": "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable",
+      "password": null,
+      "bare": "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable"
+    },
+    {
+      "url": "postgres://127.0.0.1:5999/postgres",
+      "password": null,
+      "bare": "postgres://127.0.0.1:5999/postgres"
+    },
+    {
+      "url": "postgres://tester:@127.0.0.1/postgres",
+      "password": null,
+      "bare": "postgres://tester:@127.0.0.1/postgres"
+    }
+  ],
+  "refused": [
+    {
+      "url": "mysql://tester:not-a-secret@127.0.0.1/postgres",
+      "fault": "it is not a postgres:// or postgresql:// URL"
+    },
+    {
+      "url": "host=127.0.0.1 dbname=postgres",
+      "fault": "it is not a postgres:// or postgresql:// URL"
+    },
+    {
+      "url": "postgres://tester:not-a-secret%zz@127.0.0.1:5999/postgres",
+      "fault": "its password holds a % that starts no %XX escape, or %00"
+    },
+    {
+      "url": "postgres://tester:not-a-secret%00@127.0.0.1:5999/postgres",
+      "fault": "its password holds a % that starts no %XX escape, or %00"
+    },
+    {
+      "url": "postgres://tester@127.0.0.1:5999/postgres?password=not-a-secret%2",
+      "fault": "its query string's password holds a % that starts no %XX escape, or %00"
+    },
+    {
+      "url": "postgres://tester:not-a-secret@[::1:5999/postgres",
+      "fault": "a host's [ has no ]"
+    },
+    {
+      "url": "postgres://tester:not-a-secret@[::1]x/postgres",
+      "fault": "a host's ] is followed by something other than :, /, ? or ,"
+    },
+    {
+      "url": "postgres://tester:not-a-secret@tail@127.0.0.1:5999/postgres",
+      "fault": "a host holds a raw @"
+    },
+    {
+      "url": "postgres://tester:not-a-secret/x@127.0.0.1:5999/postgres",
+      "fault": "an @ sits between the first / and the ?"
+    }
+  ]
+}

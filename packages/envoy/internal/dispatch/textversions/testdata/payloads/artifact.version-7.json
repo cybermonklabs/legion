@@ -1,0 +1,371 @@
+{
+  "id": 111490,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 632,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a16a9e-a9b0-761c-97bf-28d7cf2eaac2",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum do",
+      "tmux": "lorem ipsu",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum d"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-29T14:56:32.022037Z",
+  "payload": {
+    "name": "lorem ips",
+    "version": {
+      "size": 250786,
+      "named": false,
+      "number": 8,
+      "authors": [
+        {
+          "id": "01a16a9e-a9b0-761c-97bf-28d7cf2eaac2",
+          "kind": "session",
+          "owner": "alice@example.com",
+          "origin": {
+            "cwd": "lorem ipsum do",
+            "host": "lor",
+            "pane": "lor",
+            "tmux": "lorem ipsu",
+            "machine": "lorem ipsum d",
+            "session_title": "lorem ipsum dolor sit amet lorem ipsum d"
+          }
+        }
+      ],
+      "summary": null,
+      "created_at": "2026-10-29T14:56:32.022037Z"
+    },
+    "artifact_id": "64e49c9b-3ff7-4b5f-8930-9e6b091adcb3",
+    "references_changed": [
+      {
+        "id": "16044340-7888-4c20-aa5a-f2326ebe7488",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "2aca3126-8135-4e61-a1a6-ca7fff911741",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "2d307161-f72d-4ad8-8b07-949cfedda7b3",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "39b1481b-84e4-4cb5-939d-148c0d3d5b7b",
+        "kind": "ask",
+        "issue_key": "ACME-2"
+      },
+      {
+        "id": "720ccd93-ee79-436d-a97e-3ce372f7145b",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "9b504b4f-b83d-41c7-9715-da874cf960e5",
+        "kind": "ask",
+        "issue_key": "ACME-3"
+      },
+      {
+        "id": "c97b94fb-b97e-4b96-9574-de2224f747ed",
+        "kind": "ask",
+        "issue_key": "ACME-4"
+      },
+      {
+        "id": "fafa0c29-37d1-45c3-a646-6edd0c39190a",
+        "kind": "ask",
+        "issue_key": "ACME-5"
+      },
+      {
+        "id": "ACME-6",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-7",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-8",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-9",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-10",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-11",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-12",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-13",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-14",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-15",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-16",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-17",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-18",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-19",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-20",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-21",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-22",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-23",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-24",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-25",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-26",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-27",
+        "kind": "issue"
+      },
+      {
+        "id": "56191913-b87c-408f-b973-e505e1a34543",
+        "kind": "ask",
+        "issue_key": "ACME-28"
+      },
+      {
+        "id": "82655e4c-7b4f-4777-b45f-c47f813070f7",
+        "kind": "ask",
+        "issue_key": "ACME-29"
+      },
+      {
+        "id": "ACME-30",
+        "kind": "issue"
+      },
+      {
+        "id": "08096d9c-72c0-4285-b8fb-016aba401430",
+        "kind": "ask",
+        "issue_key": "ACME-4"
+      },
+      {
+        "id": "f46ae257-e92e-4355-86a5-d7ea4a162fd4",
+        "kind": "ask",
+        "issue_key": "ACME-31"
+      },
+      {
+        "id": "ACME-32",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-33",
+        "kind": "issue"
+      },
+      {
+        "id": "a49d6e04-1e2a-431f-bf34-e1b1477f3c5c",
+        "kind": "ask",
+        "issue_key": "ACME-34"
+      },
+      {
+        "id": "ACME-35",
+        "kind": "issue"
+      },
+      {
+        "id": "241c02ba-f53d-4eee-abb2-1a4bdf7686d4",
+        "kind": "ask",
+        "issue_key": "ACME-36"
+      },
+      {
+        "id": "ACME-37",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-38",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-39",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-40",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-41",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-42",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-43",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-44",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-34",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-45",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-46",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-47",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-48",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-49",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-50",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-51",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-52",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-28",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-53",
+        "kind": "issue"
+      },
+      {
+        "id": "cd24cf4c-beda-408f-b755-cd887e4f1ce3",
+        "kind": "ask",
+        "issue_key": "ACME-54"
+      },
+      {
+        "id": "ACME-55",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-56",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-57",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-58",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-59",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-60",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-61",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-62",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-63",
+        "kind": "issue"
+      },
+      {
+        "id": "1462d7f7-5123-4918-a620-49880b56be49",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "ACME-4",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-29",
+        "kind": "issue"
+      }
+    ],
+    "references_changed_truncated": true,
+    "references_changed_truncated_kinds": [
+      "artifact"
+    ]
+  }
+}

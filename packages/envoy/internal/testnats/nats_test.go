@@ -1,18 +1,14 @@
 package testnats
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +18,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -31,7 +30,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	attempts := 0
-	waitForJetStream(t, func() error {
+	waitForJetStream(t, func(context.Context) error {
 		attempts++
 		if attempts < 3 {
 			return errors.New("JetStream is starting")
@@ -153,7 +152,8 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
+// test's deadline, which a wait bounded by it reads (waitBound).
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +163,13 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if timed, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams
@@ -411,7 +418,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Fatalf("open the other program's socket: %v", err)
 	}
 	t.Cleanup(func() { _ = syscall.Close(fd) })
-	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte(address.IP.To4())})
 	if err == nil {
 		// The port was free: hold it listening, as a program that took it would, so the Open below
 		// meets it.
@@ -421,7 +428,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
 	}
 
-	if claim, reservation, err := holdGatePort(address.Port); err == nil {
+	if claim, reservation, err := holdGatePort(address.IP, address.Port); err == nil {
 		_ = syscall.Close(reservation)
 		_ = claim.Close()
 		t.Errorf("a second gate held the closed gate's port %d", address.Port)
@@ -523,6 +530,18 @@ const (
 	reloadCount       = 200
 )
 
+// reloadRequestStep bounds how long each request of TestAReloadUnderJetStreamRequestsAnswersEveryOne
+// waits for its answer. It is twice connectTimeout, the most that each of the two waits through
+// which one Reload holds a connection's bytes may take before that Reload fails the test:
+// relay.hold's wait for every connection to stop at a message boundary, and relay.barrier's wait
+// for the server's answers to the relay's PINGs (relay.await). It is a bound chosen from those
+// waits, not a proof that an answer was lost: the hold also lasts while the server reloads, and a
+// request can wait through more than one reload in a row. Requests the holds only delay are
+// answered far sooner: in INFRA-3904's build Jobs, 32,520 runs of a copy of this row with a 15 s
+// wait per request, plain, under -race and beside up to 16 busy loops, ran out of that wait only in
+// the one run whose answers nats-server had dropped (below).
+const reloadRequestStep = 2 * connectTimeout
+
 // A reload under clients' JetStream requests answers every request and keeps every connection, and
 // under the race detector it is no data race. nats-server writes each service import's account on
 // an authorization reload and reads it without the lock while it sets up the response to a request
@@ -532,50 +551,119 @@ const (
 // that held the clients without waiting for the server to finish what it had; each reload here
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
+//
+// Each request waits reloadRequestStep for its answer, cut to the test's deadline (testDeadline). A
+// request that draws none in its step fails the test by name at once, and its requester sends
+// another, so the reloads still run under requests; one whose wait the deadline cut fails the test
+// naming the deadline. No reload starts past that deadline, and each Reload's hold and barrier
+// waits end at the test's deadline as that Reload reads it, which is never past the binary's own.
+// So a lost answer costs this test about one step, where a request that waited to the binary's
+// deadline held every later test of the package until then (dispatch://INFRA-3904: CI run
+// 45724862942 lost two answers, this test ran 1,111 s, and the package's last tests failed for want
+// of time).
+//
+// Before the requesters start, one request is sent until it is answered, each send bounded by the
+// same step, as a setup step is (sendCreate). That works around a race in nats-server, not a defect
+// of this test: v2.15.1 (and 2.15.3) makes an exporting account's prefix for the replies of its
+// service imports on the first request through one, releases the account's lock, and only then
+// subscribes to the prefix (newServiceReply, server/accounts.go 2504-2522 in 2.15.1, the lock
+// released at 2516 and the subscribe at 2521). A request another connection's read loop handles in
+// between takes the prefix, and its answer is published before the subscription exists, matches
+// nothing and is dropped; nothing sends it again. The global account's $JS.API.INFO requests go
+// through the system account's $JS.API.> export, and the requesters start 32 first requests from
+// four connections at once, so without that one answer, which reaches the client only through the
+// subscription, a run could lose a connection's first answers: in a build Job at GOMAXPROCS=2 under
+// load, one run in 3,200 lost all eight of a connection's first requests, sent before the first
+// reload, and the system account still held their eight response mappings. The awaited request can
+// go once nats-server subscribes to the prefix before it hands the prefix out.
 func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 	seed, public := User(t)
 	grant := func(n int) string {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
 	}
 	server, uri := StartConfig(t, grant(0), []string{"-js"}, false)
-	stop := make(chan struct{})
-	var answered atomic.Int64
-	failures := make(chan error, reloadConnections*reloadRequesters)
-	var requesters sync.WaitGroup
-	for range reloadConnections {
+	bound := boundOf(t)
+	conns := make([]*natsgo.Conn, reloadConnections)
+	for c := range conns {
 		conn, err := ConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
 		t.Cleanup(conn.Close)
-		for range reloadRequesters {
+		conns[c] = conn
+	}
+	for {
+		_, err := conns[0].Request("$JS.API.INFO", nil, bound.step(reloadRequestStep))
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, natsgo.ErrTimeout) {
+			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API: %v", err)
+		}
+		if bound.over() {
+			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API, drew no answer by %s, short of the test's deadline", bound)
+		}
+	}
+	stop := make(chan struct{})
+	var answered atomic.Int64
+	var requesters sync.WaitGroup
+	stopRequesters := sync.OnceFunc(func() { close(stop) })
+	stopped := func() bool {
+		select {
+		case <-stop:
+			return true
+		default:
+			return false
+		}
+	}
+	// An early failure (a Reload's t.Fatalf among them) still stops the requesters and joins them
+	// before the test returns, closing the connections first so a request need not spend its step;
+	// each requester reports through t, which it must not do once the test has returned.
+	defer func() {
+		stopRequesters()
+		for _, conn := range conns {
+			conn.Close()
+		}
+		requesters.Wait()
+	}()
+	for c, conn := range conns {
+		for r := range reloadRequesters {
 			requesters.Go(func() {
-				for {
-					select {
-					case <-stop:
+				for !stopped() {
+					if bound.over() {
+						t.Errorf("connection %d, requester %d: the reloads did not end by %s, short of the test's deadline", c, r, bound)
+						return
+					}
+					step := bound.step(reloadRequestStep)
+					_, err := conn.Request("$JS.API.INFO", nil, step)
+					switch {
+					case err == nil:
+						answered.Add(1)
+					case errors.Is(err, natsgo.ErrTimeout) && step < reloadRequestStep:
+						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, short of the test's deadline", c, r, bound)
+						return
+					case errors.Is(err, natsgo.ErrTimeout):
+						t.Errorf("connection %d, requester %d: a request across the reloads drew no answer within %s", c, r, step)
+					case errors.Is(err, natsgo.ErrConnectionClosed) && stopped():
 						return
 					default:
-					}
-					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
-						failures <- err
+						t.Errorf("connection %d, requester %d: a request across the reloads failed: %v", c, r, err)
 						return
 					}
-					answered.Add(1)
 				}
 			})
 		}
 	}
 	for n := 1; n <= reloadCount; n++ {
+		if bound.over() {
+			t.Fatalf("completed only %d of %d reloads by %s, short of the test's deadline", n-1, reloadCount, bound)
+		}
 		if err := server.Reload(t, grant(n)); err != nil {
 			t.Fatalf("reload %d: %v", n, err)
 		}
 	}
-	close(stop)
+	stopRequesters()
 	requesters.Wait()
-	close(failures)
-	for err := range failures {
-		t.Errorf("a request across the reloads failed: %v", err)
-	}
 	if answered.Load() == 0 {
 		t.Fatal("no request was answered; this test says nothing about a reload under requests")
 	}
@@ -617,7 +705,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.Request("more.echo", nil, requestWait(t)); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
@@ -717,6 +805,61 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 }
 
+// natsDefaultWait is how long nats.go waits for the answer to a JetStream request a test's context
+// makes without MaxWait or RequestTimeout: the legacy context's MaxWait default and the
+// JetStream client's DefaultTimeout, five seconds each (nats.go v1.55.0).
+const natsDefaultWait = 5 * time.Second
+
+// A JetStream request of a context a test makes with MaxWait or RequestTimeout waits past
+// nats.go's own five seconds for a server that answers late: each context's account info, sent to
+// a frozen server, is answered once the server is thawed a second after nats.go's own wait would
+// have ended it, and neither request fails. The second is counted from the moment the connection
+// has published both requests (Stats().OutMsgs), and each request's wait began before its publish:
+// nats.go makes both contexts' timeouts before it sends (nats.go v1.55.0 jsm.go getJSContextOpts,
+// jetstream/jetstream.go wrapContextWithoutDeadline).
+func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	legacy, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("the legacy JetStream context: %v", err)
+	}
+	client, err := jetstream.New(conn, RequestTimeout(t))
+	if err != nil {
+		t.Fatalf("the JetStream client: %v", err)
+	}
+
+	sentBefore := conn.Stats().OutMsgs
+	thaw := server.Freeze(t)
+	defer thaw()
+	type answer struct {
+		context string
+		err     error
+	}
+	answers := make(chan answer, 2)
+	go func() {
+		_, err := legacy.AccountInfo()
+		answers <- answer{"the legacy context (MaxWait)", err}
+	}()
+	go func() {
+		_, err := client.AccountInfo(context.Background())
+		answers <- answer{"the JetStream client (RequestTimeout)", err}
+	}()
+	testwait.Until(t, "the connection to publish both requests", func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - sentBefore
+		return sent, sent >= 2
+	})
+	time.Sleep(natsDefaultWait + time.Second)
+	thaw()
+	for range 2 {
+		got := testwait.Receive(t, "the answer to a request sent to the frozen server", answers)
+		if got.err != nil {
+			t.Errorf("%s: the account info sent to a server thawed %s later: %v, want its answer", got.context, natsDefaultWait+time.Second, got.err)
+		}
+	}
+}
+
 // Two freezes may overlap, and each thaw may be called more than once: neither ends the test
 // binary (a second close of one gate panicked it once), a thaw left over from an earlier freeze
 // does not end a later one, and the traffic resumes once every thaw has run.
@@ -777,158 +920,4 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
 	}
-}
-
-// envoyRoot is the module's directory, packages/envoy, from this package's own.
-const envoyRoot = "../.."
-
-// thisPackage is the natslive half of this rig, in image.go and image_test.go, which an untagged
-// build does not see at all.
-const thisPackage = "github.com/sjawhar/envoy/internal/testnats"
-
-// containerRigs are the packages of this module that may reach testcontainers: this rig, and the
-// two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
-// internal/tests3 SeaweedFS). Every other package is a finding, whichever testcontainers package
-// it imports: modules/nats is the obvious way to start a NATS container, and
-// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
-var containerRigs = []string{
-	thisPackage,
-	"github.com/sjawhar/envoy/internal/testpg",
-	"github.com/sjawhar/envoy/internal/tests3",
-}
-
-// containerModule is the import prefix every testcontainers package shares.
-const containerModule = "github.com/testcontainers/testcontainers-go"
-
-// dockerDriver matches a file of this module driving a container runtime by hand: exec's run with
-// docker as the command, however the call spells its context argument, and testcontainers' own
-// Docker client. The context argument runs to the end of the line rather than to the first ')',
-// since the module already passes context.Background() inline and a test's own is t.Context().
-// It is written from pieces so that this file, which has to name them, is not itself a finding.
-var dockerDriver = regexp.MustCompile(
-	`exec\.Command(Context)?\([^\n]*` + `"docker"` + `|NewDockerClient` + `WithOpts`)
-
-// No package of this module outside the rigs above imports a container runtime directly or drives
-// docker by hand: Envoy's agents have no container runtime, and a test that needs one cannot run
-// where they do. This pins those two ways to get one — a direct import of testcontainers, read
-// from go list's Imports, TestImports and XTestImports, and a hand-driven docker — against the
-// packages allowed to have them. It does not prove that no other package needs a runtime: a
-// package that imports an allowlisted rig passes and still starts that rig's container, as
-// cmd/listener's tests do through testpg.URL whenever DISPATCH_TEST_DATABASE_URL is unset. Direct
-// imports are the right scope today because that is the one such case with no opt-out (tests3's
-// one consumer, internal/dispatch/files, skips under DISPATCH_TEST_NO_CONTAINERS=1), and a
-// separate issue removes Postgres through testpg; widening this guard to walk go list -deps is
-// that issue's work, not this one's. internal/smoke's containers are behind the smoke build tag
-// and the rig's own behind natslive, so an untagged go list never sees their imports. The walk
-// does not go by tag: it reads every .go file, those included, and passes them because none
-// drives docker by hand.
-func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
-	t.Run("imports", func(t *testing.T) {
-		for _, finding := range containerImporters(t) {
-			t.Errorf("package %s imports %s, which belongs to a container runtime; a test that needs a NATS server starts it with testnats.Start, StartConfig or URL", finding.pkg, finding.imported)
-		}
-	})
-	t.Run("docker", func(t *testing.T) {
-		for _, file := range dockerDriverFiles(t) {
-			t.Errorf("%s drives a container runtime itself; a test that has to stop a server's traffic uses testnats.Server.Freeze, and one that has to stop the server, Server.Stop", file)
-		}
-	})
-}
-
-// The file walk's matcher recognises a hand-driven docker in every way a test of this module spells
-// the call, the context argument included: the module already passes context.Background() inline,
-// and t.Context() is the test's own. Each line is assembled from pieces so this file, which the walk
-// also reads, is not a finding itself.
-func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
-	const run, docker = "exec." + "Command", `"dock` + `er"`
-	for _, line := range []string{
-		run + "(" + docker + `, "pause", id)`,
-		run + "Context(ctx, " + docker + `, "pause", id)`,
-		run + "Context(context.Background(), " + docker + `, "pause", id)`,
-		run + "Context(t.Context(), " + docker + `, "unpause", id)`,
-		"client.NewDocker" + "ClientWithOpts(client.FromEnv)",
-	} {
-		if !dockerDriver.MatchString(line) {
-			t.Errorf("the docker-driver match misses %s", line)
-		}
-	}
-	if line := run + `("go", "list", "./...")`; dockerDriver.MatchString(line) {
-		t.Errorf("the docker-driver match flags %s, which runs no container", line)
-	}
-}
-
-// containerImport is a package of this module importing a testcontainers package, and the import
-// it was found by: a package reaching only testcontainers-go/wait has imported neither a runtime
-// client nor modules/nats, and the finding has to say which it did import.
-type containerImport struct{ pkg, imported string }
-
-// containerImporters lists every package of this module, outside the rigs allowed one, that
-// imports a testcontainers package, from its own sources or its tests', with the first such
-// import of each.
-func containerImporters(t *testing.T) []containerImport {
-	t.Helper()
-	const format = `{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}`
-	list := exec.Command("go", "list", "-f", format, "./...")
-	list.Dir = envoyRoot
-	out, err := list.Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list ./...: %v: %s", err, exit.Stderr)
-		}
-		t.Fatalf("go list ./...: %v", err)
-	}
-	var importers []containerImport
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || slices.Contains(containerRigs, fields[0]) {
-			continue
-		}
-		for _, imported := range fields[1:] {
-			if imported == containerModule || strings.HasPrefix(imported, containerModule+"/") {
-				importers = append(importers, containerImport{pkg: fields[0], imported: imported})
-				break
-			}
-		}
-	}
-	return importers
-}
-
-// dockerDriverFiles lists every Go file under packages/envoy that drives a container runtime
-// itself, by its path from there. The nested infra module is left out: its pulumilive lane runs a
-// real stack of containers on a host that has a runtime, which is the one place in this tree that
-// legitimately drives Docker.
-func dockerDriverFiles(t *testing.T) []string {
-	t.Helper()
-	var drivers []string
-	err := filepath.WalkDir(envoyRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path == filepath.Join(envoyRoot, "infra") || entry.Name() == "node_modules" || entry.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		text, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if dockerDriver.Match(text) {
-			relative, err := filepath.Rel(envoyRoot, path)
-			if err != nil {
-				return err
-			}
-			drivers = append(drivers, filepath.ToSlash(relative))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", envoyRoot, err)
-	}
-	return drivers
 }

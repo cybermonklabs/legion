@@ -18,6 +18,7 @@ import (
 // request GitHub answers 404 for is the error, never a no: Dispatch cannot tell it from a pull
 // request the App cannot reach.
 func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	answers := map[string]string{
 		"1": `{"number":1,"state":"open","merged":false,"merged_at":null}`,
@@ -58,13 +59,15 @@ func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
 
 // A stored name GitHub's names do not allow never becomes a GitHub path: refs.SplitGitHubRepo
 // refuses it, naming it, before any request, whichever read of the repository asks. `acme/..`
-// and `acme/` are what a mapping written as `acme/...git` and `acme/.git` was stored as once the
-// trailing `.git` was trimmed, and `..` in a path asks GitHub about the one above the repository's
-// (`/repos/acme/../installation`). A renamed_to stored before the settings route held a pair to
-// GitHub's names, or by direct SQL, is the same name reached another way: the reconcile's refresh
-// and the read-through canonicalise the repository they are handed through it, and ask GitHub
-// nothing either. The GitHub stand-in counts every request it receives, and answers none.
+// and `acme/` are what a repository written as `acme/...git` and `acme/.git` was stored as once
+// the trailing `.git` was trimmed, and `..` in a path asks GitHub about the one above the
+// repository's (`/repos/acme/../installation`). A rename pair's new name stored before the
+// route that wrote the pairs held one to GitHub's names, or by direct SQL, is the same name
+// reached another way: the reconcile's refresh and the read-through canonicalise the repository
+// they are handed under the pairs the boot read (Attributor), and ask GitHub nothing either. The
+// GitHub stand-in counts every request it receives, and answers none.
 func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
+	t.Parallel()
 	const sha = "6767676767676767676767676767676767676767"
 	pool, ctx := deliveryTestPool(t)
 	var requests atomic.Int32
@@ -90,18 +93,23 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 		refused("askGitHubCommitOnBranch", name, err)
 	}
 
-	// Two mappings renamed to such names, as a row stored before the rule reads.
+	// Two repositories renamed to such names, as a pair stored before the rule reads, and the
+	// Attributor of the pairs a boot reads after them.
 	seedProjectRepository(t, ctx, pool, "TOOL", "Tools", "acme/tools")
-	for old, renamedTo := range map[string]string{"oldco/tools": "acme/..", "oldco/gadgets": "acme/"} {
+	renamed := map[string]string{"oldco/tools": "acme/..", "oldco/gadgets": "acme/"}
+	for old, renamedTo := range renamed {
 		if _, err := pool.Exec(ctx, `
 			insert into repo_projects (repo, project, created_by, is_default, renamed_to)
 			values ($1, 'TOOL', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $2)
 		`, old, renamedTo); err != nil {
 			t.Fatalf("record %s as renamed to %s: %v", old, renamedTo, err)
 		}
-		err := RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
+	}
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	for old, renamedTo := range renamed {
+		err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
 		refused("RefreshPullRequestHead", renamedTo, err)
-		_, _, err = ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
+		_, _, err = attributor.ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
 		refused("ReadThroughCommitPulls", renamedTo, err)
 	}
 

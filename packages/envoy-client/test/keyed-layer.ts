@@ -18,12 +18,12 @@ export interface KeyedLayerOptions {
    */
   readonly judged?: (response: Response) => boolean;
   /**
-   * A Dispatch that runs no keyed layer, the build before it, whose answers name no key back:
-   * for each keyed request (`true`), or for each one this picks by its number (from 1, among the
-   * requests that carry a key). A row about such a Dispatch says so here, and no other stand-in
-   * leaves the key out.
+   * Which of the stand-in's answers to a keyed request name no key back: each one (`true`), or
+   * each one this picks by its number (from 1, among the requests that carry a key). Dispatch's
+   * keyed layer names the key back on each answer it judges, so a row about an answer that names
+   * none says so here; no other stand-in leaves the key out.
    */
-  readonly noKeyedLayer?: true | ((request: number) => boolean);
+  readonly namesNoKey?: true | ((request: number) => boolean);
 }
 
 /**
@@ -31,17 +31,16 @@ export interface KeyedLayerOptions {
  * Dispatch's keyed layer (`keyedWrites`, `packages/envoy/internal/dispatch/api/request_keys.go`):
  * each answer the layer judged (`options.judged`, each 2xx by default) to a request that carries
  * an `Idempotency-Key` names that key back, as `TestEveryKeyedAnswerNamesItsKey` holds every
- * Dispatch answer to a keyed write to, unless the stand-in named a key itself. A Dispatch that
- * names no key back is the build before the keyed layer (`options.noKeyedLayer`), none of whose
- * 2xx the client takes as its call's answer (`DispatchClient.#writtenRow`). Every other answer is
- * as the stand-in gave it.
+ * Dispatch answer to a keyed write to, unless the stand-in named a key itself or the row's answer
+ * names none (`options.namesNoKey`), none of whose 2xx the client takes as its call's answer
+ * (`DispatchClient.#writePayload`). Every other answer is as the stand-in gave it.
  */
 export function keyedLayer<Args extends [Request | string | URL, ...unknown[]]>(
   answer: (...args: Args) => Response | Promise<Response>,
   options: KeyedLayerOptions = {}
 ): (...args: Args) => Promise<Response> {
   const judged = options.judged ?? ((response: Response) => response.ok);
-  const noKeyedLayer = options.noKeyedLayer;
+  const namesNoKey = options.namesNoKey;
   let keyed = 0;
   return async (...args) => {
     const [input, init] = args;
@@ -52,8 +51,7 @@ export function keyedLayer<Args extends [Request | string | URL, ...unknown[]]>(
     const key = sent.get(IDEMPOTENCY_KEY_HEADER) ?? "";
     const request = key === "" ? 0 : ++keyed;
     const response = await answer(...args);
-    const unkeyed =
-      typeof noKeyedLayer === "function" ? noKeyedLayer(request) : noKeyedLayer === true;
+    const unkeyed = typeof namesNoKey === "function" ? namesNoKey(request) : namesNoKey === true;
     if (
       key === "" ||
       unkeyed ||

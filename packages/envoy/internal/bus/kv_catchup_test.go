@@ -3,13 +3,17 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // catchupBucket is the bucket the rows below create on a cluster, one per row.
@@ -30,15 +34,17 @@ func memberJetStream(t *testing.T, cluster *testnats.Cluster, i int) (*nats.Conn
 }
 
 // behindMember is a JetStream context on a real cluster that answers as a member which has not
-// applied a create of the bucket yet, for as long as the member is behind, and reaches the cluster
-// for everything else:
-//   - its bucket lookup answers ErrBucketNotFound for the first misses lookups, the answer such a
-//     member gives a read of a stream it has no assignment for, and which a start cannot tell from
-//     a bucket that is not there;
-//   - its create answers ErrStreamNameAlreadyInUse, the cluster's own answer to a create of a
-//     bucket that exists. nats.go v1.55.0 rescues that answer by reading the stream itself and comparing
-//     it (kv.go:534-543), which is exactly the read this member cannot serve, so the
-//     answer reaches the start.
+// applied a create of the bucket yet, for its first misses reads of the bucket's stream, and
+// reaches the cluster for everything else:
+//   - a bucket lookup (KeyValue) answers ErrBucketNotFound, the answer such a member gives a read
+//     of a stream it has no assignment for, and which a start cannot tell from a bucket that is
+//     not there;
+//   - a read of the stream (StreamInfo), which a create the cluster answers "stream name already
+//     in use" makes (createBucketStream), answers ErrStreamNotFound, as the same member does.
+//
+// Each such answer takes one of misses, which is atomic because a read a start abandons at its
+// read limit runs on beside the read sent after it. A create of the stream (AddStream) goes to the
+// cluster's metadata leader, as it does from any member, and its answer is recorded in creates.
 //
 // A clustered create is answered once the metadata group has committed it, not once every member
 // has applied it: a probe over 25 fresh three-member clusters asked every member for a bucket's
@@ -46,51 +52,111 @@ func memberJetStream(t *testing.T, cluster *testnats.Cluster, i int) (*nats.Conn
 // found", the slowest 206 ms later, including the member the create was sent through.
 type behindMember struct {
 	nats.JetStreamContext
-	misses int
+	misses  atomic.Int32
+	mu      sync.Mutex
+	creates []error
+}
+
+// behind takes one of b's misses and reports whether there was one.
+func (b *behindMember) behind() bool {
+	for {
+		left := b.misses.Load()
+		if left <= 0 {
+			return false
+		}
+		if b.misses.CompareAndSwap(left, left-1) {
+			return true
+		}
+	}
 }
 
 func (b *behindMember) KeyValue(bucket string) (nats.KeyValue, error) {
-	if b.misses > 0 {
-		b.misses--
+	if b.behind() {
 		return nil, nats.ErrBucketNotFound
 	}
 	return b.JetStreamContext.KeyValue(bucket)
 }
 
-func (b *behindMember) CreateKeyValue(config *nats.KeyValueConfig) (nats.KeyValue, error) {
-	return nil, nats.ErrStreamNameAlreadyInUse
+func (b *behindMember) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if b.behind() {
+		return nil, nats.ErrStreamNotFound
+	}
+	return b.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+func (b *behindMember) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info, err := b.JetStreamContext.AddStream(cfg, opts...)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.creates = append(b.creates, err)
+	return info, err
+}
+
+// created is the answer each create of the stream got, in order.
+func (b *behindMember) created() []error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.creates)
 }
 
 // A second program that ensures a bucket the first has just created on a three-member cluster
 // opens it, even when the member answering has not applied the create yet. Its lookup misses, as
-// that member's answer makes it, so it sends a create of its own, which the cluster refuses with
-// "stream name already in use": an answer no lookup of that same member could resolve while it is
-// behind. Without the wait (awaitBucketApplied) the second program fails there, and on a real hub
-// a program that ensures its bucket at start exits; with it, the lookup is taken again until the
-// member has the bucket, and both programs hold a handle on it.
+// that member's answer makes it, so it sends a create of its own (createBucketStream), which goes
+// to the metadata leader. Whatever the leader answers, the member is still behind when the start
+// looks the bucket up again for its handle, so that lookup misses too. Without the wait
+// (awaitBucketApplied) the second program fails there, and on a real hub a program that ensures
+// its bucket at start exits; with it, the lookup is taken again until the member has the bucket,
+// and both programs hold a handle on it.
 //
-// Everything but that one answer is the cluster's own: the first program's create, the second
-// program's create and the handle each of them opens.
+// The leader answers in one of two ways, and each row holds one:
+//   - a second program with the first's configuration sends a create equal to the first, and the
+//     leader answers it as made;
+//   - a second program with a configuration of its own, as a newer build's can be, is answered
+//     "stream name already in use", and its read of the stream (nats.go's own step, kv.go:534-543)
+//     misses on the same member, so that answer reaches the start.
+//
+// Everything but the member's misses is the cluster's own: each program's create, the leader's
+// answers and the handle each program opens. A row whose misses were not all taken would hold
+// nothing: the start never met the member behind.
 func TestASecondStartOpensABucketAMemberHasNotAppliedYet(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
-	config := func() *nats.KeyValueConfig {
-		return &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3}
-	}
 	first, firstJS := memberJetStream(t, cluster, 0)
-	if _, err := EnsureKeyValue(t.Context(), first, firstJS, config()); err != nil {
-		t.Fatalf("the first start could not create the bucket: %v", err)
-	}
 	second, secondJS := memberJetStream(t, cluster, 1)
-	behind := &behindMember{JetStreamContext: secondJS, misses: 1}
-	kv, err := EnsureKeyValue(t.Context(), second, behind, config())
-	if err != nil {
-		t.Fatalf("the second start could not open the bucket its member had not applied yet: %v", err)
-	}
-	if kv.Bucket() != catchupBucket {
-		t.Fatalf("the second start's handle is on bucket %q, want %q", kv.Bucket(), catchupBucket)
-	}
-	if _, err := kv.ReadStreamState(context.Background()); err != nil {
-		t.Fatalf("the second start could not read the bucket's stream: %v", err)
+	for _, row := range []struct {
+		name, bucket string
+		history      uint8
+		misses       int32
+		answer       error
+	}{
+		// The lookup and the lookup after the create.
+		{"a second create equal to the first", catchupBucket + "_same", 1, 2, nil},
+		// The lookup, the create's read of the stream and the lookup after the create.
+		{"a second create of another configuration", catchupBucket + "_other", 2, 3, nats.ErrStreamNameAlreadyInUse},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if _, err := EnsureKeyValue(t.Context(), first, firstJS, &nats.KeyValueConfig{Bucket: row.bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+				t.Fatalf("the first start could not create the bucket: %v", err)
+			}
+			behind := &behindMember{JetStreamContext: secondJS}
+			behind.misses.Store(row.misses)
+			kv, err := EnsureKeyValue(t.Context(), second, behind, &nats.KeyValueConfig{Bucket: row.bucket, Storage: nats.FileStorage, Replicas: 3, History: row.history})
+			if err != nil {
+				t.Fatalf("the second start could not open the bucket its member had not applied yet: %v", err)
+			}
+			if creates := behind.created(); len(creates) != 1 || !errors.Is(creates[0], row.answer) {
+				t.Fatalf("the second start's creates were answered %v, want one answered %v", creates, row.answer)
+			}
+			if left := behind.misses.Load(); left != 0 {
+				t.Fatalf("the member was behind for %d reads the start never made, so this row holds nothing", left)
+			}
+			if kv.Bucket() != row.bucket {
+				t.Fatalf("the second start's handle is on bucket %q, want %q", kv.Bucket(), row.bucket)
+			}
+			if _, err := kv.ReadStreamState(context.Background()); err != nil {
+				t.Fatalf("the second start could not read the bucket's stream: %v", err)
+			}
+		})
 	}
 }
 
@@ -186,6 +252,7 @@ func (r *raiseWatcher) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.Stre
 // first two reads after the raise. Without the wait the start answers while they are outstanding,
 // which is what this row fails on; with it, every one is read and the start answers after them.
 func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
@@ -213,6 +280,7 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 // read limit of the caller's whole wait (countedReads), so a read a loaded machine answers late is
 // not counted twice.
 func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	config := &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3}
@@ -221,9 +289,9 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	}
 	const unlimited = 1 << 30
 	watcher := newRaiseWatcher(js, 3, unlimited, nil)
-	// A hang guard: a start that waited for the copies would wait until this context ended.
-	ctx, cancel := context.WithTimeout(countedReads(t.Context()), time.Minute)
-	defer cancel()
+	// A hang guard: a start that waited for the copies would wait until this context ended. It has
+	// no span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := countedReads(testwait.Context(t))
 	if _, err := EnsureKeyValue(ctx, conn, watcher, config); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
 	}
@@ -236,6 +304,7 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 // three-member cluster: the row above makes the wait happen, this one shows the bucket the wait
 // hands over is the one the caller reads keys from.
 func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	created, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1})
@@ -263,6 +332,7 @@ func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
 // context.DeadlineExceeded as its cause, once the start has read a copy as behind, so the row reads
 // no clock and no load can end the context before the raise.
 func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
@@ -298,7 +368,7 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := newRaiseWatcher(js, 3, 1<<30, nil)
-	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -312,10 +382,12 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 // A member that never applies a create is waited for until the caller's context ends, and the
 // error carries both that end and the member's own answer, "bucket not found".
 func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
+	// A window, not a wait: the member never applies the create, and the context must end for the
+	// wait to answer context.DeadlineExceeded with the member's own answer.
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0
-	_, err := awaitBucketApplied(ctx, catchupBucket, bucketMissing, func() (struct{}, error) {
+	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, bucketMissing, func() (struct{}, error) {
 		reads++
 		return struct{}{}, nats.ErrBucketNotFound
 	})

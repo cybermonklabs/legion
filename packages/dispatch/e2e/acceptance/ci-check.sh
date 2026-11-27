@@ -37,8 +37,8 @@
 # attributed to the issue, read just now, so the delivery reconcile has no reason to read it
 # again. The fake GitHub is given one repository holding the same pull requests and each head's
 # check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT maps one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which nothing maps.
+# PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
+# one it holds, and otherwise one of this run's own, which is no project's default.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
@@ -63,6 +63,10 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# psql is given DATABASE_URL without its password, and the password in PGPASSWORD (pg_url_run),
+# as e2e/psql.ts gives it.
+# shellcheck source-path=SCRIPTDIR source=../../../envoy/scripts/lib/pg-url.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../envoy/scripts/lib/pg-url.sh"
 require_env DISPATCH_URL PROJECT FAKE_GITHUB_PORT DATABASE_URL DEV_SIGNIN_LOGIN
 [[ "$FAKE_GITHUB_PORT" =~ ^[0-9]+$ ]] || {
   printf 'FAKE_GITHUB_PORT is %s, not a port number\n' "$FAKE_GITHUB_PORT" >&2
@@ -202,10 +206,12 @@ expect() {
 }
 
 # psql_quiet ARGS...: runs the SQL on stdin against DATABASE_URL with the psql variables ARGS
-# names (-v name=value), printing its rows unaligned. libpq would connect to PGHOSTADDR in place
-# of the URL's host, so it is left out, as e2e/psql.ts leaves it.
+# names (-v name=value), printing its rows unaligned. The URL reaches psql without its password,
+# which goes in PGPASSWORD (pg_url_run), and libpq would connect to PGHOSTADDR in place of the
+# URL's host, so it is left out, as e2e/psql.ts leaves it.
+psql_without_hostaddr() { env -u PGHOSTADDR psql "$@"; }
 psql_quiet() {
-  env -u PGHOSTADDR psql "$database_url" -X -q -A -t -v ON_ERROR_STOP=1 "$@"
+  pg_url_run "$database_url" psql_without_hostaddr -X -q -A -t -v ON_ERROR_STOP=1 "$@"
 }
 
 # sql SECTION WHAT ARGS...: psql_quiet, its rows in $work/sql; a failure fails.
@@ -430,14 +436,15 @@ SQL
 
 # --- setup ---------------------------------------------------------------------------------------
 
-# PROJECT's default repository, under the name it is called today, where it maps one: every issue
-# of the project resolves to it, so a recorded result's commit must be one it holds, and the fake
-# serves it. Where PROJECT maps none, the run drives a repository of its own, which nothing maps.
-get "/api/v1/settings/repo-projects"
-want_status 200 setup "the repository mappings answer"
+# PROJECT's default repository, where it has one (`default_repo` on GET /api/v1/projects, stored
+# under the name the repository is called today): every issue of the project resolves to it, so a
+# recorded result's commit must be one it holds, and the fake serves it. Where PROJECT has none,
+# the run drives a repository of its own, which no project has as its default.
+get "/api/v1/projects"
+want_status 200 setup "the projects answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
-  fail setup "read the repository mappings" "$(body)"
+  'first(.[] | select(.key == $p) | .default_repo // empty) // ""' "$work/body")" ||
+  fail setup "read $project's default repository" "$(body)"
 driven_repo="${default_repo:-acme/ci-check-$run_tag}"
 readonly driven_repo
 fake setup "seed the fake GitHub with $driven_repo" '.'

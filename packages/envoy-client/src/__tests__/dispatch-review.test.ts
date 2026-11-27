@@ -6,7 +6,7 @@ import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 
@@ -138,7 +138,6 @@ beforeEach(() => {
   noRoute = false;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -275,19 +274,22 @@ describe("dispatch review", () => {
       "this request's credential acts for service system:serviceaccount:legion:legion-worker and no person, so there is nobody to record this write under; run `agent-secrets login` on this machine and try again",
       {},
     ],
-  ])("a %i %s is printed with Dispatch's code and words, and exits 1", async (status, code, error, headers) => {
-    refusal = { status, code, error, headers };
+  ])(
+    "a %i %s is printed with Dispatch's code and words, and exits 1",
+    async (status, code, error, headers) => {
+      refusal = { status, code, error, headers };
 
-    const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
+      const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
 
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe(`${code}: ${error}\n`);
-    // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
-    // again.
-    expect(posted()).toEqual([
-      { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
-    ]);
-  });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe(`${code}: ${error}\n`);
+      // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
+      // again.
+      expect(posted()).toEqual([
+        { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
+      ]);
+    }
+  );
 
   test("a review that answered an open approval request says so, for every document the request named, and that the answer carries this document alone", async () => {
     answeredAsk = "ask-9";

@@ -18,6 +18,7 @@ import (
 // row and the mention its block holds - carries the id of the event appended right before the
 // stamp, not of an event the same batch appends after it, and an edge stamped before keeps its own.
 func TestDerivedStampSourceSeqIsTheStampingEventsID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	const server = "https://dispatch.example"
@@ -30,12 +31,12 @@ func TestDerivedStampSourceSeqIsTheStampingEventsID(t *testing.T) {
 	createReferenceProject(t, tx, "STAMP")
 	createReferenceIssue(t, tx, "STAMP-1", "STAMP")
 	document, _ := createReferenceArtifact(t, tx, "STAMP-1", "STAMP", "spec")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, server), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, server), nil, false); err != nil {
 		t.Fatalf("index the document's references: %v", err)
 	}
 	located := text.ExtractAt(markdown, server)
 	blocks := []model.ArtifactBlock{{ID: "b-stamp", Type: "paragraph", From: 0, To: len(markdown)}}
-	if _, err := IndexBlocks(ctx, tx, document, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, document, 1, time.Now(), markdown, blocks, located, nil, server); err != nil {
 		t.Fatalf("index the document's blocks: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id, source_seq) values ('artifact', $1, 'issue', 'STAMP-9', 7)`, document); err != nil {

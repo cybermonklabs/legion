@@ -1,45 +1,27 @@
-import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TRADE_ATTEMPT_MS } from "@legion/broker-client/token-client";
-import {
-  FORM_LAUNCHER_CREDENTIAL,
-  FORM_LAUNCHER_CREDENTIAL_DECLINED,
-  FORM_SESSION,
-  SUBJECT_TOKEN_TYPE_GITHUB,
-} from "@legion/broker-client/wire";
-import type { ArtifactBlock } from "@legion/contracts";
+import type { ArtifactBlock, DispatchToolSpec } from "@legion/contracts";
 import {
   DISPATCH_BLOCK_UNITS,
+  DISPATCH_READ_ONLY_TOKEN,
+  dispatchToolSpecs,
   IDEMPOTENCY_KEY_HEADER,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
-  SPEC_CHECK_OBSERVED_CUT_NOTE,
-  SPEC_CHECK_OBSERVED_END,
-  SPEC_CHECK_OBSERVED_MAX,
-  SPEC_CHECK_OBSERVED_START,
+  TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import type { Socket } from "bun";
 import { keyedLayer } from "../../test/keyed-layer";
-import { routeAnswer } from "../../test/route-answers";
+import { leastAnswerFor, routeAnswer } from "../../test/route-answers";
+import { SPEC_COMMIT, storedSpecResult } from "../../test/spec-check-result";
 import { forgetBrokerClients } from "../broker-credential";
-import {
-  cliRefusals,
-  DISPATCH_TOKEN_CHECK_WAIT_MS,
-  fitOutput,
-  type ResultBound,
-  runDispatchCli,
-} from "../dispatch-cli";
-import { ownIdentityDispatch } from "../dispatch-config";
+import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
+import { DRY_RUN_HELP } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import {
-  DISPATCH_WRITE_RETRY,
-  DispatchClient,
-  forgetKeyedLayerMemory,
-  KEYED_LAYER_MEMORY_MS,
-} from "../dispatch-http";
+import { readFileText } from "../dispatch-file-text";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -134,55 +116,6 @@ const rows = `${Array.from(
   { length: 15 },
   (_, index) => `{"row_id": ${index}, "file_name": "wave_${index}.json", "note": "*kept*"}`
 ).join("\n")}\n`;
-
-/** The commit a CI job tested, which every result of a check of ACME's spec files below is for. */
-const SPEC_COMMIT = "1111111111111111111111111111111111111111";
-
-/** One result a CI job stored for check p-1 of ACME's spec files at SPEC_COMMIT, as Dispatch
- *  serves it: Dispatch's record number and an in-toto statement of the job's run. */
-function storedSpecResult(seq: number, verdict: string, leg: string, attempt: number) {
-  const workflow = "example-org/example-repo/.github/workflows/ci-results.yaml";
-  return {
-    id: `00000000-0000-4000-8000-0000000000${seq}`,
-    seq,
-    kind: "run",
-    attestation: {
-      _type: "https://in-toto.io/Statement/v1",
-      subject: [
-        {
-          name: "git+https://github.com/example-org/example-repo",
-          digest: { gitCommit: SPEC_COMMIT },
-        },
-      ],
-      predicateType: "https://github.com/cybermonklabs/legion/attestations/spec-check-result/v1",
-      predicate: {
-        project: "ACME",
-        check: "p-1",
-        procedure_digest: "sha256:5f1d9c0e",
-        test: { runner: "go", selector: "example.com/m/p TestP", job: "go-checks" },
-        verdict,
-        observed: verdict === "pass" ? "--- PASS: TestP (0.01s)" : "--- FAIL: TestP (0.02s)",
-        job: "go-checks",
-        leg,
-        run: {
-          repository: "example-org/example-repo",
-          workflow_ref: `${workflow}@refs/heads/feat/probe`,
-          ref: "refs/heads/feat/probe",
-          event_name: "push",
-          run_id: "4242",
-          attempt,
-          check_run_id: "7001",
-          runner_environment: "github-hosted",
-        },
-        recorder: {
-          session: `ci-results:${workflow}`,
-          principal: `workflow-results:${workflow}`,
-        },
-        recorded_at: "2026-11-16T10:00:00Z",
-      },
-    },
-  };
-}
 
 /** What ACME's read of SPEC_COMMIT answers, newest first, and the query of each such read. */
 const storedSpecResults = [
@@ -379,6 +312,21 @@ const handoffs: {
   created_at: string;
   body: string;
 }[] = [];
+/** The store ends every document with a line feed, so a text without one comes back with one. */
+const keptText = (markdown: string): Response =>
+  Response.json({ markdown: markdown.endsWith("\n") ? markdown : `${markdown}\n` });
+/** How the two round trips answer the text they are sent - the markdown inline, a file's bytes as
+ *  text - and the body that carried it: as the store keeps it, unless a test sets another answer. */
+let roundTrip: (
+  markdown: string,
+  body: { readonly new_document?: unknown }
+) => Response | Promise<Response> = keptText;
+/** What DSP-1 holds, which an upload reads to refuse a name that exists: no document, unless a
+ *  test sets another answer. */
+let issueArtifacts: readonly object[] = [];
+/** How an upload to DSP-1 is refused, or undefined for an upload stored as version 1: as Dispatch
+ *  refuses it, where a test sets a refusal. */
+let uploadRefusal: (() => Response) | undefined;
 
 // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
@@ -398,6 +346,7 @@ const server = Bun.serve({
         path: pathname,
         body: sent instanceof Blob ? await sent.text() : sent,
       });
+      if (uploadRefusal !== undefined) return uploadRefusal();
       return Response.json({
         artifact: {
           id: "artifact-1",
@@ -411,14 +360,23 @@ const server = Bun.serve({
       });
     }
     // What the issue holds, which an upload reads to refuse a name that exists: DSP-1 holds no
-    // document here, so every upload below writes a first version. It is recorded with the rest.
+    // document here unless a test says it does (`issueArtifacts`), so every other upload below
+    // writes a first version. It is recorded with the rest.
     if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "GET") {
       requests.push({ method: request.method, path: pathname, body: undefined });
-      return Response.json([]);
+      return Response.json(issueArtifacts);
     }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
+    // Inline text travels as `markdown` to its round trip, a file's bytes as base64 in `file` to
+    // the file round trip.
+    if (pathname === ROUND_TRIP && request.method === "POST") {
+      return roundTrip(body.markdown, body);
+    }
+    if (pathname === FILE_ROUND_TRIP && request.method === "POST") {
+      return roundTrip(Buffer.from(body.file as string, "base64").toString("utf8"), body);
+    }
     if (pathname === "/api/v1/issues/DSP-2" && request.method === "GET") {
       return Response.json(blocksIssue);
     }
@@ -646,10 +604,12 @@ beforeEach(() => {
   specResultQueries.length = 0;
   searchQueries.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
+  roundTrip = keptText;
+  issueArtifacts = [];
+  uploadRefusal = undefined;
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 function environment(
@@ -668,8 +628,9 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch,
-  nearestAncestorNamed?: (names: readonly string[]) => string | undefined
+  seams: Partial<
+    Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs" | "readText">
+  > = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -682,8 +643,7 @@ async function run(
     },
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
-    ...(nearestAncestorNamed === undefined ? {} : { nearestAncestorNamed }),
+    ...seams,
   });
   return { code, stdout, stderr };
 }
@@ -692,14 +652,13 @@ async function run(
 function nextProcess(sessionId: string): void {
   resetAdviceMemory();
   forgetShownPictures(sessionId);
-  forgetKeyedLayerMemory();
 }
 
 /**
  * The test server behind Dispatch's keyed layer, which judged every answer to a write and names
  * its `Idempotency-Key` back on each: the first `failing` message posts fail in transport before
- * they reach it, and `/healthz` never answers within its bound, as under the load that stalls a
- * write.
+ * they reach it. A `/healthz` read is recorded in `probes` and never answers within any bound, as
+ * under the load that stalls a write.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
@@ -737,6 +696,199 @@ function ledger(sessionId: string): { tool: string; error?: string }[] {
 }
 
 const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
+
+/** Runs `argv` as a dry run and then as a call, each reading files and stdin's bytes `stdin` as the
+ *  `dispatch` entry reads them (`readFileText`), and expects the dry run to exit 1 printing
+ *  `stdout` alone, the call to answer as the dry run did, and neither to send anything. `name`
+ *  heads each failure's label. Each runs in `env`, Dispatch on unless a test turns it off. */
+async function refusedAlike(
+  argv: readonly string[],
+  stdin: Uint8Array,
+  stdout: string,
+  name: string,
+  env: Record<string, string | undefined> = omp
+): Promise<void> {
+  const reader = { readText: (path: string) => readFileText(path, () => stdin) };
+  const named = `${name}: ${argv.join(" ")}`;
+  requests.length = 0;
+  const dry = await run([...argv, "--dry-run"], env, "", reader);
+  expect(dry, named).toEqual({ code: 1, stdout, stderr: "" });
+  const call = await run(argv, env, "", reader);
+  expect(call, named).toEqual(dry);
+  expect(requests, named).toEqual([]);
+}
+
+/** Writes `body` to `file`, and runs `dispatch comment --body-file` reading it from `file` and then
+ *  from stdin, each as the `dispatch` entry reads them (`readFileText`): expects the dry run to
+ *  print the arguments with `body` as read and send nothing, and the call to post `body` as read. */
+async function commentPostedAsRead(file: string, body: string): Promise<void> {
+  writeFileSync(file, body);
+  for (const [path, stdin] of [
+    [file, Buffer.of()],
+    ["-", Buffer.from(body)],
+  ] as const) {
+    const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
+    const reader = { readText: (read: string) => readFileText(read, () => stdin) };
+    requests.length = 0;
+    const dry = await run([...argv, "--dry-run"], omp, "", reader);
+    expect(dry, path).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", body }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests, path).toEqual([]);
+    const call = await run(argv, omp, "", reader);
+    expect(call.code, call.stdout).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+    expect(posted?.body, path).toMatchObject({ body });
+  }
+}
+
+/** Bytes an upload refuses, named by `name`, and the refusal printed for them under `field`. */
+interface RefusedBytes {
+  readonly name: string;
+  readonly bytes: Uint8Array;
+  readonly stdout: (field: string) => string;
+}
+
+/** For each row, expects `dispatch artifact` to refuse its bytes alike (`refusedAlike`) in `env`,
+ *  read from `--content-file <file>` and from stdin under `content`, given inline as `--content`
+ *  under `content` where the bytes are UTF-8, and from a markdown `--path` file under `file`. The
+ *  inline text is an in-process caller's: argv carries no U+0000 on any kernel, and no argument
+ *  past MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages, so with such pages no text past
+ *  1 MiB, but a caller of `runDispatchCli` can hand it either, whatever the page size. */
+async function uploadRefusedEveryWay(
+  rows: readonly RefusedBytes[],
+  env: Record<string, string | undefined> = omp
+): Promise<void> {
+  const file = join(stateDir, "text");
+  const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  for (const row of rows) {
+    writeFileSync(file, row.bytes);
+    writeFileSync(join(stateDir, "x.md"), row.bytes);
+    const inline = row.stdout("content");
+    await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, row.name, env);
+    await refusedAlike(UPLOAD, row.bytes, inline, row.name, env);
+    let text: string | undefined;
+    try {
+      text = utf8.decode(row.bytes);
+    } catch {
+      // Bytes that are not UTF-8 are no text, so no caller can give them inline.
+    }
+    if (text !== undefined) {
+      await refusedAlike([...upload, "--content", text], Buffer.of(), inline, row.name, env);
+    }
+    await refusedAlike(
+      [...upload, "--path", "x.md"],
+      Buffer.of(),
+      row.stdout("file"),
+      row.name,
+      env
+    );
+  }
+}
+
+/** An inline upload, its text read from stdin, and the route its stored-text check asks. */
+const UPLOAD = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", "-"];
+const NOTES = "# Notes\n\n* one\n";
+const NOTES_JSON = `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content: NOTES }, null, 2)}\n`;
+/** The notes.md DSP-1 holds in a test that sets it (`issueArtifacts`), which an upload under that
+ *  name without --force is refused for. */
+const NOTES_HELD = {
+  id: "artifact-notes",
+  issue_key: "DSP-1",
+  name: "notes.md",
+  slug: "notes-md",
+  kind: "doc",
+  created_by: { kind: "user", id: "alice" },
+  versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+};
+const ROUND_TRIP = "/api/v1/markdown/round-trip";
+const FILE_ROUND_TRIP = "/api/v1/markdown/file-round-trip";
+/** The round trip's body for inline text a call without --force uploads: the text in `markdown`,
+ *  asking for a new document's refusals (`new_document`), since that call makes a new document. */
+const markdownBody = (markdown: string): { markdown: string; new_document: true } => ({
+  markdown,
+  new_document: true,
+});
+/** The file round trip's body for a `--path` file's bytes: base64 in `file`, asking for a new
+ *  document's refusals as `markdownBody` does. */
+const fileBody = (bytes: string | Uint8Array): { file: string; new_document: true } => ({
+  file: Buffer.from(bytes).toString("base64"),
+  new_document: true,
+});
+/** An ask block holding a paragraph after its options, which its content rule refuses, and
+ *  Dispatch's refusal of it, its upload's and its round trip's alike. */
+const ASK_AFTER_OPTIONS =
+  ':::ask{#a1 urgency="med" multiple="false" state="open"}\nWhich database?\n\n- Postgres\n- SQLite\n\nPick one by Friday.\n:::\n';
+const ASK_AFTER_OPTIONS_REFUSED = {
+  code: "INVALID_ASK_BLOCK",
+  error:
+    'ask block "a1", asking "Which database?", holds a paragraph after its options where its content rule, paragraph+ bullet_list?, allows one or more paragraphs and then at most one bullet list, last',
+};
+/** Block HTML, which the parser refuses, and Dispatch's refusal of it. */
+const BLOCK_HTML = "<details>x</details>";
+const BLOCK_HTML_REFUSED = {
+  code: "INVALID_MARKDOWN",
+  error:
+    "markdown is not a Proof document: outside Proof schema: block HTML is not accepted by Proof",
+};
+
+/** A text past the bytes one document holds, counted in UTF-8 as Dispatch counts them: each "é"
+ *  is one UTF-16 unit and two bytes, so the text's length is under the limit and its bytes are
+ *  past it. */
+const PAST_DOCUMENT_LIMIT = `# Notes\n\n${"é".repeat(MARKDOWN_DOCUMENT_MAX_BYTES / 2)}\n`;
+/** The refusal of such a text, in Dispatch's own words, as the call and its dry run print it. */
+const DOCUMENT_TOO_LARGE =
+  "CAP_EXCEEDED: a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type";
+/** Dispatch's refusals of a byte that is not UTF-8 and of a NUL in `field`, at `character`, as the
+ *  call and its dry run print them. */
+const notUtf8 = (field: string, byte: string, character: number): string =>
+  `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byte}) at character ${character}, which Dispatch cannot store\n`;
+const nul = (field: string, character: number): string =>
+  `NUL_CHARACTER: ${field} holds a NUL character (U+0000) at character ${character}, which Dispatch cannot store\n`;
+/** 12,000 list items, 48 KB: more elements than one document may hold. */
+const MANY_ITEMS = "- a\n".repeat(12_000);
+/** Dispatch's 413 for those items, its upload's and its round trip's alike, in the words the
+ *  server's parse gives it (markdown_round_trip_test.go measures the two equal). */
+const TOO_MANY_ELEMENTS = {
+  code: "CAP_EXCEEDED",
+  error:
+    "document too large to store: this write's markdown makes more than 65536 elements, passing that at line 9362; a block weighs 3 elements, the empty block an empty container is read as holding 3, a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2, an escape 1, and each piece of inline syntax, mark and line of text 1. Shorten the change, or split the document; an upload of data rather than prose can go up as a file of another content type",
+};
+/** 20,000 paragraphs of a no-break space, which Go's strings.TrimSpace empties, so the text is
+ *  blank, and which make more elements than one document may hold. */
+const BLANK_PAST_ELEMENTS = "\u00a0\n\n".repeat(20_000);
+/** Dispatch's 413 for those paragraphs, in the words markdown_round_trip_test.go measured. */
+const BLANK_TOO_MANY_ELEMENTS = {
+  code: "CAP_EXCEEDED",
+  error: TOO_MANY_ELEMENTS.error.replace("line 9362", "line 32769"),
+};
+/** Markdown whose rendering no reader reads back, and Dispatch's refusal of it, its upload's and
+ *  its round trip's alike, in the words markdown_round_trip_test.go measured. */
+const UNREADABLE_RENDERING = "2. [^N]:\n       12. *\n       --\n";
+const UNREADABLE_RENDERING_REFUSED = {
+  code: "INVALID_MARKDOWN",
+  error:
+    "markdown is not a Proof document: the markdown the document would be stored as cannot be read back: outside Proof schema: an empty list item followed by a blank line inside another list item, where goldmark ends the outer item and the browser editor does not",
+};
+/** The round trip's refusal of a text, as Dispatch answers it: `answer` at `status`, marked as a
+ *  refusal of the text (TEXT_REFUSAL_HEADER, which Dispatch values `text`). */
+const textRefusal = (answer: { code: string; error: string }, status: number): Response =>
+  Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } });
+
+/** The `hint` Dispatch's answer to a path no route serves carries (routes/router.go's
+ *  staticHandler), which the CLI prints after the message (`messageFor`). */
+const NO_ROUTE_HINT = "GET /api/v1 lists every route";
+
+/** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
+const routeAbsent = (answer: string): string =>
+  `dispatch: warning: this Dispatch cannot check the text: POST ${ROUND_TRIP} failed with ${answer}. The call uploads the text unchecked.\n`;
+
+/** The stderr line of an upload's dry run whose round trip could not run, for `why`. */
+const unasked = (why: string): string =>
+  `dispatch: warning: the dry run could not ask Dispatch about the text: ${why}. The call refuses the upload until Dispatch answers.\n`;
 
 /** A `dispatch result` record of check k1 of DSP-1, its arguments as the command parses them. */
 const RESULT_ARGS = {
@@ -887,19 +1039,29 @@ describe("the dispatch CLI", () => {
 
   // An empty key or id is refused before any request, naming the flag: sent, an empty `--issue`
   // asked `PATCH /api/v1/issues/`, which no route serves, and came back seven seconds later as a
-  // refusal about a rolling release.
-  test("an empty --issue is refused before any request, naming the flag", async () => {
-    const { code, stdout } = await run(
-      ["issue-update", "--issue", "", "--status", "in_progress"],
-      omp
-    );
-    expect({ code, lines: stdout.split("\n").slice(0, 2) }).toEqual({
-      code: 2,
-      lines: [
-        "dispatch issue-update was not called: 1 problem",
-        "- --issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+  // refusal about a rolling release; an empty `--retract` or `--comment` asked
+  // `POST /api/v1/results//retract` or `POST /api/v1/comments//resolve`, which Dispatch's router
+  // answers with a redirect to the cleaned path, printed as a page that blames the Dispatch URL.
+  test("an empty --issue, --retract or --comment is refused before any request, naming the flag", async () => {
+    for (const [argv, command, flag, noun] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "issue-update",
+        "--issue",
+        "issue",
       ],
-    });
+      [["result", "--retract", "", "--reason", "Wrong commit."], "result", "--retract", "result"],
+      [["resolve-comment", "--comment", ""], "resolve-comment", "--comment", "comment"],
+    ] as const) {
+      const { code, stdout } = await run(argv, omp);
+      expect({ code, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        lines: [
+          `dispatch ${command} was not called: 1 problem`,
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
     expect(requests).toEqual([]);
   });
 
@@ -973,9 +1135,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
-  // because an argument is missing exits 2: a script reading the code alone tells it from a write
-  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
+  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
+  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1053,6 +1215,30 @@ describe("the dispatch CLI", () => {
     expect(code, stdout).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ retract: "res-2", reason: "The run was wrong." });
     expect(requests).toEqual([]);
+  });
+
+  test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {
+    const listed = await run(["results", "--project", "ACME", "--commit", SPEC_COMMIT], omp);
+    expect(listed.code, listed.stdout).toBe(0);
+    expect(listed.stdout).toBe(
+      [
+        `Results of ACME at ${SPEC_COMMIT}, newest first:`,
+        `- #42 p-1: fail. Job go-checks, leg linux, run 4242 attempt 2, commit ${SPEC_COMMIT}.`,
+        `- #41 p-1: pass. Job go-checks, no leg, run 4242 attempt 1, commit ${SPEC_COMMIT}.`,
+        "",
+      ].join("\n")
+    );
+
+    const rows = await run(
+      ["results", "--project", "ACME", "--commit", SPEC_COMMIT, "--check", "p-1", "--json"],
+      omp
+    );
+    expect(rows.code, rows.stdout).toBe(0);
+    expect(JSON.parse(rows.stdout)).toEqual(storedSpecResults);
+    expect(specResultQueries).toEqual([
+      `?commit=${SPEC_COMMIT}`,
+      `?commit=${SPEC_COMMIT}&check=p-1`,
+    ]);
   });
 
   // No length check stands between the body and Dispatch: the whole text is posted, and what the
@@ -1182,8 +1368,8 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // A dry run reads nothing from Dispatch, so it checks and prints with Dispatch off too, and
-  // prints the JSON alone.
+  // A dry run of a command with no dry-run step reads nothing from Dispatch, so it checks and
+  // prints with Dispatch off too, and prints the JSON alone.
   test("--dry-run checks and prints with Dispatch off", async () => {
     const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
     const passed = await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], off);
@@ -1198,6 +1384,1002 @@ describe("the dispatch CLI", () => {
       "dispatch issue-update was not called: 1 problem\n- reason goes only with status done"
     );
     expect(requests).toEqual([]);
+  });
+
+  // INFRA-4224 R3: an upload's dry run asks Dispatch how it would store its inline text, as the
+  // call does, and is refused for the text's spelling exactly as the call is: the same exit, the
+  // same refusal on the same stream. It stores nothing.
+  test("an upload's dry run refuses a text Dispatch would respell, exactly as the call does", async () => {
+    roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
+    const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) }]);
+    requests.length = 0;
+
+    const call = await run(UPLOAD, omp, NOTES);
+    expect(call.code).toBe(2);
+    expect(call.stdout).toStartWith(
+      'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".'
+    );
+    expect(dry).toEqual(call);
+    // The call refused it before its upload, as the dry run did.
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) },
+    ]);
+  });
+
+  // A text past the bytes one document holds (PAST_DOCUMENT_LIMIT). The call refuses it in
+  // Dispatch's own words before it sends anything, the read of whether the issue holds the name
+  // included, and its dry run alike: the same exit, the same stdout, and the same line in this
+  // session's ledger.
+  test("an upload's dry run refuses a text past the document limit in UTF-8 bytes as the call does, sending nothing", async () => {
+    expect(PAST_DOCUMENT_LIMIT.length).toBeLessThan(MARKDOWN_DOCUMENT_MAX_BYTES);
+    expect(Buffer.byteLength(PAST_DOCUMENT_LIMIT, "utf8")).toBeGreaterThan(
+      MARKDOWN_DOCUMENT_MAX_BYTES
+    );
+
+    const dry = await run([...UPLOAD, "--dry-run"], omp, PAST_DOCUMENT_LIMIT);
+    expect(requests).toEqual([]);
+    const call = await run(UPLOAD, omp, PAST_DOCUMENT_LIMIT);
+    expect(call).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(dry).toEqual(call);
+    expect(requests).toEqual([]);
+    expect(ledger("ses-1").map(({ tool, error }) => ({ tool, error }))).toEqual([
+      { tool: "dispatch_artifact", error: DOCUMENT_TOO_LARGE },
+      { tool: "dispatch_artifact", error: DOCUMENT_TOO_LARGE },
+    ]);
+  });
+
+  // Dispatch refuses an upload past the document limit whatever name it carries, so the call
+  // refuses such a text for its size before it reads whether the issue holds the name, and
+  // answers it under a held name as its dry run, which reads no held name, does: the same exit and
+  // the same stdout, and neither sends anything. A text within the limit under that name is
+  // refused for the name, which shows the issue holds it.
+  test("an upload past the document limit under a name the issue holds is refused for its size, by the call as by its dry run", async () => {
+    issueArtifacts = [NOTES_HELD];
+    const named = await run(UPLOAD, omp, NOTES);
+    expect(named.code).toBe(2);
+    expect(named.stdout).toStartWith(
+      "dispatch artifact was not called: 1 problem\n- issue DSP-1 already holds notes.md"
+    );
+    requests.length = 0;
+
+    const dry = await run([...UPLOAD, "--dry-run"], omp, PAST_DOCUMENT_LIMIT);
+    expect(requests).toEqual([]);
+    const call = await run(UPLOAD, omp, PAST_DOCUMENT_LIMIT);
+    expect(call).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(dry).toEqual(call);
+    expect(requests).toEqual([]);
+  });
+
+  // A text whose round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER): here
+  // its refusal of markdown whose rendering no reader reads back, which its upload answers too.
+  // The call refuses the text with Dispatch's own refusal, printed as it prints the upload's
+  // (`INVALID_MARKDOWN: <message>`), under a name that keeps the bytes too, asking once, and its dry
+  // run alike, with the same exit and the same stdout. Neither uploads.
+  test("an upload's dry run refuses a text whose round trip Dispatch marks as refused as the call does", async () => {
+    roundTrip = () => textRefusal(UNREADABLE_RENDERING_REFUSED, 400);
+    for (const name of ["notes.md", "notes"]) {
+      const argv = ["artifact", "--issue", "DSP-1", "--name", name, "--content-file", "-"];
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, UNREADABLE_RENDERING);
+      expect(requests, name).toEqual([
+        { method: "POST", path: ROUND_TRIP, body: markdownBody(UNREADABLE_RENDERING) },
+      ]);
+      requests.length = 0;
+      const call = await run(argv, omp, UNREADABLE_RENDERING);
+      expect(call, name).toEqual({
+        code: 1,
+        stdout: `${UNREADABLE_RENDERING_REFUSED.code}: ${UNREADABLE_RENDERING_REFUSED.error}\n`,
+        stderr: "",
+      });
+      expect(dry, name).toEqual(call);
+      expect(
+        requests.filter((request) => request.method === "POST"),
+        name
+      ).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(UNREADABLE_RENDERING) }]);
+    }
+  });
+
+  // An answer the round trip does not mark says nothing of the text, whatever its status: here the
+  // route's own 413 for a body past its bound, which no text within the document's bytes reaches.
+  // The call refuses the upload until Dispatch answers, as for any failure of the check, and its
+  // dry run passes, saying so on stderr.
+  test("an upload's dry run passes a round trip refusal Dispatch does not mark, which the call reads as no answer", async () => {
+    roundTrip = () =>
+      Response.json(
+        { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" },
+        { status: 413 }
+      );
+    const failure = `POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes`;
+    const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+    expect(dry).toEqual({ code: 0, stdout: NOTES_JSON, stderr: unasked(failure) });
+    const call = await run(UPLOAD, omp, NOTES);
+    expect(call).toEqual({
+      code: 1,
+      stdout: `Dispatch could not say how it would store this text, so nothing was uploaded: ${failure}. Send the upload again once that call is answered.\n`,
+      stderr: "",
+    });
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) },
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) },
+    ]);
+  });
+
+  // A markdown file sent with --path is stored as a document, so Dispatch refuses one past the
+  // bytes one document holds with the same CAP_EXCEEDED as inline text (verified on a local
+  // stack: the call exits 1 with DOCUMENT_TOO_LARGE). Its dry run refuses it with the call's code
+  // and message, as R3 of INFRA-4224 asks for a text the call refuses for its size, and uploads
+  // nothing. The tester found at c66bcb82 that the dry run printed the arguments and exited 0.
+  test("an upload's dry run refuses a markdown --path file past the document limit with the call's code and message", async () => {
+    writeFileSync(join(stateDir, "big.md"), PAST_DOCUMENT_LIMIT);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "big.md"];
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(requests.filter((request) => request.method === "POST")).toEqual([]);
+  });
+
+  // The same file under a name the issue holds: the call refuses it for its size before it reads
+  // whether the issue holds the name, as it refuses inline text, so it sends no request at all,
+  // and its dry run, which reads no held name, answers it alike.
+  test("a markdown --path file past the document limit under a name the issue holds is refused for its size by the call and its dry run, the call sending nothing", async () => {
+    issueArtifacts = [NOTES_HELD];
+    writeFileSync(join(stateDir, "big.md"), PAST_DOCUMENT_LIMIT);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "big.md"];
+
+    const call = await run(argv, omp);
+    expect(call).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(requests).toEqual([]);
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual(call);
+    expect(requests).toEqual([]);
+  });
+
+  // INFRA-4224 R3: 12,000 list items, 48 KB, make more elements than one document may hold.
+  // Dispatch's upload refuses them 413 CAP_EXCEEDED, and so does its round trip, in the upload's
+  // own words (markdownRoundTrip in packages/envoy/internal/dispatch/api), which this fake
+  // answers. The call refuses the inline text with that refusal before its upload, and its dry run
+  // alike: the same exit and the same stdout.
+  test("an upload's dry run refuses inline text past the element limit with Dispatch's refusal, as the call does, and neither uploads", async () => {
+    roundTrip = () => textRefusal(TOO_MANY_ELEMENTS, 413);
+    const dry = await run([...UPLOAD, "--dry-run"], omp, MANY_ITEMS);
+    const call = await run(UPLOAD, omp, MANY_ITEMS);
+    expect(call).toEqual({
+      code: 1,
+      stdout: `CAP_EXCEEDED: ${TOO_MANY_ELEMENTS.error}\n`,
+      stderr: "",
+    });
+    expect(dry).toEqual(call);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(MANY_ITEMS) },
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(MANY_ITEMS) },
+    ]);
+  });
+
+  // The same items in a markdown file sent with --path: Dispatch stores it as a document and
+  // refuses its upload with that refusal, and its file round trip alike, in the upload's own words
+  // (markdown_round_trip_test.go measures the upload's refusal and the round trip's equal). The dry
+  // run and the call each ask the round trip about the file's bytes and refuse it with that
+  // refusal, the same stdout and exit 1, before anything is uploaded: this fake's upload would
+  // take the file, and neither reaches it.
+  test("an upload's dry run refuses a markdown --path file past the element limit with Dispatch's refusal, as the call does, and neither uploads", async () => {
+    roundTrip = () => textRefusal(TOO_MANY_ELEMENTS, 413);
+    writeFileSync(join(stateDir, "items.md"), MANY_ITEMS);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "items.md"];
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({
+      code: 1,
+      stdout: `CAP_EXCEEDED: ${TOO_MANY_ELEMENTS.error}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([
+      { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(MANY_ITEMS) },
+    ]);
+    requests.length = 0;
+    const call = await run(argv, omp);
+    expect(call).toEqual(dry);
+    expect(requests).toEqual([
+      { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(MANY_ITEMS) },
+    ]);
+  });
+
+  // A markdown file is stored as the store spells it, with no refusal for its spelling: the dry
+  // run and the call ask the round trip only for a refusal, so a file the store would respell
+  // passes the dry run, and the call uploads its bytes.
+  test("an upload's dry run of a markdown --path file Dispatch would respell passes, as the call stores it", async () => {
+    roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", path: "notes.md" }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([{ method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) }]);
+    requests.length = 0;
+    const call = await run(argv, omp);
+    expect(call.code, call.stdout).toBe(0);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) },
+      { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
+    ]);
+  });
+
+  // INFRA-4224 R3 (spec v24): Dispatch's round trip refuses, in its upload's own status, code and
+  // words, every text that upload refuses for the text alone (markdown_round_trip_test.go measures
+  // the two equal, and these are the words it measured). A markdown --path file holding one that
+  // the command does not refuse itself - its size, a U+0000 and a byte that is not UTF-8, which it
+  // refuses before it asks (below) - is refused by the dry run and by the call alike, each from the
+  // file round trip it sends the file's bytes to, with the same stdout and exit 1. The call
+  // refuses it before it reads whether the issue holds the name and before its upload, which this
+  // fake would take: it sends nothing else.
+  for (const refusal of [
+    {
+      holding: "an ask block that breaks its content rule",
+      bytes: Buffer.from(ASK_AFTER_OPTIONS),
+      ...ASK_AFTER_OPTIONS_REFUSED,
+    },
+    {
+      holding: "markdown the parser refuses",
+      bytes: Buffer.from(BLOCK_HTML),
+      ...BLOCK_HTML_REFUSED,
+    },
+  ]) {
+    test(`a markdown --path file holding ${refusal.holding} is refused by the call as by its dry run, and neither uploads`, async () => {
+      const answer = { code: refusal.code, error: refusal.error };
+      roundTrip = () => textRefusal(answer, 400);
+      writeFileSync(join(stateDir, "refused.md"), refusal.bytes);
+      const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
+
+      const dry = await run([...argv, "--dry-run"], omp);
+      expect(dry).toEqual({ code: 1, stdout: `${refusal.code}: ${refusal.error}\n`, stderr: "" });
+      expect(requests).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(refusal.bytes) },
+      ]);
+      requests.length = 0;
+      const call = await run(argv, omp);
+      expect(call).toEqual(dry);
+      expect(requests).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(refusal.bytes) },
+      ]);
+    });
+  }
+
+  // INFRA-4224 R3 (spec v27): the command reads every file and stdin a flag names as bytes
+  // (`readFileText`, the `dispatch` entry's reader, run here with stdin's bytes handed to it), and
+  // refuses bytes that are not UTF-8, which a lenient read stored as U+FFFD, with Dispatch's own
+  // refusal of such a byte (`unstorableText`'s INVALID_UTF8): the field the flag sets, the first
+  // such byte, and the character it stands at, counted from 1 in UTF-16 units. A U+0000 before
+  // that byte is refused first, and an upload's text past the bytes one document holds before
+  // either (the next test). The dry run and the call refuse it alike, for any command: exit 1, the
+  // same stdout, and nothing sent. A byte order mark and multi-byte UTF-8 read as before, the mark
+  // kept as U+FEFF.
+  test("a file or stdin holding a byte that is not UTF-8 is refused with Dispatch's INVALID_UTF8 by the dry run as by the call, sending nothing, and UTF-8 reads as before", async () => {
+    const file = join(stateDir, "text");
+    const refused: { argv: string[]; file?: Buffer; stdin?: Buffer; stdout: string }[] = [
+      // A byte order mark, a two-byte and a four-byte character, and a space before the byte: one,
+      // one, two and one UTF-16 units.
+      {
+        argv: UPLOAD,
+        stdin: Buffer.concat([Buffer.from("\uFEFFé😀 "), Buffer.from([0xff])]),
+        stdout: notUtf8("content", "0xFF", 6),
+      },
+      {
+        argv: ["comment", "--issue", "DSP-1", "--body-file", file],
+        file: Buffer.concat([Buffer.from("Looks good.\n"), Buffer.from([0xff])]),
+        stdout: notUtf8("body", "0xFF", 13),
+      },
+      // A sequence cut short is refused at the byte that opens it, as Go's utf8.DecodeRune reads it.
+      {
+        argv: ["message", "--issue", "DSP-1", "--body-file", "-"],
+        stdin: Buffer.concat([Buffer.from("ab"), Buffer.from([0xe2, 0x82]), Buffer.from("c")]),
+        stdout: notUtf8("body", "0xE2", 3),
+      },
+    ];
+    for (const row of refused) {
+      if (row.file !== undefined) writeFileSync(file, row.file);
+      await refusedAlike(row.argv, row.stdin ?? Buffer.of(), row.stdout, "not UTF-8");
+    }
+
+    await commentPostedAsRead(file, "\uFEFFCafé 😀 naïve\n");
+  });
+
+  /** UTF-8 holding U+0000, and a text holding a byte that is not UTF-8, each refused at character
+   *  11: two rows of packages/envoy/internal/dispatch/api/testdata/text-refusals.json. */
+  const utf8WithNulRow: RefusedBytes = {
+    name: "UTF-8 holding U+0000",
+    bytes: Buffer.from("# Notes\n\nA\u0000B\n"),
+    stdout: (field) => nul(field, 11),
+  };
+  const notUtf8Row: RefusedBytes = {
+    name: "a file holding a byte that is not UTF-8",
+    bytes: Buffer.concat([Buffer.from("# Notes\n\nA"), Buffer.from([0xff]), Buffer.from("B\n")]),
+    stdout: (field) => notUtf8(field, "0xFF", 11),
+  };
+
+  // INFRA-4224 R3 (spec v27): for the same bytes, `dispatch artifact --content-file <file>`,
+  // `--content-file -` (stdin), `--content <text>` where the bytes are UTF-8, and a markdown
+  // `--path` file get the same refusal, in the order the `--path` file's upload refuses it
+  // (`documentBytesRefusal`): the size first, then the first U+0000 or byte that is not UTF-8,
+  // whichever comes first in the bytes, whether or not the bytes are UTF-8. Dispatch's words name
+  // the field the upload names: `content` for inline text, `file` for a `--path` file. The dry run
+  // and the call print the same stdout and exit 1, and neither sends anything: no round trip is
+  // asked. Inline text holding U+0000, which only an in-process caller can give, is checked as a
+  // text read is (review round 13 of INFRA-4224): its dry run once passed it, since this fake's
+  // round trip keeps the text. The first three texts are the rows of
+  // packages/envoy/internal/dispatch/api/testdata/text-refusals.json whose `command` is
+  // ["inline"], and the fourth its row of UTF-8 holding U+0000. Any other command's field is no
+  // document: a comment's body is refused at its first U+0000 or byte that is not UTF-8 only for
+  // bytes that are not UTF-8, and its UTF-8 holding U+0000 the command does not refuse. The dry run
+  // passes it, and the call sends it to Dispatch as read, which answers it.
+  test("an upload's bytes from --content-file, stdin, inline --content or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
+    const nulFirst = Buffer.from([0x41, 0x00, 0x42, 0xff]);
+    await uploadRefusedEveryWay([
+      {
+        name: "a file holding U+0000 before a byte that is not UTF-8",
+        bytes: nulFirst,
+        stdout: (field) => nul(field, 2),
+      },
+      {
+        name: "a file past the bytes one document holds holding a byte that is not UTF-8",
+        bytes: Buffer.concat([
+          Buffer.from("# Notes\n\nA"),
+          Buffer.from([0xff]),
+          Buffer.alloc(MARKDOWN_DOCUMENT_MAX_BYTES, "word "),
+        ]),
+        stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
+      },
+      notUtf8Row,
+      utf8WithNulRow,
+    ]);
+
+    const file = join(stateDir, "text");
+    writeFileSync(file, nulFirst);
+    const comment = ["comment", "--issue", "DSP-1", "--body-file", file];
+    await refusedAlike(comment, Buffer.of(), nul("body", 2), "a comment");
+    await commentPostedAsRead(file, "Looks good.\u0000\n");
+  });
+
+  // INFRA-4224 R3: with Dispatch off (no Dispatch in the environment and no envoy.json), the dry
+  // run and the call refuse the same bytes from `--content-file <file>`, `--content-file -`
+  // (stdin), `--content <text>` where the bytes are UTF-8, and a markdown `--path` file alike, as
+  // they do with Dispatch on: UTF-8 holding U+0000, a text of UTF-8 past the bytes one document
+  // holds, and bytes that are not UTF-8, each with exit 1 and the same stdout but for the field,
+  // nothing on stderr, and no request. Each is refused once the flags are read, before anything
+  // that needs Dispatch, so no client is built and the call is never refused for Dispatch being
+  // off; a file these checks pass is (the test of the dry run's warning with Dispatch off). The
+  // inline text is an in-process caller's (review round 13 of INFRA-4224): its call once exited 2
+  // for Dispatch being off where its dry run refused the size with exit 1, or passed the U+0000
+  // with a warning.
+  test("with Dispatch off an upload's bytes from --content-file, stdin, inline --content or a markdown --path file are refused alike by the dry run and the call", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    await uploadRefusedEveryWay(
+      [
+        utf8WithNulRow,
+        {
+          name: "a text past the bytes one document holds",
+          bytes: Buffer.from(PAST_DOCUMENT_LIMIT),
+          stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
+        },
+        notUtf8Row,
+      ],
+      off
+    );
+  });
+
+  // A markdown --path file the command cannot read is no refusal of its text, so the check made
+  // once the flags are read leaves it to the argument check: a dry run naming both a path and
+  // content is refused for that, with exit 2, and sends nothing.
+  test("an upload's dry run naming content and a markdown --path file that is not there is refused by the argument check", async () => {
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--content", "# A"];
+    const dry = await run([...argv, "--path", "gone.md", "--dry-run"], omp);
+    expect(dry.code).toBe(2);
+    expect(dry.stdout).toStartWith(
+      "dispatch artifact was not called: 1 problem\n- Give at most one of path and content."
+    );
+    expect(dry.stderr).toBe("");
+    expect(requests).toEqual([]);
+  });
+
+  // With DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run runs no step, so a markdown --path file that
+  // is not there, which the check made once the flags are read leaves, is never read: the dry run
+  // prints the arguments and sends nothing.
+  test("with DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run of a markdown --path file that is not there prints the arguments", async () => {
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--path", "gone.md"];
+    const dry = await run([...argv, "--dry-run"], { ...omp, DISPATCH_DRY_RUN_LOCAL: "1" });
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "a.md", path: "gone.md" }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  // A markdown --path file that is neither a regular file nor a directory is not read, as a file
+  // Dispatch stores as its bytes is not (review round 13 of INFRA-4224): a FIFO stats with size 0,
+  // and the check made once the flags are read waited forever on its read, so AskGate's own dry run
+  // (DISPATCH_DRY_RUN_LOCAL=1) hung where it had returned at once. With the variable and without
+  // it, the dry run prints the arguments, writes nothing on stderr and sends no request: the dry
+  // run's step asks no file round trip about a file it holds no bytes of. A read that waits fails
+  // the test by its timeout.
+  test("an upload's dry run of a markdown --path file that is a FIFO prints the arguments without reading it, with DISPATCH_DRY_RUN_LOCAL=1 and without", async () => {
+    execFileSync("mkfifo", [join(stateDir, "f.md")]);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--path", "f.md", "--dry-run"];
+    const json = `${JSON.stringify({ issue: "DSP-1", name: "a.md", path: "f.md" }, null, 2)}\n`;
+    for (const local of ["1", undefined]) {
+      requests.length = 0;
+      const named = `DISPATCH_DRY_RUN_LOCAL=${local ?? "unset"}`;
+      const dry = await run(argv, { ...omp, DISPATCH_DRY_RUN_LOCAL: local });
+      expect(dry, named).toEqual({ code: 0, stdout: json, stderr: "" });
+      expect(requests, named).toEqual([]);
+    }
+  });
+
+  // INFRA-4224: the call of a markdown --path file asks the file round trip about the bytes it
+  // would send, with and without --force, as its dry run does, and throws Dispatch's refusal
+  // before it uploads. This fake's upload refuses the file in other words, which neither prints.
+  test("the call of a markdown --path file whose file round trip Dispatch refuses prints that refusal as its dry run does, and uploads nothing", async () => {
+    roundTrip = () => textRefusal(BLOCK_HTML_REFUSED, 400);
+    uploadRefusal = () =>
+      Response.json(
+        { code: "INVALID_MARKDOWN", error: "the upload's own words, which the call never reaches" },
+        { status: 400 }
+      );
+    writeFileSync(join(stateDir, "refused.md"), BLOCK_HTML);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
+    for (const [call, asked] of [
+      [argv, fileBody(BLOCK_HTML)],
+      [[...argv, "--force"], { file: Buffer.from(BLOCK_HTML).toString("base64") }],
+    ] as const) {
+      requests.length = 0;
+      const dry = await run([...call, "--dry-run"], omp);
+      const called = await run(call, omp);
+      expect(called, call.join(" ")).toEqual({
+        code: 1,
+        stdout: `${BLOCK_HTML_REFUSED.code}: ${BLOCK_HTML_REFUSED.error}\n`,
+        stderr: "",
+      });
+      expect(dry, call.join(" ")).toEqual(called);
+      // The dry run's round trip, then the call's, which is all the call sends: no read of the
+      // held name, and no upload.
+      expect(requests, call.join(" ")).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: asked },
+        { method: "POST", path: FILE_ROUND_TRIP, body: asked },
+      ]);
+    }
+  });
+
+  // INFRA-4224: without --force the call reads whether the issue holds the name, and it reads it
+  // only after its check of the text, the check its dry run makes. So a text that check refuses,
+  // inline or in a markdown --path file, under a name the issue holds, gets the text's refusal
+  // from the call, which reads no held name for it, as from its dry run, which reads none at all:
+  // the same stdout and exit. A text the check passes is still refused for the name by the call,
+  // read after the check, and passed by the dry run, which cannot know the name.
+  test("a text refused for the text alone under a name the issue holds gets the text's refusal from the call, as from its dry run, not the name's", async () => {
+    issueArtifacts = [NOTES_HELD];
+    writeFileSync(join(stateDir, "refused.md"), BLOCK_HTML);
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    const refusedText = () => textRefusal(BLOCK_HTML_REFUSED, 400);
+    const textRefused = `${BLOCK_HTML_REFUSED.code}: ${BLOCK_HTML_REFUSED.error}\n`;
+    const cases: {
+      argv: string[];
+      stdin: string;
+      answer: typeof roundTrip;
+      asked: { path: string; body: unknown };
+      code: number;
+      refusal: string;
+    }[] = [
+      {
+        argv: [...owner, "--content-file", "-"],
+        stdin: BLOCK_HTML,
+        answer: refusedText,
+        asked: { path: ROUND_TRIP, body: markdownBody(BLOCK_HTML) },
+        code: 1,
+        refusal: textRefused,
+      },
+      {
+        argv: [...owner, "--path", "refused.md"],
+        stdin: "",
+        answer: refusedText,
+        asked: { path: FILE_ROUND_TRIP, body: fileBody(BLOCK_HTML) },
+        code: 1,
+        refusal: textRefused,
+      },
+      // Refused for its spelling, which exits 2 as the name's refusal does, in other words.
+      {
+        argv: [...owner, "--content-file", "-"],
+        stdin: NOTES,
+        answer: (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") }),
+        asked: { path: ROUND_TRIP, body: markdownBody(NOTES) },
+        code: 2,
+        refusal:
+          'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".',
+      },
+    ];
+    for (const { argv, stdin, answer, asked, code, refusal } of cases) {
+      roundTrip = answer;
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect({ code: call.code, stderr: call.stderr }, argv.join(" ")).toEqual({
+        code,
+        stderr: "",
+      });
+      expect(call.stdout, argv.join(" ")).toStartWith(refusal);
+      expect(call.stdout, argv.join(" ")).not.toContain("already holds");
+      expect(requests, argv.join(" ")).toEqual([{ method: "POST", ...asked }]);
+      expect(await run([...argv, "--dry-run"], omp, stdin), argv.join(" ")).toEqual(call);
+    }
+
+    roundTrip = keptText;
+    for (const [argv, stdin, asked] of [
+      [[...owner, "--content-file", "-"], NOTES, ROUND_TRIP],
+      [[...owner, "--path", "notes.md"], "", FILE_ROUND_TRIP],
+    ] as const) {
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect(call.code, argv.join(" ")).toBe(2);
+      expect(call.stdout, argv.join(" ")).toStartWith(
+        "dispatch artifact was not called: 1 problem\n- issue DSP-1 already holds notes.md"
+      );
+      expect(
+        requests.map((request) => `${request.method} ${request.path}`),
+        argv.join(" ")
+      ).toEqual([`POST ${asked}`, "GET /api/v1/issues/DSP-1/artifacts"]);
+      expect((await run([...argv, "--dry-run"], omp, stdin)).code, argv.join(" ")).toBe(0);
+    }
+  });
+
+  // The same ask block and markdown sent inline: the call asks the round trip before it uploads,
+  // and is refused there as its dry run is, with the same stdout and exit 1; neither uploads.
+  for (const refusal of [
+    {
+      holding: "an ask block that breaks its content rule",
+      text: ASK_AFTER_OPTIONS,
+      ...ASK_AFTER_OPTIONS_REFUSED,
+    },
+    { holding: "markdown the parser refuses", text: BLOCK_HTML, ...BLOCK_HTML_REFUSED },
+  ]) {
+    test(`inline text holding ${refusal.holding} is refused by the dry run as by the call`, async () => {
+      roundTrip = () => textRefusal({ code: refusal.code, error: refusal.error }, 400);
+      const dry = await run([...UPLOAD, "--dry-run"], omp, refusal.text);
+      const call = await run(UPLOAD, omp, refusal.text);
+      expect(call).toEqual({ code: 1, stdout: `${refusal.code}: ${refusal.error}\n`, stderr: "" });
+      expect(dry).toEqual(call);
+      expect(requests.filter((request) => request.method === "POST")).toEqual([
+        { method: "POST", path: ROUND_TRIP, body: markdownBody(refusal.text) },
+        { method: "POST", path: ROUND_TRIP, body: markdownBody(refusal.text) },
+      ]);
+    });
+  }
+
+  // INFRA-4224 R3 (spec v26): under --force the upload may replace a document the owner holds, and
+  // a replacement is judged against the document it replaces, by looser rules than a new
+  // document's seed: an ask the write leaves unchanged is not held to its content rule. So under
+  // --force the round trip asks for none of a new document's refusals (no `new_document`), and
+  // Dispatch answers the text as the most permissive replacement takes it, with the rendering that
+  // replacement stores, as it answers every client that does not ask: the call checks that
+  // spelling and uploads the text, and the dry run passes with no warning, inline and for a --path
+  // file alike. This fake refuses the text only where the request asks.
+  test("under --force the round trip asks for no new document's refusals: the call uploads and the dry run passes", async () => {
+    roundTrip = (markdown, body) =>
+      body.new_document === true ? textRefusal(ASK_AFTER_OPTIONS_REFUSED, 400) : keptText(markdown);
+    writeFileSync(join(stateDir, "asks.md"), ASK_AFTER_OPTIONS);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--force"];
+    for (const [argv, stdin, args, asked, upload] of [
+      [
+        [...owner, "--content-file", "-"],
+        ASK_AFTER_OPTIONS,
+        { issue: "DSP-1", name: "notes.md", force: true, content: ASK_AFTER_OPTIONS },
+        { path: ROUND_TRIP, body: { markdown: ASK_AFTER_OPTIONS } },
+        expect.objectContaining({ content: ASK_AFTER_OPTIONS }),
+      ],
+      [
+        [...owner, "--path", "asks.md"],
+        "",
+        { issue: "DSP-1", name: "notes.md", force: true, path: "asks.md" },
+        {
+          path: FILE_ROUND_TRIP,
+          body: { file: Buffer.from(ASK_AFTER_OPTIONS).toString("base64") },
+        },
+        ASK_AFTER_OPTIONS,
+      ],
+    ] as const) {
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, stdin);
+      expect({ code: dry.code, stderr: dry.stderr }, argv.join(" ")).toEqual({
+        code: 0,
+        stderr: "",
+      });
+      expect(JSON.parse(dry.stdout), argv.join(" ")).toEqual(args);
+      expect(requests, argv.join(" ")).toEqual([{ method: "POST", ...asked }]);
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect(call.code, `${argv.join(" ")}\n${call.stdout}`).toBe(0);
+      expect(
+        requests
+          .filter((request) => request.path === "/api/v1/issues/DSP-1/artifacts")
+          .map((request) => request.body),
+        argv.join(" ")
+      ).toEqual([upload]);
+    }
+    // Without --force the call makes a new document, so the same text is refused by the dry run
+    // and by the call alike, from a round trip that asks for a new document's refusals.
+    requests.length = 0;
+    const dry = await run([...UPLOAD, "--dry-run"], omp, ASK_AFTER_OPTIONS);
+    const call = await run(UPLOAD, omp, ASK_AFTER_OPTIONS);
+    expect(call).toEqual({
+      code: 1,
+      stdout: `${ASK_AFTER_OPTIONS_REFUSED.code}: ${ASK_AFTER_OPTIONS_REFUSED.error}\n`,
+      stderr: "",
+    });
+    expect(dry).toEqual(call);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(ASK_AFTER_OPTIONS) },
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(ASK_AFTER_OPTIONS) },
+    ]);
+  });
+
+  // A refusal every upload makes before its write, a NUL character here, holds under --force too:
+  // the dry run and the call each refuse it once the flags are read, before they ask anything,
+  // inline text read from stdin and a --path file alike, with the same stdout and exit 1, naming
+  // the field each upload names (`content`, `file`). This fake's round trip keeps the text and its
+  // upload stores what it is sent, so a call that reached either would pass.
+  test("under --force an upload's refusal is still the call's: the dry run and the call refuse a NUL alike", async () => {
+    const text = "# Notes\n\nA\u0000B\n";
+    writeFileSync(join(stateDir, "nul.md"), text);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--force"];
+    for (const [argv, stdin, field] of [
+      [[...owner, "--content-file", "-"], text, "content"],
+      [[...owner, "--path", "nul.md"], "", "file"],
+    ] as const) {
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, stdin);
+      expect(dry, argv.join(" ")).toEqual({ code: 1, stdout: nul(field, 11), stderr: "" });
+      expect(await run(argv, omp, stdin), argv.join(" ")).toEqual(dry);
+      expect(requests, argv.join(" ")).toEqual([]);
+    }
+  });
+
+  // The dry run's client stops at the dry run's deadline and takes the same budget as its own
+  // deadline, so a credential is given that budget less the request's reserve
+  // (`credentialDeadline`): of 600 ms, it waits 300. A broker credential whose renewal the broker
+  // holds answers with the live token in hand once its wait ends, and the round trip still has its
+  // reserve to be sent and answered. A client stopped by the dry run's deadline alone, with the
+  // client's own minute as its budget, gives the credential the whole 600 ms, and the round trip
+  // then goes out on a deadline already spent.
+  test("an upload's dry run leaves the round trip its reserve after a credential that answers only when its wait ends", async () => {
+    let trades = 0;
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async () => {
+        trades += 1;
+        // The first trade's token is good for 200 s, so the client renews it at its half life
+        // (`renewalAt`): the test moves the clock past that before the second dry run, while the
+        // token is still live; the broker holds each renewal.
+        if (trades > 1) return await new Promise<Response>(() => {});
+        return Response.json({
+          access_token: fixtureSecret("live"),
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 200,
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const pod = {
+      ...omp,
+      DISPATCH_TOKEN: undefined,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    };
+    const passed = { code: 0, stdout: NOTES_JSON, stderr: "" };
+    try {
+      // The first dry run trades for the token the second one holds; moving the clock 150 s on
+      // puts the second dry run past the token's half-life renewal while it is still live.
+      expect(await run([...UPLOAD, "--dry-run"], pod, NOTES)).toEqual(passed);
+      setSystemTime(new Date(Date.now() + 150_000));
+      expect(await run([...UPLOAD, "--dry-run"], pod, NOTES, { dryRunDeadlineMs: 600 })).toEqual(
+        passed
+      );
+      expect(trades).toBe(2);
+      expect(requests).toEqual([
+        { method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) },
+        { method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) },
+      ]);
+    } finally {
+      setSystemTime();
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+  });
+
+  test("an upload's dry run passes a text Dispatch keeps, printing the arguments alone", async () => {
+    // The store adds the final line feed this text lacks, which is no other spelling.
+    const content = "# Notes\n\n- one";
+    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(content) }]);
+  });
+
+  // A typed block whose attributes differ from what Dispatch stores only in their order is no
+  // other spelling: the call uploads the text as Dispatch stores it (storedUpload) and names the
+  // block, so its dry run, which refuses only what the call refuses, passes it.
+  test("an upload's dry run passes a text whose block attributes Dispatch stores in another order, as the call uploads it", async () => {
+    const document = (attributes: string) =>
+      `# Verification\n\n:::check{#c1 ${attributes}}\nThe block is stored in Dispatch's order.\n:::\n`;
+    const content = document(
+      'surface="cli" ci_check="lint" when="before_merge" negative_control="no"'
+    );
+    const stored = document(
+      'surface="cli" when="before_merge" negative_control="no" ci_check="lint"'
+    );
+    roundTrip = () => Response.json({ markdown: stored });
+    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content }, null, 2)}\n`,
+      stderr: "",
+    });
+    requests.length = 0;
+    const call = await run(UPLOAD, omp, content);
+    expect(call.code, call.stdout).toBe(0);
+    expect(call.stdout).toContain(
+      "in the order Dispatch stores: id, surface, when, negative_control, ci_check."
+    );
+    expect(
+      requests
+        .filter(
+          (request) =>
+            request.method === "POST" && request.path === "/api/v1/issues/DSP-1/artifacts"
+        )
+        .map((request) => request.body)
+    ).toEqual([expect.objectContaining({ content: stored })]);
+  });
+
+  // A Dispatch older than the round trip answers no route for it, as the server answers every path
+  // no route serves, with its hint (routes/router.go's staticHandler), and the call then uploads
+  // the text unchecked. The dry run asks the route once, with no waits before asking again, so
+  // that answer reaches it well inside its 5 s bound, and its warning carries Dispatch's hint.
+  test("an upload's dry run against a Dispatch with no round-trip route passes within its bound, saying the call uploads unchecked", async () => {
+    roundTrip = () =>
+      Response.json(
+        { code: "NOT_FOUND", error: `no route for POST ${ROUND_TRIP}`, hint: NO_ROUTE_HINT },
+        { status: 404 }
+      );
+    const started = performance.now();
+    const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: NOTES_JSON,
+      stderr: routeAbsent(`NOT_FOUND: no route for POST ${ROUND_TRIP}; ${NO_ROUTE_HINT}`),
+    });
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) }]);
+  });
+
+  // A Dispatch that has the inline round trip and not the file one - main's server, and the old
+  // pods of a rolling deploy - answers the file's check 404, as its own JSON with its hint. The
+  // dry run of a markdown --path file then passes, saying this Dispatch cannot check the file and
+  // that the call asks once more. The call asks the same route as its dry run asks it - once, with
+  // no wait before asking a route again - and uploads the file once that route is absent too: one
+  // file round trip, then the upload, inside the dry run's 5 s bound.
+  test("a markdown --path file's dry run against a Dispatch with no file round trip passes, saying it cannot check the file, and the call asks once and uploads", async () => {
+    roundTrip = (markdown, body) =>
+      "file" in body
+        ? Response.json(
+            {
+              code: "NOT_FOUND",
+              error: `no route for POST ${FILE_ROUND_TRIP}`,
+              hint: NO_ROUTE_HINT,
+            },
+            { status: 404 }
+          )
+        : keptText(markdown);
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+    const asked = { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) };
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", path: "notes.md" }, null, 2)}\n`,
+      stderr: `dispatch: warning: this Dispatch cannot check the file: POST ${FILE_ROUND_TRIP} failed with NOT_FOUND: no route for POST ${FILE_ROUND_TRIP}; ${NO_ROUTE_HINT}. The call asks once more, and uploads the file unchecked if it gets no answer either.\n`,
+    });
+    expect(requests).toEqual([asked]);
+    requests.length = 0;
+    const started = performance.now();
+    const call = await run(argv, omp);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(call.code, call.stdout).toBe(0);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      asked,
+      { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
+    ]);
+  });
+
+  // Every other answer of the file round trip that is not a refusal Dispatch marks says nothing
+  // of the file, and the call uploads it, leaving its refusal to the upload: a Dispatch without
+  // the route answering 405, the route's own 413 for a body past its bound, which carries no mark,
+  // and a 503, which the call does not ask again, as its dry run does not, since the file goes up
+  // whatever the round trip failed with.
+  test("the call of a markdown --path file uploads it when the file round trip gives no answer about it", async () => {
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+    for (const [status, answer] of [
+      [405, { code: "METHOD_NOT_ALLOWED", error: "method not allowed" }],
+      [413, { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" }],
+      [503, { code: "UNAVAILABLE", error: "the database is restarting" }],
+    ] as const) {
+      roundTrip = () => Response.json(answer, { status });
+      requests.length = 0;
+      const call = await run(argv, omp);
+      expect(call.code, `${status}: ${call.stdout}`).toBe(0);
+      expect(
+        requests.filter((request) => request.method === "POST"),
+        String(status)
+      ).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) },
+        { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
+      ]);
+    }
+  });
+
+  // A dry run whose round trip cannot run passes and says why on stderr: an AskGate that runs the
+  // call after a failed dry run would post the write unreviewed. The JSON stays alone on stdout.
+  test("an upload's dry run passes when the round trip fails, naming the failure on stderr", async () => {
+    const cases = [
+      {
+        status: 405,
+        answer: { code: "METHOD_NOT_ALLOWED", error: "method not allowed" },
+        stderr: routeAbsent("METHOD_NOT_ALLOWED: method not allowed"),
+      },
+      {
+        status: 500,
+        answer: { code: "INTERNAL", error: "the document service is down" },
+        stderr: unasked(`POST ${ROUND_TRIP} failed with INTERNAL: the document service is down`),
+      },
+    ];
+    for (const { status, answer, stderr } of cases) {
+      roundTrip = () => Response.json(answer, { status });
+      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+      expect(dry, String(status)).toEqual({ code: 0, stdout: NOTES_JSON, stderr });
+    }
+  });
+
+  test("an upload's dry run passes when Dispatch gives no answer within its bound, saying so", async () => {
+    const held = Promise.withResolvers<Response>();
+    roundTrip = () => held.promise;
+    try {
+      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES, { dryRunDeadlineMs: 200 });
+      expect(dry).toEqual({
+        code: 0,
+        stdout: NOTES_JSON,
+        stderr: unasked("Dispatch gave no answer within 0.2 s"),
+      });
+    } finally {
+      held.resolve(keptText(NOTES));
+    }
+  });
+
+  // With Dispatch off the call is refused with the Dispatch-off message, exit 2, whatever it
+  // uploads - text, blank text, a Markdown file - and its dry run passes, saying so, and sends
+  // nothing.
+  test("an upload's dry run with Dispatch off says the call is refused for the same reason, and sends nothing", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    for (const [argv, stdin, subject] of [
+      [[...owner, "--content-file", "-"], NOTES, "the text"],
+      [[...owner, "--content-file", "-"], " \n\t", "the text"],
+      [[...owner, "--path", "notes.md"], "", "the file"],
+    ] as const) {
+      const call = await run(argv, off, stdin);
+      expect(call.code, argv.join(" ")).toBe(2);
+      const why = call.stdout.replace(/^dispatch: /, "").trimEnd();
+      const dry = await run([...argv, "--dry-run"], off, stdin);
+      expect(dry.code, argv.join(" ")).toBe(0);
+      expect(dry.stderr, argv.join(" ")).toStartWith(
+        `dispatch: warning: the dry run could not ask Dispatch about ${subject}: ${why}`
+      );
+      expect(dry.stderr, argv.join(" ")).toEndWith(" The call is refused for the same reason.\n");
+    }
+    expect(requests).toEqual([]);
+  });
+
+  // AskGate reads the arguments alone: with DISPATCH_DRY_RUN_LOCAL=1 the dry run asks Dispatch
+  // nothing, and the call refuses a respelled text itself.
+  test("with DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run checks the arguments alone, sending nothing", async () => {
+    roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
+    const dry = await run([...UPLOAD, "--dry-run"], { ...omp, DISPATCH_DRY_RUN_LOCAL: "1" }, NOTES);
+    expect(dry).toEqual({ code: 0, stdout: NOTES_JSON, stderr: "" });
+    expect(requests).toEqual([]);
+  });
+
+  // The call asks the round trip nothing for the empty string, and its dry run alike. A file
+  // Dispatch stores as its bytes, one whose path is not Markdown, is no document, so its dry run
+  // asks nothing about it (a Markdown file's asks for a refusal alone, above).
+  test("an upload's dry run of a file stored as bytes, of empty text and of a name alone asks Dispatch nothing", async () => {
+    writeFileSync(join(stateDir, "rows.jsonl"), rows);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    const cases: { argv: string[]; args: object }[] = [
+      {
+        argv: ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--path", "rows.jsonl"],
+        args: { issue: "DSP-1", name: "rows.jsonl", path: "rows.jsonl" },
+      },
+      {
+        argv: [...owner, "--content", ""],
+        args: { issue: "DSP-1", name: "notes.md", content: "" },
+      },
+      { argv: owner, args: { issue: "DSP-1", name: "notes.md" } },
+    ];
+    for (const { argv, args } of cases) {
+      const dry = await run([...argv, "--dry-run"], omp);
+      expect(dry, argv.join(" ")).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify(args, null, 2)}\n`,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+  });
+
+  // Any other blank text (Go's strings.TrimSpace empties it) is asked, for a refusal alone, never
+  // for its spelling: the round trip answers "" for it, which is no spelling the call refuses, so a
+  // short blank text passes the dry run, as the call uploads it.
+  test("an upload's dry run of a short blank text asks the round trip and passes", async () => {
+    // The round trip answers the empty markdown for blank text it does not refuse.
+    roundTrip = () => Response.json({ markdown: "" });
+    const blank = " \n\t";
+    const dry = await run([...UPLOAD, "--dry-run"], omp, blank);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content: blank }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(blank) }]);
+  });
+
+  // Blank text the upload refuses: 20,000 paragraphs of a no-break space, which Go's
+  // strings.TrimSpace empties and which make more elements than one document may hold. Dispatch's
+  // round trip refuses them with the upload's 413, marked as a refusal of the text, and the call
+  // and its dry run each refuse them with it, with the same stdout and exit 1. Neither uploads.
+  test("an upload's dry run refuses blank text past the element limit with Dispatch's refusal, as the call does", async () => {
+    roundTrip = () => textRefusal(BLANK_TOO_MANY_ELEMENTS, 413);
+    const dry = await run([...UPLOAD, "--dry-run"], omp, BLANK_PAST_ELEMENTS);
+    const call = await run(UPLOAD, omp, BLANK_PAST_ELEMENTS);
+    expect(call).toEqual({
+      code: 1,
+      stdout: `CAP_EXCEEDED: ${BLANK_TOO_MANY_ELEMENTS.error}\n`,
+      stderr: "",
+    });
+    expect(dry).toEqual(call);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(BLANK_PAST_ELEMENTS) },
+      { method: "POST", path: ROUND_TRIP, body: markdownBody(BLANK_PAST_ELEMENTS) },
+    ]);
+  });
+
+  test("artifact's help prints its spec's own dry-run sentence, and another command's the shared one", async () => {
+    const specs = new Map<string, DispatchToolSpec>(dispatchToolSpecs.map((s) => [s.name, s]));
+    const artifactDryRun = specs.get("dispatch_artifact")?.dryRunHelp;
+    expect(typeof artifactDryRun).toBe("string");
+    expect(artifactDryRun).not.toBe(DRY_RUN_HELP);
+    expect(specs.get("dispatch_message")?.dryRunHelp).toBeUndefined();
+    const artifact = await run(["artifact", "--help"], omp);
+    expect(artifact.stdout).toContain(`  --dry-run\n      ${artifactDryRun}\n`);
+    const message = await run(["message", "--help"], omp);
+    expect(message.stdout).toContain(`  --dry-run\n      ${DRY_RUN_HELP}\n`);
   });
 
   test("the follow notice is printed once per ask across processes", async () => {
@@ -1221,99 +2403,122 @@ describe("the dispatch CLI", () => {
     expect(second.stdout).not.toContain("is still in triage");
   });
 
-  // Every `dispatch` command is a process of its own, so what one call saw of Dispatch's keyed
-  // layer reaches the next only through the session's state. A later call's write whose attempt
-  // fails is asked again under its key on that alone, without /healthz, which the load that
-  // stalled the write can keep from answering in time.
-  test("a failed write is asked again under its key when an earlier call of the session saw the keyed layer", async () => {
+  // Every `dispatch` command is a process of its own, and its write whose attempt fails is asked
+  // again under its key on its own: Dispatch's keyed layer answers the repeat from the key, so the
+  // call needs nothing an earlier call saw, and the session's state keeps nothing of the layer.
+  test("a failed write is asked again under its key in a call of its own, and the state keeps nothing of the keyed layer", async () => {
     const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const first = keyedDispatch(0);
-    expect((await run(message, omp, "", first.fetchImpl)).code).toBe(0);
+    const stalled = keyedDispatch(1);
+    const { code, stdout } = await run(message, omp, "", { fetchImpl: stalled.fetchImpl });
+    expect(code, stdout).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
     const state = JSON.parse(
       readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
     );
-    expect(Object.keys(state.keyedLayer)).toEqual([`http://127.0.0.1:${server.port}`]);
-    nextProcess("ses-1");
-    const stalled = keyedDispatch(1);
-    const second = await run(message, omp, "", stalled.fetchImpl);
-    expect(second.code).toBe(0);
-    expect(stalled.keys).toHaveLength(2);
-    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
-    expect(stalled.probes).toEqual([]);
+    expect(Object.keys(state).sort()).toEqual(["advice", "follows", "pictures"]);
   });
 
-  // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
-  // within one. One older than that, one dated ahead of the clock, and anything that is not a
-  // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
-  // than sent twice.
-  test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
-    const origin = `http://127.0.0.1:${server.port}`;
-    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const dir = join(stateDir, "sessions", "ses-1");
-    mkdirSync(dir, { recursive: true });
-    const sighting = (ago: number) => ({ [origin]: new Date(Date.now() - ago).toISOString() });
-    const call = async (keyedLayer: unknown) => {
-      writeFileSync(
-        join(dir, "state.json"),
-        JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer })
-      );
-      nextProcess("ses-1");
-      const stalled = keyedDispatch(1);
-      const { code } = await run(message, omp, "", stalled.fetchImpl);
-      return { code, posts: stalled.keys.length, probes: stalled.probes.length };
-    };
-    expect(await call(sighting(60_000))).toEqual({ code: 0, posts: 2, probes: 0 });
-    for (const keyedLayer of [
-      sighting(KEYED_LAYER_MEMORY_MS + 1_000),
-      sighting(-60_000),
-      { [origin]: "yesterday" },
-      { [origin]: Date.now() },
-      "garbage",
-    ]) {
-      expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
-        code: 1,
-        posts: 1,
-        probes: 1,
-      });
-    }
-  });
-
-  // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
-  // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
-  // again, and the call's save leaves the sighting out of state.json, so the next call trusts
-  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
-  test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
+  // Every `dispatch` command is a process of its own and carries nothing of Dispatch's keyed layer
+  // from an earlier call. Every Dispatch that carries `b1c42d1d7d` runs that layer, so a later
+  // call's write whose attempt fails is asked again under its key with no /healthz read, which the
+  // load that stalled the write can keep from answering in time. The state.json here is one an
+  // earlier release wrote, whose `keyedLayer` remembered a sighting of the layer too old for that
+  // release to trust: it is not read, and the call's save writes no such member back.
+  test("a failed write is asked again under its key with no /healthz read, whatever an earlier call of the session saw", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");
     mkdirSync(join(stateDir, "sessions", "ses-1"), { recursive: true });
-    const keyedLayer = { [origin]: new Date(Date.now() - 60_000).toISOString() };
+    const keyedLayer = { [origin]: new Date(Date.now() - 10 * 60_000).toISOString() };
     writeFileSync(file, JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer }));
     nextProcess("ses-1");
-    let posts = 0;
-    let probes = 0;
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const { pathname } = new URL(request.url);
-      if (pathname === "/healthz") {
-        probes++;
-        throw new DOMException("The operation timed out.", "TimeoutError");
-      }
-      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-        posts++;
-        return Response.json({ code: "INTERNAL", error: "database is down" }, { status: 503 });
-      }
-      return fetch(request);
-    }) as typeof fetch;
+    const stalled = keyedDispatch(1);
+
     const { code } = await run(
       ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
       omp,
       "",
-      fetchImpl
+      { fetchImpl: stalled.fetchImpl }
     );
-    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
-    expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
-  }, 30_000);
+
+    expect(code).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
+    expect(stalled.probes).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf-8"))).not.toHaveProperty("keyedLayer");
+  });
+
+  // A cache or a front that answers a write by its URL with another call's stored answer gives a
+  // 2xx that names no key back, and Dispatch's keyed layer names the key back on every answer it
+  // gives a keyed write: such a 2xx is never the call's answer, whatever it holds, so the command
+  // says the write may or may not have taken effect, and exits 1. At 7735fa52b4 the command printed
+  // such an answer as this call's write ("Created ACME-7: Another call's title", "Posted comment
+  // <another call's id>", exit 0) while nothing of this call was stored. The stand-in answers each
+  // route with its least declared answer, and the write with another call's, naming no key back.
+  for (const { argv, route, other, shown } of [
+    {
+      argv: ["issue", "--project", "ACME", "--title", "This call's title", "--force"],
+      route: "POST /api/v1/issues",
+      other: { key: "ACME-7", project: "ACME", title: "Another call's title" },
+      shown: "Another call's title",
+    },
+    {
+      argv: ["comment", "--issue", "DSP-1", "--body", "This call's body"],
+      route: "POST /api/v1/issues/DSP-1/comments",
+      other: {
+        id: "0bbbbbbb-0000-4000-8000-000000000007",
+        issue_key: "DSP-1",
+        body: "Another call's body",
+      },
+      shown: "0bbbbbbb-0000-4000-8000-000000000007",
+    },
+  ]) {
+    test(`dispatch ${argv[0]} prints another call's stored answer, naming no key back, as no answer of its own`, async () => {
+      const writes: string[] = [];
+      const cache = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          await request.arrayBuffer();
+          const { pathname } = new URL(request.url);
+          const asked = `${request.method} ${pathname}`;
+          let answer: { status: number; body: unknown } | undefined;
+          try {
+            answer = leastAnswerFor(request.method, pathname);
+          } catch {
+            answer = { status: 200, body: [] };
+          }
+          if (answer === undefined) {
+            return Response.json(
+              { code: "NOT_FOUND", error: `no route for ${asked}` },
+              { status: 404 }
+            );
+          }
+          if (asked !== route) return Response.json(answer.body, { status: answer.status });
+          writes.push(asked);
+          return Response.json(
+            { ...(answer.body as Record<string, unknown>), ...other },
+            { status: answer.status }
+          );
+        },
+      });
+      try {
+        const { code, stdout, stderr } = await run(argv, {
+          ...omp,
+          DISPATCH_URL: `http://127.0.0.1:${cache.port}`,
+        });
+        const out = `${stdout}${stderr}`;
+        expect({
+          asked: writes.length > 0,
+          code,
+          printsTheOtherCall: out.includes(shown),
+          unknown: out.includes("may or may not"),
+        }).toEqual({ asked: true, code: 1, printsTheOtherCall: false, unknown: true });
+      } finally {
+        cache.stop(true);
+      }
+    }, 30_000);
+  }
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
@@ -1521,6 +2726,10 @@ describe("the dispatch CLI", () => {
           ["--ref", "dispatch://DSP-4/children", "--events", "5"],
           dropped("--events", "the issue's children"),
         ],
+        [
+          ["--ref", "dispatch://DSP-4/comments", "--events", "5"],
+          dropped("--events", "the issue's comments"),
+        ],
         [["--ref", `dispatch://DSP-4/ask/${id}`, "--events", "5"], dropped("--events", "an ask")],
         [
           ["--ref", `dispatch://CORE/artifact/runbook/ask/${id}`, "--events", "5"],
@@ -1573,7 +2782,7 @@ describe("the dispatch CLI", () => {
     expect(readFileSync(path).subarray(0, 4).toString("hex")).toBe("89504e47");
   });
 
-  test("every call that reaches Dispatch appends one ledger line naming its tool", async () => {
+  test("every spec command that reaches Dispatch appends one ledger line naming its tool", async () => {
     await run(["message", "--issue", "DSP-1", "--body", "Deliverable landed."], omp);
     await run(["read", "--message", "missing"], omp);
     expect(ledger("ses-1").map((entry) => entry.tool)).toEqual([
@@ -1775,6 +2984,47 @@ describe("the dispatch CLI", () => {
     });
   });
 
+  // A replace with no with was sent and read as an empty one, which deleted the text its find
+  // matched; one whose new text stood under markdown did the same. Both exit 2 before anything is
+  // sent, naming the operation and the field.
+  describe("doc-edit replace", () => {
+    test("refuses a replace with no with before it sends anything", async () => {
+      const { code, stdout } = await run(
+        [
+          "doc-edit",
+          "--issue",
+          "DSP-2",
+          "--ops-json",
+          JSON.stringify([{ op: "replace", find: "old" }]),
+        ],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        'ops[0] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.'
+      );
+      expect(requests).toEqual([]);
+    });
+
+    test("refuses a replace carrying a field replace does not take, naming it", async () => {
+      const ops = [
+        { op: "replace", find: "old", with: "new" },
+        { op: "replace", find: "old", markdown: "new" },
+      ];
+      const { code, stdout } = await run(
+        ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify(ops)],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        "ops[1] is a replace carrying markdown, which replace does not take: it takes find, with and occurrence, and its new text goes in with."
+      );
+      expect(stdout).toContain("ops[1] is a replace with no with");
+      expect(stdout).not.toContain("ops[0]");
+      expect(requests).toEqual([]);
+    });
+  });
+
   test("dispatch project prints the created project, and a taken key exits 1 naming PROJECT_EXISTS", async () => {
     const created = await run(["project", "--key", "SMOKE684", "--name", "Smoke"], omp);
     expect(created.code).toBe(0);
@@ -1829,6 +3079,184 @@ describe("the dispatch CLI", () => {
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
+
+  // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
+  // command prints that refusal as a line of its own, its code first and then Dispatch's message,
+  // and exits 1, as for every write Dispatch refused. The credential is the read trade
+  // DISPATCH_TOKEN_BROKER_READ asks for, over the DISPATCH_TOKEN the shell also holds.
+  test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
+    const readToken = fixtureSecret("read");
+    const trades: URLSearchParams[] = [];
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        trades.push(new URLSearchParams(await request.text()));
+        return Response.json({
+          access_token: readToken,
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 600,
+          scope: "read",
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const refusal =
+      "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran";
+    const sent: { method: string; path: string; authorization: string }[] = [];
+    // The stand-in Dispatch: the test server answers every read, and every write is refused as
+    // Dispatch refuses a read-only token's.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (request.method === "GET") return await fetch(request);
+      return Response.json({ code: DISPATCH_READ_ONLY_TOKEN, error: refusal }, { status: 403 });
+    }) as typeof fetch;
+    let ran: { code: number; stdout: string };
+    try {
+      ran = await run(
+        ["message", "--issue", "DSP-1", "--body", "hello"],
+        {
+          ...omp,
+          DISPATCH_TOKEN_BROKER_READ: "1",
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+        },
+        "",
+        { fetchImpl }
+      );
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+
+    expect(ran.stdout.split("\n")).toContain(`${DISPATCH_READ_ONLY_TOKEN}: ${refusal}`);
+    expect(ran.code).toBe(1);
+    expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
+    expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    // Every request presented the read-only token, never the bearer the shell holds.
+    expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
+  });
+});
+
+// `dispatch api`: one request of a route under /api/v1 (a GET here; its writes, its answers and
+// the rest of its refusals are in dispatch-api.test.ts), with the session's own credential,
+// Dispatch's JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each
+// request carried, which the server above does not, and a broker of its own answers a pod's trade.
+describe("dispatch api", () => {
+  interface Asked {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string;
+  }
+  const asked: Asked[] = [];
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      asked.push({
+        method: request.method,
+        path: `${pathname}${search}`,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (pathname === "/api/v1/issues/DSP-1") {
+        return Response.json({
+          key: "DSP-1",
+          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+        });
+      }
+      return Response.json(
+        { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
+        { status: 404 }
+      );
+    },
+  });
+  /** The session each trade asked the broker to write under, as its `session` form field. */
+  const trades: string[] = [];
+  /** The access token the broker answered each trade with, in the order of `trades`. */
+  const accessTokens: string[] = [];
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      const accessToken = fixtureSecret("access");
+      accessTokens.push(accessToken);
+      return Response.json({
+        access_token: accessToken,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+        credential_id: "cred-1",
+      });
+    },
+  });
+  afterAll(() => {
+    dispatch.stop(true);
+    broker.stop(true);
+  });
+  beforeEach(() => {
+    asked.length = 0;
+    trades.length = 0;
+    accessTokens.length = 0;
+    forgetBrokerClients();
+  });
+  const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+
+  test("reads a route with the session's bearer and prints Dispatch's JSON", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1?events=0"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
+    ]);
+  });
+
+  test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, "projected.service.account.token\n");
+    // A pod launched under the setting: the bearer the environment still holds is never read.
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1"], {
+      ...session,
+      DISPATCH_TOKEN_BROKER: "1",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).key).toBe("DSP-1");
+    expect(trades).toEqual(["ses-1"]);
+    expect(asked).toEqual([
+      {
+        method: "GET",
+        path: "/api/v1/issues/DSP-1",
+        authorization: `DPoP ${accessTokens[0]}`,
+      },
+    ]);
+  });
+
+  // Two paths dispatch-api.test.ts's refusals hold no row of: an encoded dot segment in mixed
+  // case, and a backslash after /api/v1.
+  test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
+    const outside = ["/api/v1/%2E%2e/healthz", "/api/v1/issues\\..\\..\\healthz"];
+    for (const path of outside) {
+      const { code, stdout } = await run(["api", "--path", path], session);
+      expect(code, path).toBe(2);
+      expect(stdout, path).toStartWith("dispatch api was not called: 1 problem\n");
+      expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
+    }
+    expect(asked).toEqual([]);
+  });
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
@@ -1870,8 +3298,9 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
-  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
+  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
+  // the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
@@ -1950,1881 +3379,6 @@ describe("the dispatch entry as its own process", () => {
       expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
   }, 30_000);
-});
-
-// `dispatch result --project` is a CI job's own write, and the job has no session: it trades the
-// OIDC token its runner mints for it at the secrets broker, as a workflow run's token, and writes
-// with the results token it got. The three stand-ins below are the runner's token endpoint, the
-// broker's token endpoint and Dispatch's two project results routes.
-describe("dispatch result --project, as a CI job writes it", () => {
-  const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-  /** The run's OIDC token, the bearer the runner's endpoint takes, and the results token the
-   *  broker mints: none of the three may reach the command's output or its argument list. */
-  const OIDC_TOKEN = fixtureSecret("oidc");
-  const REQUEST_TOKEN = fixtureSecret("actions");
-  const RESULTS_TOKEN = fixtureSecret("results");
-  const SECRETS = [OIDC_TOKEN, REQUEST_TOKEN, RESULTS_TOKEN];
-
-  interface Seen {
-    readonly method: string;
-    readonly path: string;
-    readonly authorization: string | null;
-    readonly dpop: string | null;
-    readonly body: unknown;
-  }
-  const runnerAsked: { authorization: string | null; audience: string | null }[] = [];
-  const trades: { form: URLSearchParams; proof: string }[] = [];
-  const written: Seen[] = [];
-  let brokerAnswer: () => Response | Promise<Response>;
-  /** What the runner's token endpoint waits on before it answers: settled at once by default, and
-   *  held by a test of a runner that answers only after the command's bound: false fails the
-   *  request with a 503. */
-  let runnerHold: Promise<boolean> = Promise.resolve(true);
-  let dispatchAnswer: () => Response | Promise<Response>;
-  /** Whether the stand-in Dispatch answers the write now as no keyed layer does: naming no key. */
-  let unkeyed = false;
-  /** The result Dispatch stores for the job's write, as the route answers it. */
-  const result = storedSpecResult(43, "pass", "", 1);
-  const stored = routeAnswer<typeof result>("POST /api/v1/projects/{key}/results", result, 201);
-  /** The answer of the write in Dispatch's own form, `body`, the stored result by default: the
-   *  keyed layer the stand-in Dispatch answers behind names the write's key back on it. */
-  const storedAnswer = (body: unknown = stored) => Response.json(body, { status: 201 });
-
-  const runner = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      runnerAsked.push({
-        authorization: request.headers.get("Authorization"),
-        audience: new URL(request.url).searchParams.get("audience"),
-      });
-      asked();
-      if (!(await runnerHold)) return new Response("unavailable", { status: 503 });
-      return Response.json({ count: 1, value: OIDC_TOKEN });
-    },
-  });
-  const broker = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      trades.push({
-        form: new URLSearchParams(await request.text()),
-        proof: request.headers.get("DPoP") ?? "",
-      });
-      asked();
-      return brokerAnswer();
-    },
-  });
-  // Behind Dispatch's keyed layer, which names the write's key back on each 2xx and each 409 (its
-  // KEY_COMMITTED, and a handler's refusal), unless the row says it answers as none does.
-  const dispatch = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: keyedLayer(
-      async (request: Request) => {
-        const text = await request.text();
-        written.push({
-          method: request.method,
-          path: new URL(request.url).pathname,
-          authorization: request.headers.get("Authorization"),
-          dpop: request.headers.get("DPoP"),
-          body: text === "" ? undefined : JSON.parse(text),
-        });
-        asked();
-        return dispatchAnswer();
-      },
-      { judged: (response) => response.ok || response.status === 409, noKeyedLayer: () => unkeyed }
-    ),
-  });
-  afterAll(() => {
-    for (const stub of [runner, broker, dispatch]) stub.stop(true);
-  });
-  // A row on the fake clock that never ended left its timers faked: the next row starts real.
-  const realSetTimeout = globalThis.setTimeout;
-  beforeEach(() => {
-    globalThis.setTimeout = realSetTimeout;
-    jest.useRealTimers();
-    runnerAsked.length = 0;
-    trades.length = 0;
-    written.length = 0;
-    runnerHold = Promise.resolve(true);
-    forgetBrokerClients();
-    brokerAnswer = () =>
-      Response.json(
-        Object.fromEntries([
-          ["access_token", RESULTS_TOKEN],
-          ["issued_token_type", "urn:ietf:params:oauth:token-type:access_token"],
-          ["token_type", "DPoP"],
-          ["expires_in", 600],
-        ])
-      );
-    dispatchAnswer = () => storedAnswer();
-    unkeyed = false;
-  });
-
-  const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
-  /** A job's environment as the reporter action writes it: no DISPATCH_HOST and no session. */
-  const jobEnvironment = (): Record<string, string | undefined> => ({
-    PATH: process.env.PATH,
-    HOME: stateDir,
-    DISPATCH_STATE_DIR: stateDir,
-    DISPATCH_URL: dispatchUrl,
-    AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
-    AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
-    AGENT_SECRETS_MACHINE_AUDIENCE: "example-audience",
-    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${runner.port}/_apis/idtoken?api-version=2.0`,
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
-  });
-  const record = [
-    "result",
-    "--project",
-    "ACME",
-    "--check",
-    "p-1",
-    "--verdict",
-    "pass",
-    "--commit",
-    SPEC_COMMIT,
-  ];
-
-  /** The command as its own process, as a job's step runs it. */
-  async function spawnJob(
-    argv: readonly string[],
-    env: Record<string, string | undefined>
-  ): Promise<{ code: number; stdout: string; stderr: string }> {
-    const child = Bun.spawn([process.execPath, entry, ...argv], {
-      cwd: stateDir,
-      env: { ...env, ...CHILD_BUN },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { code, stdout, stderr };
-  }
-
-  /** The command in this process, under exactly `env`, with its one bound `bound` where a test
-   *  shortens it, and the write client's `fetchImpl` where a test watches its answers. */
-  async function runJob(
-    argv: readonly string[],
-    env: Record<string, string | undefined>,
-    bound?: ResultBound,
-    fetchImpl?: typeof fetch
-  ): Promise<{ code: number; stdout: string; stderr: string }> {
-    let stdout = "";
-    let stderr = "";
-    const code = await runDispatchCli(argv, env, {
-      stdout: (text) => {
-        stdout += text;
-      },
-      stderr: (text) => {
-        stderr += text;
-      },
-      readText: (path) => readFileSync(path, "utf-8"),
-      cwd: stateDir,
-      ...(bound === undefined ? {} : { resultBound: bound }),
-      ...(fetchImpl === undefined ? {} : { fetchImpl }),
-    });
-    return { code, stdout, stderr };
-  }
-
-  /** Each row's wait on what the stand-ins were asked (`arrived`); every stand-in calls `asked`
-   *  once it has recorded a request, and so does the write client's fetch once an answer's
-   *  headers came (`answersHeard`). */
-  const watches = new Set<{ readonly met: () => boolean; readonly resolve: () => void }>();
-  let answersHeard = 0;
-  function asked(): void {
-    for (const watch of watches) {
-      if (!watch.met()) continue;
-      watches.delete(watch);
-      watch.resolve();
-    }
-  }
-  /** Settles once `met` holds of what the stand-ins were asked. */
-  function arrived(met: () => boolean): Promise<void> {
-    if (met()) return Promise.resolve();
-    const { promise, resolve } = Promise.withResolvers<void>();
-    watches.add({ met, resolve });
-    return promise;
-  }
-
-  /** Lets the event loop run `count` turns, moving no clock. */
-  async function turns(count: number): Promise<void> {
-    for (let turn = 0; turn < count; turn++) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      await promise;
-    }
-  }
-
-  /** The fake clock a row moves (`onFakeClock`). */
-  interface FakeClock {
-    /** Moves the clock `ms` on, firing each timer due by then. */
-    readonly advance: (ms: number) => void;
-    /** The delay of the timer the code sets `index`th (from 0) since the clock started, once it
-     *  has set it: each wait the call takes (`sleep`, a write's pause, its 20 s silence cut). */
-    readonly timerSet: (index: number) => Promise<number>;
-    /** Settles once the call has ended. */
-    readonly ended: Promise<void>;
-    /** How far the clock has moved since the call started. */
-    readonly elapsed: () => number;
-  }
-
-  /**
-   * `runJob` on the test runner's fake timers, with how far that clock had moved when the call
-   * ended (`ms`, undefined where it had not ended). The command's bound, the trade's own bound and
-   * each wait of the call run on a clock that moves only when `drive` moves it, so a row judges
-   * when on that clock the call ended, which the machine's load cannot change: on the real clock
-   * the 60 s bound once read 246,969 ms on a loaded host. The stand-ins answer on real sockets,
-   * and the clock stands still while they do, so `drive` moves it only once the call waits on
-   * it: a stand-in holds its request (`arrived`), or the call has set the timer of a wait
-   * (`timerSet`). After `drive`, the call has the event loop's turns to end in, and no time.
-   */
-  async function onFakeClock(
-    argv: readonly string[],
-    env: Record<string, string | undefined>,
-    bound: ResultBound | undefined,
-    drive: (clock: FakeClock) => Promise<void> = (clock) => clock.ended
-  ): Promise<{ code: number; stdout: string; stderr: string; ms: number | undefined }> {
-    jest.useFakeTimers();
-    const faked = globalThis.setTimeout;
-    const delays: number[] = [];
-    const timerWatches = new Set<{ readonly index: number; readonly resolve: () => void }>();
-    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...rest: unknown[]) => {
-      delays.push(delay ?? 0);
-      for (const watch of timerWatches) {
-        if (watch.index >= delays.length) continue;
-        timerWatches.delete(watch);
-        watch.resolve();
-      }
-      return faked(handler, delay, ...rest);
-    }) as unknown as typeof setTimeout;
-    answersHeard = 0;
-    // Every real request of the call is counted while it is out (`nextTimers`): the write's own,
-    // the broker client's trades and the runner's token requests, all through the global fetch.
-    const realFetch = globalThis.fetch;
-    requestsOut = 0;
-    globalThis.fetch = Object.assign(
-      async (...args: Parameters<typeof fetch>) => {
-        requestsOut += 1;
-        try {
-          return await realFetch(...args);
-        } finally {
-          requestsOut -= 1;
-        }
-      },
-      { preconnect: realFetch.preconnect }
-    ) as typeof fetch;
-    const heard = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const response = await fetch(input, init);
-      answersHeard += 1;
-      asked();
-      return response;
-    }) as typeof fetch;
-    const started = performance.now();
-    const elapsed = () => performance.now() - started;
-    let ms: number | undefined;
-    const job = runJob(argv, env, bound, heard).finally(() => {
-      ms = elapsed();
-    });
-    try {
-      await drive({
-        advance: (step) => jest.advanceTimersByTime(step),
-        timerSet: async (index) => {
-          if (index >= delays.length) {
-            const { promise, resolve } = Promise.withResolvers<void>();
-            timerWatches.add({ index, resolve });
-            await promise;
-          }
-          return delays[index] as number;
-        },
-        ended: job.then(() => undefined),
-        elapsed,
-      });
-      const ran = await Promise.race([job, turns(50).then(() => undefined)]);
-      return ran === undefined
-        ? { code: Number.NaN, stdout: "", stderr: "", ms: undefined }
-        : { ...ran, ms };
-    } finally {
-      globalThis.setTimeout = faked;
-      globalThis.fetch = realFetch;
-      jest.useRealTimers();
-    }
-  }
-
-  /** Moves the clock over each wait the call sets, as it sets it, until the call ends: a wait is
-   *  every timer but the write's 20 s silence cut, which no row here reaches. */
-  async function eachWait(clock: FakeClock): Promise<void> {
-    for (let index = 0; ; index++) {
-      const delay = await Promise.race([clock.ended.then(() => undefined), clock.timerSet(index)]);
-      if (delay === undefined) return;
-      if (delay !== DISPATCH_WRITE_RETRY.silenceMs) clock.advance(delay);
-    }
-  }
-
-  /** The real requests the call has out, which `onFakeClock` counts. */
-  let requestsOut = 0;
-
-  /**
-   * Moves the clock to each next timer the call and the broker client's retry loop have set, as
-   * real time reaches them, until the call ends, and only once no real request is out and the
-   * event loop has turned: the clock never runs ahead of a stand-in's answer. The call's waits (a
-   * write's pauses, a round's wait) and the loop's (its next trade) run side by side, which moving
-   * the clock over each wait in turn (`eachWait`) would add up. A row whose stand-in holds a
-   * request drives the clock itself.
-   */
-  async function nextTimers(clock: FakeClock): Promise<void> {
-    let over = false;
-    void clock.ended.then(() => {
-      over = true;
-    });
-    for (;;) {
-      await turns(20);
-      while (requestsOut > 0 && !over) await turns(20);
-      if (over) return;
-      if (jest.getTimerCount() === 0) throw new Error("the call waits on no timer and no request");
-      jest.advanceTimersToNextTimer();
-    }
-  }
-
-  /** One part of a compact JWS, as JSON. */
-  const jwsPart = (compact: string | null, at: number): Record<string, unknown> =>
-    JSON.parse(Buffer.from((compact ?? "").split(".")[at] ?? "", "base64url").toString("utf8"));
-
-  /** Nothing went to the runner, the broker, Dispatch or the session's Dispatch. */
-  const sentNothing = () => {
-    expect(runnerAsked).toEqual([]);
-    expect(trades).toEqual([]);
-    expect(written).toEqual([]);
-    expect(requests).toEqual([]);
-  };
-
-  /** No token is in what the command printed, nor in the argument list it ran with. */
-  const namesNoToken = (argv: readonly string[], stdout: string, stderr: string) => {
-    for (const secret of SECRETS) {
-      expect(stdout, secret).not.toContain(secret);
-      expect(stderr, secret).not.toContain(secret);
-      expect(argv.join(" "), secret).not.toContain(secret);
-    }
-  };
-
-  // The 30 s limit is the hang guard of the rows above that run the entry as a child process.
-  test("trades the job's OIDC token as a workflow run and presents the DPoP token it got", async () => {
-    // A test's output opens with `---`, so the job gives it in the `=` form, which reads no flag.
-    const argv = [...record, "--observed=--- PASS: TestP (0.01s)"];
-    const { code, stdout, stderr } = await spawnJob(argv, jobEnvironment());
-
-    expect({ code, stderr }, stdout).toEqual({ code: 0, stderr: "" });
-    expect(JSON.parse(stdout)).toEqual(stored);
-    expect(runnerAsked).toEqual([
-      { authorization: `Bearer ${REQUEST_TOKEN}`, audience: "example-audience" },
-    ]);
-    expect(trades).toHaveLength(1);
-    const form = trades[0]?.form;
-    expect(form?.get("subject_token")).toBe(OIDC_TOKEN);
-    expect(form?.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_GITHUB);
-    expect(form?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
-    // The broker's result entry fixes the session, so the job names none.
-    expect(form?.has(FORM_SESSION)).toBe(false);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-    const write = written[0];
-    expect(write?.authorization).toBe(`DPoP ${RESULTS_TOKEN}`);
-    const proof = jwsPart(write?.dpop ?? null, 1);
-    expect(proof["htm"]).toBe("POST");
-    expect(proof["htu"]).toBe(`${dispatchUrl}/api/v1/projects/ACME/results`);
-    expect(proof["ath"]).toBe(createHash("sha256").update(RESULTS_TOKEN).digest("base64url"));
-    // One key: the one the trade proved is the one the write proves.
-    expect(jwsPart(write?.dpop ?? null, 0)["jwk"]).toEqual(
-      jwsPart(trades[0]?.proof ?? null, 0)["jwk"]
-    );
-    namesNoToken(argv, stdout, stderr);
-  }, 30_000);
-
-  test("a refusal names no token either", async () => {
-    const refusal = `The files of .dispatch/spec at ${SPEC_COMMIT} hold no check p-9.`;
-    dispatchAnswer = () =>
-      Response.json({ code: "CHECK_NOT_IN_FILES", error: refusal }, { status: 409 });
-    const argv = record.map((word) => (word === "p-1" ? "p-9" : word));
-    const dispatchRefused = await spawnJob(argv, jobEnvironment());
-    expect(dispatchRefused.code, dispatchRefused.stdout).toBe(1);
-    expect(dispatchRefused.stdout.trim()).toBe(`CHECK_NOT_IN_FILES: ${refusal}`);
-    namesNoToken(argv, dispatchRefused.stdout, dispatchRefused.stderr);
-
-    written.length = 0;
-    brokerAnswer = () =>
-      Response.json(
-        { error: "invalid_grant", error_description: "The subject token was presented before." },
-        { status: 400 }
-      );
-    const brokerRefused = await spawnJob(record, jobEnvironment());
-    expect(brokerRefused.code, brokerRefused.stdout).toBe(1);
-    expect(brokerRefused.stdout).toContain("invalid_grant");
-    expect(written).toEqual([]);
-    namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
-  }, 30_000);
-
-  // A job's step writes `--project "$PROJECT" --check "$CHECK" --commit "$SHA"`, and an empty
-  // variable is the honest way to send one empty: it is refused before the trade or any write,
-  // naming the flag.
-  test("an empty --project, --check or --commit is refused before any request, naming the flag", async () => {
-    for (const [flag, noun] of [
-      ["--project", "project"],
-      ["--check", "check"],
-      ["--commit", "commit"],
-    ] as const) {
-      const argv = [...record];
-      argv[argv.indexOf(flag) + 1] = "";
-      const { code, stdout, stderr } = await runJob(argv, jobEnvironment());
-      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
-        code: 2,
-        stderr: "",
-        lines: [
-          "dispatch result was not called: 1 problem",
-          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
-        ],
-      });
-    }
-    sentNothing();
-  });
-
-  /** Dispatch's `409 KEY_COMMITTED` to the write it answers now, which its keyed layer names the
-   *  write's key back on, or the key `other` names where a test gives another request's. */
-  const keyCommitted = (other?: string) =>
-    Response.json(
-      { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-      { status: 409, headers: other === undefined ? {} : { "Idempotency-Key": other } }
-    );
-
-  // A write whose answer was lost after Dispatch stored it (409 KEY_COMMITTED) is done, and the
-  // job's log is read by a program: it prints the JSON the session path records for the same
-  // case and exits 0. It gives no advice, since a results token reads nothing back.
-  test("a result stored with its answer lost prints landed_without_answer as JSON and exits 0", async () => {
-    dispatchAnswer = () => keyCommitted();
-    const { code, stdout, stderr } = await runJob(record, jobEnvironment());
-    expect({ code, stdout, stderr }).toEqual({
-      code: 0,
-      stdout: `${JSON.stringify({ landed_without_answer: "KEY_COMMITTED" })}\n`,
-      stderr: "",
-    });
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-  });
-
-  // A landing needs the key Dispatch names back, on a 409 as on a 2xx: a KEY_COMMITTED that names
-  // none, or another request's, is no verdict of Dispatch's on this write, so the result may or
-  // may not be stored, and a second run is safe.
-  test("a 409 KEY_COMMITTED that does not name the write's key back prints write_outcome_unknown and exits 1", async () => {
-    for (const named of ["", "another-request-key"]) {
-      written.length = 0;
-      // One names no key back, as no keyed layer answers; the other names another request's.
-      unkeyed = named === "";
-      dispatchAnswer = () => keyCommitted(named === "" ? undefined : named);
-      const { code, stdout, stderr } = await runJob(record, jobEnvironment());
-      expect({ code, stdout, stderr }, named).toEqual({
-        code: 1,
-        stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_409" })}\n`,
-        stderr: "",
-      });
-      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-        ["POST", "/api/v1/projects/ACME/results"],
-      ]);
-    }
-  });
-
-  /** A proxy in front of the stand-in Dispatch that sends each request on, and closes the job's
-   *  connection in place of passing on the answer of each results write that `drops` names (by
-   *  its number, from 1), and of every other request when `dropOthers`: the write lands, and the
-   *  job hears nothing back. */
-  function lossyProxy(drops: (write: number) => boolean, dropOthers: boolean) {
-    let writes = 0;
-    interface Link {
-      upstream: Promise<Socket<undefined>>;
-      drop: boolean;
-    }
-    const proxy = Bun.listen<Link>({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: {
-        open(client) {
-          client.data = {
-            drop: false,
-            upstream: Bun.connect({
-              hostname: "127.0.0.1",
-              port: Number(dispatch.port),
-              socket: {
-                data(_upstream, answer) {
-                  if (client.data.drop) client.end();
-                  else client.write(answer);
-                },
-                close() {
-                  client.end();
-                },
-              },
-            }),
-          };
-        },
-        // A request's first chunk opens with its request line; the rest of it is its body.
-        async data(client, request) {
-          const line = request.subarray(0, 64).toString("latin1");
-          if (/^[A-Z]+ \//.test(line)) {
-            const write = line.startsWith("POST /api/v1/projects/");
-            if (write) writes += 1;
-            client.data.drop = write ? drops(writes) : dropOthers;
-          }
-          (await client.data.upstream).write(request);
-        },
-        close(client) {
-          void client.data.upstream.then((upstream) => upstream.end());
-        },
-      },
-    });
-    return { url: `http://127.0.0.1:${proxy.port}`, stop: () => proxy.stop(true) };
-  }
-
-  // A write that went out and heard nothing back may have stored the result, here it did: the
-  // proxy drops the answer of the write and of /healthz, which would let it ask again. The job's
-  // step still fails, since the write is not confirmed, and its one line says so to a program.
-  test("a write that went out and heard no answer prints write_outcome_unknown and exits 1", async () => {
-    const proxy = lossyProxy(() => true, true);
-    try {
-      const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
-      expect(ran).toEqual({
-        code: 1,
-        stdout: `${JSON.stringify({ write_outcome_unknown: "ECONNRESET" })}\n`,
-        stderr: "",
-      });
-      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-        ["POST", "/api/v1/projects/ACME/results"],
-        ["GET", "/healthz"],
-      ]);
-    } finally {
-      proxy.stop();
-    }
-  });
-
-  // The control: a connection refused before any request went out reached nothing, so the write
-  // stored nothing, and the command prints the transport error and no write_outcome_unknown. The
-  // write loop asks a refused connection again on its pacing (write-outcome.ts, `unreached`), so
-  // the row runs on the fake clock until the asking is spent.
-  test("a write whose connection was refused prints no write_outcome_unknown", async () => {
-    const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
-    const url = `http://127.0.0.1:${closed.port}`;
-    closed.stop(true);
-    const { code, stdout, stderr } = await onFakeClock(
-      record,
-      { ...jobEnvironment(), DISPATCH_URL: url },
-      undefined,
-      nextTimers
-    );
-    expect({ code, stderr, unknown: stdout.includes("write_outcome_unknown") }).toEqual({
-      code: 1,
-      stderr: "",
-      unknown: false,
-    });
-    expect(stdout).toStartWith(`Dispatch at ${url} is unreachable: `);
-    expect(written).toEqual([]);
-  });
-
-  // A landed write whose first answer the proxy drops is asked again under its key, and Dispatch
-  // answers KEY_COMMITTED: the old line, byte for byte, and exit 0.
-  test("a landed write whose answer is lost and asked again still prints landed_without_answer", async () => {
-    const proxy = lossyProxy((write) => write === 1, false);
-    dispatchAnswer = () => {
-      if (written.at(-1)?.path === "/healthz") return Response.json({ idempotency_keys: true });
-      return written.filter((seen) => seen.method === "POST").length === 1
-        ? storedAnswer()
-        : keyCommitted();
-    };
-    try {
-      const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
-      expect(ran).toEqual({
-        code: 0,
-        stdout: `${JSON.stringify({ landed_without_answer: "KEY_COMMITTED" })}\n`,
-        stderr: "",
-      });
-      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-        ["POST", "/api/v1/projects/ACME/results"],
-        ["GET", "/healthz"],
-        ["POST", "/api/v1/projects/ACME/results"],
-      ]);
-    } finally {
-      proxy.stop();
-    }
-  }, 30_000);
-
-  /** The broker's token endpoint's 429, as its per-address bucket answers it (`oauthToken`). */
-  const rateLimited = (retryAfter: string) =>
-    Response.json(
-      {
-        error: "invalid_request",
-        error_description: "RATE_LIMITED: too many token requests; try again later",
-        code: "RATE_LIMITED",
-      },
-      { status: 429, headers: { "Retry-After": retryAfter } }
-    );
-
-  /** A bound of the command short enough for a test, on the fake clock each of its rows runs on
-   *  (`onFakeClock`): no round starts later than `reserveMs` before `totalMs`. */
-  const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
-
-  // A 201 whose body does not come whole, as the JSON it says, is asked again under its key by the
-  // write table (write-outcome.ts: `body-broken`, `body-malformed`), since asked again Dispatch
-  // replays what it stored, or ends the call where the bound ends its read (`deadline-in-flight`).
-  // Here no ask fits in the short bound, so each ends as a write that may have stored:
-  // write_outcome_unknown, exit 1, naming what ended it: the body that broke off (its error's
-  // name), the 201 whose body is not the JSON it says, or the bound (B4 of the review of
-  // 2f29345b8d, its stall). The stand-in Dispatch is a raw socket, so the status line and the
-  // first bytes of the body surely reach the job before the connection closes or goes silent. The
-  // stall is ended by the command's own bound, on the fake clock (`onFakeClock`), moved once the
-  // 201's headers came, since that bound is what the row tests.
-  const bodyStart = '{"id":"00000000-0000-4000-8000-';
-  /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch on a raw socket names
-   *  back itself: `keyedLayer` wraps a fetch-shaped answer, and a socket gives none. */
-  const keyOf = (request: Buffer): string =>
-    /\r\nidempotency-key: *([^\r\n]*)/i.exec(request.toString("latin1"))?.[1]?.trim() ?? "";
-  for (const [name, length, close, stall, ended] of [
-    ["is cut", 400, true, false, "Error"],
-    ["stalls past the bound", 400, false, true, "TimeoutError"],
-    ["is not the JSON it says it is", bodyStart.length, false, false, "HTTP_201"],
-  ] as const) {
-    test(`a 201 whose body ${name} prints write_outcome_unknown and exits 1`, async () => {
-      let posts = 0;
-      const lost = Bun.listen({
-        hostname: "127.0.0.1",
-        port: 0,
-        socket: {
-          data(socket, request) {
-            if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
-            posts += 1;
-            socket.write(
-              "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
-                `Idempotency-Key: ${keyOf(request)}\r\n` +
-                `Content-Length: ${length}\r\n\r\n${bodyStart}`
-            );
-            if (close) socket.end();
-          },
-        },
-      });
-      try {
-        const ran = await onFakeClock(
-          record,
-          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
-          shortBound(1_000, 200),
-          async (clock) => {
-            if (stall) {
-              await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
-              clock.advance(1_000);
-            }
-            await clock.ended;
-          }
-        );
-        expect({
-          code: ran.code,
-          stdout: ran.stdout,
-          stderr: ran.stderr,
-          posts,
-          withinTheBound: ran.ms !== undefined && ran.ms <= 1_000,
-        }).toEqual({
-          code: 1,
-          stdout: `${JSON.stringify({ write_outcome_unknown: ended })}\n`,
-          stderr: "",
-          posts: 1,
-          withinTheBound: true,
-        });
-      } finally {
-        lost.stop(true);
-      }
-    }, 30_000);
-  }
-
-  /** A stand-in Dispatch on a raw socket that answers every POST with `status`, `type` and the
-   *  whole of `body`, naming back the request's key itself (`keyOf`, since no fetch-shaped layer
-   *  wraps a socket) as Dispatch does (`this`), none, or another request's (`other`), counting the
-   *  posts. */
-  function answeringWhole(
-    status: string,
-    type: string,
-    body: string,
-    echo: "this" | "none" | "other" = "this"
-  ) {
-    const seen = { posts: 0 };
-    const server = Bun.listen({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: {
-        data(socket, request) {
-          if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
-          seen.posts += 1;
-          const key = keyOf(request);
-          const named =
-            echo === "none"
-              ? ""
-              : `Idempotency-Key: ${echo === "this" ? key : `${key}-another`}\r\n`;
-          socket.write(
-            `HTTP/1.1 ${status}\r\nContent-Type: ${type}\r\n${named}` +
-              `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
-          );
-          socket.end();
-        },
-      },
-    });
-    return { seen, server };
-  }
-
-  // A 201 whose body comes whole and still gives no stored result. JSON of another shape (D-1 of
-  // the acceptance of 8ae6f5bcb4) and JSON null are a landing: the client reads a write's 2xx into
-  // the row its callers read (`dispatch-write-rows.ts`), and an answer the keyed layer gave that is
-  // not that row is ANSWER_LOST, which the reporter reads as stored. It printed `Cannot destructure
-  // property 'predicate' …` and exited 1. A body that is no JSON under another type, and an empty
-  // body, are no answer Dispatch writes to a keyed write (`WriteJSON`), so the write table ends the
-  // write on them as something in Dispatch's place answered (`foreign-2xx`): it may have stored,
-  // write_outcome_unknown, exit 1, naming the status.
-  const landed = `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`;
-  const unknown201 = `${JSON.stringify({ write_outcome_unknown: "HTTP_201" })}\n`;
-  for (const [name, type, body, code, stdout] of [
-    [
-      "is no JSON, typed text/html",
-      "text/html",
-      "<html><body>not json</body></html>",
-      1,
-      unknown201,
-    ],
-    ["is empty, typed JSON", "application/json", "", 1, unknown201],
-    ["is the JSON {}", "application/json", "{}", 0, landed],
-    ["is JSON null", "application/json", "null", 0, landed],
-  ] as const) {
-    test(`a 201 whose whole body ${name} prints ${code === 0 ? "landed_without_answer and exits 0" : "write_outcome_unknown and exits 1"}`, async () => {
-      const { seen, server } = answeringWhole("201 Created", type, body);
-      try {
-        const ran = await onFakeClock(
-          record,
-          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
-          shortBound(1_000, 200)
-        );
-        expect({
-          code: ran.code,
-          stdout: ran.stdout,
-          stderr: ran.stderr,
-          posts: seen.posts,
-        }).toEqual({ code, stdout, stderr: "", posts: 1 });
-      } finally {
-        server.stop(true);
-      }
-    }, 30_000);
-  }
-
-  // The controls of the rows above: the true stored result, on the same raw socket, is printed
-  // whole with its id; and a refusal, whatever its body, stays a refusal that stored nothing.
-  test("a 201 whose whole body is the stored result prints it with its id and exits 0", async () => {
-    const { seen, server } = answeringWhole(
-      "201 Created",
-      "application/json",
-      JSON.stringify(stored)
-    );
-    try {
-      const ran = await onFakeClock(
-        record,
-        { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
-        shortBound(1_000, 200)
-      );
-      expect({ code: ran.code, stderr: ran.stderr, posts: seen.posts }).toEqual({
-        code: 0,
-        stderr: "",
-        posts: 1,
-      });
-      expect(JSON.parse(ran.stdout)).toEqual(stored);
-      expect(JSON.parse(ran.stdout).id).toBe(stored.id);
-    } finally {
-      server.stop(true);
-    }
-  }, 30_000);
-
-  for (const [name, type, body] of [
-    [
-      "Dispatch's own refusal",
-      "application/json",
-      '{"code":"CHECK_NOT_IN_FILES","error":"no such check"}',
-    ],
-    ["a page that is no JSON", "text/html", "<html><body>refused</body></html>"],
-    ["an empty body", "application/json", ""],
-    ["the JSON {}", "application/json", "{}"],
-  ] as const) {
-    test(`a 409 whose body is ${name} stays a refusal, exit 1, and no landing`, async () => {
-      const { server } = answeringWhole("409 Conflict", type, body);
-      try {
-        const ran = await onFakeClock(
-          record,
-          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
-          shortBound(1_000, 200)
-        );
-        expect({ code: ran.code, landed: ran.stdout.includes("landed_without_answer") }).toEqual({
-          code: 1,
-          landed: false,
-        });
-        if (name === "Dispatch's own refusal") {
-          expect(ran.stdout).toBe("CHECK_NOT_IN_FILES: no such check\n");
-        }
-      } finally {
-        server.stop(true);
-      }
-    }, 30_000);
-  }
-
-  // A 2xx that is not Dispatch's answer to the write - it names no key back and gives no stored
-  // result, or names another request's key back - came from whatever answers in Dispatch's place
-  // (a proxy's page, a server that is not Dispatch), which may have passed the write on first:
-  // the job prints write_outcome_unknown and exits 1, never landed_without_answer, which its
-  // reporter reads as stored (B5 of the review of 355f8ada68). Each runs the command as its own
-  // process, as a job's step runs it.
-  for (const [name, status, type, body, echo, code] of [
-    [
-      "a 200 page that names no key back",
-      "200 OK",
-      "text/html",
-      "<html><body>OK</body></html>",
-      "none",
-      "HTTP_200",
-    ],
-    [
-      "a 200 with the stored result that names another request's key back",
-      "200 OK",
-      "application/json",
-      JSON.stringify(stored),
-      "other",
-      "HTTP_200",
-    ],
-    ["a 204 that names no key back", "204 No Content", "application/json", "", "none", "HTTP_204"],
-    [
-      "a 201 of JSON from a server that is no Dispatch",
-      "201 Created",
-      "application/json",
-      '{"ok":true}',
-      "none",
-      "HTTP_201",
-    ],
-  ] as const) {
-    test(`${name} prints write_outcome_unknown and exits 1`, async () => {
-      const { seen, server } = answeringWhole(status, type, body, echo);
-      try {
-        const ran = await spawnJob(record, {
-          ...jobEnvironment(),
-          DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        });
-        expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
-          code: 1,
-          stdout: `${JSON.stringify({ write_outcome_unknown: code })}\n`,
-          posts: 1,
-        });
-      } finally {
-        server.stop(true);
-      }
-    }, 30_000);
-  }
-
-  // Dispatch's keyed layer names the key back on every answer of every write route, so a 201 that
-  // names no key back is no answer of Dispatch's to this write, whatever result it holds: this
-  // call's own, another run's of the same check, verdict and commit (the hardening note H1 of the
-  // deep audit of 7735fa52b4), or another call's of another project, check, verdict or commit (a
-  // proxy or a cache that answers one write with another's). The write may have reached Dispatch
-  // behind what answered: write_outcome_unknown, exit 1. No content of the answer is compared.
-  const { predicate, subject } = stored.attestation;
-  /** Another call's stored result: the job's own, its attestation changed as `change` says. */
-  const another = (change: Partial<typeof stored.attestation>): typeof stored => ({
-    ...stored,
-    attestation: { ...stored.attestation, ...change },
-  });
-  for (const [held, body] of [
-    ["this call's own stored result", stored],
-    [
-      "another run's stored result of the same check, verdict and commit",
-      routeAnswer(
-        "POST /api/v1/projects/{key}/results",
-        storedSpecResult(44, "pass", "macos", 2),
-        201
-      ),
-    ],
-    [
-      "another call's stored result, of another project",
-      another({ predicate: { ...predicate, project: "OTHER" } }),
-    ],
-    [
-      "another call's stored result, of another check",
-      another({ predicate: { ...predicate, check: "p-2" } }),
-    ],
-    [
-      "another call's stored result, of another verdict",
-      another({ predicate: { ...predicate, verdict: "fail" } }),
-    ],
-    [
-      "another call's stored result, of another commit",
-      another({
-        subject: subject.map((item) => ({ ...item, digest: { gitCommit: "2".repeat(40) } })),
-      }),
-    ],
-  ] as const) {
-    test(`a 201 with ${held} that names no key back prints write_outcome_unknown and exits 1`, async () => {
-      const { seen, server } = answeringWhole(
-        "201 Created",
-        "application/json",
-        JSON.stringify(body),
-        "none"
-      );
-      try {
-        const ran = await spawnJob(record, {
-          ...jobEnvironment(),
-          DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        });
-        expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
-          code: 1,
-          stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_201" })}\n`,
-          posts: 1,
-        });
-      } finally {
-        server.stop(true);
-      }
-    }, 30_000);
-  }
-
-  // Dispatch's own 204 to the write would name the key back: a body that gives no stored result
-  // under it is the landing, as for its 201.
-  test("a 204 that names the key back prints landed_without_answer and exits 0", async () => {
-    const { seen, server } = answeringWhole("204 No Content", "application/json", "");
-    try {
-      const ran = await spawnJob(record, {
-        ...jobEnvironment(),
-        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      });
-      expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
-        code: 0,
-        stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
-        posts: 1,
-      });
-    } finally {
-      server.stop(true);
-    }
-  }, 30_000);
-
-  // Dispatch never answers a write with a redirect; a proxy in front of it sends one to its
-  // sign-in page. The write follows none: the 302 is the answer, a refusal that names it with
-  // exit 1, and the page is never asked for, so its 200 is never read as the write's.
-  test("a 302 to a sign-in page is not followed, and is a refusal naming it", async () => {
-    const seen = { posts: 0, pages: 0 };
-    const proxy = Bun.serve({
-      port: 0,
-      fetch(request) {
-        if (request.method === "POST") {
-          seen.posts += 1;
-          return new Response(null, { status: 302, headers: { Location: "/login" } });
-        }
-        seen.pages += 1;
-        return new Response("<html><body>Sign in</body></html>", {
-          headers: { "Content-Type": "text/html" },
-        });
-      },
-    });
-    try {
-      const ran = await spawnJob(record, {
-        ...jobEnvironment(),
-        DISPATCH_URL: `http://127.0.0.1:${proxy.port}`,
-      });
-      expect({ code: ran.code, posts: seen.posts, pages: seen.pages }).toEqual({
-        code: 1,
-        posts: 1,
-        pages: 0,
-      });
-      expect(ran.stdout).toStartWith(
-        `HTTP_302: POST http://127.0.0.1:${proxy.port}/api/v1/projects/ACME/results answered 302`
-      );
-    } finally {
-      proxy.stop(true);
-    }
-  }, 30_000);
-
-  // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
-  // with no fault of its own: the broker client's retry loop trades again after the answer's
-  // Retry-After (`BrokerRefusedError.retryAfterMs`), and the result is stored once. Each wait is a
-  // second of the fake clock, which moves to each next timer of the call and of the loop.
-  test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
-    const answer = brokerAnswer;
-    brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
-    const { code, stdout, stderr, ms } = await onFakeClock(
-      record,
-      jobEnvironment(),
-      shortBound(5_000, 1_000),
-      nextTimers
-    );
-    expect({
-      code,
-      stderr,
-      trades: trades.length,
-      waited: ms !== undefined && ms >= 2_000,
-    }).toEqual({
-      code: 0,
-      stderr: "",
-      trades: 3,
-      waited: true,
-    });
-    expect(JSON.parse(stdout)).toEqual(stored);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-  }, 15_000);
-
-  // A limit that never lets the trade through ends at the command's one bound, with one line that
-  // says so, and no write_outcome_unknown: nothing reached Dispatch. A Retry-After past the bound
-  // ends at once.
-  test("a trade the broker's rate limit refuses for ever ends at the command's one bound with one line", async () => {
-    for (const [retryAfter, wanted] of [
-      ["1", 3],
-      ["61", 1],
-    ] as const) {
-      trades.length = 0;
-      forgetBrokerClients();
-      brokerAnswer = () => rateLimited(retryAfter);
-      const { code, stdout, stderr, ms } = await onFakeClock(
-        record,
-        jobEnvironment(),
-        shortBound(3_000, 500),
-        nextTimers
-      );
-      expect({
-        code,
-        stderr,
-        trades: trades.length,
-        withinTheBound: ms !== undefined && ms < 3_000,
-      }).toEqual({
-        code: 1,
-        stderr: "",
-        trades: wanted,
-        withinTheBound: true,
-      });
-      expect(stdout.split("\n")).toEqual([
-        "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later, and the trade is being retried in the background",
-        "",
-      ]);
-      expect(written).toEqual([]);
-    }
-  }, 15_000);
-
-  /** The results writes Dispatch got so far, the one it answers now included. */
-  const posts = (): number => written.filter((seen) => seen.method === "POST").length;
-  /** Dispatch's two answers of its check of a broker token that judged nothing, before any
-   *  handler ran (`brokerTokenActor`): a spent bucket of checks, and a broker that answered
-   *  nothing. */
-  const tokenNotChecked = {
-    limited: () =>
-      Response.json(
-        {
-          code: "BROKER_TOKEN_RATE_LIMITED",
-          error: "too many access tokens checked from this address; try again in 200ms",
-        },
-        { status: 429, headers: { "Retry-After": "1" } }
-      ),
-    unavailable: () =>
-      Response.json(
-        {
-          code: "BROKER_UNAVAILABLE",
-          error: "the secrets broker cannot be reached; try again in a minute",
-        },
-        { status: 503 }
-      ),
-  };
-  /** The ways a call is turned away before anything is stored: Dispatch's check of the token
-   *  (its 429, and its 503 for a broker that answered nothing) and the broker's own 503 of the
-   *  trade. Each sets the stand-ins up to turn away `times` calls, then to answer as usual. */
-  const turnedAway: readonly (readonly [name: string, setUp: (times: number) => void])[] = [
-    [
-      "Dispatch's 429 of its token check",
-      (times) => {
-        dispatchAnswer = () => (posts() <= times ? tokenNotChecked.limited() : storedAnswer());
-      },
-    ],
-    [
-      "Dispatch's 503 for a broker that answered nothing",
-      (times) => {
-        dispatchAnswer = () => (posts() <= times ? tokenNotChecked.unavailable() : storedAnswer());
-      },
-    ],
-    [
-      "the broker's 503 of the trade",
-      (times) => {
-        const answer = brokerAnswer;
-        brokerAnswer = () =>
-          trades.length <= times ? new Response("unavailable", { status: 503 }) : answer();
-      },
-    ],
-  ];
-
-  // Dispatch's check of the job's token answers before any handler runs, so a write it turns away
-  // did nothing, and a trade the broker does not answer stores nothing: each is asked again, and
-  // one result is stored. Dispatch's answers are asked again after their Retry-After, or a second;
-  // the broker's 503 when the broker client's retry loop trades again, on the Go client's
-  // schedule (`RETRY_FIRST_WAIT_MS`, jittered, then doubling), which the command's whole 60 s
-  // bound holds twice.
-  test("a call Dispatch's token check or the broker turns away is asked again, and the result is stored", async () => {
-    const defaults = { brokerAnswer, dispatchAnswer };
-    for (const [name, setUp] of turnedAway) {
-      ({ brokerAnswer, dispatchAnswer } = defaults);
-      written.length = 0;
-      trades.length = 0;
-      forgetBrokerClients();
-      setUp(2);
-      const { code, stdout, stderr, ms } = await onFakeClock(
-        record,
-        jobEnvironment(),
-        name.startsWith("the broker") ? undefined : shortBound(5_000, 1_000),
-        nextTimers
-      );
-      expect(
-        {
-          code,
-          stderr,
-          waited: ms !== undefined && ms >= 2_000,
-          stored: code === 0 ? JSON.parse(stdout) : stdout,
-        },
-        name
-      ).toEqual({ code: 0, stderr: "", waited: true, stored });
-      expect(posts(), name).toBe(name.startsWith("the broker") ? 1 : 3);
-    }
-  }, 30_000);
-
-  /** The one line a call turned away for its whole bound of `seconds` ends with: which turned
-   *  it away, then that answer's own words. */
-  const turnedAwayLines = (seconds: number): Record<string, string> => ({
-    "Dispatch's 429 of its token check": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_TOKEN_RATE_LIMITED: too many access tokens checked from this address; try again in 200ms`,
-    "Dispatch's 503 for a broker that answered nothing": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_UNAVAILABLE: the secrets broker cannot be reached; try again in a minute`,
-    "the broker's 503 of the trade": `the secrets broker could not answer the trade, and the ${seconds} s this command may take leave no time to ask again: trade this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) at `,
-  });
-
-  // Turned away for ever, the call ends at its one bound with one line that says which turned it
-  // away, and no write_outcome_unknown: no write ran. The broker's 503 is the control: it never
-  // reaches Dispatch, so its line named the cause before the one bound as well.
-  test("a call Dispatch's token check or the broker turns away for ever ends at the one bound with one line", async () => {
-    const defaults = { brokerAnswer, dispatchAnswer };
-    const lines = turnedAwayLines(3);
-    for (const [name, setUp] of turnedAway) {
-      ({ brokerAnswer, dispatchAnswer } = defaults);
-      written.length = 0;
-      trades.length = 0;
-      forgetBrokerClients();
-      setUp(Number.POSITIVE_INFINITY);
-      const { code, stdout, stderr, ms } = await onFakeClock(
-        record,
-        jobEnvironment(),
-        shortBound(3_000, 500),
-        nextTimers
-      );
-      expect(
-        {
-          code,
-          stderr,
-          lines: stdout.split("\n").length,
-          withinTheBound: ms !== undefined && ms < 3_000,
-        },
-        name
-      ).toEqual({
-        code: 1,
-        stderr: "",
-        lines: 2,
-        withinTheBound: true,
-      });
-      expect(stdout, name).toStartWith(lines[name] ?? "");
-    }
-  }, 30_000);
-
-  // The case of the fresh acceptance of f60429ff0d (its D-A): a Dispatch whose /healthz says it
-  // runs the keyed layer, so the write client also asks again under the key inside each call,
-  // while Dispatch's check of the token turns every attempt away. The client's deadline and the
-  // command's waits are one bound on one clock: the call ends inside it with the refusal that
-  // names the last code, and no write_outcome_unknown, since no handler ever ran. Before the one
-  // bound the client's own 60 s deadline, counted apart from the command's waits, ended the call
-  // first, and an attempt it ended before it was sent read as one that may have stored.
-  for (const [name, answer, code] of [
-    ["503 BROKER_UNAVAILABLE", tokenNotChecked.unavailable, "BROKER_UNAVAILABLE"],
-    ["429 BROKER_TOKEN_RATE_LIMITED", tokenNotChecked.limited, "BROKER_TOKEN_RATE_LIMITED"],
-  ] as const) {
-    test(`Dispatch's token check turning every write away with ${name}, against the keyed layer, ends at the one bound naming ${code}`, async () => {
-      dispatchAnswer = () =>
-        written.at(-1)?.path === "/healthz"
-          ? Response.json({ status: "degraded", idempotency_keys: true })
-          : answer();
-      const ran = await onFakeClock(record, jobEnvironment(), shortBound(8_000, 1_000), eachWait);
-      expect(
-        {
-          code: ran.code,
-          stderr: ran.stderr,
-          lines: ran.stdout.split("\n").length,
-          namesTheCause: ran.stdout.startsWith(
-            "Dispatch's check of the job's token turned the write away"
-          ),
-          namesTheCode: ran.stdout.includes(`: ${code}: `),
-          outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
-          askedAgainUnderTheKey: posts() > 2,
-          withinTheBound: ran.ms !== undefined && ran.ms < 8_000,
-        },
-        ran.stdout
-      ).toEqual({
-        code: 1,
-        stderr: "",
-        lines: 2,
-        namesTheCause: true,
-        namesTheCode: true,
-        outcomeUnknown: false,
-        askedAgainUnderTheKey: true,
-        withinTheBound: true,
-      });
-    }, 90_000);
-  }
-
-  // The client's deadline is the command's bound: a Dispatch that never answers ends the call at
-  // the bound, as a write whose outcome is unknown, since the attempt the bound cut was sent.
-  test("a Dispatch that never answers ends the call at the one bound as an outcome unknown", async () => {
-    const { promise: never } = Promise.withResolvers<Response>();
-    dispatchAnswer = () => never;
-    const ran = await onFakeClock(
-      record,
-      jobEnvironment(),
-      shortBound(3_000, 500),
-      async (clock) => {
-        await arrived(() => written.length >= 1);
-        clock.advance(3_000);
-        // The bound aborts the write's request, which ends on the event loop's own time.
-        await clock.ended;
-      }
-    );
-    expect({
-      code: ran.code,
-      stdout: ran.stdout,
-      stderr: ran.stderr,
-      atTheBound: ran.ms === 3_000,
-    }).toEqual({
-      code: 1,
-      stdout: `${JSON.stringify({ write_outcome_unknown: "TimeoutError" })}\n`,
-      stderr: "",
-      atTheBound: true,
-    });
-  }, 90_000);
-
-  // The one bound reaches the trade too: the call waits on the runner's token request and the
-  // broker's exchange under the same signal as the write, so a runner or a broker that takes the
-  // request and never answers it ends the call at the bound, with a line that names which of the
-  // two it was and says nothing was written, and Dispatch is sent nothing. The answer is held on a
-  // promise the test settles only once the call has ended. The bound runs on the fake clock, whose
-  // timers all move together (one part's stopped clock is how the fault of D-A hid), moved its
-  // 400 ms once the held request arrived. The trade runs on under its own bound after the call
-  // ended, so the held runner fails it once it is let go, and it sends a later row's broker
-  // nothing. The immediate case is the control: with nothing held, the same bound stores the
-  // result.
-  for (const [name, hold, lead, heldThere] of [
-    [
-      "the runner's token request",
-      (held: Promise<void>) => {
-        runnerHold = held.then(() => false);
-      },
-      "this command's 0.4 s ended while it read the job's own token for the secrets broker, and nothing was written: ",
-      () => runnerAsked.length >= 1,
-    ],
-    [
-      "the broker's exchange",
-      (held: Promise<void>) => {
-        const answer = brokerAnswer;
-        brokerAnswer = async () => {
-          await held;
-          return answer();
-        };
-      },
-      "this command's 0.4 s ended while the secrets broker traded the job's token, and nothing was written: ",
-      () => trades.length >= 1,
-    ],
-  ] as const) {
-    test(`${name} that never answers ends the call at the bound, naming it`, async () => {
-      const { promise: held, resolve: release } = Promise.withResolvers<void>();
-      hold(held);
-      try {
-        const ran = await onFakeClock(
-          record,
-          jobEnvironment(),
-          shortBound(400, 50),
-          async (clock) => {
-            await arrived(heldThere);
-            clock.advance(400);
-            await clock.ended;
-          }
-        );
-        expect(
-          {
-            code: ran.code,
-            stderr: ran.stderr,
-            lines: ran.stdout.split("\n").length,
-            namesTheTrade: ran.stdout.startsWith(lead),
-            outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
-            sentToDispatch: written.length,
-            withinTheBound: ran.ms === 400,
-          },
-          ran.stdout
-        ).toEqual({
-          code: 1,
-          stderr: "",
-          lines: 2,
-          namesTheTrade: true,
-          outcomeUnknown: false,
-          sentToDispatch: 0,
-          withinTheBound: true,
-        });
-      } finally {
-        release();
-      }
-    }, 30_000);
-  }
-
-  test("the immediate trade, the control, stores the result inside the same bound", async () => {
-    const ran = await onFakeClock(record, jobEnvironment(), shortBound(400, 50));
-    expect({ code: ran.code, stderr: ran.stderr, withinTheBound: ran.ms === 0 }).toEqual({
-      code: 0,
-      stderr: "",
-      withinTheBound: true,
-    });
-    expect(JSON.parse(ran.stdout)).toEqual(stored);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-  }, 30_000);
-
-  // The reserve of the one bound is set from the wait of Dispatch's check of a token on the broker,
-  // which the command copies: the copy is held to Go's own constant, so a change of that wait
-  // changes the reserve with it.
-  test("the reserve's copy of Dispatch's token-check wait is Go's introspectTimeout", () => {
-    const go = readFileSync(
-      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "brokertoken", "introspect.go"),
-      "utf8"
-    );
-    const seconds = /^const introspectTimeout = (\d+) \* time\.Second$/m.exec(go)?.[1];
-    expect(seconds === undefined ? undefined : Number(seconds) * 1_000).toBe(
-      DISPATCH_TOKEN_CHECK_WAIT_MS
-    );
-  });
-
-  // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
-  // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
-  // call ends inside its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s
-  // bound (`TRADE_ATTEMPT_MS`) ends the first trade, which got no answer, and the broker client's
-  // retry loop trades again on its schedule while the call asks again inside its bound, each ask
-  // told at once that the loop is trading again, until no round may start in the bound's last
-  // 7 s. The clock moves to that 30 s first and on only once the trade it cut has ended, so the
-  // loop has read it as a trade the broker did not answer before any later timer fires: moved to
-  // the next timer while the cut request was still out, the clock reached the call's share of the
-  // bound (`credentialDeadline`, 59 s) before the loop heard of the cut, and the row ended on that
-  // timer's line instead, in one order of the two or the other as the event loop happened to run.
-  // After that the clock moves to each next timer once no real request is out but the held trade.
-  test("a broker that never answers the trade ends the call inside the real 60 s bound, naming the trade", async () => {
-    const { promise: held, resolve: release } = Promise.withResolvers<void>();
-    const answer = brokerAnswer;
-    brokerAnswer = async () => {
-      await held;
-      return answer();
-    };
-    try {
-      const ran = await onFakeClock(record, jobEnvironment(), undefined, async (clock) => {
-        let over = false;
-        void clock.ended.then(() => {
-          over = true;
-        });
-        await arrived(() => trades.length >= 1);
-        clock.advance(TRADE_ATTEMPT_MS);
-        while (requestsOut > 0 && !over) await turns(20);
-        while (!over) {
-          // The loop has one trade out at a time, which the broker holds for good; the clock
-          // waits on any other request.
-          await turns(20);
-          while (requestsOut > 1 && !over) await turns(20);
-          if (over) return;
-          jest.advanceTimersToNextTimer();
-        }
-      });
-      expect(
-        {
-          code: ran.code,
-          stdout: ran.stdout,
-          sentToDispatch: written.length,
-          tradedAgain: trades.length >= 2,
-          insideTheBound: ran.ms !== undefined && ran.ms > TRADE_ATTEMPT_MS && ran.ms <= 60_000,
-        },
-        ran.stdout
-      ).toEqual({
-        code: 1,
-        stdout:
-          "the secrets broker could not answer the trade, and the 60 s this command may take leave no time to ask again: the secrets broker did not answer the trade of this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) within 30 s, and the trade is being retried in the background\n",
-        sentToDispatch: 0,
-        tradedAgain: true,
-        insideTheBound: true,
-      });
-    } finally {
-      release();
-    }
-  }, 30_000);
-
-  // Two Dispatch clients that share the job's broker credential share its one trade, and the end
-  // of one is no end of the other: client A starts the trade and is cancelled while it runs, and
-  // client B, which joined it with no signal of its own, gets its answer from it (B3 of the review
-  // of 2f29345b8d, its probe as a row). A asks first, so its credential starts the trade, and B's
-  // joins it before the trade reaches the broker, which answers only once A has left.
-  test("one client's cancellation during a shared trade ends that client alone", async () => {
-    const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
-    const { promise: held, resolve: release } = Promise.withResolvers<void>();
-    const answer = brokerAnswer;
-    brokerAnswer = async () => {
-      arrive();
-      await held;
-      return answer();
-    };
-    dispatchAnswer = () => Response.json({ results: [] });
-    const resolution = ownIdentityDispatch(jobEnvironment());
-    if (!resolution.enabled) throw new Error(resolution.error ?? resolution.notice);
-    const cancel = new AbortController();
-    const a = new DispatchClient(resolution.url, resolution.credential, fetch, {
-      signal: cancel.signal,
-    });
-    const b = new DispatchClient(resolution.url, resolution.credential, fetch);
-    try {
-      const first = a.specCheckResults("ACME", SPEC_COMMIT).then(
-        () => "answered",
-        (error: Error) => error.name
-      );
-      const second = b.specCheckResults("ACME", SPEC_COMMIT).then(
-        () => "answered",
-        (error: Error) => `${error.name}: ${error.message}`
-      );
-      await arrived;
-      cancel.abort();
-      const left = await first;
-      release();
-      // A's own end is told as the trade still unanswered (`TradeUnansweredError`, the broker
-      // client's `#stopped`), and the trade goes on for B.
-      expect({ a: left, b: await second, trades: trades.length }).toEqual({
-        a: "TradeUnansweredError",
-        b: "answered",
-        trades: 1,
-      });
-    } finally {
-      release();
-    }
-  }, 30_000);
-
-  // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
-  // command from a line that starts with "::" once its leading white space is trimmed and from a
-  // "##[" anywhere in a line. The call prints text it did not write: its arguments, its
-  // environment, and the answers of the broker and of Dispatch. Each such value is printed on its
-  // line, escaped by the rule of Go's runnerlog.Printable (runner-log.ts), so no value starts a
-  // line of its own and no line is a workflow command. A row that shows the value also shows it
-  // in the form the rule prints it in: as text in a line of words, as JSON in a JSON answer.
-  test("no value the call prints starts a line of its own or is a workflow command", async () => {
-    const long = "y".repeat(100_000);
-    /** A value, and how it prints in a line of words and in a JSON answer. */
-    const values: readonly (readonly [name: string, value: string, text: string, json: string])[] =
-      [
-        ["a line break", "p\n::error::line", "p\\n::error::line", '"p\\n::error::line"'],
-        ["a carriage return", "p\r::warning::cr", "p\\r::warning::cr", '"p\\r::warning::cr"'],
-        [
-          "control characters",
-          "p\u001b[2K\u000b\u0085::error::c",
-          "p\\x1b[2K\\v\\u0085::error::c",
-          '"p\\u001b[2K\\u000b\\u0085::error::c"',
-        ],
-        ["an error command", "::error::x", "::error::x", '"::error::x"'],
-        ["a command of the second form", "##[group]x", "##\\x5bgroup]x", '"##\\u005bgroup]x"'],
-        ["a mask command", "::add-mask::x", "::add-mask::x", '"::add-mask::x"'],
-        [
-          "a stop of command processing",
-          "::stop-commands::t",
-          "::stop-commands::t",
-          '"::stop-commands::t"',
-        ],
-        [
-          "a very long line",
-          `${long}\n::error::long`,
-          `${long}\\n::error::long`,
-          `"${long}\\n::error::long"`,
-        ],
-      ];
-    /** The arguments of the job's call with `value` after `flag`. */
-    const withValue = (flag: string, value: string): string[] => {
-      const argv = [...record];
-      argv[argv.indexOf(flag) + 1] = value;
-      return argv;
-    };
-    /** The body of the last write Dispatch got, as the stand-in reads it to word its refusal. */
-    const sent = (): Record<string, string> =>
-      (written.at(-1)?.body ?? {}) as Record<string, string>;
-    const refused = (code: string, error: string) =>
-      Response.json({ code, error }, { status: code === "COMMIT_NOT_THE_RUNS" ? 403 : 409 });
-    /** Each place a value reaches a print: whether the output shows the value, and in which
-     *  form, and how one call puts `value` there. */
-    const places: readonly (readonly [
-      place: string,
-      shows: "text" | "json" | "none",
-      run: (value: string) => Promise<{ code: number; stdout: string; stderr: string }>,
-    ])[] = [
-      [
-        "the project key",
-        "none",
-        (value) => runJob(withValue("--project", value), jobEnvironment()),
-      ],
-      [
-        "the check id, in a dry run",
-        "json",
-        (value) => runJob([...withValue("--check", value), "--dry-run"], jobEnvironment()),
-      ],
-      [
-        "the check id, in Dispatch's refusal",
-        "text",
-        (value) => {
-          dispatchAnswer = () =>
-            refused(
-              "CHECK_NOT_THIS_JOBS",
-              `check ${sent().check} names the job "lint", and this token's job is "go-checks" (check run 7001, "go-checks"): a job writes results only for the checks that name it`
-            );
-          return runJob(withValue("--check", value), jobEnvironment());
-        },
-      ],
-      [
-        "the commit, in Dispatch's refusal",
-        "text",
-        (value) => {
-          dispatchAnswer = () =>
-            refused(
-              "COMMIT_NOT_THE_RUNS",
-              `the result is for commit ${sent().commit}, and this token's run tested commit ${SPEC_COMMIT}: a job writes results only for the commit that it tested`
-            );
-          return runJob(withValue("--commit", value), jobEnvironment());
-        },
-      ],
-      [
-        "the observed text, refused as a flag",
-        "text",
-        (value) => runJob([...record, "--observed", `--- ${value}`], jobEnvironment()),
-      ],
-      [
-        "the observed file's name, refused as unreadable",
-        "text",
-        (value) => runJob([...record, "--observed-file", `${stateDir}/${value}`], jobEnvironment()),
-      ],
-      [
-        "Dispatch's error text",
-        "text",
-        (value) => {
-          dispatchAnswer = () => refused("CHECK_NOT_IN_FILES", value);
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        "Dispatch's error code",
-        "none",
-        (value) => {
-          dispatchAnswer = () => refused(value, "the result is refused");
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        "a body that is not Dispatch's JSON",
-        "none",
-        (value) => {
-          dispatchAnswer = () =>
-            new Response(value, { status: 400, headers: { "Content-Type": "text/plain" } });
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        "a spec file's name in Dispatch's refusal",
-        "text",
-        (value) => {
-          dispatchAnswer = () =>
-            refused(
-              "SPEC_FILES_REFUSED",
-              `the spec files of example-org/example-repo at ${SPEC_COMMIT} have 1 problem, so they hold no check to write a result for. The first: .dispatch/spec/${value}.md:1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it`
-            );
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        "the stored result's observed text",
-        "json",
-        (value) => {
-          const kept = { ...stored.attestation.predicate, observed: value };
-          dispatchAnswer = () =>
-            storedAnswer({ ...stored, attestation: { ...stored.attestation, predicate: kept } });
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        // The broker's description of a refusal it is not known to write is withheld
-        // (`BrokerRefusedError.said`, refusal-text.ts), so the value never reaches the output.
-        "the broker's refusal",
-        "none",
-        (value) => {
-          brokerAnswer = () =>
-            Response.json({ error: "invalid_grant", error_description: value }, { status: 400 });
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        // The refusal of an identity the machine cannot prove names the variable and the
-        // identities it takes, never the value it was given (environment.ts).
-        "the machine identity of the environment",
-        "none",
-        (value) => runJob(record, { ...jobEnvironment(), AGENT_SECRETS_MACHINE_IDENTITY: value }),
-      ],
-      [
-        "Dispatch's code of a write it may have stored",
-        "json",
-        (value) => {
-          dispatchAnswer = () => Response.json({ code: value, error: "internal" }, { status: 500 });
-          return runJob(record, jobEnvironment());
-        },
-      ],
-      [
-        // `dispatch results --project` runs as a session, so its output may be read in a job's
-        // log too: a listed result's leg, in its line and as --json.
-        "a listed result's leg, in the listing and as --json",
-        "text",
-        async (value) => {
-          dispatchAnswer = () =>
-            Response.json({ results: [storedSpecResult(44, "fail", value, 1)] });
-          const session = {
-            PATH: process.env.PATH,
-            HOME: stateDir,
-            DISPATCH_STATE_DIR: stateDir,
-            DISPATCH_URL: dispatchUrl,
-            DISPATCH_HOST: "omp",
-            DISPATCH_SESSION_ID: "ses-results-listing",
-            DISPATCH_TOKEN: fixtureSecret("session"),
-          };
-          const listing = ["results", "--project", "ACME", "--commit", SPEC_COMMIT];
-          const text = await runJob(listing, session);
-          const json = await runJob([...listing, "--json"], session);
-          return {
-            code: text.code || json.code,
-            stdout: `${text.stdout}${json.stdout}`,
-            stderr: `${text.stderr}${json.stderr}`,
-          };
-        },
-      ],
-    ];
-    const defaults = { brokerAnswer, dispatchAnswer };
-    /** One line per row that failed: its place, its value, and what was wrong with the output. */
-    const failed: string[] = [];
-    for (const [place, shows, run] of places) {
-      for (const [name, value, text, json] of values) {
-        ({ brokerAnswer, dispatchAnswer } = defaults);
-        forgetBrokerClients();
-        const { code, stdout, stderr } = await run(value);
-        const out = `${stdout}${stderr}`;
-        // Split wherever a runner or a log viewer can end a line, so no line can hide in another.
-        const lines = out.split(/\r\n|[\n\r\u0085\u2028\u2029]/);
-        const commands = lines.filter(
-          (line) => line.trimStart().startsWith("::") || line.includes("##[")
-        );
-        // The command's own line ends are its one \n each; any other line break, control
-        // character, format character or separator came from a value.
-        const unescaped = [...out.matchAll(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu)]
-          .map(([character]) => character)
-          .filter((character) => character !== "\n");
-        const shown = shows === "none" || out.includes(shows === "text" ? text : json);
-        if (commands.length > 0 || unescaped.length > 0 || !shown) {
-          const characters = unescaped.map((character) => character.codePointAt(0)?.toString(16));
-          failed.push(
-            `${place}, ${name}: exit ${code}, ${commands.length} workflow command lines, ` +
-              `unescaped [${characters.join(" ")}], value shown ${shown}, printed ` +
-              JSON.stringify(out.slice(0, 160))
-          );
-        }
-      }
-    }
-    expect(failed).toEqual([]);
-  }, 120_000);
-
-  // The broker's result entry fixes the session a job writes under, so the trade names none, even
-  // where the job's environment sets the session a command of this machine trades under.
-  test("the trade names no session where AGENT_SECRETS_SESSION is set", async () => {
-    const { code, stdout } = await runJob(record, {
-      ...jobEnvironment(),
-      AGENT_SECRETS_SESSION: "a-session-of-the-runner",
-    });
-    expect(code, stdout).toBe(0);
-    expect(trades).toHaveLength(1);
-    expect(trades[0]?.form.has(FORM_SESSION)).toBe(false);
-  });
-
-  test("a job whose runner gave it no token URL is refused naming the variable, and sends nothing", async () => {
-    const {
-      ACTIONS_ID_TOKEN_REQUEST_URL: _url,
-      ACTIONS_ID_TOKEN_REQUEST_TOKEN: _token,
-      ...noEndpoint
-    } = jobEnvironment();
-    const { code, stdout } = await runJob(record, noEndpoint);
-    expect(code, stdout).toBe(2);
-    expect(stdout).toContain(
-      "ACTIONS_ID_TOKEN_REQUEST_URL is required by AGENT_SECRETS_MACHINE_IDENTITY=github-actions"
-    );
-    sentNothing();
-  });
-
-  test("--issue and --project are exclusive, refused before any request", async () => {
-    for (const env of [jobEnvironment(), { ...jobEnvironment(), ...omp }]) {
-      const { code, stdout } = await runJob([...record, "--issue", "DSP-1"], env);
-      expect(code, stdout).toBe(2);
-      expect(stdout).toContain("exactly one of issue and project is required");
-    }
-    sentNothing();
-  });
-
-  test("an argument of an issue's record is refused with --project", async () => {
-    for (const [flag, value, field] of [
-      ["--role", "implementer", "role"],
-      ["--surface", "api", "surface"],
-      ["--run", "go test ./...", "run"],
-      ["--negative-control", "The test without its check.", "negative_control"],
-      ["--failed", "0", "failed"],
-      ["--skipped", "0", "skipped"],
-      ["--excluded", "0", "excluded"],
-      ["--screenshot", "dispatch://ACME-1/artifact/shot-png", "screenshots"],
-      ["--retract", "00000000-0000-4000-8000-000000000041", "retract"],
-    ] as const) {
-      const { code, stdout } = await runJob([...record, flag, value], jobEnvironment());
-      expect(code, `${flag}: ${stdout}`).toBe(2);
-      expect(stdout, flag).toContain(`This call also carries ${field}.`);
-    }
-    sentNothing();
-  });
-
-  test("posts the body {commit, check, verdict, observed} and nothing else", async () => {
-    // A person's bearer in the job's environment is not what the job writes with.
-    const env = { ...jobEnvironment(), DISPATCH_TOKEN: fixtureSecret("person") };
-    const observed = "panic: test timed out after 10m0s";
-    const withObserved = await runJob(
-      [...record.map((word) => (word === "pass" ? "could_not_run" : word)), "--observed", observed],
-      env
-    );
-    expect(withObserved.code, withObserved.stdout).toBe(0);
-    const bare = await runJob(record, env);
-    expect(bare.code, bare.stdout).toBe(0);
-
-    expect(written.map((seen) => seen.body)).toStrictEqual([
-      { commit: SPEC_COMMIT, check: "p-1", verdict: "could_not_run", observed },
-      { commit: SPEC_COMMIT, check: "p-1", verdict: "pass" },
-    ]);
-    expect(written.map((seen) => seen.authorization)).toEqual([
-      `DPoP ${RESULTS_TOKEN}`,
-      `DPoP ${RESULTS_TOKEN}`,
-    ]);
-    expect(requests).toEqual([]);
-  });
-
-  test("sends what a result keeps of observed: its start and its end around the note, with what Dispatch cannot store replaced", async () => {
-    // A failing test's log over 1 MiB is ordinary, and Dispatch takes no request that large. A
-    // result keeps SPEC_CHECK_OBSERVED_MAX characters, so that is what the command sends: the
-    // first SPEC_CHECK_OBSERVED_START of them, the note that says the middle was cut, and the last
-    // SPEC_CHECK_OBSERVED_END. A text of the bound goes whole, and a character outside the basic
-    // plane, two UTF-16 units, is one character of the count. A NUL, which Dispatch cannot store,
-    // and each byte that is not UTF-8 are sent as U+FFFD, so the result is still written.
-    const start = SPEC_CHECK_OBSERVED_START;
-    const end = SPEC_CHECK_OBSERVED_END;
-    const note = SPEC_CHECK_OBSERVED_CUT_NOTE;
-    const rows: [name: string, content: string | Buffer, sent: string][] = [
-      [
-        "a log of 1 MiB",
-        `=== RUN   TestP\n${"x".repeat(1024 * 1024)}--- FAIL: TestP\n`,
-        `=== RUN   TestP\n${"x".repeat(start - 16)}${note}${"x".repeat(end - 16)}--- FAIL: TestP\n`,
-      ],
-      [
-        "a text of the bound",
-        "é".repeat(SPEC_CHECK_OBSERVED_MAX),
-        "é".repeat(SPEC_CHECK_OBSERVED_MAX),
-      ],
-      [
-        "a text one past the bound",
-        `s${"é".repeat(SPEC_CHECK_OBSERVED_MAX - 1)}e`,
-        `s${"é".repeat(start - 1)}${note}${"é".repeat(end - 1)}e`,
-      ],
-      [
-        "a text outside the basic plane",
-        "🙂".repeat(2500),
-        `${"🙂".repeat(start)}${note}${"🙂".repeat(end)}`,
-      ],
-      [
-        "a NUL and bytes that are not UTF-8",
-        Buffer.from([0x61, 0x00, 0x62, 0xff, 0x63]),
-        "a\uFFFDb\uFFFDc",
-      ],
-    ];
-    for (const [name, content] of rows) {
-      const file = join(stateDir, `observed-${name.replaceAll(" ", "-")}.txt`);
-      writeFileSync(file, content);
-      const ran = await runJob([...record, "--observed-file", file], jobEnvironment());
-      expect(ran.code, `${name}: ${ran.stdout}`).toBe(0);
-    }
-
-    const sent = written.map(({ body }) =>
-      body !== null &&
-      typeof body === "object" &&
-      "observed" in body &&
-      typeof body.observed === "string"
-        ? body.observed
-        : ""
-    );
-    expect(sent).toEqual(rows.map(([, , kept]) => kept));
-    for (const kept of sent.slice(0, 4)) expect([...kept].length).toBe(SPEC_CHECK_OBSERVED_MAX);
-  });
-
-  test("a failing test's log of 10,000 characters sends its first line and its --- FAIL line, with the note between them", async () => {
-    // A test's output names the test in its first line and says why it failed at its end.
-    const first = "=== RUN   TestX\n";
-    const last = "--- FAIL: TestX (0.01s)\n";
-    const log = join(stateDir, "observed-failing.txt");
-    writeFileSync(log, `${first}${"x\n".repeat((10_000 - first.length - last.length) / 2)}${last}`);
-    const ran = await runJob([...record, "--observed-file", log], jobEnvironment());
-    expect(ran.code, ran.stdout).toBe(0);
-    const body = written[0]?.body as { observed?: string } | undefined;
-    const sent = body?.observed ?? "";
-    const note = sent.indexOf(SPEC_CHECK_OBSERVED_CUT_NOTE);
-    expect({
-      characters: [...sent].length,
-      first: sent.startsWith(first),
-      last: sent.endsWith(last),
-      noteBetween:
-        note >= first.length &&
-        note + SPEC_CHECK_OBSERVED_CUT_NOTE.length <= sent.length - last.length,
-    }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, noteBetween: true });
-  });
-
-  test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {
-    const listed = await run(["results", "--project", "ACME", "--commit", SPEC_COMMIT], omp);
-    expect(listed.code, listed.stdout).toBe(0);
-    expect(listed.stdout).toBe(
-      [
-        `Results of ACME at ${SPEC_COMMIT}, newest first:`,
-        `- #42 p-1: fail. Job go-checks, leg linux, run 4242 attempt 2, commit ${SPEC_COMMIT}.`,
-        `- #41 p-1: pass. Job go-checks, no leg, run 4242 attempt 1, commit ${SPEC_COMMIT}.`,
-        "",
-      ].join("\n")
-    );
-
-    const rows = await run(
-      ["results", "--project", "ACME", "--commit", SPEC_COMMIT, "--check", "p-1", "--json"],
-      omp
-    );
-    expect(rows.code, rows.stdout).toBe(0);
-    expect(JSON.parse(rows.stdout)).toEqual(storedSpecResults);
-    expect(specResultQueries).toEqual([
-      `?commit=${SPEC_COMMIT}`,
-      `?commit=${SPEC_COMMIT}&check=p-1`,
-    ]);
-  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {
@@ -4015,11 +3569,11 @@ describe("the dispatch CLI's envoy.json", () => {
       CODEX_THREAD_ID: "codex-thread-3",
     };
     const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
-    const underCodex = await run(argv, both, "", undefined, () => "codex");
+    const underCodex = await run(argv, both, "", { nearestAncestorNamed: () => "codex" });
     expect(underCodex.code).toBe(0);
-    const underClaude = await run(argv, both, "", undefined, () => "claude");
+    const underClaude = await run(argv, both, "", { nearestAncestorNamed: () => "claude" });
     expect(underClaude.code).toBe(0);
-    const unknown = await run(argv, both, "", undefined, () => undefined);
+    const unknown = await run(argv, both, "", { nearestAncestorNamed: () => undefined });
     expect(unknown.code).toBe(0);
     const actors = requests
       .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
@@ -4031,8 +3585,8 @@ describe("the dispatch CLI's envoy.json", () => {
     serverConfig(join(stateDir, ".config", "legion"));
     const both = { ...fromFile, CODEX_THREAD_ID: "codex-thread-4" };
     const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
-    expect((await run(argv, both, "", undefined, () => "codex")).code).toBe(0);
-    expect((await run(argv, both, "", undefined, () => "omp")).code).toBe(0);
+    expect((await run(argv, both, "", { nearestAncestorNamed: () => "codex" })).code).toBe(0);
+    expect((await run(argv, both, "", { nearestAncestorNamed: () => "omp" })).code).toBe(0);
     const actors = requests
       .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
       .map((request) => (request.body as { actor: { id: string } }).actor.id);
@@ -4117,7 +3671,7 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(requests).toEqual([]);
   });
 
-  test("a checkout's .opencode/envoy.json is named on every call, and its server is never used", async () => {
+  test("a checkout's .opencode/envoy.json is named on every spec command's call, and its server is never used", async () => {
     serverConfig(join(stateDir, ".config", "legion"));
     const old = join(stateDir, ".opencode", "envoy.json");
     mkdirSync(join(stateDir, ".opencode"), { recursive: true });
@@ -4348,6 +3902,58 @@ describe("the dispatch CLI's subscription note", () => {
     ]);
   });
 
+  // A replayed 2xx reading ANSWER_NOT_KEPT says Dispatch gives no copy of the first answer. The
+  // issue create wrote, so it is the create's landing, which exits 0 and says to read it back; the
+  // related-item check wrote nothing, so the command asks it under a second key, and when that is
+  // answered the same way it exits 1 saying the call wrote nothing and to run it again.
+  test("an answer Dispatch kept no copy of is a landing for a write, and for a call that writes nothing a line to run it again", async () => {
+    const notKept = (status: number) =>
+      Response.json(
+        { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+        { status, headers: { "Idempotency-Replayed": "?1" } }
+      );
+    const checkKeys: (string | null)[] = [];
+    // Behind Dispatch's keyed layer: each replay names its request's key back, as Dispatch's do.
+    const fetchImpl = keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);
+      if (request.method === "POST" && pathname === "/api/v1/projects/DSP/related") {
+        checkKeys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER));
+        return notKept(200);
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const created = await run(
+      ["issue", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      { fetchImpl }
+    );
+    expect(created.code).toBe(0);
+    expect(created.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
+      ),
+    ]);
+
+    const checked = await run(
+      ["related", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      { fetchImpl }
+    );
+    expect(checked.code).toBe(1);
+    expect(checked.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/projects\/DSP\/related wrote nothing, and Dispatch kept no copy of its answer \(ANSWER_NOT_KEPT\), so this command has no answer to print: run it again, which asks under a new key\.$/
+      ),
+    ]);
+    expect(checkKeys).toHaveLength(2);
+    expect(new Set(checkKeys).size).toBe(2);
+  });
+
   // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made
   // nothing: a caller that reads the status must not be told an issue was filed.
   test("a create the near-copy gate refuses exits 1, and a create it lets through exits 0", async () => {
@@ -4388,14 +3994,14 @@ describe("the dispatch CLI's subscription note", () => {
       }) as typeof fetch;
     const create = ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"];
 
-    const refused = await run(create, omp, "", creating(true));
+    const refused = await run(create, omp, "", { fetchImpl: creating(true) });
     expect(refused.code).toBe(1);
     expect(refused.stdout).toContain(
       'Not created: "Nightly export retries for ever" is a near copy of an open issue.'
     );
     expect(refused.stdout).toContain("DSP-9 [in_progress] Nightly export retries for ever");
 
-    const made = await run(create, omp, "", creating(false));
+    const made = await run(create, omp, "", { fetchImpl: creating(false) });
     expect(made.code).toBe(0);
     expect(made.stdout).toContain("Created DSP-10");
   });
@@ -4516,11 +4122,11 @@ describe("cliRefusals", () => {
     expect(cliRefusals(moved.stdout)).toEqual([]);
   });
 
-  // A refusal the CLI prints before it reaches Dispatch is logged too, whenever the call knows its
-  // session: a reader of the ledger (pi-envoy's run-end check, the skill-scenario rig) sees a call
-  // whose output a pipe, `$(…)` or another program swallowed. The host and the command need not be
-  // known for the session to be: a Python `subprocess.run(["dispatch", …])` inherits the session id
-  // without `DISPATCH_HOST`.
+  // A refusal the CLI prints before it reaches Dispatch, but `dispatch proxy`'s or
+  // `dispatch login`'s, is logged too, whenever the call knows its session: a reader of the ledger
+  // (pi-envoy's run-end check, the skill-scenario rig) sees a call whose output a pipe, `$(…)` or
+  // another program swallowed. The host and the command need not be known for the session to be:
+  // a Python `subprocess.run(["dispatch", …])` inherits the session id without `DISPATCH_HOST`.
   test("an early refusal is logged when the call knows its session, with no request", async () => {
     const cases: [string, readonly string[], Record<string, string | undefined>, string][] = [
       ["an unknown flag", ["message", "--issue", "X", "--isue", "Y"], omp, "dispatch_message"],
@@ -4585,6 +4191,16 @@ describe("cliRefusals", () => {
       expect(cliRefusals(stdout)).toEqual([]);
     }
     expect(cliRefusals("It said: dispatch message was not called: 1 problem")).toEqual([]);
+  });
+
+  test("a host the command does not accept is refused by name, with the three it accepts", async () => {
+    const { code, stdout } = await run(["projects"], {
+      DISPATCH_HOST: "opencode",
+      DISPATCH_SESSION_ID: "ses-1",
+    });
+    expect(code).toBe(2);
+    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp, claude or codex.\n');
+    expect(requests).toEqual([]);
   });
 });
 

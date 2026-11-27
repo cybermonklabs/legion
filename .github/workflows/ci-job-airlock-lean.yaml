@@ -1,6 +1,6 @@
 name: CI job airlock-lean
 
-# The steps of ci.yaml's `airlock-lean` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#airlock-lean` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job airlock-lean
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -34,11 +34,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The built model the two runs below compare the Go code against. Naming no file makes
-      # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance skip
-      # (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build
-      # step checks the binary is there before those runs read this.
-      AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/broker/airlock/lean/.lake/build/bin/airlock-model
+      # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelRefusesAHostlessEntry skip
+      # (modelPath in internal/cipher/proxyrules/airlock_fuzz_test.go), and a skip is a pass, so the
+      # build step checks the binary is there before those runs read this.
+      AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,8 +47,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
-      # No Go cache family: the airlock package imports the standard library and internal/fold,
+      # No Go cache family: the proxyrules package imports the standard library and internal/fold,
       # which imports nothing, so this job downloads no module and compiles no third-party code,
       # as envoy-go-race-api does.
       #
@@ -58,30 +61,32 @@ jobs:
       # entry of another toolchain is exactly what this key keeps out, and `lake` would download
       # the named one anyway. .github/workflows/ci-caches.yaml fills it on a push to main, as it
       # fills every family this file restores.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: elan-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
       - uses: ./.github/actions/install-elan
       - name: Build the Lean model
         run: |
           lake build
           test -x .lake/build/bin/airlock-model
-        working-directory: packages/envoy/internal/broker/airlock/lean
+        working-directory: packages/envoy/internal/cipher/proxyrules/lean
       # What the three axioms are, and why fewer theorems printed than the model has is a
       # failure, is in the script. Check k15 of packages/envoy/scripts/airlock-check.sh runs the
       # same one, so the rule and the count it holds are written once.
       - name: Print the theorems' axioms
-        run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+        run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; the
       # host shapes a rules file may hold, which no seed decodes to, through both validations; and
-      # a host-less entry carrying guidance, a field the generator never writes.
+      # a host-less entry, which both validations refuse and a proxy request for which both
+      # refuse as a secret not behind the airlock.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/broker/airlock/
+        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

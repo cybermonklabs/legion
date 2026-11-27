@@ -333,7 +333,9 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 			state.liveWriter = write
 			state.roomGeneration = s.nextRoomGeneration()
 			// A writer takes up a room a late departure's settlement loaded: the room stays once
-			// that settlement has ended (retireSettlementRoom).
+			// that settlement has ended (retireSettlementRoom). A load of that room that has not
+			// taken the record yet sets no mark while this write holds the slot (onLoadDocument),
+			// so the room is taken up whichever of the two comes first.
 			state.warmed = nil
 			// The take-over runs whatever the record already says, so it always stops an
 			// armed timer: `settleDeferred || takeOver…` would skip the call on a record
@@ -533,7 +535,10 @@ func (s *Service) readFork(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 // closedIssueCommentMark is whether write is a comment's anchor on a closed issue: the read
 // beside the owner's lock the transaction took says the issue is closed (joinLiveWrite,
 // liveWrite.ownerClosed), and ctx is one of that comment's anchor operations (commentMarkAnchor,
-// the same test the version and the mark read make, closedIssueCommentAnchor). It is the write
+// the same test the version and the mark read make, closedIssueCommentAnchor) - the reject of the
+// pending suggestion of a comment its author is deleting among them
+// (RejectDeletedCommentSuggestion), which runs under the mark the delete made and takes that
+// suggestion's text out of a closed issue's document with the comment's body. It is the write
 // that forks cold there (readFork says why), and it needs no read of its own for the issue: the
 // owner's answer is already in hand.
 // The other write a closed issue's document takes, the ask states its issue's lifecycle writes
@@ -910,12 +915,12 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.finishLiveWrite(write)
 	s.hooks.parkLiveWrite(write.artifactID, PauseAfterCommit)
 	defer s.closeShadow(write)
+	if s.beforePublish != nil {
+		s.beforePublish(write)
+	}
 	// Committed, the write has no more use for its fork, so the fork goes before the publish,
 	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
 	// (newShadow).
-	if s.checkRendering != nil {
-		s.checkRendering("publish", write)
-	}
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {

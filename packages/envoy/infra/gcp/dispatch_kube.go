@@ -225,12 +225,12 @@ func secretEnv(name, secret, key string) corev1.EnvVarArgs {
 }
 
 // refuseDispatchSeed is value, a plain-typed Input of the component (the NATS seed secret's id),
-// with a seed refused once it resolves: the output fails naming input and never the value, so no
-// child is registered with it.
+// with a seed refused once it resolves: the output fails with a core.InputError naming input and
+// never the value, so no child is registered with it.
 func refuseDispatchSeed(value pulumi.StringInput, dispatch, input string) pulumi.StringOutput {
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
 		}
 		return v, nil
 	}).(pulumi.StringOutput)
@@ -250,7 +250,7 @@ var iapAudienceRule = regexp.MustCompile(`^/projects/[0-9]+/global/backendServic
 func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.StringOutput {
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal("iapAudience"))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience", "%w", core.SeedRefusal("iapAudience")))
 		}
 		if !iapAudienceRule.MatchString(v) {
 			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience",
@@ -272,13 +272,13 @@ func dependsOnInput(in pulumi.StringInput) pulumi.ResourceOption {
 // it resolves (tailnetAuthKey, signInClientSecret): a blank or whitespace-only value is a
 // credential that cannot work (the front door cannot join the tailnet, Dispatch refuses a blank
 // sign-in secret at boot), so it is refused here, and so is one holding an nkey seed. Each
-// refusal names input and never the value.
+// refusal is a core.InputError naming input, and never the value.
 func refuseDispatchSecret(v, dispatch, input string) error {
 	if strings.TrimSpace(v) == "" {
 		return fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%s is blank, which no credential is", input))
 	}
 	if bus.HoldsSeed(v) {
-		return fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+		return fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
 	}
 	return nil
 }
@@ -310,8 +310,10 @@ func envVars(env []string) corev1.EnvVarArray {
 // newDispatchKubernetes registers the component's Kubernetes provider, built from the cluster
 // half's kubeconfig, whichever cluster that is, and every Kubernetes object on it, each a child of
 // the component that depends on the cluster half's waitFor: the component's own Cluster, or nothing
-// for a cluster existingCluster names.
-func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) error {
+// for a cluster existingCluster names. It also registers the NATS seed's two grants by uid, which
+// take the app's and the listener's ServiceAccounts' uids and so follow those accounts, and
+// answers with the app's account's uid (dispatchServiceAccountUID), the serviceAccountUid output.
+func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) (pulumi.StringOutput, error) {
 	dispatch := dispatchType + " " + name
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
 	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a front-door pod
@@ -326,7 +328,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		EnableConfigMapMutable: pulumi.Bool(true),
 	}, pulumi.Parent(comp))
 	if err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 	child := []pulumi.ResourceOption{pulumi.Parent(comp), pulumi.Provider(provider), pulumi.DependsOn(cloud.waitFor)}
 	metadata := func(name string) *metav1.ObjectMetaArgs {
@@ -334,7 +336,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	if !s.existingNamespace {
 		if _, err := corev1.NewNamespace(ctx, s.namespace, &corev1.NamespaceArgs{Metadata: &metav1.ObjectMetaArgs{Name: pulumi.String(s.namespace)}}, child...); err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 	}
 	// The app runs as ServiceAccount <hostname>, which Workload Identity lets mount the NATS seed
@@ -343,8 +345,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// runs as <hostname>-listener, an account of its own granted the NATS seed and nothing else,
 	// and the front door's pods as <hostname>-tailnet (newDispatchFrontDoor), so no pod but the
 	// app's can project a token naming <hostname>.
-	if _, err := corev1.NewServiceAccount(ctx, s.hostname, &corev1.ServiceAccountArgs{Metadata: metadata(s.hostname)}, child...); err != nil {
-		return err
+	appAccount, err := corev1.NewServiceAccount(ctx, s.hostname, &corev1.ServiceAccountArgs{Metadata: metadata(s.hostname)}, child...)
+	if err != nil {
+		return pulumi.StringOutput{}, err
 	}
 	dispatchSecretName := s.hostname + "-dispatch"
 	databaseURL := pulumi.Sprintf("postgres://dispatch:%s@127.0.0.1:5432/dispatch?sslmode=disable", database.password.Result)
@@ -370,7 +373,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	dispatchSecret, err := corev1.NewSecret(ctx, dispatchSecretName, &corev1.SecretArgs{Metadata: metadata(dispatchSecretName), StringData: dispatchData}, child...)
 	if err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 	// The listener's Deployment, Service, ServiceAccount and bearer share one name. The bearer is
 	// a Secret of its own: the listener's pod names this one and never the component's dispatch
@@ -382,10 +385,22 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		Metadata: metadata(listenerName), StringData: pulumi.StringMap{"ENVOY_API_TOKEN": database.listenerToken.Result},
 	}, child...)
 	if err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
-	if _, err := corev1.NewServiceAccount(ctx, listenerName, &corev1.ServiceAccountArgs{Metadata: metadata(listenerName)}, child...); err != nil {
-		return err
+	listenerAccount, err := corev1.NewServiceAccount(ctx, listenerName, &corev1.ServiceAccountArgs{Metadata: metadata(listenerName)}, child...)
+	if err != nil {
+		return pulumi.StringOutput{}, err
+	}
+	// The NATS seed's grants by uid take each account's uid, so they register here, after both
+	// accounts.
+	appUID := dispatchServiceAccountUID(ctx, dispatch, s.hostname, appAccount)
+	appSeedGrantByUID, err := newDispatchSeedGrantByUID(ctx, comp, name, args, cloud, database, s.hostname, appUID)
+	if err != nil {
+		return pulumi.StringOutput{}, err
+	}
+	listenerSeedGrantByUID, err := newDispatchSeedGrantByUID(ctx, comp, name, args, cloud, database, listenerName, dispatchServiceAccountUID(ctx, dispatch, listenerName, listenerAccount))
+	if err != nil {
+		return pulumi.StringOutput{}, err
 	}
 	// One of the three SecretProviderClasses, which differ in nothing else: the CSI driver reads
 	// the Secret Manager secret the consumer's Input names, at its latest version, and mounts it
@@ -405,20 +420,20 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	seedName := s.hostname + "-nats-seed"
 	if err := secretClass(seedName, args.NatsSeedSecret, "natsSeedSecret", "nats-seed"); err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 
 	azureKeyClassName := s.hostname + "-azure-embed-key"
 	if s.azure.key {
 		if err := secretClass(azureKeyClassName, args.AzureEmbedKeySecret, "azureEmbedKeySecret", "key"); err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 	}
 
 	chatTokenClassName := s.hostname + "-chat-token"
 	if s.answerer.place == dispatchAnswererEndpoint {
 		if err := secretClass(chatTokenClassName, args.ChatTokenSecret, "chatTokenSecret", "token"); err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 	}
 
@@ -466,7 +481,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.disruption.priorityClass != "" {
 		class, err := schedulingv1.GetPriorityClass(ctx, s.hostname+"-priority-class", pulumi.ID(s.disruption.priorityClass), nil, child...)
 		if err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 		priorityClassName = pulumi.String(s.disruption.priorityClass)
 		priorityClassWait = []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{class})}
@@ -478,7 +493,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// selects app=<hostname>, sends user traffic to the app's pods and to no other workload's.
 	// checksums names the component Secrets the pod's environment reads (secretChecksum). The
 	// template carries safe-to-evict only when no budget covers it (safeToEvictAnnotation).
-	deployment := func(name string, replicas int, pdbMinAvailable int, checksums map[string]*corev1.Secret, pod corev1.PodSpecArgs, opts ...pulumi.ResourceOption) (*appsv1.Deployment, error) {
+	// creator is whether the workload's pods create JetStream consumers, which the app's and the
+	// listener's do and the front door's do not: a creator's Deployment takes the writer hold's
+	// update rule (heldReplacement) while replaceUnderHold is set, and every other Deployment keeps
+	// the strategy its replica count gives it (dispatchStrategyFor) and is waited for.
+	deployment := func(name string, replicas int, pdbMinAvailable int, checksums map[string]*corev1.Secret, pod corev1.PodSpecArgs, creator bool, opts ...pulumi.ResourceOption) (*appsv1.Deployment, error) {
 		selector := &metav1.LabelSelectorArgs{MatchLabels: pulumi.StringMap{"app": pulumi.String(name)}}
 		pod.Affinity, pod.TopologySpreadConstraints = dispatchSpread(selector)
 		annotations := pulumi.StringMap{}
@@ -490,11 +509,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}
 		pod.PriorityClassName = priorityClassName
 		opts = append(opts, priorityClassWait...)
+		meta, strategy := metadata(name), dispatchStrategyFor(replicas)
+		if creator && s.replaceUnderHold {
+			strategy = heldReplacement(meta)
+		}
 		workload, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
-			Metadata: metadata(name),
+			Metadata: meta,
 			Spec: appsv1.DeploymentSpecArgs{
 				Replicas: pulumi.Int(replicas),
-				Strategy: deploymentStrategy(dispatchStrategyFor(replicas)),
+				Strategy: deploymentStrategy(strategy),
 				Selector: selector,
 				Template: corev1.PodTemplateSpecArgs{
 					Metadata: &metav1.ObjectMetaArgs{Labels: pulumi.StringMap{"app": pulumi.String(name)}, Annotations: annotations},
@@ -548,7 +571,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return labelPeer(map[string]string{"app": app})
 	}
 	policy := func(name string, ingress networkingv1.NetworkPolicyIngressRuleArray) error {
-		return networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		_, err := networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		return err
 	}
 
 	// The front door, one thing and registered as one: the Tailscale Service svc:<hostname> itself
@@ -569,19 +593,19 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		authKeyName := s.hostname + "-tailnet-auth-key"
 		authKeySecret, err := corev1.NewSecret(ctx, authKeyName, &corev1.SecretArgs{Metadata: metadata(authKeyName), StringData: pulumi.StringMap{"TS_AUTHKEY": refuseDispatchSeedInSecret(args.TailnetAuthKey, dispatch, "tailnetAuthKey")}}, child...)
 		if err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 		tailscaleService, err := newDispatchTailscaleService(ctx, comp, s, database.waitFor)
 		if err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 		frontDoorPod, frontDoorOpts, err := newDispatchFrontDoor(ctx, s, tailscaleService, database.waitFor, authKeyName, metadata, child)
 		if err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
-		tailnet, err := deployment(tailnetName, s.frontDoorReplicas, s.disruption.frontDoorPDBMinAvailable, map[string]*corev1.Secret{authKeyName: authKeySecret}, frontDoorPod, frontDoorOpts...)
+		tailnet, err := deployment(tailnetName, s.frontDoorReplicas, s.disruption.frontDoorPDBMinAvailable, map[string]*corev1.Secret{authKeyName: authKeySecret}, frontDoorPod, false, frontDoorOpts...)
 		if err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 		// Whatever reaches the proxy gets tailnet egress as a front-door node, on every front-door
 		// pod, so only the two workloads that dial the hub through it may. With natsInCluster no
@@ -592,13 +616,13 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if !s.natsInCluster {
 			socks5Service, err := service(tailnetName, dispatchSOCKS5Port)
 			if err != nil {
-				return err
+				return pulumi.StringOutput{}, err
 			}
 			frontDoorResources = []pulumi.Resource{tailnet, socks5Service}
 			frontDoorIngress = append(frontDoorIngress, ingressFrom(dispatchSOCKS5Port, networkingv1.NetworkPolicyPeerArray{podPeer(s.hostname), podPeer(listenerName)}))
 		}
 		if err := policy(tailnetName, frontDoorIngress); err != nil {
-			return err
+			return pulumi.StringOutput{}, err
 		}
 	}
 	// In the SOCKS5 mode the listener dials the NATS hub through the front door's proxy and waits
@@ -621,9 +645,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// wait for, and the sandbox is in-cluster NATS by the resolver's own rule.
 	frontDoor := pulumi.DependsOn(frontDoorResources)
 	// Both also mount the NATS seed, which a pod can read only once its principal holds
-	// roles/secretmanager.secretAccessor on the secret, so each waits for its own account's grant
-	// rather than racing IAM on the first deployment: the listener here, the app below.
-	seedGrant := pulumi.DependsOn([]pulumi.Resource{database.listenerSeedAccessor})
+	// roles/secretmanager.secretAccessor on the secret, so each waits for its own account's two
+	// grants, by name and by uid, rather than racing IAM on the first deployment: the listener
+	// here, the app below.
+	seedGrant := pulumi.DependsOn([]pulumi.Resource{database.listenerSeedAccessor, listenerSeedGrantByUID})
 
 	// The listener runs under its own ServiceAccount, <hostname>-listener, which is what mounts
 	// the NATS seed through Workload Identity, with listenerReplicas pods. Above one it needs an
@@ -652,11 +677,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			},
 		},
 		Volumes: seedVolume,
-	}, frontDoor, seedGrant); err != nil {
-		return err
+	}, true, frontDoor, seedGrant); err != nil {
+		return pulumi.StringOutput{}, err
 	}
 	if _, err := service(listenerName, core.DefaultListenerPort); err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 
 	// A pod leaves routing asynchronously, and it does so alongside its own shutdown rather than
@@ -687,19 +712,29 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on. The IAP door's three variables take that same place, since the resolver refuses
-	// the Google client beside it, and render only with iapAudience: the identity mode, the
-	// audience, and the domain whose accounts may use Dispatch, which Dispatch holds the signed
-	// header's hd claim to. A deployment without it names no identity mode, and Dispatch keeps its
-	// default. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
-	// output's own derivation (serverURL) and never a second spelling of it, and
-	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
-	// outside input renders byte for byte what it always rendered.
+	// sign-in on, and DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
+	// which needs sign-in on too: the entries comma-joined, as Dispatch splits them. The IAP door's
+	// three variables take that same place, since the resolver refuses the Google client beside it,
+	// and render only with iapAudience: the identity mode, the audience, and the domain whose
+	// accounts may use Dispatch, which Dispatch holds the signed header's hd claim to. A deployment
+	// without it names no identity mode, and Dispatch keeps its default. DISPATCH_SERVER_URL is the
+	// address a reader is sent back to, so it is the url output's own derivation (serverURL) and
+	// never a second spelling of it.
+	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
+	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
+	// outside inputs renders byte for byte what it always rendered. DISPATCH_PARENT_STATUS_RULE=on
+	// comes next, only with parentStatusRule, in every mode: it is no sign-in setting, and after the
+	// origins it moves none of the variables above it. DISPATCH_LEGION_STATUS_SCOPE=on comes after
+	// it, or in its place without parentStatusRule, only with legionStatusScope and in every mode,
+	// for the same reasons.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 		if s.signInOutside {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
+		if len(s.signInWorkspaceDomains) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(s.signInWorkspaceDomains, ",")))
 		}
 	}
 	if s.iap {
@@ -710,6 +745,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
 	if s.outsideOrigin != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
+		if s.signInPasskey {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
+		}
+	}
+	if s.parentStatusRule {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PARENT_STATUS_RULE", "on"))
+	}
+	if s.legionStatusScope {
+		appEnv = append(appEnv, valueEnv("DISPATCH_LEGION_STATUS_SCOPE", "on"))
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
@@ -725,6 +769,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	if s.streamMaxBytes > 0 {
 		appEnv = append(appEnv, valueEnv("ENVOY_STREAM_MAX_BYTES", strconv.Itoa(s.streamMaxBytes)))
+	}
+	// The consumer-name setting, after the JetStream numbers and only when it is set, for the same
+	// reason; the listener's copy comes from core's Env (dispatchListenerEnv).
+	if s.consumerNames != "" {
+		appEnv = append(appEnv, valueEnv(core.EnvConsumerNames, s.consumerNames))
 	}
 	// Dispatch presents its own ServiceAccount's token to the listener, which verifies it against
 	// this cluster's issuer and takes a send's role mark from that account alone
@@ -744,7 +793,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appMounts = append(appMounts, tokenMount)
 	appVolumes := append(corev1.VolumeArray{}, seedVolume...)
 	appVolumes = append(appVolumes, tokenVolume)
-	appGrants := []pulumi.Resource{database.seedAccessor}
+	appGrants := []pulumi.Resource{database.seedAccessor, appSeedGrantByUID}
 	if s.agentSecretsURL != "" {
 		// Dispatch presents its own ServiceAccount's token to the broker, which reads the caller
 		// from BROKER_API_ACCOUNTS. The kubelet mints it for the broker's audience into a projected
@@ -770,10 +819,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
 	}
+	if s.projectOwnerFallback != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
 		appEnv = append(appEnv, valueEnv("DISPATCH_APP_CLIENT_ID", s.appClientID), valueEnv("DISPATCH_APP_ID", s.appID), secretEnv("DISPATCH_APP_PEM_B64", s.appKeySecretName, s.appKeySecretKey))
+		// The verdict App's id follows the App it runs under, only when given, so a deployment
+		// that gives none renders what it rendered before the input.
+		if s.verdictAppID != "" {
+			appEnv = append(appEnv, valueEnv("DISPATCH_VERDICT_APP_ID", s.verdictAppID))
+		}
 	}
 	if s.azure.embedder {
 		// Meaning search embeds on Azure AI Foundry. The endpoint, and the deployment when given,
@@ -881,8 +938,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// envoy-dispatch reads the dispatch Secret and ENVOY_TOKEN from the listener's, so a change to
 	// either rolls the app.
 	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret, listenerName: listenerSecret}
-	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, pulumi.DependsOn(appGrants)); err != nil {
-		return err
+	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, true, pulumi.DependsOn(appGrants)); err != nil {
+		return pulumi.StringOutput{}, err
 	}
 	// With networkEndpointGroupName, GKE makes a standalone network endpoint group of that name for
 	// the app's Service on 8766, which the deployment's load balancer takes as its backend.
@@ -891,7 +948,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appAnnotations = pulumi.StringMap{"cloud.google.com/neg": pulumi.String(dispatchNEGAnnotation(args.NetworkEndpointGroupName))}
 	}
 	if _, err := serviceWith(s.hostname, 8766, appAnnotations); err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 
 	// An ingress rule with an empty from admits every source, so a named namespace gets a rule and
@@ -916,14 +973,14 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(tailnetName)}))
 	}
 	if err := policy(s.hostname, appIngress); err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
 	if err := policy(listenerName, networkingv1.NetworkPolicyIngressRuleArray{
 		ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{podPeer(s.hostname)}),
 	}); err != nil {
-		return err
+		return pulumi.StringOutput{}, err
 	}
-	return nil
+	return appUID, nil
 }
 
 // dispatchNEGAnnotation is the cloud.google.com/neg annotation that has GKE make a standalone

@@ -47,6 +47,11 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 	"ping_interval: \"20s\"\n" +
 	"ping_max: 2\n"
 
+// privateProjectsTagLines are the lines core renders after the ping lines beside privateProjects:
+// the server tag nats-server copies into each authorization request.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
+	`server_tags: ["envoy-private-projects"]` + "\n"
+
 func otherXKey(t *testing.T) string {
 	t.Helper()
 	curve, err := nkeys.CreateCurveKeys()
@@ -83,41 +88,72 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 	require.NotContains(t, podAnnotations(values), "envoy-infra.sjawhar.dev/auth-callout")
 }
 
-// A hub behind the auth service runs no listener of its own until the listener has a service
-// identity to connect through the auth service with, which arrives with dispatch://INFRA-840's
-// t-e-13: today the listener connects as a NATS user whose seed the hub stores. So listener
-// (gcp:NatsHub) and tailnet.listener (gcp:ClusteredNatsHub, whose tailnet always runs one) beside
-// authCallout are refused, naming both inputs, and nothing registers. The refusal is this slice's
-// stated behaviour until t-e-13 lands, and the task that sets the listener's service identity
-// removes it.
-func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
+// clusteredListenerPlacements are the places gcp:ClusteredNatsHub's session listener can be
+// declared, each an edit that adds it to a hub with no tailnet: tailnet.listener, which the tailnet
+// always runs, or the hub's own listener input. Applied to calloutClusteredHub, the tailnet edit
+// gives clusteredArgs behind the callout. A third placement is added here, once, for every test
+// that reads the list.
+func clusteredListenerPlacements() []struct {
+	name string
+	edit func(a *gcp.ClusteredNatsHubArgs)
+} {
+	return []struct {
+		name string
+		edit func(a *gcp.ClusteredNatsHubArgs)
+	}{
+		{"gcp:ClusteredNatsHub's tailnet.listener", func(a *gcp.ClusteredNatsHubArgs) {
+			full := clusteredArgs()
+			a.Tailnet, a.TailnetAuthKey = full.Tailnet, full.TailnetAuthKey
+		}},
+		{"gcp:ClusteredNatsHub's own listener", func(a *gcp.ClusteredNatsHubArgs) {
+			full := clusteredArgs()
+			standaloneListener(full)
+			a.Listener = full.Listener
+		}},
+	}
+}
+
+// A hub behind the auth service keeps its own session listener, which connects as a user whose
+// seed the hub stores (dispatch://INFRA-840): the listener's user is a keyed user, so core lists
+// its key in auth_users after the users' keys, and nats-server admits it by its nkey alone, as it
+// admits every static user, without asking the auth service. That holds for gcp:NatsHub's
+// listener and for gcp:ClusteredNatsHub's session listener wherever it is declared
+// (clusteredListenerPlacements). The clustered hub's pods then carry the callout's annotation,
+// whose digest covers auth_users, and the hub registers. dispatch://INFRA-840's t-e-13, which moves
+// the listener to a service identity that connects through the auth service, takes the listener's
+// seeded user out of auth_users and replaces this test.
+//
+// Controls: put back the refusal of a listener beside authCallout (gcp/clusteredhub.go, before
+// newClusteredHubTailnet; gcp/natshub.go, before hubListener) and every subtest fails with that
+// refusal; drop the listener's user from auth_users (core/nats_callout.go block: skip a user whose
+// Label is "listener") and each subtest fails on the listener's key.
+func TestAHubBehindTheAuthServiceKeepsItsSeededListener(t *testing.T) {
+	block := calloutBlock(keyA, keyB, keyC, keyD, keyAuth, keyListener, keySessions)
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		args := calloutNatsHub()
 		args.Listener = exampleArgs().Listener
-		err := gcp.ResolveNatsHub(args)
-		var input *core.InputError
-		require.ErrorAs(t, err, &input)
-		require.Equal(t, "listener", input.Input)
-		require.ErrorContains(t, err, "listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
+		conf, err := gcp.NatsHubAuthConf(args)
+		require.NoError(t, err)
+		require.Contains(t, conf, "  ]\n"+block+"}\n", "the listener's key is in auth_users, after the users' and before the session user's")
 		m, err := run(t, args, nil, true)
-		require.ErrorContains(t, err, "listener and authCallout:")
-		require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
+		require.NoError(t, err)
+		require.Contains(t, m.Types(), hubType)
 	})
-	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
-		args := clusteredArgs()
-		args.Users = append(args.Users, authServiceUser())
-		args.AuthCallout = authCallout()
-		_, err := gcp.ResolveClusteredNatsHub(args)
-		var input *core.InputError
-		require.ErrorAs(t, err, &input)
-		require.Equal(t, "tailnet.listener", input.Input)
-		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
-		m, err := runClustered(t, "example-clustered-hub", args, nil)
-		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
-		require.Empty(t, m.Registrations(), "nothing registered")
-	})
+	for _, placement := range clusteredListenerPlacements() {
+		t.Run(placement.name, func(t *testing.T) {
+			args := calloutClusteredHub()
+			placement.edit(args)
+			s, err := gcp.ResolveClusteredNatsHub(args)
+			require.NoError(t, err)
+			require.Contains(t, s.AuthConf, "  ]\n"+block+"}\n", "the listener's key is in auth_users, after the users' and before the session user's")
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.NoError(t, err)
+			require.Contains(t, m.Types(), clusteredHubType)
+			sum := sha256.Sum256([]byte(block + calloutPingLines))
+			require.Equal(t, hex.EncodeToString(sum[:]), podAnnotations(chartValues(t, m))["envoy-infra.sjawhar.dev/auth-callout"],
+				"the pods' callout annotation is the digest of the callout's lines, the listener's key among them")
+		})
+	}
 }
 
 // core's refusals of the callout reach the consumer as a core.InputError naming authCallout.
@@ -149,14 +185,17 @@ func TestAHubRefusesACalloutCoreRefuses(t *testing.T) {
 	}
 }
 
-// The clustered hub's pods carry the SHA-256 of the callout's lines, the auth_callout block and the
-// ping lines, in the annotation envoy-infra.sjawhar.dev/auth-callout: a change of either, an added
-// user's key in auth_users among them, changes the pod template and rolls the pods one at a time,
-// and a change of a user's grant alone leaves those lines and the annotation as they were, so the
-// reloader applies it. core.Authorization.CalloutLines says why a change rolls rather than reloads.
+// The clustered hub's pods carry the SHA-256 of the callout's lines, the auth_callout block, the
+// ping lines and, beside privateProjects, the server tag, in the annotation
+// envoy-infra.sjawhar.dev/auth-callout: a change of any of them, an added user's key in auth_users
+// or privateProjects set or removed among them, changes the pod template and rolls the pods one at
+// a time, and a change of a user's grant alone leaves those lines and the annotation as they were,
+// so the reloader applies it. core.Authorization.CalloutLines says why a change rolls rather than
+// reloads.
 //
-// Control: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
-// lines); the first two rows fail.
+// Controls: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
+// lines); the first two rows fail. Write the server tag's lines after the callout's tail, outside
+// CalloutLines; the privateProjects row fails, since the annotation no longer changes with it.
 func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	annotation := func(t *testing.T, args *gcp.ClusteredNatsHubArgs) any {
 		t.Helper()
@@ -185,6 +224,20 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	args = calloutClusteredHub()
 	args.Users[1].Permissions.Publish.Allow = []string{"notifications.>"}
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
+
+	// The server tag is a callout line, so setting privateProjects rolls every pod and removing it
+	// rolls them back: nats-server also reloads server_tags, and each reload decides every callout
+	// connection again, but the roll is what brings a change of these lines to every server at one
+	// known moment, its restart, after the ConfigMap is applied.
+	public := privateClusteredHub()
+	public.PrivateProjects = false
+	untagged := annotation(t, public)
+	tagged := annotation(t, privateClusteredHub())
+	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines+privateProjectsTagLines), tagged,
+		"setting privateProjects rolls the pods to take the server tag")
+	require.NotEqual(t, untagged, tagged, "privateProjects leaves the pods' annotation as it was, so the tag would reach no running server")
+	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines), untagged,
+		"removing privateProjects rolls the pods back to the untagged lines")
 }
 
 // Beside a callout, the chart's cluster block pins the routes' own ping at today's effective
@@ -205,8 +258,10 @@ func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {
 // TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
 // the callout's lines exactly as the hub's auth.conf holds them: the auth_callout block cut from
 // the rendered text (what follows the users' closing "  ]" line, up to the authorization block's
-// own "}" line), then the ping lines that end it. So the hash cannot drift from what the servers
-// read. For each hub shape it changes, the callout's own, another xkey and an added user.
+// own "}" line), then the ping lines and, beside privateProjects, the server tag's lines
+// (TestClusteredNatsHubRollsThePodsForACalloutChange), which end it. So the hash cannot drift from
+// what the servers read. For each hub shape it changes, the callout's own, another xkey and an
+// added user.
 //
 // Control: make core's Render write its own block and CalloutLines leave out the last user's key;
 // every row fails.

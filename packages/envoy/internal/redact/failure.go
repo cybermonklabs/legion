@@ -18,7 +18,7 @@ import (
 // already gave. net/url quotes the whole value it could not parse, net/http's *url.Error leaves a
 // user name, a query and a fragment in the URL it names, and x/oauth2 keeps the body of an answer,
 // so a server a setting names is reported by its class, beside the server as the message itself
-// names it: the sign-in client (brokerclient's DeviceFlow) prints each failure of a request to the
+// names it: the sign-in client (cipherclient's DeviceFlow) prints each failure of a request to the
 // sign-in issuer, or to an endpoint its discovery document names, this way. An OAuth answer's
 // class carries its error code where that code is a registered one (answerCodes), which this
 // package spells, never the server; a failure already put in words (a classified) keeps those
@@ -85,7 +85,7 @@ func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
 // prints: a server writes what it likes in a description, a message and a code of its own, an
 // echo of the request that carried a credential among them, and a Google error body has carried
 // a token before. The sign-in client prints an issuer's refusal of its discovery document this
-// way, from the status its transport recorded (brokerclient's statusOf), since go-oidc's own error
+// way, from the status its transport recorded (oauthrefusal.Recorder), since go-oidc's own error
 // quotes the issuer and the body.
 func Answered(status int, body []byte) string {
 	text := fmt.Sprintf("the server answered HTTP %d", status)

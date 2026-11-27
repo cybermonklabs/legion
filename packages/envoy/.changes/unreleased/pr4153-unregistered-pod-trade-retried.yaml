@@ -12,4 +12,4 @@ body: |-
   `github.com/sjawhar/envoy/brokerclient` package forwards `NewDPoPTransport`.
 time: 2026-11-16T04:15:13Z
 custom:
-    Issue: INFRA-840
+    Issue: pr4153

@@ -1,9 +1,15 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import type { Server } from "bun";
 import { keyedLayer } from "../../../packages/envoy-client/test/keyed-layer.ts";
 import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -88,7 +94,7 @@ function standIn(options: {
         if (options.keyed && key !== null) answers.set(key, answer);
         return Response.json(answer, { status: 201 });
       },
-      options.keyed ? {} : { noKeyedLayer: true }
+      options.keyed ? {} : { namesNoKey: true }
     ),
     hostname: "127.0.0.1",
     port: 0,

@@ -7,8 +7,7 @@ import {
   renderInbound,
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
-import { messageFor } from "./errors";
-import { registrationTopics, subjectsOverlap } from "./stream-topics";
+import { subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
@@ -309,6 +308,13 @@ export interface ConsumerDelivery {
    * it changed.
    */
   setFollowed(topics: Iterable<string>): void;
+  /**
+   * Forgets only `topics`, keeping every other follow and its stamp: what a registration the
+   * listener refused for some topics does, since another registration may have added a topic
+   * since this one took the follows (`setFollowed`), and that one's frames must still be handed
+   * over. Persists the snapshot when it changed.
+   */
+  unfollow(topics: Iterable<string>): void;
   /** Offers the snapshot to the host's `persist`, when it changed: call it after a frame is
    *  written. */
   persist(): void;
@@ -788,6 +794,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       follows = next;
       persist();
     },
+    unfollow(topics) {
+      for (const topic of topics) follows.delete(topic);
+      persist();
+    },
     persist,
     resumePoint,
     snapshot,
@@ -828,156 +838,4 @@ function gapNoticeFields(notice: ConsumerGapNotice): Readonly<Record<string, str
  */
 export function gapNoticeText(notice: ConsumerGapNotice): string {
   return envoyNoticeText(gapNoticeFields(notice));
-}
-
-/**
- * What a session is told when the listener can give it no consumer, worded once for every host:
- * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
- * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
- * `why` is the listener's own message, which carries its machine-readable reason. Each host
- * shows it where it shows a gap notice and says once per outage.
- */
-export function inboundUnavailableNoticeText(why: string): string {
-  return envoyNoticeText({
-    notice: "Envoy inbound unavailable",
-    error: why,
-    detail:
-      "The listener gave this session no durable consumer, which is the only path an Envoy message reaches it by, so it receives none. Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.",
-  });
-}
-
-/**
- * What a session that was told its inbound is unavailable is told once a registration is
- * accepted again, worded once for every host: without it the outage notice is the last word the
- * session has, and a session that recovered a few seconds later reads itself as deaf for its life.
- */
-export function inboundRestoredNoticeText(): string {
-  return envoyNoticeText({
-    notice: "Envoy inbound restored",
-    detail:
-      "The listener accepted this session's registration and gave it its durable consumer, so Envoy messages reach it again, the ones the stream stored during the outage first.",
-  });
-}
-
-/** One session's outage report (`inboundUnavailable`). */
-export interface InboundUnavailable {
-  /**
-   * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it.
-   */
-  refused(error: unknown): void;
-  /** A registration was accepted: ends the outage, telling the session so through the host's
-   *  `restored` when it was told of the outage, and the next outage tells the session again. */
-  accepted(): void;
-}
-
-/**
- * Says once per outage that the session receives nothing, and that it receives again once a
- * registration is accepted. The listener refuses a registration it can give no consumer, and the
- * host registers again at every heartbeat, so a host that told the session each time would tell
- * it every tick for as long as the outage lasts; one that never told it again would leave a second
- * outage silent; and one that never said the outage ended would leave the session believing it
- * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
- * words with `inboundUnavailableNoticeText`, and `restored` is worded with
- * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
- */
-export function inboundUnavailable(
-  tell: (why: string) => void,
-  restored: () => void
-): InboundUnavailable {
-  let told = false;
-  return {
-    refused(error) {
-      if (told) return;
-      told = true;
-      tell(messageFor(error));
-    },
-    accepted() {
-      if (!told) return;
-      told = false;
-      restored();
-    },
-  };
-}
-
-/** What a registration needs of a session's relay; `ConsumerDelivery` is one. */
-export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "registration">;
-
-/** What `registerWithRelay` is handed; `Result` is the host client's registration answer. */
-export interface RelayRegistration<Result> {
-  /**
-   * The relay this registration asks the listener for a consumer on, or `undefined` when the
-   * session holds no relay subject (no NATS connection yet, or inbound off for this session).
-   */
-  readonly relay: RegisteringRelay | undefined;
-  /**
-   * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
-   * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
-   * the outage notice name it. Undefined when the host has no failure to name.
-   */
-  readonly relayMissing?: string;
-  /** This session's own agent subject, which every registration carries. */
-  readonly ownAgentSubject: string;
-  /** Every topic the session follows now, filtered by `registrationTopics`. */
-  readonly followed: Iterable<string>;
-  /** The Legion roles this session holds, which decide the controller notice lane it may follow. */
-  readonly roles?: readonly string[];
-  /** This session's outage report, told once per outage. */
-  readonly outage: InboundUnavailable;
-  /** Sends the registration carrying these topics and this delivery request. */
-  readonly send: (topics: readonly string[], delivery: DeliveryRequest) => Promise<Result>;
-  /**
-   * Takes the answer's consumer, once the registration was accepted: the host drops it when it
-   * has since left the session or closed the relay this asked for.
-   */
-  readonly answered: (result: Result) => void;
-}
-
-/**
- * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
- * from a refusal the listener sent. Its message names why the relay is missing when the host said
- * (`relayMissing`).
- */
-export class NoRelaySubjectError extends Error {}
-
-/**
- * One registration, as every host that holds a relay makes it: the topics the listener will
- * store (`registrationTopics`), stamped on the relay before the registration carries them, then
- * sent, with the outage told once whichever way it ends.
- *
- * A session with no relay subject open is refused here rather than registered: every
- * registration asks for consumer delivery, a session receives only what its own consumer holds,
- * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
- */
-export function registerWithRelay<Result>({
-  relay,
-  relayMissing,
-  ownAgentSubject,
-  followed,
-  roles,
-  outage,
-  send,
-  answered,
-}: RelayRegistration<Result>): Promise<Result> {
-  if (relay === undefined) {
-    const refused = new NoRelaySubjectError(
-      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
-    );
-    outage.refused(refused);
-    return Promise.reject(refused);
-  }
-  const topics = registrationTopics(ownAgentSubject, followed, roles);
-  relay.setFollowed(topics);
-  return send(topics, relay.registration()).then(
-    (result) => {
-      outage.accepted();
-      answered(result);
-      return result;
-    },
-    (error: unknown) => {
-      outage.refused(error);
-      throw error;
-    }
-  );
 }

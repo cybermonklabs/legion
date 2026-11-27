@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,8 +36,14 @@ func (b *recordingBus) publish(item contracts.Envelope) error {
 
 func (b *recordingBus) Publish(item contracts.Envelope) error { return b.publish(item) }
 
-func (b *recordingBus) PublishWithin(_ context.Context, item contracts.Envelope) error {
-	return b.publish(item)
+func (b *recordingBus) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := b.publish(item); err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, false, false)
+	}
+	return nil
 }
 
 // topics are the topics the bus was handed, in order, which is what a fan-out case states.
@@ -49,15 +56,15 @@ func (b *recordingBus) topics() []string {
 }
 
 // publishMethods are the two one-method interfaces a *Publisher satisfies, so every case runs
-// through both: the webhook handlers hold PublishWithin and the CI summary loop holds Publish, and
-// the two must fan out alike.
+// through both: the webhook handlers hold PublishEachWithin and the CI summary loop holds Publish,
+// and the two must fan out alike.
 var publishMethods = []struct {
 	name    string
 	publish func(*Publisher, contracts.Envelope) error
 }{
 	{"Publish", func(p *Publisher, item contracts.Envelope) error { return p.Publish(item) }},
-	{"PublishWithin", func(p *Publisher, item contracts.Envelope) error {
-		return p.PublishWithin(context.Background(), item)
+	{"PublishEachWithin", func(p *Publisher, item contracts.Envelope) error {
+		return p.PublishEachWithin(context.Background(), item, nil)
 	}},
 }
 
@@ -95,6 +102,71 @@ func mustParse(t *testing.T, value string) Renames {
 		t.Fatalf("Parse(%q) refused the value: %v, want the pairs it holds", value, err)
 	}
 	return renames
+}
+
+// duplicateBus answers every publish to the topics in held as a duplicate, as a stream that holds
+// their message id already does, and every publish to the topics in resent as the answer to the
+// bus's resend after a closed connection.
+type duplicateBus struct {
+	recordingBus
+	held, resent []string
+}
+
+func (b *duplicateBus) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := b.publish(item); err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, slices.Contains(b.held, item.Topic), slices.Contains(b.resent, item.Topic))
+	}
+	return nil
+}
+
+// The webhook logs one line for each topic a delivery is published on, so the publisher reports
+// each topic it published, the copy under the former name included, with the stream's own
+// acknowledgement for that topic: the copy is a message of its own, which the stream can hold
+// while it stores the envelope, or the other way round, and either can be the answer to a resend.
+// A copy that fails is not reported, and the envelope before it is.
+func TestPublisherReportsEachTopicWithItsOwnAnswer(t *testing.T) {
+	const (
+		current = "notifications.github.cybermonklabs.legion.pr.7706"
+		former  = "notifications.github.sjawhar.legion.pr.7706"
+	)
+	for _, c := range []struct {
+		name         string
+		held, resent []string
+		failOn       int
+		want         []string
+	}{
+		{name: "neither held", want: []string{current + " stored", former + " stored"}},
+		{name: "the envelope held", held: []string{current}, want: []string{current + " duplicate", former + " stored"}},
+		{name: "only the copy held", held: []string{former}, want: []string{current + " stored", former + " duplicate"}},
+		{name: "the copy's resend held", held: []string{former}, resent: []string{former}, want: []string{current + " stored", former + " duplicate resent"}},
+		{name: "the copy fails", failOn: 2, want: []string{current + " stored"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bus := &duplicateBus{held: c.held, resent: c.resent}
+			bus.failOn, bus.failWith = c.failOn, errors.New("refused")
+			p := Publishing(bus, mustParse(t, "sjawhar/legion=cybermonklabs/legion"), nil)
+			var reported []string
+			err := p.PublishEachWithin(context.Background(), testEnvelope(current), func(topic string, duplicate, resent bool) {
+				answer := topic + " stored"
+				if duplicate {
+					answer = topic + " duplicate"
+				}
+				if resent {
+					answer += " resent"
+				}
+				reported = append(reported, answer)
+			})
+			if (err != nil) != (c.failOn != 0) {
+				t.Fatalf("PublishEachWithin = %v, want an error only when the copy fails", err)
+			}
+			if !slices.Equal(reported, c.want) {
+				t.Fatalf("reported %q, want %q", reported, c.want)
+			}
+		})
+	}
 }
 
 // TestPublisherFansOutToTheFormerName covers which topics a publish puts on the bus and in which

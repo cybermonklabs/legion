@@ -10,7 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
@@ -24,6 +26,14 @@ import { pruneSessions } from "../dispatch-session-state";
 // CLI consumes a marker before it posts a gated write, and refuses one with no marker, whatever
 // form ran it. These tests write the record and the markers by hand, in the format the gate
 // writes, so they hold the CLI to that format and to nothing of the gate's.
+
+// The programs themselves, never a mise shim of them, read here at module scope as docs/testing.md
+// says: the row below gives each child a HOME of its own, where a shim reads the real home's
+// config as untrusted, or finds no version, and exits 1 before the program runs. That row calls
+// requireHostTools first, which fails it by name on a host that lacks either program, so the bare
+// name each fallback holds is never what runs.
+const node = hostTool("node") ?? "node";
+const python3 = hostTool("python3") ?? "python3";
 
 interface Recorded {
   readonly method: string;
@@ -57,11 +67,15 @@ const server = Bun.serve({
     if (request.method === "GET" && pathname === ARTIFACTS) {
       return Response.json([]);
     }
-    // The markdown the store would hold for inline text: this stub stores it as it stands, so
-    // no upload below is refused for its spelling.
+    // The markdown the store would hold for inline text, and for a file's bytes: this stub stores
+    // each as it stands, so no upload below is refused for its spelling or its text.
     if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
       const asked: { markdown?: string } = await request.json();
       return Response.json({ markdown: asked.markdown });
+    }
+    if (request.method === "POST" && pathname === "/api/v1/markdown/file-round-trip") {
+      const asked: { file: string } = await request.json();
+      return Response.json({ markdown: Buffer.from(asked.file, "base64").toString("utf8") });
     }
     if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
       record(await request.json());
@@ -71,8 +85,9 @@ const server = Bun.serve({
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
+    // A refusal, so a write this stub has no route for is answered once and never asked again.
     record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 400 });
   }),
 });
 afterAll(() => server.stop(true));
@@ -168,6 +183,7 @@ function environment(
   extra: Record<string, string | undefined>
 ): Record<string, string | undefined> {
   return {
+    ...bunCacheOff,
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
     DISPATCH_TOKEN: TOKEN,
@@ -612,6 +628,25 @@ describe("AskGate at the dispatch CLI", () => {
     expect(posts).toHaveLength(0);
   });
 
+  // A correction writes or takes down the text of a post the gate reviewed when it was posted,
+  // so the CLI asks for a marker for each of the four, as it does for a comment or a message.
+  test("the four post corrections are gated, each refused before any request", async () => {
+    writeRecord();
+    const comment = "cccccccc-0000-4000-8000-000000000050";
+    const message = "dddddddd-0000-4000-8000-000000000050";
+    for (const [argv, command] of [
+      [["edit-comment", "--comment", comment, "--body", "Corrected: 72 hours."], "edit-comment"],
+      [["delete-comment", "--comment", comment], "delete-comment"],
+      [["edit-message", "--message", message, "--body", "Corrected: 02:00 UTC."], "edit-message"],
+      [["delete-message", "--message", message], "delete-message"],
+    ] as const) {
+      const { code, stdout } = await run(argv);
+      expect(code).toBe(1);
+      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+    }
+    expect(posts).toHaveLength(0);
+  });
+
   test("a record that cannot be read, or that names a missing store, is a refusal naming the cause", async () => {
     const self = { pid: process.pid, start: startOf(process.pid) };
     const file = ownerFile("ses-1", self);
@@ -816,6 +851,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
   // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
   // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
+    requireHostTools("node", "python3");
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
     writeFileSync(
@@ -828,11 +864,11 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
-      ["python3 -c", ["python3", "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
+      ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
       [
         "node -e",
         [
-          "node",
+          node,
           "-e",
           `require("node:child_process").spawnSync("dispatch", [${argv}], { stdio: "inherit" })`,
         ],

@@ -12,31 +12,47 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v21's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// from, leak-check-v33's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
 // ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354"
+const ghPinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
 // it returns for the call before it looks up any target. It reads the call as that check does
 // with no GH_HOST, which no call of these tests sets.
 //
-// The read is the check's, part for part (its gh_guard, is_read, collect and api_read): `--help`,
-// `-h` and `--version` first; then a call that begins with an option, whose words after -R/--repo
-// values and other options are read by is_read, and which the check refuses, so no read, where
-// they are not; then `gh api` (ghPinnedAPIRead); and any other call by is_read over its first two
-// words (ghPinnedIsRead).
+// The check first asks gh's aliases (gh_alias), for every call but exactly `alias list` and
+// `alias delete -- KEY`, which it lets go at once, and which this reads as is_read reads them.
+// After that the read is the check's, part for part (its gh_guard, is_read, collect and
+// api_read): `--help`, `-h` and `--version` first; then a call that begins with an option, whose
+// words after -R/--repo values and other options are read by is_read, and which the check
+// refuses, so no read, where they are not; then `gh api` (ghPinnedAPIRead); and any other call
+// by is_read over its first two words (ghPinnedIsRead).
 //
-// Four parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
+// Five parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
 // where the check reads a query with no mutation as one, and `gh secret`, which the check lets go
-// before it reads anything, is read here as is_read reads it. Two are looser, and in each the
-// check refuses the call before it looks up any target, so neither makes a call the port reads as
-// a read cost the check a lookup: the check refuses a first word that is a gh alias in
-// GH_CONFIG_DIR's config (gh_alias), which this reads as any other word, and `legion gh` refuses
-// such a call itself before the guard; and the check exits 2 on a missing or unreadable file an
-// argument names (file_ok), which this never looks for, so `api --input f --input=
-// repos/acme/widgets/pulls` with no file f is a read here. No call these tests count as a read
-// meets any of the four.
+// once it has asked gh's aliases and before it reads anything else, is read here as is_read reads
+// it. Three are looser, and in each the check refuses the call before it looks up any target, so
+// none makes a call the port reads as a read cost the check a lookup. The check refuses a call
+// that an alias gh lists matches (gh_alias): a key of one word that is one of the words gh may
+// read as the call's command, or a key of several words whose later words come, in that order,
+// among the arguments after the first such word, as `gh alias list` lists them for GH_CONFIG_DIR
+// and for each directory under LEGION_GH_OWNERS_DIR that holds a config.yml. This reads every
+// call as if gh lists no alias. `legion gh` refuses such a call itself, before the guard, only
+// where a word of the command path it walks is an alias that its parent's help lists (`pr pv2`
+// for the key `pr pv2`), so a call that the check matches more widely, such as `pr view pv2` for
+// that key, reaches the check. The check exits 2 where it cannot read gh's aliases: no gh to run,
+// a working directory that is gone, a LEGION_GH_OWNERS_DIR it cannot list, or a `gh alias list`
+// that fails or does not answer within its bound (read_gh_aliases). And the check exits 2 on a
+// missing or unreadable file an argument names (file_ok), which this never looks for, so
+// `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
+// tests count as a read meets any of the five.
+//
+// The guard calls the check as `gh-guard -- <argv>`, and `gh-guard` alone for a call of no words
+// (leakguard's modeArgv). The check's main() takes out the one `--` the guard writes after the mode
+// word, so gh_guard gets argv unchanged, a leading `--` of the call's own among it; a call of no
+// words returns 0 in mode_gh before gh_guard, and this reads it as is_read reads an empty first
+// word.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
@@ -344,6 +360,7 @@ func ghGeneratedSpellings() []ghSpelling {
 // that did not answer public fails as what it was, stopped by visibilityAnswerBound after so many
 // seconds or ending with its own status and words, and not as a read missing from gh's count.
 func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
+	t.Parallel()
 	t.Run("the generated spellings", func(t *testing.T) {
 		spellings := ghGeneratedSpellings()
 		admitted, mismatches := 0, 0
@@ -367,7 +384,9 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			}
 		}
 	})
-	run := ghGuardRig(t)
+	// The guard's own lookup is a whole guard's, which reads the visibility only where the
+	// deployment names its rule file.
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, tc := range []struct {
 		args                   []string
 		checkLooks, guardLooks bool
@@ -402,7 +421,7 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", tc.args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; !strings.HasPrefix(got.checked, want) {
+			if want := ghGuardRun(tc.args); !strings.HasPrefix(got.checked, want) {
 				t.Errorf("the shared check recorded %q, want its run of the call first, %q", got.checked, want)
 			}
 			looked := strings.Contains(got.checked, "lookup acme/widgets\n")

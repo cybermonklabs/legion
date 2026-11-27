@@ -47,27 +47,35 @@ export interface DispatchStack {
  *
  * Every test file that starts a stack calls this once per stack, at its own module scope, as
  * `const stackDirectory = useDispatchStackDirectory()`, and hands the path to `startDispatchStack`.
- * The call cannot live in this module's body, and belongs at module scope rather than in the
- * `describe` body that starts the stack, for the reasons `useEnvoyStackDirectory` states.
+ * The call cannot live in this module's body, and the `afterAll` hands the directory to a removal
+ * it does not wait for, both for the reasons `useEnvoyStackDirectory` states.
  */
 export function useDispatchStackDirectory(): string {
-  return temporaryDirectory("dispatch-stack");
+  return temporaryDirectory("dispatch-stack", { removeInBackground: true });
 }
 
 /** What a caller may change about the stack it starts. */
 export interface DispatchStackOptions {
   /**
    * The directory the stack works in, which the caller reserved with
-   * {@link useDispatchStackDirectory} and the fixture removes again. It exists and is empty when
-   * `startDispatchStack` is called, and one stack has it to itself.
+   * {@link useDispatchStackDirectory}, whose `afterAll` hands it to a removal of its own. It exists
+   * and is empty when `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Settings the server is given beside the ones below, for a row that needs a deployment the
+   * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
+   * verifies projected service-account tokens, and an issuer nothing serves makes every such
+   * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`); the CI results stack names its secrets
+   * broker and its stand-in of GitHub here. A name the stack sets itself is refused, so a row
+   * cannot quietly take the server's database, port or token away from it, but for
+   * `DISPATCH_SERVER_URL`: a stack whose callers reach the server by another name (the CI results
+   * stack's public URL, which only the airlock's proxy reaches) names the URL they reach it at.
+   */
+  readonly env?: Readonly<Record<string, string>> | undefined;
   /** Called with the port the stack chooses for the server, before the server starts. */
   readonly portChosen?: PortChosen;
-  /** Extra environment for the server process, after the fixture's fixed test settings, so a name
-   *  the stack sets too takes the caller's value: the CI results stack names its secrets broker
-   *  and its stand-in of GitHub here. */
-  readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -97,12 +105,12 @@ export function testDatabaseServer(): string {
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
  * reaches it, since the child is given the environment below, with `options.env` over it, and
- * nothing else. It serves on a socket the stack holds from the choice of its port
- * (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}), so no other program can take the port before
- * it serves.
+ * nothing else. It serves on a
+ * socket the stack holds from the choice of its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}),
+ * so no other program can take the port before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
- * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
+ * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it once the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  */
 export async function startDispatchStack(options: DispatchStackOptions): Promise<DispatchStack> {
@@ -144,10 +152,8 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       "dispatch",
       "DISPATCH_LISTEN_FD",
       options.portChosen,
-      (port) => ({
-        command: [path.join(bin, "dispatch")],
-        cwd: ENVOY_MODULE,
-        env: {
+      (port) => {
+        const settings: Record<string, string> = {
           PATH: SHELL_PATH,
           HOME: home,
           DATABASE_URL: databaseUrl.toString(),
@@ -160,10 +166,22 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
           DISPATCH_PORT: String(port),
           DISPATCH_SERVER_URL: `http://127.0.0.1:${port}`,
           DISPATCH_WEB_DIST: WEB_DIST,
-          ...options.env,
-        },
-        log,
-      })
+        };
+        for (const [name, value] of Object.entries(options.env ?? {})) {
+          if (name in settings && name !== "DISPATCH_SERVER_URL") {
+            throw new Error(
+              `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+            );
+          }
+          settings[name] = value;
+        }
+        return {
+          command: [path.join(bin, "dispatch")],
+          cwd: ENVOY_MODULE,
+          env: settings,
+          log,
+        };
+      }
     );
     child = started.child;
     const url = `http://127.0.0.1:${started.port}`;

@@ -1,4 +1,5 @@
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
+import { openIssueDetails } from "./issue-details";
 import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
@@ -119,11 +120,12 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
     agent
   );
   // The option's stored text, which the panel shows as the row's excerpt: its label, an em dash
-  // and its description.
-  const optionText = `Wait — Hold until dispatch://${target.key} ships.`;
+  // and its description, drawn by the renderer, so the address in it reads as the issue's name.
+  const optionText = `Wait — Hold until ${target.key} ${target.title} ships.`;
 
   await page.goto(`/issues/${target.key}`);
   const header = page.getByTestId("issue-header");
+  await openIssueDetails(page);
   await header.getByRole("button", { name: /^Referenced by/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
 
@@ -134,7 +136,7 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
   const askSource = references.getByRole("link", { name: `Ask · ${source.key}` });
   await expect(askSource).toBeVisible();
   await expect(references.getByText(/^Artifact · /)).toHaveCount(0);
-  await expect(references.getByText(optionText, { exact: true })).toBeVisible();
+  await expect(references.locator(".dispatch-markdown")).toHaveText(optionText);
   // One row, not two: an ask's own links are its question's, so the option's citation is the
   // part's edge alone.
   await expect(askSource).toHaveCount(1);

@@ -35,13 +35,13 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 
 | Need | Setting | Notes |
 | --- | --- | --- |
-| Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
+| Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. Dispatch also refuses a URL holding an `@` after its user name and password, naming the variable alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`. A database name holding an `@` is refused however it is written. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
-| An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
+| An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone, as for each model endpoint, `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_GITHUB_API_BASE`. |
 | NATS | `NATS_URLS`, `NATS_NKEY_SEED_FILE` | Where Dispatch publishes its events for agents. The Agents page's live view also needs it. Dispatch refuses a NATS server on another machine unless `ENVOY_ALLOW_REMOTE_NATS=1`. A NATS that is down, or refuses Dispatch's credential, when Dispatch starts does not stop it: Dispatch serves, connects once NATS answers, and publishes what was written meanwhile. Set `DISPATCH_NATS_DISABLED=1` to run without it. |
 | An address to listen on | `DISPATCH_LISTEN_HOST`, `DISPATCH_PORT` | Port `8766` by default. |
 | Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v1/search/coverage` shows how far it has got. |
@@ -262,8 +262,10 @@ with Docker, Bun, and Go installed:
    It runs a container named `dispatch-pg` on `127.0.0.1:55432` from a pinned image, pgvector on
    PostgreSQL 18 (Dispatch's migrations need its `vector` extension, and 18 is the version
    Dispatch's tests and dev databases run), and starts or reuses that container when it is already
-   there. A `dispatch-pg` made from another image or PostgreSQL major is refused, with the commands
-   that dump its databases and restore them into a new container on the right one.
+   there. The migrations also need `btree_gin`, a contrib extension that PostgreSQL includes, and a
+   migration creates each of the two extensions. A `dispatch-pg` made from another image or
+   PostgreSQL major is refused, with the commands that dump its databases and restore them into a
+   new container on the right one.
 
 2. Build the web app:
 
@@ -306,14 +308,17 @@ either, the server logs that meaning search is unavailable and serves everything
 Sign in, then open **Settings**:
 
 - **Projects**: create your first project, with a key such as `CORE` and a name.
-- **Repositories → Projects**: choose which project issues from each GitHub repository land in.
-  `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
   and under no parent that names one, goes to that person, and so does every question on an issue
   nobody holds. Every project names one, so the page moves a default from one person to another
   and clears none. A person moves it here, and an agent names a project's first one in the call
   that creates the project.
+- **Projects → Default repository**: name the repository each project's work is done in, in the
+  projects table's own column, as `owner/name`. An issue that names no repository, under no parent
+  that names one, takes it. **Save** sets it, **Clear** removes it, and a project with none reads
+  **None**. An import of a GitHub issue names its project, since Dispatch chooses no project from
+  a repository.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
@@ -427,7 +432,7 @@ that the GitHub client counts on every request a pass sends:
 
 - GitHub gave no answer: a network error, the client's own 20-second timeout, or a body the client
   could not read or that was past its size limit.
-- GitHub answered with a 5xx status or with 401.
+- GitHub answered with a 408, a 5xx status or 401.
 - A rate limit: a 429, a 403 that carries a limit, a GraphQL answer that reports a limit (also
   with status 200), or a limit already recorded that held the request before it was sent.
 
@@ -437,7 +442,7 @@ The second kind is a part of its read that a loop gives up:
   redelivery request, or a rate limit stops the sweep.
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
-  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  be listed), a project's default repository that the App is not installed on, a pull request head it
   cannot read (an answer too large included), a failed read of a head's commit statuses, or a
   rate limit that ends the pass, also one already in force when the pass starts. A read that the
   pass's own time limit cut short is not one of these.
@@ -519,6 +524,67 @@ that names the owner, the earlier event and that event's last publish error. The
 earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
 attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
+## GitHub rate reading
+
+Each server with the GitHub App's private key reads the App's rate counters: at start, every 10
+minutes, and in the last minute before each counter reset of any installation. A reading is due 45
+seconds before a reset, or at once when the reading before it ended inside that last minute. Each
+reading lists the App's installations, reads first the ones in a counter's last minute, and logs
+one `github_rate_reading` line for each of them to stderr. The line is JSON, though the rest of the
+log is text, so a log store such as Cloud Logging keeps its fields. A reading costs each
+installation one REST core call, and one more when the server lists the installation's
+repositories again: at its first reading, and after GitHub no longer has the repository it read
+before. It holds:
+
+- `program` (`dispatch`), `process` (the server's host name) and `project` (empty).
+- `app_id`, `app_slug`, `owner` and `installation_id`, which name the installation, and
+  `installations`, how many installations the list held. The App's id and slug come from the
+  fresh installation list, which names both for each installation, so a renamed App does not keep
+  its old slug until the server restarts. The server asks GitHub's `GET /app` only when the list
+  names neither, and a failure there fails no reading.
+- `permissions`: each permission the installation grants the App, with its access, as the
+  installation list named them. It is `{}` when the list named none, and it is on the line of a
+  reading that failed too. A permission the list names with a value that is not text is left out.
+- `before_reset`, true when the line was written in the last minute before a reset of one of this
+  installation's counters, including on a regular pass. A reading that failed there is a
+  `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
+  an installation is written in a counter's last minute, the server takes no other reading for
+  that reset, even when GitHub's next answer names the reset a second later. If that line failed,
+  the hour has no last-minute reading of that counter: the server does not ask GitHub again until
+  the reset.
+- For the REST core counter and the GraphQL counter: `core_used`, `core_limit` and `core_reset`,
+  and `graphql_used`, `graphql_limit` and `graphql_reset`, as GitHub answered them, with each reset
+  in RFC 3339 UTC.
+- `core_own` and `graphql_own`: the calls this server made on that counter since its last reset,
+  by the part of Dispatch that made them. Those are `architecture_import`, `delivery_reconcile`
+  and `ci_reconcile` (three of the loops above), `webhook_intake` (the delivery intakes), `api`
+  (the API and the GitHub proxy), `rate_reading` (the reading itself) and `other` (anything
+  else). `webhook_redelivery` appears only if the sweep calls GitHub with an installation's token;
+  today it calls with the App's own credential alone.
+
+A reading of an installation that has used its whole budget still carries the counters. Its reads
+are sent even while the server holds back its other reads of that installation, and GitHub names
+the counter in a refusal too: about 6 + 2N core calls an hour of each such installation from each
+server, N being the App's installations. A secondary limit is different: GitHub asks a client to
+send nothing while one holds, and may ban an integration that goes on. So once GitHub answers one
+of this server's calls with an installation's token with a secondary limit, the server sends that
+installation's reading nothing until the end GitHub asked for (its `Retry-After`, else a minute,
+at most an hour), and the line carries the hold as its `error`. A reading that fails carries
+`error` in place of the counters: for example, when GitHub refuses the installation's token, does
+not answer, or a counter resets before the server reads its own-call counts. An `error` holds at
+most 1,024 bytes: a longer one is cut at a whole character and ends with the length it was cut
+from. So a reading logs a line for each installation listed. A list that fails, or that holds no
+installation, logs one line with its `error` and no `permissions`. A reading that fails keeps the
+resets the server read before, so the reading before those resets is still taken.
+
+GitHub counts every caller of an installation together. Its used counts are REST requests or
+GraphQL points, while the server's own counts are answered calls. A GraphQL query can cost several
+points, and a refused REST call can cost nothing, so subtracting the own counts does not measure
+the use of the other servers or programs. A call that only the App's own credential makes, such as
+the webhook redelivery sweep's, is charged to no installation and is in no count. Neither is a
+call to GitHub's `GET /rate_limit` endpoint, nor an answer of `304 Not Modified`, which GitHub
+does not charge. A read of a repository that is named `rate_limit` is counted.
+
 ## Behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`. A browser keeps WebSockets apart
@@ -570,8 +636,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 22 for the work it runs once across the servers and the
-delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 29 for the work it runs once across the servers, the
+intakes' holds and the keyword fill's hold, up to 8 for saving what people type in documents,
+up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -583,7 +650,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 113
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 120
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -636,6 +703,14 @@ What a reader sees while two servers are serving:
   that cannot store them does not start, and the roll keeps the servers it would have replaced. A
   version older than the first that stores them stores nothing, so a roll away from one of those
   versions can still leave a page asking for files no server has.
+- A document that a server of the earlier version removes or makes again during the rollout can
+  leave this version's record of it out of step: `envoy-dispatch census --store` then names it
+  `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
+  `gone`; an `orphaned` line says `no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+- A comment that a server of the earlier version writes during the rollout, and a document block
+  it indexes then, can keep a record that names no project: `envoy-dispatch census --store` then
+  names it `unscoped`. Once every server runs this version, run
+  `envoy-dispatch backfill-graph-store` again, which gives it its project.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.
@@ -721,13 +796,19 @@ server ignores a write's `Idempotency-Key`, so while both run a write whose answ
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can
 reach the other version. At one replica the Deployment's `Recreate` already stops the old pod
 first; above one replica, scale to zero before the new version starts. Releases after it roll
-again. Rolling it back brings the hazard back the other way: a tab still open, and a `dispatch`
-client that saw this version keep keys in the last five minutes, retry a write whose answer was
-lost against the earlier server, which runs it again. So fix it forward, as above; if you must roll
-back, stop this version first, knowing a write in flight at that moment may land twice. Once a
-later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
-this version also stops broadcasts: the earlier version's broadcast send reads and writes that
-table, so every broadcast send fails while the rest of that version keeps working. A tab opened
+again. Rolling it back brings the hazard back the other way: a tab still open, and every
+`dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
+write whose answer was lost against the earlier server, which runs it again. So fix it forward,
+as above; if you must roll back, stop this version first, knowing a write in flight at that
+moment may land twice. Rolling back to a build whose keyed layer passes a caller it cannot
+resolve on to the handler, rather than answering that caller itself, brings the double write back
+too, for as long as that build serves: a `dispatch` command that sends a failed write again
+without reading `/healthz` can have that build run it once with no key and again under its key.
+Once your sessions run such a command, do not roll Dispatch back past `b1c42d1d7d` (the first
+build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
+Once a later release has dropped the broadcast send's old key table (migration `0141`),
+rolling back past this version also stops broadcasts: the earlier version's broadcast send reads and
+writes that table, so every broadcast send fails while the rest of that version keeps working. A tab opened
 before the deploy needs a reload: its event route is gone and it shows
 **Live updates unavailable**, and its broadcast body still carries a field the new server refuses.
 

@@ -17,6 +17,7 @@ import (
 // A Sandbox that carries the reset mark is deleted by the next launch too (R6). In each case
 // IssueKeepsVolume answers false, so the issue is told that the work its roles did not push is lost.
 func TestIssueKeepsVolumeIsFalseWhereTheNextLaunchReplacesTheVolume(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(childToken)
 	// launched is a kept rig with the child's first pod launched, and a time after its Sandbox was
 	// made, which is a time a round over that pod can have opened at.

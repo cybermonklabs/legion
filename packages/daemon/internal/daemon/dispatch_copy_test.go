@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -33,6 +34,7 @@ import (
 // re-read through the turn itself, the last three read over HTTP by the daemon's own Dispatch
 // client from a board whose JSON names each field as Dispatch's own model does.
 func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
+	t.Parallel()
 	const key = "CAPTURE-3"
 	labels, rank := []string{"design", "urgent"}, "a3"
 	t.Run("an issue event", func(t *testing.T) {
@@ -91,8 +93,10 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // progress; the first boot's listing, which refills the project's rows of the copy, lists W
 // waiting on B and B in progress; the periodic turn re-reads B; and the release's read of W, as it
 // adopts W into a live tree, shows W waiting on B. In the first three W is a labelled todo root on
-// the waiting line with a slot free for it, which it takes only if the pass of the same fact reads
-// a copy in which W waits on nothing.
+// the waiting line with a slot free for it; in the fourth the tree's root waits on W, its open
+// child, in awaiting_children and holds no slot (dispatch://INFRA-3320 R11), so both slots stand
+// free. In each W takes a slot only if the pass of the same fact reads a copy in which W waits on
+// nothing.
 //
 // The turn re-reads a blocker only while the copy shows it unfinished
 // (TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn), so its case holds B todo in the copy,
@@ -101,6 +105,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // on nothing, takes no slot, which is the tick's admission pass reading B's row as that reading
 // wrote it.
 func TestEachReadingKindWritesItsBlockers(t *testing.T) {
+	t.Parallel()
 	const waiter, blocker, other = "CAPTURE-3", "CAPTURE-7", "CAPTURE-8"
 	t.Run("an issue event", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
@@ -190,8 +195,13 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		if recorded == nil || recorded.Tree != tree || recorded.Phase != phase.Admitted {
 			t.Fatalf("%s = %#v, want it in the tree of %s at admitted: its first phase waits on %s", waiter, recorded, tree, blocker)
 		}
-		if slotted := tickSlotted(t, pool); !slices.Equal(slotted, []string{tree}) {
-			t.Fatalf("slots = %v, want %s's alone: %s waits on %s, which is in progress", slotted, tree, waiter, blocker)
+		// The tree's root, in planning, now waits on its open child W in awaiting_children and holds
+		// no slot (dispatch://INFRA-3320 R11), so the one slot this case can show is one W took.
+		if got := recordedPhase(t, w, tree); got != phase.AwaitingChildren {
+			t.Fatalf("%s after the adoption = %s, want awaiting_children: %s is its open child", tree, got, waiter)
+		}
+		if slotted := tickSlotted(t, pool); len(slotted) != 0 {
+			t.Fatalf("slots = %v, want none: %s waits on %s, which is in progress, and %s holds no slot in awaiting_children", slotted, waiter, blocker, tree)
 		}
 	})
 }
@@ -205,6 +215,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 // wait ended in that pass and not at a later fact. With the mirror after admission in the handler
 // list, P would still wait after the event, so the test holds the order of the handlers.
 func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
+	t.Parallel()
 	const root, child, elsewhere = "CAPTURE-1", "CAPTURE-3", "CAPTURE-9"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -217,7 +228,7 @@ func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 	openTree(t, pool, "CAPTURE", root)
 	seedTickMirror(t, pool, root, "in_progress", 1)
 	putOutboxGate(t, pool, record.NewStore(), record.DesignGate{Issue: root, ArtifactID: "artifact-1", LatestVersion: 1})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: child, Project: "CAPTURE", Seq: 5,
 			Status: record.Carry("backlog"), Parent: record.Carry(root), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
@@ -262,8 +273,8 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 	cfg := config.Config{Project: "CAPTURE", DispatchURL: dispatchBoard(t, board.serve(t)), AdmissionCap: slots,
 		Projects: map[string]config.Project{"CAPTURE": {}}}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	w, err := openWorkflow(ctx, cfg, st, "project-id", workflowDispatchToken, nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now)
+	w, err := openWorkflow(ctx, cfg, st, "project-id", dispatch.BearerTransport(workflowDispatchToken, nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
+		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

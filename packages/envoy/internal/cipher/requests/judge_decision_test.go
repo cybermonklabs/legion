@@ -1,0 +1,558 @@
+// packages/envoy/internal/cipher/requests/judge_decision_test.go
+// The model judge's own decisions against the real database: what an approval of its leaves on
+// the record, the request and the grant, what a verdict that decides nothing leaves, what its
+// keys' judge tags refuse it, and what happens when a person and the judge both answer one request.
+package requests
+
+import (
+	"crypto/ecdsa"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+)
+
+// judgeModel is the model deciding in these tests; every judge actor they expect is
+// record.JudgeActor of it.
+const judgeModel = "claude-opus-4-6"
+
+// adminSecretName is the administrator's credential these tests ask for, and adminSecret the
+// secret itself: human tier and the operator's own, carrying the requesters list and the hour's
+// cap the admin tag demands of a secret beside the tag (policy.TagRules, which refuses an admin
+// secret that is agent tier, lists nobody or caps nothing), and a judge tag of 900 seconds, which
+// a person approving every release of it outranks. A test that wants it puts it into its own
+// fixture's store rather than fixtureSecrets holding it, so every other test's policy is the one
+// it has always been.
+const adminSecretName = "ADMIN_CONSOLE_KEY"
+
+func adminSecret() secrets.LocalSecret {
+	s := policytest.ListedSecret(adminSecretName, fixtureOperator, policy.TierHuman, fixtureOperator, "admin-v1")
+	s.Tags[policy.TagAdmin] = policy.AdminTrue
+	return policytest.Judged(s, 900, "")
+}
+
+// federationSecretName is the operator's human-tier anthropic-federation secret with no admin tag,
+// whose judge tag gives the judge 900 seconds of it, and which a person approves every release of
+// all the same.
+const federationSecretName = "FEDERATION_ADMIN_KEY"
+
+func federationSecret() secrets.LocalSecret {
+	return policytest.Judged(policytest.TypeSecret(federationSecretName, fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), 900, "")
+}
+
+// newJudgeFixture is newFixture with judge tags that let the judge decide up to 900 seconds of
+// DEEL_API_KEY, the operator's own human-tier secret, and of SHARED_KEY, the shared one: the two
+// records' approvers are a person's login and record.AnyoneApprover, which is the difference the
+// grant's approver turns on. The judge tag alone makes a key the judge's; whether the key is
+// behind the proxy is no part of who decides it. adminSecret and federationSecret carry a
+// judge tag of their own, the tags no owner must be able to write past, since a secret whose
+// release a person approves (policy.Secret.PersonApprovesEveryRelease) does not answer to its
+// judge tag. The chain verifier reads the same live policy (record.ChainVerifier.JudgeSeconds). A
+// judge is wired, a hook that does nothing, so a request for a judge key is held for it; a test of
+// a broker that runs no judge sets m.Judge to nil.
+func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
+	t.Helper()
+	m, enrollmentID, key, _ := newFixture(t)
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 900, "")
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "SHARED_KEY", 900, "")
+	m.Judge = func(PendingRequest) {}
+	return m, enrollmentID, key
+}
+
+// signJudgeable signs an agent_secret request object over names with the reason and the lifetime
+// the judge reads: a reason naming a Dispatch issue and a lifetime inside the key's judge tag are
+// two of the three things record.MayJudge asks for, and the tests below move each of them.
+func signJudgeable(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason string, lifetime int, names ...string) string {
+	t.Helper()
+	details := make([]record.AuthorizationDetail, len(names))
+	for i, n := range names {
+		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: n, Actions: []string{"inject"}}
+	}
+	compact, err := record.Sign(key, m.Audience, details, reason, "", &lifetime, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	return compact
+}
+
+// pendingJudgeable creates one request for names that waits on a person, the state the judge
+// decides from.
+func pendingJudgeable(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime int, names ...string) Request {
+	t.Helper()
+	req, err := m.Create(t.Context(), enrollmentID, signJudgeable(t, m, key, reason, lifetime, names...), "")
+	if err != nil || req.RecordID == nil || req.State != "pending" {
+		t.Fatalf("Create(%v) = %+v, %v; want a pending request", names, req, err)
+	}
+	return req
+}
+
+// decided is everything one record's decision wrote that a judge's approval must get right: its
+// terminal decision events, the login and actor of the one it has (login nil for the judge), the
+// request's own state and decided_by, and the approver of every grant the request produced.
+type decided struct {
+	events    int
+	login     *string
+	actor     string
+	state     string
+	decidedBy string
+	approvers []string
+}
+
+func readDecided(t *testing.T, m *Machine, recordID string) decided {
+	t.Helper()
+	var d decided
+	if err := m.Store.Pool.QueryRow(t.Context(),
+		`select count(*), min(login), coalesce(min(actor),'') from credential_request_events where record_id=$1`, recordID).
+		Scan(&d.events, &d.login, &d.actor); err != nil {
+		t.Fatalf("read decision events: %v", err)
+	}
+	if err := m.Store.Pool.QueryRow(t.Context(),
+		`select state, coalesce(decided_by,'') from requests where record_id=$1`, recordID).
+		Scan(&d.state, &d.decidedBy); err != nil {
+		t.Fatalf("read request row: %v", err)
+	}
+	rows, err := m.Store.Pool.Query(t.Context(),
+		`select g.approver from grants g join requests r on r.id=g.request_id where r.record_id=$1 order by g.id`, recordID)
+	if err != nil {
+		t.Fatalf("read grants: %v", err)
+	}
+	if d.approvers, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatalf("read grants: %v", err)
+	}
+	return d
+}
+
+// judgedRows is every request.judged audit row of a record's request, as actor, the grant it
+// names (empty for none), the verdict its detail carries and what that detail says the
+// transaction applied ("true", "false", or "" for a row with no such key).
+type judgedRow struct {
+	actor   string
+	grantID string
+	verdict string
+	applied string
+}
+
+func readJudged(t *testing.T, m *Machine, recordID string) []judgedRow {
+	t.Helper()
+	rows, err := m.Store.Pool.Query(t.Context(),
+		`select a.actor, coalesce(a.grant_id::text,''), coalesce(a.detail->>'verdict',''), coalesce(a.detail->>'applied','') from audit a
+			join requests r on r.id=a.request_id where r.record_id=$1 and a.kind='request.judged' order by a.id`, recordID)
+	if err != nil {
+		t.Fatalf("read request.judged rows: %v", err)
+	}
+	judged, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (judgedRow, error) {
+		var j judgedRow
+		return j, row.Scan(&j.actor, &j.grantID, &j.verdict, &j.applied)
+	})
+	if err != nil {
+		t.Fatalf("read request.judged rows: %v", err)
+	}
+	return judged
+}
+
+// auditKinds is the audit kinds one record's request carries, in the order they were written.
+func auditKinds(t *testing.T, m *Machine, recordID string) []string {
+	t.Helper()
+	rows, err := m.Store.Pool.Query(t.Context(),
+		`select a.kind from audit a join requests r on r.id=a.request_id where r.record_id=$1 order by a.id`, recordID)
+	if err != nil {
+		t.Fatalf("read audit kinds: %v", err)
+	}
+	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read audit kinds: %v", err)
+	}
+	return kinds
+}
+
+// TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover is D1 at the database: the judge's
+// approval writes one decision event with no login and the judge's actor, records that actor as
+// having decided the request, and mints a grant whose approver is the record's own — the owner's
+// login for an owned secret, record.AnyoneApprover for a shared one — never the judge. The
+// verdict that produced it is in the same transaction (D11), naming the grant it granted, and the
+// chain the release re-checks verifies under the judge's arm.
+func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
+	for name, c := range map[string]struct{ secret, approver string }{
+		"an owned secret": {"DEEL_API_KEY", fixtureOperator},
+		"a shared secret": {"SHARED_KEY", record.AnyoneApprover},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key := newJudgeFixture(t)
+			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, c.secret)
+
+			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "issue": "ACME-1353"})
+			if err != nil || dec.State != "granted" || dec.GrantID == "" {
+				t.Fatalf("ApplyJudgeDecision = %+v, %v; want a granted decision", dec, err)
+			}
+
+			got := readDecided(t, m, *req.RecordID)
+			judge := record.JudgeActor(judgeModel)
+			if got.events != 1 || got.login != nil || got.actor != judge {
+				t.Errorf("decision events = %d rows, login %v, actor %q; want one row, no login, actor %q", got.events, got.login, got.actor, judge)
+			}
+			if got.state != "granted" || got.decidedBy != judge {
+				t.Errorf("request row = %q decided by %q; want granted, decided by %q", got.state, got.decidedBy, judge)
+			}
+			if len(got.approvers) != 1 || got.approvers[0] != c.approver {
+				t.Errorf("grant approvers = %q; want one grant approved by %q, the record's own approver", got.approvers, c.approver)
+			}
+
+			judged := readJudged(t, m, *req.RecordID)
+			if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != dec.GrantID || judged[0].verdict != JudgedGranted {
+				t.Errorf("request.judged rows = %+v; want one by %q naming grant %s, verdict %q", judged, judge, dec.GrantID, JudgedGranted)
+			}
+			if kinds := auditKinds(t, m, *req.RecordID); len(kinds) != 3 || kinds[1] != "request.granted" || kinds[2] != judgedKind {
+				t.Errorf("audit kinds = %q; want the creation, then request.granted and request.judged of the one approval", kinds)
+			}
+			if err := m.VerifyChain(t.Context(), dec.GrantID); err != nil {
+				t.Errorf("VerifyChain of the judge's grant = %v; want it to verify", err)
+			}
+		})
+	}
+}
+
+// TestAVerdictThatDecidesNothingWritesOnlyItself is the refer verdict and every approval the
+// state machine refused: LogJudged keeps what the judge answered and changes nothing else — no
+// decision event, no grant, and the request still waiting for the person who decides it today.
+// The row's verdict is what became of the request, whatever word the caller wrote: handed to the
+// person for a pending request, and not pending for one decided before the row. LogJudged answers
+// the verdict it wrote, so the judge's own line can say the same.
+func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+
+	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "why": "an answer outside grant and deny, which hands the request over"})
+	if err != nil {
+		t.Fatalf("LogJudged: %v", err)
+	}
+	if wrote.Verdict != JudgedHandedOver {
+		t.Errorf("LogJudged answered verdict %q; want %q, the verdict it wrote", wrote.Verdict, JudgedHandedOver)
+	}
+
+	judged := readJudged(t, m, *req.RecordID)
+	judge := record.JudgeActor(judgeModel)
+	if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != "" || judged[0].verdict != JudgedHandedOver {
+		t.Fatalf("request.judged rows = %+v; want one by %q naming no grant, verdict %q and never the deny the caller wrote", judged, judge, JudgedHandedOver)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after a verdict that hands the request over = %+v; want the request untouched and pending", got)
+	}
+
+	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
+	// written with the outcome alone rather than refused.
+	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
+	if _, err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
+		t.Fatalf("LogJudged(no detail): %v", err)
+	}
+	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != JudgedHandedOver {
+		t.Fatalf("request.judged rows of a verdict with no detail = %+v; want one by %q, verdict %q", judged, judge, JudgedHandedOver)
+	}
+
+	// A request its person decided before the judge's row says not pending. handOver writes the
+	// hand-over's own row while the request is still pending, which says handed to the person; the
+	// row written after the person's decision is the last.
+	decided := pendingJudgeable(t, m, enr, key, "ACME-1353 wants it decided", 600, "DEEL_API_KEY")
+	handOver(t, m, *decided.RecordID)
+	if _, err := m.ApplyDecision(t.Context(), *decided.RecordID, false, fixtureOperator); err != nil {
+		t.Fatalf("the person's denial: %v", err)
+	}
+	before := len(readJudged(t, m, *decided.RecordID))
+	wrote, err = m.LogJudged(t.Context(), *decided.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "already decided"})
+	if err != nil {
+		t.Fatalf("LogJudged(decided): %v", err)
+	}
+	if wrote.Verdict != JudgedNotPending {
+		t.Errorf("LogJudged of a request decided first answered verdict %q; want %q, the verdict it wrote", wrote.Verdict, JudgedNotPending)
+	}
+	judged = readJudged(t, m, *decided.RecordID)
+	if len(judged) != before+1 || judged[len(judged)-1].verdict != JudgedNotPending {
+		t.Fatalf("request.judged rows of a request decided first = %+v; want one more, verdict %q", judged, JudgedNotPending)
+	}
+	for _, row := range judged[:before] {
+		if row.verdict != JudgedHandedOver {
+			t.Errorf("the hand-over's row reads verdict %q; want %q, written while the request was pending", row.verdict, JudgedHandedOver)
+		}
+	}
+}
+
+// TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit drives each reason record.MayJudge
+// refuses the judge's grant of a record — a key carrying no judge tag beside its judge key, and a
+// judge tag that moved under a request the judge holds, past its lifetime or off its key — and
+// each comes back to the caller as a refusal it can test and leaves the request exactly as it
+// found it.
+func TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit(t *testing.T) {
+	for name, c := range map[string]struct {
+		names []string
+		// tagsAfter moves the judge tag once the request is written, as its owner's retag does.
+		tagsAfter func(t *testing.T, m *Machine)
+	}{
+		"a judge key beside a key carrying no judge tag": {names: []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}},
+		"a judge tag lowered below the request's lifetime": {names: []string{"DEEL_API_KEY"}, tagsAfter: func(t *testing.T, m *Machine) {
+			policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 300, "")
+		}},
+		"a judge tag taken away": {names: []string{"DEEL_API_KEY"}, tagsAfter: func(t *testing.T, m *Machine) {
+			retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key := newJudgeFixture(t)
+			// DEEL_OTHER_KEY is the operator's second human-tier secret, so a request for both
+			// of its names waits on one approver and is refused for its two names rather than
+			// for ErrMixedApprovers.
+			retag(t, m, policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"))
+			req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants the key", 600, c.names...)
+			if c.tagsAfter != nil {
+				c.tagsAfter(t, m)
+			}
+
+			_, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+			if !errors.Is(err, record.ErrNotJudgeable) {
+				t.Fatalf("ApplyJudgeDecision = %v; want record.ErrNotJudgeable", err)
+			}
+
+			got := readDecided(t, m, *req.RecordID)
+			if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+				t.Errorf("after the refusal = %+v; want the request untouched and pending", got)
+			}
+			if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+				t.Errorf("request.judged rows after the refusal = %+v; want none: the transaction wrote nothing", judged)
+			}
+		})
+	}
+}
+
+// TestOneDecisionBetweenThePersonAndTheJudge: a request is decided once, by the judge while it
+// holds the request or by the person once the judge has handed it over, and whichever decides it
+// leaves the other ErrTerminal. The record keeps exactly one terminal event and one grant, under
+// the actor of whoever decided it (D10).
+func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
+	judge := record.JudgeActor(judgeModel)
+	for name, judgeFirst := range map[string]bool{"the judge first": true, "the person after the hand-over": false} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key := newJudgeFixture(t)
+			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			verdict := map[string]any{"verdict": "grant"}
+
+			if judgeFirst {
+				if dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, verdict); err != nil || dec.GrantID == "" {
+					t.Fatalf("the judge's approval = %+v, %v; want a grant", dec, err)
+				}
+				if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator); !errors.Is(err, ErrTerminal) {
+					t.Fatalf("the person deciding after the judge = %+v, %v; want ErrTerminal", dec, err)
+				}
+			} else {
+				if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+					t.Fatalf("the hand-over: %v", err)
+				}
+				if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator); err != nil || dec.GrantID == "" {
+					t.Fatalf("the person's approval = %+v, %v; want a grant", dec, err)
+				}
+				if dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, verdict); !errors.Is(err, ErrTerminal) {
+					t.Fatalf("the judge deciding after the person = %+v, %v; want ErrTerminal", dec, err)
+				}
+			}
+
+			got := readDecided(t, m, *req.RecordID)
+			wantActor, wantApprover, wantLogin := judge, fixtureOperator, (*string)(nil)
+			if !judgeFirst {
+				wantActor, wantLogin = record.HumanActor(fixtureOperator), new(fixtureOperator)
+			}
+			switch {
+			case got.events != 1 || len(got.approvers) != 1:
+				t.Fatalf("after both answered = %d decision events and %d grants; want one of each", got.events, len(got.approvers))
+			case got.actor != wantActor || got.approvers[0] != wantApprover:
+				t.Errorf("the decision = actor %q, grant approver %q; want %q and %q", got.actor, got.approvers[0], wantActor, wantApprover)
+			case (got.login == nil) != (wantLogin == nil) || got.login != nil && *got.login != *wantLogin:
+				t.Errorf("the decision event's login = %v; want %v", got.login, wantLogin)
+			}
+			// The judge's verdict is written with its own approval, or with its hand-over, and
+			// with nothing else: the attempt the terminal request refused wrote no row at all.
+			if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 {
+				t.Errorf("request.judged rows = %+v; want 1", judged)
+			}
+		})
+	}
+}
+
+// TestTheJudgedRowSaysWhatTheTransactionDid: an approval the judge makes can commit and grant
+// nothing — the current policy may have dropped the session from the secret's requesters list,
+// which is recorded as the request's own denial, and the requesting enrollment may have gone,
+// which is recorded approved and then denied. Either way the request.judged row beside that
+// decision commits with it, and what it says it applied is what the transaction did and not
+// what the judge asked for. A reader of GET /v1/grant-log reads the row to learn whether the
+// judge's verdict released a credential, so a row saying applied where nothing was granted is
+// the trail telling them something untrue.
+func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
+	for name, c := range map[string]struct {
+		// before runs between the pending request and the judge's approval.
+		before      func(t *testing.T, m *Machine, enrollmentID string)
+		wantState   string
+		wantApplied string
+		wantVerdict string
+		wantDetail  string
+	}{
+		"an approval that grants": {wantState: "granted", wantApplied: "true", wantVerdict: JudgedGranted},
+		"an enrollment that has gone": {
+			before: func(t *testing.T, m *Machine, enrollmentID string) {
+				t.Helper()
+				if _, err := m.Store.Pool.Exec(t.Context(),
+					`update enrollments set lease_expires_at = now() - interval '1 minute' where id=$1`, enrollmentID); err != nil {
+					t.Fatalf("lapse the enrollment's lease: %v", err)
+				}
+			},
+			wantState: "denied", wantApplied: "false", wantVerdict: JudgedRefused,
+			wantDetail: "the requesting enrollment is no longer live",
+		},
+		"a requesters list that dropped the session": {
+			before: func(t *testing.T, m *Machine, _ string) {
+				t.Helper()
+				retag(t, m, policytest.Judged(listedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson), 900, ""))
+			},
+			wantState: "denied", wantApplied: "false", wantVerdict: JudgedRefused,
+			wantDetail: "DEEL_API_KEY: " + policy.ReasonRequesterNotListed,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key := newJudgeFixture(t)
+			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			if c.before != nil {
+				c.before(t, m, enr)
+			}
+
+			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+			if err != nil {
+				t.Fatalf("ApplyJudgeDecision = %+v, %v; want the decision made", dec, err)
+			}
+			if dec.State != c.wantState || dec.Detail != c.wantDetail {
+				t.Fatalf("the decision = state %q detail %q; want %q and %q", dec.State, dec.Detail, c.wantState, c.wantDetail)
+			}
+
+			judged := readJudged(t, m, *req.RecordID)
+			if len(judged) != 1 {
+				t.Fatalf("request.judged rows = %+v; want the one the decision wrote beside itself", judged)
+			}
+			if judged[0].applied != c.wantApplied || judged[0].verdict != c.wantVerdict {
+				t.Errorf("the row reads applied %q, verdict %q; want %q and %q, which is what the transaction did (%s, grant %q)",
+					judged[0].applied, judged[0].verdict, c.wantApplied, c.wantVerdict, dec.State, dec.GrantID)
+			}
+			if (judged[0].grantID != "") != (c.wantState == "granted") {
+				t.Errorf("the row names grant %q for a %s request; want it to name one only where the approval granted", judged[0].grantID, dec.State)
+			}
+		})
+	}
+}
+
+// TestTheJudgeSettlesNoWithheldName: the judge's run checks what the session's operator withheld
+// before it asks a model anything, and then spends up to twenty seconds on that model call. The
+// decision transaction checks it again, so a name withheld in those seconds is never settled by
+// the judge — neither granted nor denied — and the request waits for the person who decides it
+// today. The guard is the judge's alone: the same withheld name, on the same request, is still
+// the owner's to approve, which is the path a person has had all along.
+func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	if _, err := m.Store.Pool.Exec(t.Context(),
+		`insert into withheld_secrets (enrollment_id, name) values ($1,'DEEL_API_KEY')`, enr); err != nil {
+		t.Fatalf("withhold the name: %v", err)
+	}
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a withheld name = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none: the transaction wrote nothing", judged)
+	}
+
+	// The run that met the refusal hands the request to its person, who may grant it, as they
+	// always could.
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "withheld"}); err != nil {
+		t.Fatalf("the hand-over: %v", err)
+	}
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the same withheld name = %+v, %v; want it granted, as it always was", person, err)
+	}
+}
+
+// TestTheJudgeSettlesNoAdminSecret: an admin-tagged secret promises that a person approves every
+// release of it, and the judge is no person. Its run checks the tag itself before it asks a
+// model anything (judge's admin check) and then spends up to twenty seconds on the model call,
+// in which the tag can be added or a judge tag written for a name that already carries it, so
+// the decision transaction checks it again: the judge's approval of such a name is refused,
+// neither granted nor denied, and the request waits for the person who decides it.
+//
+// The judge tag is the point. This fixture's tags give the judge 900 seconds of the name
+// (adminSecret), which is exactly the deployment the defect allowed — a judge tag written on an
+// administrator's secret — and the transaction refuses it all the same: the admin tag's promise
+// outranks the judge tag, and whoever writes the judge tag cannot undo it.
+//
+// The guard is the judge's alone: the same admin secret, on the same request, is still the
+// owner's to approve, which is the path a person has had all along.
+func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	retag(t, m, adminSecret())
+	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of an administrator's secret = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none: the transaction wrote nothing", judged)
+	}
+
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the same administrator's secret = %+v, %v; want it granted, which is the only way one is ever released", person, err)
+	}
+}
+
+// TestTheJudgeDecidesNoFederationSecret: an Anthropic federation secret's token can be an
+// organization administrator's, so a person approves every release of one, as of an admin secret,
+// whatever seconds its judge tag gives the judge — and this fixture's tag gives it 900. The
+// judge does not hold a request for it, the hook is not called, and the judge's approval is refused
+// and leaves the request pending with no request.judged row; the owner's approval grants it.
+func TestTheJudgeDecidesNoFederationSecret(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	retag(t, m, federationSecret())
+	if _, decided := m.judgeKey(m.Policy.Get(), federationSecretName); decided {
+		t.Fatalf("judgeKey(%s) = true under a 900-second rules entry; want the judge to decide no federation key", federationSecretName)
+	}
+	watched := watchJudge(m)
+	req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants the Anthropic admin key", 600, federationSecretName)
+	if len(watched.handed) != 0 || req.JudgeDeciding {
+		t.Fatalf("a federation key's request was held for the judge: handed %+v, judge deciding %v", watched.handed, req.JudgeDeciding)
+	}
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a federation secret = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none", judged)
+	}
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the federation secret = %+v, %v; want it granted", person, err)
+	}
+}

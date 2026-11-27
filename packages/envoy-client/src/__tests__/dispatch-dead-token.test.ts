@@ -12,7 +12,7 @@
 import { expect, test } from "bun:test";
 import { routeAnswer } from "../../test/route-answers";
 import { brokerCredential } from "../broker-credential";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubBroker } = brokerStandIns("dispatch-dead-token");
@@ -58,46 +58,43 @@ test.each([
     "a write",
     (client: DispatchClient) =>
       client.comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "ses-one" } }),
-    // The comment as its route answers it, the row the write reads (`dispatch-write-rows.ts`).
     (key: string) =>
-      Response.json(
-        routeAnswer("POST /api/v1/issues/{key}/comments", {
-          id: "c-1",
-          issue_key: "DSP-1",
-          body: "Shipped.",
-        }),
-        { status: 201, headers: key === "" ? {} : { "Idempotency-Key": key } }
-      ),
+      Response.json(routeAnswer("POST /api/v1/issues/{key}/comments", { id: "c-1" }), {
+        status: 201,
+        headers: key === "" ? {} : { "Idempotency-Key": key },
+      }),
   ],
-] as const)("%s whose token is dead while the host moves to a warm session drops the dead token alone", async (_, call, answer) => {
-  forgetKeyedLayerMemory();
-  const broker = stubBroker(900);
-  let session = "ses-two";
-  const dispatch = deadFirst(() => {
-    session = "ses-two";
-  }, answer);
-  const credential = brokerCredential(podEnvironment(broker.url, dispatch.url), () => session);
-  const url = `${dispatch.url}/api/v1/whoami`;
-  // The session the host moves to already holds a live token.
-  const warm = (await credential.headers("GET", url)).Authorization;
-  session = "ses-one";
+] as const)(
+  "%s whose token is dead while the host moves to a warm session drops the dead token alone",
+  async (_, call, answer) => {
+    const broker = stubBroker(900);
+    let session = "ses-two";
+    const dispatch = deadFirst(() => {
+      session = "ses-two";
+    }, answer);
+    const credential = brokerCredential(podEnvironment(broker.url, dispatch.url), () => session);
+    const url = `${dispatch.url}/api/v1/whoami`;
+    // The session the host moves to already holds a live token.
+    const warm = (await credential.headers("GET", url)).Authorization;
+    session = "ses-one";
 
-  await call(new DispatchClient(dispatch.url, credential, fetch, { deadlineMs: 10_000 }));
+    await call(new DispatchClient(dispatch.url, credential, fetch, { deadlineMs: 10_000 }));
 
-  // ses-one's token went out first and was dead; the resend went as ses-two, with its live token,
-  // which no trade replaced.
-  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual(["ses-two", "ses-one"]);
-  expect(dispatch.presented).toEqual([broker.trades[1]?.token, broker.trades[0]?.token]);
-  expect((await credential.headers("GET", url)).Authorization).toBe(warm);
-  expect(broker.trades).toHaveLength(2);
-  // The dead session trades afresh the next time it presents, rather than present its dead token.
-  session = "ses-one";
-  expect((await credential.headers("GET", url)).Authorization).toBe(
-    `DPoP ${broker.trades[2]?.token}`
-  );
-  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
-    "ses-two",
-    "ses-one",
-    "ses-one",
-  ]);
-});
+    // ses-one's token went out first and was dead; the resend went as ses-two, with its live token,
+    // which no trade replaced.
+    expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual(["ses-two", "ses-one"]);
+    expect(dispatch.presented).toEqual([broker.trades[1]?.token, broker.trades[0]?.token]);
+    expect((await credential.headers("GET", url)).Authorization).toBe(warm);
+    expect(broker.trades).toHaveLength(2);
+    // The dead session trades afresh the next time it presents, rather than present its dead token.
+    session = "ses-one";
+    expect((await credential.headers("GET", url)).Authorization).toBe(
+      `DPoP ${broker.trades[2]?.token}`
+    );
+    expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
+      "ses-two",
+      "ses-one",
+      "ses-one",
+    ]);
+  }
+);

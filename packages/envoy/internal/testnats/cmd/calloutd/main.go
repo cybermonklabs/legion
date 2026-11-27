@@ -1,6 +1,6 @@
-// Command calloutd runs the NATS auth service (internal/broker/natscallout) for the server
+// Command calloutd runs the NATS auth service (internal/cipher/natscallout) for the server
 // natsd -callout-keys runs, deciding a session's token by what a broker's introspection route
-// answers over HTTP. The secrets broker runs the same service in its replicas (cmd/broker) with
+// answers over HTTP. The secrets broker runs the same service in its replicas (cmd/cipherd) with
 // its own introspection in process; this stands in for it where a client's test holds the
 // broker's answers itself: packages/envoy-client's src/__tests__/nats-credential.test.ts serves
 // the token exchange and the introspection route, and so decides which token the service admits
@@ -28,8 +28,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // readyTimeout bounds the wait for the service's subscription to reach the server, so a server

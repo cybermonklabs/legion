@@ -1,21 +1,21 @@
 import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  lstatSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+  access,
+  chmod,
+  type FileHandle,
+  lstat,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
-import type { SyncSubprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
+import { spawnWatched, type WatchedCommand } from "./process-group";
 import { sendable } from "./secret-file";
 
 /** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
@@ -34,8 +34,27 @@ export type EnvoyConfigEnvironment = {
   readonly DISPATCH_URL?: string | undefined;
 } & Readonly<Record<string, string | undefined>>;
 
-/** How long a `!` command may run before its field is an error. */
-const COMMAND_TIMEOUT_MS = 10_000;
+/** How long a `!` command may run before its field is an error. Exported for the hooks whose
+ *  Claude Code timeout must outlast it (claude-envoy's open-asks hook). */
+export const COMMAND_TIMEOUT_MS = 10_000;
+
+/** Tests only: the variable that sets that bound, for a test that holds a command on its own gate
+ * while it waits on other processes, which a loaded host can stretch past 10 s (claude-envoy's
+ * answers-hook rows set it to their own timeout). It is taken only as whole ms written in digits,
+ * from 1 to `LONGEST_TIMEOUT_MS`; unset, or any other value, the bound is `COMMAND_TIMEOUT_MS`. */
+const COMMAND_TIMEOUT_VARIABLE = "ENVOY_COMMAND_TIMEOUT_MS";
+
+/** The longest delay `setTimeout` keeps, which the runner's limit is: 2^31 ms or more is a
+ * delay of 1 ms in Bun 1.4.4 (it warns `TimeoutOverflowWarning`), which would end every command
+ * at once. */
+const LONGEST_TIMEOUT_MS = 2_147_483_647;
+
+/** How long a `!` command run with `env` may run. */
+export function commandTimeoutMs(env: EnvoyConfigEnvironment): number {
+  const text = env[COMMAND_TIMEOUT_VARIABLE] ?? "";
+  const ms = /^[1-9]\d*$/.test(text) ? Number(text) : Number.NaN;
+  return ms <= LONGEST_TIMEOUT_MS ? ms : COMMAND_TIMEOUT_MS;
+}
 
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */
@@ -153,6 +172,9 @@ const EnvoySectionSchema = z.strictObject({
   // `broker` or `none`, which `envoySettings` reads (`NATS_AUTH_VAR`); another value turns off
   // inbound messages alone, naming it, rather than the whole file.
   natsAuth: z.string().optional(),
+  // `nats` or `listener`, which `envoySettings` reads (`ENVOY_INBOUND`): how the session takes its
+  // inbound messages. Another value turns off inbound messages alone, naming it.
+  inbound: z.string().optional(),
 });
 
 // A top-level `natsUrls` is refused before this schema runs (`parseFile`): it belongs in
@@ -277,25 +299,36 @@ function describeSchemaIssue(filePath: string, error: z.ZodError): string {
 }
 
 /** A dangling link's target, for a chosen file that does not exist. */
-function danglingLink(filePath: string): string | null {
+async function danglingLink(filePath: string): Promise<string | null> {
   try {
-    return lstatSync(filePath).isSymbolicLink() ? readlinkSync(filePath) : null;
+    return (await lstat(filePath)).isSymbolicLink() ? await readlink(filePath) : null;
   } catch {
     return null;
   }
 }
 
-function parseFile<Settings>(
+/** Whether anything is at `file`, as `existsSync` answers it: any error is nothing there. */
+async function exists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function parseFile<Settings>(
   filePath: string,
   schema: z.ZodType<Settings>,
   checkout: boolean
-): ParsedFile<Settings> {
+): Promise<ParsedFile<Settings>> {
   let raw: string;
   try {
-    raw = readFileSync(filePath, "utf-8");
+    raw = await readFile(filePath, "utf-8");
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
-      return { kind: "absent", link: danglingLink(filePath) };
+      // A missing checkout file names no link: only the chosen file's notice reads it.
+      return { kind: "absent", link: checkout ? null : await danglingLink(filePath) };
     }
     return { kind: "invalid", reason: `${filePath}: could not be read (${messageFor(error)})` };
   }
@@ -335,8 +368,9 @@ type KeptOutcome = CommandOutcome & { readonly at: number };
 
 /** How long a `!` command's failure that ended on its own is kept before it runs again: a transient
  * cause (a locked keyring, a file not yet written) clears without a restart. A command that ran out
- * of time is kept failed for the life of the process instead: each run blocks the process for the
- * whole timeout, so a hanging command retried once a minute would freeze its session that often. */
+ * of time is kept failed for the life of the process instead: each run holds every read waiting on
+ * it for the whole timeout, so a hanging command retried once a minute would stall its session's
+ * Dispatch and Envoy reads that often. */
 const FAILURE_KEPT_MS = 60_000;
 
 /** The process-wide store of kept outcomes, by command, file and working directory. It lives on
@@ -346,61 +380,104 @@ const FAILURE_KEPT_MS = 60_000;
  * that shape takes a new key (`.v2`), so an older bundle in the same process never misreads an
  * entry a newer one wrote. */
 const COMMAND_OUTCOMES: unique symbol = Symbol.for("legion.envoy-config.commands.v1");
+/** The runs under way, by the same key, beside the kept outcomes and shared the same way: a read
+ * that starts while its command runs, in any bundle of this module at or after this map was added,
+ * waits for that run rather than starting another; a bundle from before it starts a run of its own.
+ * An entry, a promise of the `KeptOutcome` its run keeps, lives only while the run does; its shape
+ * is its contract across bundles, under the same rule as the outcomes'. */
+const COMMAND_RUNS: unique symbol = Symbol.for("legion.envoy-config.command-runs.v1");
 const processGlobal = globalThis as typeof globalThis & {
   [COMMAND_OUTCOMES]?: Map<string, KeptOutcome>;
+  [COMMAND_RUNS]?: Map<string, Promise<KeptOutcome>>;
 };
 const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES] ?? new Map();
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
+const commandRuns: Map<string, Promise<KeptOutcome>> = processGlobal[COMMAND_RUNS] ?? new Map();
+processGlobal[COMMAND_RUNS] = commandRuns;
 
-function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+/** A file of its own for a command's stdout that no one can name: created in a private directory,
+ * which is removed again before the command starts. The command writes it through the descriptor
+ * it is handed, this process reads it through its own (`readOutput`), and the kernel frees it once
+ * the last of them is closed: no exit of this process or of the command leaves the value on disk
+ * under a name. Each step is asynchronous, so a loaded disk holds this read alone, never the
+ * process's event loop. */
+async function unnamedFile(): Promise<FileHandle> {
+  const directory = await mkdtemp(path.join(tmpdir(), "envoy-command-"));
+  try {
+    await chmod(directory, 0o700);
+    return await open(path.join(directory, "stdout"), "wx+", 0o600);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+/** All that was written to `file`, read from its start: the command's writes moved the offset
+ * this descriptor shares with it, so each read names its position. */
+async function readOutput(file: FileHandle): Promise<string> {
+  const output = Buffer.alloc((await file.stat()).size);
+  let read = 0;
+  while (read < output.length) {
+    const { bytesRead } = await file.read(output, read, output.length - read, read);
+    if (bytesRead === 0) break;
+    read += bytesRead;
+  }
+  return output.toString("utf-8", 0, read);
+}
+
+async function runCommand(
+  command: string,
+  env: EnvoyConfigEnvironment,
+  cwd: string
+): Promise<CommandOutcome> {
+  const timeoutMs = commandTimeoutMs(env);
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
   }
-  // stdout goes to a file in a private directory, so the wait is for the shell alone: a pipe would
-  // be held open by any process the command left running, until the timeout.
-  const directory = mkdtempSync(path.join(tmpdir(), "envoy-command-"));
+  // stdout goes to a file, so the wait is for the shell alone: a pipe would be held open by any
+  // process the command left running, until the timeout.
+  const file = await unnamedFile();
   try {
-    chmodSync(directory, 0o700);
-    const output = path.join(directory, "stdout");
-    const fd = openSync(output, "wx", 0o600);
-    let result: SyncSubprocess<number, "ignore">;
+    let watched: WatchedCommand<number, "ignore">;
     try {
-      // Its own process group, so every process the command started is killed with it.
-      result = Bun.spawnSync(["/bin/sh", "-c", command], {
+      // Its own process group, so every process the command started is killed with it, and a
+      // group that ends with this process, however it ends (`spawnWatched`).
+      watched = spawnWatched(["/bin/sh", "-c", command], {
         cwd,
         env: childEnv,
-        stdin: "ignore",
-        stdout: fd,
+        stdout: file.fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
-        detached: true,
       });
     } catch (error) {
       return { failure: `could not start: ${messageFor(error)}`, timedOut: false };
+    }
+    const { child, endGroup } = watched;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      endGroup();
+    }, timeoutMs);
+    try {
+      await child.exited;
     } finally {
-      closeSync(fd);
+      clearTimeout(timer);
     }
     // Whatever the outcome, nothing the command started outlives it, and so nothing it left
     // running can change the value read below.
-    try {
-      process.kill(-result.pid, "SIGKILL");
-    } catch {
-      // The group is already gone.
-    }
-    if (result.exitedDueToTimeout) {
+    endGroup();
+    if (timedOut) {
       return {
-        failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
+        failure: `did not finish within ${timeoutMs / 1000} s, and does not run again in this process`,
         timedOut: true,
       };
     }
-    if (!result.success) {
+    if (child.exitCode !== 0) {
       return {
-        failure: `exited with ${result.signalCode ?? `status ${result.exitCode}`}`,
+        failure: `exited with ${child.signalCode ?? `status ${child.exitCode}`}`,
         timedOut: false,
       };
     }
-    const value = readFileSync(output, "utf-8").trim();
+    const value = (await readOutput(file)).trim();
     if (value.length === 0) return { failure: "printed nothing", timedOut: false };
     if (!sendable(value)) {
       return {
@@ -410,7 +487,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     }
     return { value };
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    await file.close();
   }
 }
 
@@ -423,26 +500,31 @@ export type CommandMode = "run" | "kept";
  * A value from the chosen file: as written, or, for one starting with `!`, its command's trimmed
  * stdout. The command runs under `/bin/sh -c` with `env`, in the directory of the file that names
  * it (never the session's working directory, so a relative command or a directory-configured shim
- * resolves against that file), in its own process group, for at most 10 s. Its value is kept for
- * the process, shared by every copy of this module loaded in it, keyed by the command, its file and
- * its working directory; so is a run out of time, while a failure that ended on its own (a non-zero
- * exit, empty output, more than one line) is kept for 60 s, then the command runs again. Its exit
- * status decides, and the wait is for the shell alone: once it exits or runs out of time, every
- * process of its group still running is killed, then its output is read. A non-zero exit, a
- * timeout or empty output throws naming the field and the file. A value with whitespace or a
- * control character inside it, as written or as printed, throws too, since it cannot be sent as one
- * bearer. No error carries the value or either stream.
+ * resolves against that file), in its own process group, for at most 10 s (`commandTimeoutMs`: a
+ * test can set another bound), while the process goes on serving its timers and connections: the
+ * read awaits it and nothing else does, and a read that starts while it runs awaits that same run.
+ * Its value is kept for the process, shared by every copy of this module loaded in it, keyed by
+ * the command, its file and its working directory; so is a run out of time, while a failure that
+ * ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s, then the
+ * command runs again.
+ * Its exit status decides, and the wait is for the shell alone: once it exits or runs out of time,
+ * every process of its group still running is killed, then its output is read. However this
+ * process ends while the command runs, a SIGKILL included, the group ends with it
+ * (`spawnWatched`), and the output was never in a file anyone can name (`unnamedFile`). A
+ * non-zero exit, a timeout or empty output rejects naming the field and the file. A
+ * value with whitespace or a control character inside it, as written or as printed, rejects too,
+ * since it cannot be sent as one bearer. No error carries the value or either stream.
  *
- * With `commands: "kept"` the command never runs: the kept outcome answers, a kept failure throws
- * as above however old it is, and a command with no kept outcome throws saying it has not run.
+ * With `commands: "kept"` the command never runs: the kept outcome answers, a kept failure rejects
+ * as above however old it is, and a command with no kept outcome rejects saying it has not run.
  */
-export function fileValue(
+export async function fileValue(
   value: string,
   field: string,
   filePath: string,
   env: EnvoyConfigEnvironment,
   commands: CommandMode = "run"
-): string {
+): Promise<string> {
   if (!value.startsWith("!")) {
     if (!sendable(value)) {
       throw new Error(`${filePath}: ${field} holds whitespace or a control character`);
@@ -463,19 +545,29 @@ export function fileValue(
     outcome === undefined ||
     ("failure" in outcome && !outcome.timedOut && Date.now() - outcome.at >= FAILURE_KEPT_MS)
   ) {
-    outcome = { ...runCommand(command, env, cwd), at: Date.now() };
-    commandOutcomes.set(key, outcome);
+    let run = commandRuns.get(key);
+    if (run === undefined) {
+      run = runCommand(command, env, cwd)
+        .then((ran) => {
+          const kept = { ...ran, at: Date.now() };
+          commandOutcomes.set(key, kept);
+          return kept;
+        })
+        .finally(() => commandRuns.delete(key));
+      commandRuns.set(key, run);
+    }
+    outcome = await run;
   }
   if ("failure" in outcome) throw new Error(`${filePath}: ${field}'s command ${outcome.failure}`);
   return outcome.value;
 }
 
 /** The device a directory is on, as `stat` gives it, or undefined when it cannot be read. */
-export type DeviceOf = (directory: string) => number | undefined;
+export type DeviceOf = (directory: string) => Promise<number | undefined>;
 
-function statDevice(directory: string): number | undefined {
+async function statDevice(directory: string): Promise<number | undefined> {
   try {
-    return statSync(directory).dev;
+    return (await stat(directory)).dev;
   } catch {
     return undefined;
   }
@@ -487,13 +579,18 @@ function statDevice(directory: string): number | undefined {
  * bind-mounts from its host). There a `mv` would move the host's file into the box's own
  * filesystem, so the notice names the file to create and says to move the old one on the machine
  * that owns it, with no command. */
-function moveNotice(oldFile: string, newFile: string, move: string, deviceOf: DeviceOf): string {
-  const oldDevice = deviceOf(path.dirname(oldFile));
+async function moveNotice(
+  oldFile: string,
+  newFile: string,
+  move: string,
+  deviceOf: DeviceOf
+): Promise<string> {
+  const oldDevice = await deviceOf(path.dirname(oldFile));
   let ancestor = path.dirname(newFile);
-  let newDevice = deviceOf(ancestor);
+  let newDevice = await deviceOf(ancestor);
   while (newDevice === undefined && path.dirname(ancestor) !== ancestor) {
     ancestor = path.dirname(ancestor);
-    newDevice = deviceOf(ancestor);
+    newDevice = await deviceOf(ancestor);
   }
   if (oldDevice !== undefined && newDevice !== undefined && oldDevice !== newDevice) {
     return `${oldFile} is not read, and is on another filesystem than ${newFile} (a mount): create ${newFile}, and move ${oldFile} on the machine that owns it`;
@@ -508,19 +605,19 @@ function moveNotice(oldFile: string, newFile: string, move: string, deviceOf: De
  * file to copy or link it to; the neutral file under a relocated `XDG_CONFIG_HOME` (a Legion
  * pane's, under the daemon's state directory) says it is not read there, without asking anyone to
  * move it. Any other file says nothing of it. */
-function oldUserFileNotice(
+async function oldUserFileNotice(
   filePath: string,
   env: EnvoyConfigEnvironment,
   deviceOf: DeviceOf
-): string | undefined {
+): Promise<string | undefined> {
   const home = nonEmpty(env.HOME) ?? homedir();
   const old = path.join(home, ".config", "opencode", "envoy.json");
-  if (!existsSync(old)) return undefined;
+  if (!(await exists(old))) return undefined;
 
   const selected = path.resolve(filePath);
   const userFile = path.resolve(home, ".config", "legion", "envoy.json");
   if (selected === userFile) {
-    return moveNotice(
+    return await moveNotice(
       old,
       userFile,
       "mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/",
@@ -562,11 +659,12 @@ export function missingConfigNotice(filePath: string, missing: MissingConfig, of
 
 /**
  * Read the envoy.json at `filePath` (`envoyConfigPath`) and the checkout's `.envoy/envoy.json`
- * under `cwd`, whose `dispatch` section Dispatch's resolver reads beside the chosen file's. Runs no
- * command. A missing chosen file sets `missing`; a chosen file that cannot be read or is not valid
- * is `failed`, naming the file and the key. The checkout's file keeps its own outcome: one that
- * cannot be read or is not valid is an `invalid` checkout, which only Dispatch reads, and an
- * `envoy` section in it sets `checkout.envoyError` rather than configuring anything.
+ * under `cwd`, whose `dispatch` section Dispatch's resolver reads beside the chosen file's, without
+ * holding the event loop: a read on a loaded disk waits alone. Runs no command. A missing chosen
+ * file sets `missing`; a chosen file that cannot be read or is not valid is `failed`, naming the
+ * file and the key. The checkout's file keeps its own outcome: one that cannot be read or is not
+ * valid is an `invalid` checkout, which only Dispatch reads, and an `envoy` section in it sets
+ * `checkout.envoyError` rather than configuring anything.
  *
  * The OpenCode-era files are never read. While the chosen file is missing, its notice names
  * `$HOME/.config/opencode/envoy.json` when that file is there (`oldUserFileNotice`); while the
@@ -574,20 +672,25 @@ export function missingConfigNotice(filePath: string, missing: MissingConfig, of
  * Neither gives a `mv` across filesystems (`moveNotice`); `deviceOf` says which filesystem a
  * directory is on, `stat`'s device by default.
  */
-export function readEnvoyConfig(
+export async function readEnvoyConfig(
   filePath: string,
   env: EnvoyConfigEnvironment,
   options: { readonly cwd: string; readonly deviceOf?: DeviceOf | undefined }
-): EnvoyConfig {
+): Promise<EnvoyConfig> {
   const deviceOf = options.deviceOf ?? statDevice;
-  const chosen = parseFile(filePath, EnvoyFileSchema, false);
-  if (chosen.kind === "invalid") return { kind: "failed", path: filePath, error: chosen.reason };
   const resolvedChosen = path.resolve(filePath);
   const checkoutPath = path.resolve(options.cwd, ".envoy", "envoy.json");
-  const checkoutFile =
+  const oldCheckout = path.resolve(options.cwd, ".opencode", "envoy.json");
+  // Three reads that wait on the disk and on nothing of each other, so they run at once: this read
+  // comes before every Dispatch call a session makes.
+  const [chosen, checkoutFile, oldCheckoutThere] = await Promise.all([
+    parseFile(filePath, EnvoyFileSchema, false),
     checkoutPath === resolvedChosen
-      ? { kind: "absent" as const, link: null }
-      : parseFile(checkoutPath, CheckoutFileSchema, true);
+      ? Promise.resolve({ kind: "absent" as const, link: null })
+      : parseFile(checkoutPath, CheckoutFileSchema, true),
+    oldCheckout === resolvedChosen ? Promise.resolve(false) : exists(oldCheckout),
+  ]);
+  if (chosen.kind === "invalid") return { kind: "failed", path: filePath, error: chosen.reason };
   const own: EnvoyFile = chosen.kind === "valid" ? chosen.settings : {};
   let checkout: CheckoutEnvoyConfig | null = null;
   if (checkoutFile.kind === "invalid") {
@@ -605,11 +708,17 @@ export function readEnvoyConfig(
         : null,
     };
   }
-  const oldCheckout = path.resolve(options.cwd, ".opencode", "envoy.json");
+  // Whether the checkout's own file is there: what its read found, or, for one that could not be
+  // read or parsed, whether anything is at its path.
+  const checkoutMissing =
+    checkoutPath === resolvedChosen
+      ? chosen.kind === "absent"
+      : checkoutFile.kind === "absent" ||
+        (checkoutFile.kind === "invalid" && !(await exists(checkoutPath)));
   const warnings =
-    oldCheckout !== resolvedChosen && !existsSync(checkoutPath) && existsSync(oldCheckout)
+    oldCheckout !== resolvedChosen && checkoutMissing && oldCheckoutThere
       ? [
-          moveNotice(
+          await moveNotice(
             oldCheckout,
             checkoutPath,
             `mkdir -p ${path.dirname(checkoutPath)} && mv ${oldCheckout} ${checkoutPath}`,
@@ -618,7 +727,7 @@ export function readEnvoyConfig(
         ]
       : [];
   const unreadOldUserFile =
-    chosen.kind === "absent" ? oldUserFileNotice(filePath, env, deviceOf) : undefined;
+    chosen.kind === "absent" ? await oldUserFileNotice(filePath, env, deviceOf) : undefined;
   return {
     kind: "read",
     path: filePath,
@@ -637,19 +746,19 @@ export function readEnvoyConfig(
 }
 
 /**
- * AskGate's switch in the session's envoy.json at `filePath`, read now. No file, no `askgate`
- * section, or `enabled: true` leaves it on; `enabled: false` turns it off. A section that does
- * not parse, or a file that cannot be read or is not JSON, leaves it on with an `error` that names
- * the file and `askgate.enabled`.
+ * AskGate's switch in the session's envoy.json at `filePath`, read now, without holding the event
+ * loop. No file, no `askgate` section, or `enabled: true` leaves it on; `enabled: false` turns it
+ * off. A section that does not parse, or a file that cannot be read or is not JSON, leaves it on
+ * with an `error` that names the file and `askgate.enabled`.
  */
-export function askgateSetting(filePath: string): AskgateSetting {
+export async function askgateSetting(filePath: string): Promise<AskgateSetting> {
   const stayOn = (reason: string): AskgateSetting => ({
     enabled: true,
     error: `${reason}; AskGate stays on`,
   });
   let raw: string;
   try {
-    raw = readFileSync(filePath, "utf-8");
+    raw = await readFile(filePath, "utf-8");
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
       return { enabled: true, error: null };

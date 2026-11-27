@@ -26,6 +26,7 @@ import (
 // benchmark fixture is what it is for; a title that carries the round's number would do as well.
 // This test is red until the benchmark opens its issues a way the gate does not refuse.
 func TestTheWriteBoundBenchmarksOpenTheirIssues(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logtest.SetDefault(t, slog.NewTextHandler(io.Discard, nil))
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	writeBoundProject(t, handler)

@@ -1,0 +1,74 @@
+diff --git a/lib/runner/index.js b/lib/runner/index.js
+index 35b52d207c30d3888143315273c35a9bef0d1237..47e96f2b29a36ce5e674199d060bb2d5fc151992 100644
+--- a/lib/runner/index.js
++++ b/lib/runner/index.js
+@@ -2033,6 +2033,12 @@ var ProcessHost = class extends import_events.EventEmitter {
+         const result = await raceAgainstDeadline2(() => exitPromise, lastHeartbeat + timeout);
+         if (!result.timedOut)
+           return;
++        if (this._processDidExit) {
++          // The process has exited: it sends no more heartbeats and there is nothing to kill.
++          // The deadline is for a process that is still running, so wait for 'exit' without it.
++          await exitPromise;
++          return;
++        }
+         if (monotonicTime3() < lastHeartbeat + timeout)
+           continue;
+         this.emit("processError", { message: `Error: ${this._processName} process did not exit within ${timeout}ms after stop, force-killed it` });
+@@ -5632,6 +5638,39 @@ function artifactsFolderName(workerIndex) {
+ // packages/playwright/src/runner/workerHost.ts
+ var { removeFolders: removeFolders3 } = require("playwright-core/lib/coreBundle").utils;
+ var lastWorkerIndex = 0;
++// A worker's artifacts directory is removed after its process exits, in the background, so the
++// 'exit' its stop() waits for is sent when the process exits rather than when a removal of
++// thousands of trace files ends (minutes on a contended disk). The removal makes one filesystem
++// call at a time, so it holds at most one libuv threadpool thread: fs.promises.rm's recursive
++// removal queues every entry at once, and the next worker's mkdir waited behind all of them.
++// Each worker has its own directory (its worker index), so no start waits on a removal.
++// Dispatcher.stop() waits for the removals before the run ends.
++var artifactsRemovals = /* @__PURE__ */ new Set();
++async function removeOneCallAtATime(dir) {
++  const entries = await import_fs12.default.promises.readdir(dir, { withFileTypes: true }).catch((e) => {
++    if (e.code === "ENOENT")
++      return [];
++    throw e;
++  });
++  for (const entry of entries) {
++    const child = import_path15.default.join(dir, entry.name);
++    if (entry.isDirectory())
++      await removeOneCallAtATime(child);
++    else
++      await import_fs12.default.promises.unlink(child).catch((e) => {
++        if (e.code !== "ENOENT")
++          throw e;
++      });
++  }
++  await import_fs12.default.promises.rmdir(dir).catch((e) => {
++    if (e.code !== "ENOENT")
++      throw e;
++  });
++}
++function removeArtifactsInBackground(dir) {
++  const removal = removeOneCallAtATime(dir).catch(() => removeFolders3([dir])).finally(() => artifactsRemovals.delete(removal));
++  artifactsRemovals.add(removal);
++}
+ var WorkerHost = class extends ProcessHost {
+   constructor(testGroup, options) {
+     const workerIndex = lastWorkerIndex++;
+@@ -5663,7 +5702,7 @@ var WorkerHost = class extends ProcessHost {
+     });
+   }
+   async onExit() {
+-    await removeFolders3([this._params.artifactsDir]);
++    removeArtifactsInBackground(this._params.artifactsDir);
+   }
+   async stop(didFail) {
+     if (didFail)
+@@ -5908,6 +5947,7 @@ var Dispatcher = class {
+       return;
+     this._isStopped = true;
+     await Promise.all(this._workerSlots.map(({ worker }) => worker?.stop()));
++    await Promise.all(artifactsRemovals);
+     this._checkFinished();
+   }
+ };

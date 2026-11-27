@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import type { ReplyBlock } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
-
+import { api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { passageItem, ReplyQuote } from "./ReplyQuote";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A user author, drawn as plain text, so a quote reads `Replying to Planner` with no registry
  *  read. */
@@ -70,4 +77,70 @@ test("a passage belongs to the item its node names, which can be another reply i
   expect(passageItem(passage, [root, nested])).toBe(root);
   expect(passageItem({ ...passage, node: `comment/${nested.id}#b1` }, [root, nested])).toBe(nested);
   expect(passageItem({ ...passage, node: "message/elsewhere#b1" }, [root, nested])).toBeUndefined();
+});
+
+test("a quote of a deleted parent says so in place of the parent's text", async () => {
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ReplyQuote
+          author={planner}
+          deleted={{ at: "2026-09-09T03:00:00Z", by: { id: "Planner", kind: "user" } }}
+          excerpt="Alpha."
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => expect(view.container.textContent).toContain("Deleted by Planner"));
+    expect(view.container.textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a quote of an edited parent says so after its author, and a parent nobody edited does not", async () => {
+  await expectQuote(
+    { author: planner, edited: "2026-09-09T02:00:00Z", excerpt: "Alpha." },
+    "Replying to Planner · edited — Alpha."
+  );
+  await expectQuote(
+    { author: planner, block: passage, edited: "2026-09-09T02:00:00Z", excerpt: "" },
+    "Replying to Planner's passage · edited — Beta."
+  );
+  await expectQuote(
+    { author: planner, edited: null, excerpt: "Alpha." },
+    "Replying to Planner — Alpha."
+  );
+});
+
+// dispatch://INFRA-5702/spec#b-r-reads: a quote of a session's post draws `AgentName`, whose session
+// form reads the live agents registry, unless the caller asks for the author to be named from the
+// registry the cache already holds (`agentNames="cache"`), which sends no agents read.
+test("a quote of a session's post names its author from the cache and reads no registry, where the caller asks", async () => {
+  const session = { id: "planner-session", kind: "session" } as const;
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const draw = (agentNames?: "cache") =>
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          <ReplyQuote
+            {...(agentNames === undefined ? {} : { agentNames })}
+            author={session}
+            excerpt="Alpha."
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  try {
+    const cached = draw("cache");
+    await waitFor(() => expect(cached.container.textContent).toContain("Alpha."));
+    expect(listAgents, "the cached quote read the agents registry").not.toHaveBeenCalled();
+    cached.unmount();
+    const live = draw();
+    await waitFor(() => expect(listAgents, "the live quote read no registry").toHaveBeenCalled());
+    live.unmount();
+  } finally {
+    listAgents.mockRestore();
+  }
 });

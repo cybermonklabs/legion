@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import { CannotRunError, recordOf } from "./corpus-io";
 import { type DispatchConfig, readBytes } from "./dispatch-read";
-import { BUILD_CHAIN_NAMES, chainRefusal } from "./draw-io";
+import { BUILD_CHAIN_NAMES, chainRefusal, DRAW_CHAIN_NAMES } from "./draw-io";
 import {
   FILE_KEY,
   INPUTS_VERSION,
@@ -53,12 +53,6 @@ const STAGE_CHAIN_NAMES: Readonly<Partial<Record<keyof StageChain, string>>> = {
   person: "person",
   throughEventId: "pin",
   reserveAsk: "reserve-ask.ts closure",
-};
-
-/** The fields of a `StageChain`'s draw, as a refusal names them. */
-const DRAW_CHAIN_NAMES: Readonly<Record<keyof StageChain["draw"], string>> = {
-  drawSha256: "draw.json",
-  slicesSha256: "slices.json",
 };
 
 /**
