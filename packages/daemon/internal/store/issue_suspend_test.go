@@ -131,6 +131,7 @@ func cleanupStarted(t *testing.T, st *Store) bool {
 // the check waiting for its next look (the row "a pending look", s23, whose endLookPending queues
 // the same suspension): neither holds the pod, and neither changes what the agent's claim decides.
 func TestAnIssueSuspensionWaitsForAnOpenRetroAfterItsCheckCloses(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		checker supervise.Claim

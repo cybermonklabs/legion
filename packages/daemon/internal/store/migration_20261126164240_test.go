@@ -145,6 +145,7 @@ func seedRunRetroIssues(t *testing.T, store *Store) {
 // a close reads the newest run of any generation; every other issue gets one for its current run
 // alone.
 func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	migrateThrough(t, store, runRetrosVersion-1)
 	seedRunRetroIssues(t, store)
@@ -228,6 +229,7 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 // which fills run_retros from the issues as they stand then. The claim and the delivery the
 // columns were on stay, as the release before wrote them.
 func TestTheRunRetroMigrationsWayBackRemovesWhatTheReleaseBeforeCannotRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, runRetrosVersion-1)

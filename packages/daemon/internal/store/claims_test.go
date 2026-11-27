@@ -169,6 +169,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 // back as the wrong field and fails by its field. The claim and the delivery are compared whole
 // (sameClaim), the look's times as instants.
 func TestAClaimRoundTripsTheRetroRunItServesAndTheRetroRunOfItsTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-implementer")
