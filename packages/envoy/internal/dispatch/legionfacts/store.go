@@ -684,7 +684,10 @@ func readRows(ctx context.Context, q Querier, project string, wide bool, where s
 
 // scanRow reads one row of readRows' columns: the board's, and the rest where wide. Root is no
 // column: it is whether the issue is its own tree's root (root_key), which is how the computation
-// answers it (metrics.IssueFacts.Root).
+// answers it (metrics.IssueFacts.Root). The hours by column and the growth, the two JSON columns
+// every read decodes and the board's reads decode for each of thousands of rows, are flat objects
+// of numbers, decoded without reflection (decodeNumbers); the bars, which are nested, and the idle
+// hours, which only a wide read of a window's closed rows reads, are encoding/json's to decode.
 func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	row := Row{Project: project}
 	// opened_at is a nullable column, which a row this package wrote always fills.
@@ -705,14 +708,20 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 		row.OpenedAt = *opened
 	}
 	row.Root = row.Tree == row.Issue
-	decoded := []struct {
+	var err error
+	if row.PhaseHours, err = decodeNumbers(hours); err != nil {
+		return Row{}, fmt.Errorf("read the Legion facts of %s: hours_by_phase: %w", row.Issue, err)
+	}
+	if row.Growth, err = decodeNumbers(growth); err != nil {
+		return Row{}, fmt.Errorf("read the Legion facts of %s: growth: %w", row.Issue, err)
+	}
+	if !wide {
+		return row, nil
+	}
+	for _, column := range []struct {
 		stored []byte
 		into   any
-	}{{hours, &row.PhaseHours}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
-	if !wide {
-		decoded = decoded[:2]
-	}
-	for _, column := range decoded {
+	}{{bars, &row.Bars}, {idle, &row.IdleByRole}} {
 		if err := json.Unmarshal(column.stored, column.into); err != nil {
 			return Row{}, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
 		}
