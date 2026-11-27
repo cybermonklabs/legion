@@ -89,6 +89,11 @@ engine="$work/legion"
 export PUBLIC_LEAK_CHECK="$work/public-leak-check.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$PUBLIC_LEAK_CHECK"
 chmod +x "$PUBLIC_LEAK_CHECK"
+# The stand-in is no check a deployment names. An issue pod names its deployment's checker in
+# LEGION_LEAK_CHECKER_MANIFEST_SHA256 (leakguard's CheckerVar), and under it the guard refuses
+# every write as a setup failure ("the shared public leak check found is not the one the
+# deployment names"), so the suite run in a pod compared nothing; a CI runner names none.
+unset LEGION_LEAK_CHECKER_MANIFEST_SHA256
 # The push door's URL. `legion leak-check pre-push`, the command the pod's pre-push hook runs,
 # clears a push that can only write to a local path, so the door's refusals are read at a URL with a
 # host that names no GitHub repository: the guard reads that destination as public (its fail-closed
