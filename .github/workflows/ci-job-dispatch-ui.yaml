@@ -9,8 +9,8 @@ name: CI job dispatch-ui
 #
 # The file holds two jobs, and both run under ci.yaml's dispatch-ui at once, each on a runner of
 # its own: dispatch-ui runs the proof editor's checks, the dashboard's web lane, its build and its
-# asset checks; dispatch-ui-harness runs the dashboard's typecheck and its e2e/__tests__ lane.
-# The caller's result is the result of both.
+# asset checks; dispatch-ui-harness runs the contracts build, the dashboard's typecheck and its
+# e2e/__tests__ lane. The caller's result is the result of both.
 # why: .github/ci-notes/ci-job-dispatch-ui.md#why-the-checks-run-as-two-jobs
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run this job's own result
@@ -25,6 +25,18 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+
+# The `test` script of packages/dispatch/package.json is three `bun run`s joined by ` && `, and
+# these are their arguments, one text for both jobs: dispatch-ui runs the second,
+# dispatch-ui-harness the first and the third, each step from its variable here. dispatch-ui's
+# "Test dispatch dashboard" builds the script from all three and refuses to run unless the
+# package's is the same text, so no step runs a command the script does not, and a command the
+# script gains fails there rather than running in neither job. Each value is split on spaces into
+# the `bun run`'s arguments.
+env:
+  DISPATCH_TEST_BUILD: build:contracts
+  DISPATCH_TEST_WEB: test:web web/src
+  DISPATCH_TEST_HARNESS: test:harness e2e/__tests__
 
 jobs:
   dispatch-ui:
@@ -44,10 +56,12 @@ jobs:
       - name: Test proof editor
         run: bun run test
         working-directory: packages/proof-editor
-      # This step and dispatch-ui-harness's "Test dispatch harness" run packages/dispatch's
-      # `test` script between them: its first two commands here, its third there, so each lane
-      # has a runner of its own. The step first holds the script to those three commands, so a
-      # command added to the script fails here rather than running in neither job.
+      # This step runs the second of packages/dispatch's `test` script's commands
+      # (DISPATCH_TEST_WEB), after it holds the script to the three this file's `env:` names, as
+      # that block says. It builds no contracts: the web lane reads @legion/contracts through the
+      # workspace's "bun" export condition, from its sources, and the harness lane's Playwright
+      # spawn is the one reader of the built dist/ (dispatch-ui-harness's "Build contracts for the
+      # suites that spawn Playwright").
       #
       # This step runs its lane in random order, which packages/dispatch/bunfig.toml sets. The lane
       # prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
@@ -55,14 +69,16 @@ jobs:
       # in random order") says; it also says what a row that failed from the lane's load needs.
       - name: Test dispatch dashboard
         run: |
-          want='bun run build:contracts && bun run test:web web/src && bun run test:harness e2e/__tests__'
+          read -ra build <<< "$DISPATCH_TEST_BUILD"
+          read -ra web <<< "$DISPATCH_TEST_WEB"
+          read -ra harness <<< "$DISPATCH_TEST_HARNESS"
+          want="bun run ${build[*]} && bun run ${web[*]} && bun run ${harness[*]}"
           got=$(jq -r .scripts.test package.json)
           if [ "$got" != "$want" ]; then
-            echo "::error::packages/dispatch/package.json's test script is '$got', and the two test steps of .github/workflows/ci-job-dispatch-ui.yaml run '$want' between them: write the steps' commands from the script again" >&2
+            echo "::error::packages/dispatch/package.json's test script is '$got', and the two jobs of .github/workflows/ci-job-dispatch-ui.yaml run '$want' between them: write that file's DISPATCH_TEST_BUILD, DISPATCH_TEST_WEB and DISPATCH_TEST_HARNESS from the script again" >&2
             exit 1
           fi
-          bun run build:contracts
-          bun run test:web web/src
+          bun run "${web[@]}"
         working-directory: packages/dispatch
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
@@ -126,12 +142,15 @@ jobs:
       # compiles no module outside the set the dashboard's tsc programs compile, which is what
       # this job's filter lists. package.json allows no comment, so this is where the list is
       # explained: a new import of a contracts subpath by packages/dispatch adds its entry to that
-      # script, or Playwright's Node resolution fails on the missing dist/ file. The package's own
-      # `test` script runs the same script again (build:contracts), and so does dispatch-ui's
-      # "Test dispatch dashboard".
+      # script, or Playwright's Node resolution fails on the missing dist/ file. This step runs
+      # the build as the first command of packages/dispatch's `test` script (DISPATCH_TEST_BUILD,
+      # `bun run build:contracts`, whose recipe is `bun run --filter @legion/contracts
+      # build:dispatch`), so the harness lane below reads the dist/ that `bun run test` would give it.
       - name: Build contracts for the suites that spawn Playwright
-        run: bun run build:dispatch
-        working-directory: packages/contracts
+        run: |
+          read -ra build <<< "$DISPATCH_TEST_BUILD"
+          bun run "${build[@]}"
+        working-directory: packages/dispatch
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
@@ -160,11 +179,14 @@ jobs:
       # The stack contract that harness-stacks.test.ts guards is also covered end to end by every
       # multi-worker run of the browser suite itself.
       #
-      # This step runs the third command of packages/dispatch's `test` script, which dispatch-ui's
-      # "Test dispatch dashboard" holds the script to; contracts is built by the step above. It
-      # runs its lane in random order, as that step's lane does, and prints its own seed.
+      # This step runs the third command of packages/dispatch's `test` script (DISPATCH_TEST_HARNESS),
+      # which dispatch-ui's "Test dispatch dashboard" holds the script to; the step "Build contracts
+      # for the suites that spawn Playwright" above ran its first. It runs its lane in random order,
+      # as that step's lane does, and prints its own seed.
       - name: Test dispatch harness
-        run: bun run test:harness e2e/__tests__
+        run: |
+          read -ra harness <<< "$DISPATCH_TEST_HARNESS"
+          bun run "${harness[@]}"
         working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

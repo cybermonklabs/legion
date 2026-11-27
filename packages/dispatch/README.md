@@ -997,7 +997,8 @@ the two runs that need a network dropping TEST-NET-1, which skip with the reason
 network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
 a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
-zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui-harness` job (in
+`.github/workflows/ci-job-dispatch-ui.yaml`), which runs that file, installs it.
 
 `e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
 edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
@@ -1085,7 +1086,8 @@ reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools
 `bun e2e/tools/row-map.ts` generates the row map and prints it. Git does not keep the map.
 `--write` writes it to `e2e/row-map.md`, which git ignores, so no commit keeps the file.
 `e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of the
-tool. CI generates the map in each run of `dispatch-ui`, the job that runs that test.
+tool. CI generates the map in each run of `dispatch-ui-harness`, the job of
+`.github/workflows/ci-job-dispatch-ui.yaml` that runs that test.
 
 `e2e/stub/real-stack-reasons.ts` keeps the reasons of the real-stack spec files that were there
 when its list closed. A change to one of those reasons is made in `real-stack-reasons.ts`.

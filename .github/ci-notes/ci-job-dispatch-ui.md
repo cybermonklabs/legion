@@ -17,7 +17,8 @@ dashboard" 37 s, "Test proof editor" 24 s, "Install zsh" 15 s, the checkout 14 s
 154.7 s.
 
 That step is computation, not waiting. Scratch run 46022571148 (branch
-probe/dispatch-ui-time, main e3cb409d, three jobs per variant, Neoverse-N2, `nproc` 4) sampled
+probe/dispatch-ui-time at 684cceb1, whose parent is main 33a388c3, three jobs per variant,
+Neoverse-N2, `nproc` 4) sampled
 the whole runner's /proc/stat each second. Run one after the other, the web lane took
 147.4/154.4/162.4 s at 3.67 to 3.86 busy cores (560/559/604 CPU-s) and the harness lane
 117.4/130.7/158.7 s at 2.73 to 3.36 busy cores (291/337/322 CPU-s); the cores were idle only in
@@ -33,13 +34,23 @@ idle.
 So the work is split over two runners, balanced by those medians: dispatch-ui runs the proof
 editor's typecheck and tests, the web lane, the build and the asset checks;
 dispatch-ui-harness runs the contracts build the harness's Playwright spawn reads, the
-dashboard's typecheck, zsh's install and the harness lane. Both
-lanes still run on a runner of their own with the package's `test` script's commands and its
-`--parallel=8`, so no row runs under more load than it did, and the second runner's own setup
-(checkout, Bun and `bun install`) is the cost. Measured on the three attempts of run
-46036413948 at the head that split them: dispatch-ui 260/241/230 s, its web lane 171/149/148 s;
-dispatch-ui-harness 224/256/230 s, its typecheck 55/54/55 s and its harness lane 130/162/144 s.
-The check is as slow as the slower of the two, so 260/256/230 s against the one job's p50 449 s.
-Each lane's own wall stays inside what it read before the split (web 135.7 to 177.4 s, harness
-112.7 to 154.7 s over 9 jobs), but for the 162 s reading, whose runner also took 16 s to check
-out where the other two took 4 s.
+dashboard's typecheck, zsh's install and the harness lane. Both lanes still run on a runner of
+their own with the package's `test` script's commands and its `--parallel=8`, so no row runs
+under more load than it did.
+
+What a run of the split costs and gains, read from the jobs API for each pair of jobs (the
+three attempts of run 46036413948 and run 46045442090), every reading:
+
+- The slower job's duration: 260/256/230/278 s, against the one job's p50 449 s (393 to 503).
+- First start to last end: 284/403/231/278 s. This adds the second runner's start lag,
+  24/147/1/0 s: the two jobs are created at once, and the second waits for a runner of its own.
+  One job cannot pay that.
+- Created to last end, which counts the queue the first job waited too: 326/563/490/283 s,
+  against the one job's p50 470 s (397 to 641). The first job's own queue wait in those four
+  was 42/160/259/5 s; the one job's was p50 4 s and at most 194 s.
+- Runner-seconds, the two jobs together: 484/497/460/529 s, against the one job's 449 s: the
+  second runner's own set-up, checkout, Bun and `bun install` (12/23/11/24 s in the harness job
+  of these four), comes on top of the work.
+
+Each lane's own wall after the split is web 171/149/148/184 s and harness 130/162/144/146 s,
+against 135.7 to 177.4 s and 112.7 to 154.7 s over 9 jobs before it.
