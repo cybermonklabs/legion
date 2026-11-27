@@ -1348,6 +1348,10 @@ func main() {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
 	go reconcile.Run(ctx, deliveryReconcileLeases)
+	// The eval registry over the server's database, its document service, its broker and the boot's
+	// one Attributor: the Legion state intake writes each project's admission eval through it
+	// (evals.AdmissionWriter), and the eval day-row refresher keeps its day rows (below).
+	evalStore := evals.New(database, documentService, broker, attributor)
 	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
 	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
 	// stop as a function a second call of which returns once the first has, so a second call of
@@ -1393,9 +1397,11 @@ func main() {
 		// state intake takes from its held durable, with or without the GitHub App; it reads a
 		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
 		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
-		// reads one. A connect that fails stops the delivery intakes before the exit, since they
-		// may hold their durables already.
-		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		// reads one. Each state it applies writes the readings of its project's admission eval in
+		// the same transaction (dispatch://INFRA-2918, evals.AdmissionWriter), recording this
+		// process's build on their day rows. A connect that fails stops the delivery intakes before
+		// the exit, since they may hold their durables already.
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, evals.AdmissionWriter(evalStore, processBuild()), legionIntakeLeases, legionSettingsWake)
 		if err != nil {
 			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
 			cancel()
@@ -1520,8 +1526,9 @@ func main() {
 	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
 	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
 	// records the build it runs as against every row and walk, as the facts consumer does, and
-	// attributes each pull request its day rows count by the boot's one Attributor.
-	evalStore := evals.New(database, documentService, broker, attributor)
+	// attributes each pull request its day rows count by the boot's one Attributor (evalStore,
+	// above).
+	//
 	// The first paint of every cut of the stored eval figures a move of a default repository or the
 	// rename pass above marked stale, folded before the server serves, so the first read of one
 	// after a restart or a deploy reads its stored figures inside R8's 150 ms rather than the fold

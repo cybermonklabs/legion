@@ -234,7 +234,7 @@ func announcements(t *testing.T, database *store.Store, project string) func(wha
 // any error ReadWhole answers.
 func readDaemon(t *testing.T, database *store.Store, setting Settings) {
 	t.Helper()
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonStart); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonStart); err != nil {
 		t.Fatalf("read the daemon of %s whole: %v", setting.Project, err)
 	}
 }

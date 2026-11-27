@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -101,14 +102,8 @@ type Written struct {
 // (foldWrittenPaints): a read of the eval folds its day rows meanwhile wherever no stored row it
 // would read is folded again, so every read answers what it answers after the refold.
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
-	if !slugPattern.MatchString(batch.Slug) {
-		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
-	}
-	if reason := keyTooLong("slug", batch.Slug); reason != "" {
-		return Written{}, fieldRefusal(CodeKeyTooLong, "slug", "%s", reason)
-	}
-	if batch.BuiltBy == "" {
-		return Written{}, errors.New("evals: a readings write needs the running build, which its day rows record")
+	if err := batch.check(); err != nil {
+		return Written{}, err
 	}
 	if len(batch.Rows) == 0 {
 		return Written{}, refusal(CodeReadingsEmpty, "a readings write carries at least one reading")
@@ -131,73 +126,13 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		if err != nil {
 			return err
 		}
-		readings, err := insertReadings(ctx, w.Tx, evalID, rows, batch.Caller, w.now)
+		spans := daySpans{}
+		readings, folded, err := storeReadings(ctx, w, definition, byName, rows, replaced, batch, spans)
 		if err != nil {
 			return err
 		}
-		removed := make([]Reading, 0, len(replaced))
-		for _, row := range rows {
-			if row.Replaces != "" {
-				removed = append(removed, replaced[row.Replaces])
-			}
-		}
-		if len(removed) > 0 {
-			ids := make([]string, len(removed))
-			for index, reading := range removed {
-				ids[index] = reading.ID
-			}
-			// The ids grow with the batch, so they go in statements of at most statementBytes;
-			// lockReplaced locked every one of them already.
-			for chunk := range statementChunks(ids, paramBytes(1), textBytes) {
-				if _, err := w.Exec(ctx, `update eval_readings set superseded_at = now() where id = any($1::text[]::uuid[])`, chunk); err != nil {
-					return fmt.Errorf("supersede the readings %s corrects: %w", evalID, err)
-				}
-			}
-		}
-		if !definition.Computed() {
-			folded, err := foldedReadings(ctx, w.Tx, evalID, removed)
-			if err != nil {
-				return err
-			}
-			// spans is the days whose figures the write may have moved, each run apart: those of the
-			// zero rows its day rows leave owed and of the rows a correction empties, which writeDays
-			// writes and deletes, and the day of each of its readings and of those they replace;
-			// repos is the repository of each row they count in, the project's own ("") among them.
-			spans, repos := daySpans{}, []string{""}
-			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy, spans); err != nil {
-				return err
-			}
-			for _, reading := range slices.Concat(readings, folded) {
-				if keys, _, ok := dayKeysOf(reading, -1); ok {
-					spans.add(evalID, keys[0].day, keys[0].day)
-					for _, key := range keys[1:] {
-						repos = append(repos, key.repo)
-					}
-				}
-			}
-			if len(spans) > 0 {
-				// The stored figures of the days moved, folded under the definition and the series this
-				// write read under the eval's lock (registerMissing), which a read of them again
-				// (foldFiguresInTx) would answer alike; their order reaches no figure, since
-				// foldKeyOf and encodeFigures read the series by name.
-				scope, ok, err := readFigureScope(ctx, w.Tx, batch.BuiltBy, batch.Project)
-				if err != nil {
-					return err
-				}
-				entry := Entry{Definition: definition, Series: slices.Collect(maps.Values(byName))}
-				switch {
-				case !ok:
-				case daySeries(spans, entry, scope.through) > inlineFoldDaySeries:
-					slices.Sort(repos)
-					if err := foldWrittenPaints(ctx, w.Tx, scope, entry, slices.Compact(repos)); err != nil {
-						return err
-					}
-				default:
-					if err := refoldFigures(ctx, w.Tx, scope, map[string]Entry{evalID: entry}, spans.sets()...); err != nil {
-						return err
-					}
-				}
-			}
+		if err := refoldWritten(ctx, w.Tx, definition, byName, batch, slices.Concat(readings, folded), spans); err != nil {
+			return err
 		}
 		written = Written{Definition: definition, Registered: registered, Readings: readings}
 		return nil
@@ -206,6 +141,289 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		return Written{}, err
 	}
 	return written, nil
+}
+
+// check refuses a batch whose slug no eval can hold (CodeSlugInvalid, CodeKeyTooLong), and a batch
+// that names no running build, which its day rows record.
+func (batch Batch) check() error {
+	if !slugPattern.MatchString(batch.Slug) {
+		return refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
+	}
+	if reason := keyTooLong("slug", batch.Slug); reason != "" {
+		return fieldRefusal(CodeKeyTooLong, "slug", "%s", reason)
+	}
+	if batch.BuiltBy == "" {
+		return errors.New("evals: a readings write needs the running build, which its day rows record")
+	}
+	return nil
+}
+
+// storeReadings stores rows, readings of definition's eval parsed and judged, whose series byName
+// holds and the readings they correct replaced holds (lockReplaced), in w under the eval's lock:
+// it inserts them (insertReadings), supersedes the readings they correct, and, for a logged eval,
+// keeps the day rows of every day they touch and the zero rows those rows leave owed (writeDays),
+// adding to spans the days of the zero rows it writes and of the rows a correction empties. It
+// answers the readings it stored, in the rows' order, and the readings they replaced that the
+// eval's day rows held (foldedReadings), whose days, beside the stored readings' own, the figures'
+// fold takes too (refoldWritten). A computed eval's readings are stored and folded nowhere.
+func storeReadings(ctx context.Context, w *writeTx, definition Definition, byName map[string]Series, rows []Reading, replaced map[string]Reading, batch Batch, spans daySpans) ([]Reading, []Reading, error) {
+	evalID := definition.EvalID
+	readings, err := insertReadings(ctx, w.Tx, evalID, rows, batch.Caller, w.now)
+	if err != nil {
+		return nil, nil, err
+	}
+	removed := make([]Reading, 0, len(replaced))
+	for _, row := range rows {
+		if row.Replaces != "" {
+			removed = append(removed, replaced[row.Replaces])
+		}
+	}
+	if len(removed) > 0 {
+		ids := make([]string, len(removed))
+		for index, reading := range removed {
+			ids[index] = reading.ID
+		}
+		// The ids grow with the batch, so they go in statements of at most statementBytes;
+		// lockReplaced locked every one of them already.
+		for chunk := range statementChunks(ids, paramBytes(1), textBytes) {
+			if _, err := w.Exec(ctx, `update eval_readings set superseded_at = now() where id = any($1::text[]::uuid[])`, chunk); err != nil {
+				return nil, nil, fmt.Errorf("supersede the readings %s corrects: %w", evalID, err)
+			}
+		}
+	}
+	if definition.Computed() {
+		return readings, nil, nil
+	}
+	folded, err := foldedReadings(ctx, w.Tx, evalID, removed)
+	if err != nil {
+		return nil, nil, err
+	}
+	// spans is the days whose figures the write may have moved: those of the zero rows its day rows
+	// leave owed and of the rows a correction empties, which writeDays writes and deletes, and the
+	// day of each of its readings and of those they replace (refoldWritten).
+	if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy, spans); err != nil {
+		return nil, nil, err
+	}
+	return readings, folded, nil
+}
+
+// refoldWritten folds again, in tx under the eval's lock, the stored figures of the days a write of
+// definition's readings moved: spans, which writeDays filled, and the day of each of touched, the
+// readings it stored and those they replaced that the day rows held (storeReadings). They are
+// folded under the definition and the series byName the write read under the eval's lock, which a
+// read of them again (foldFiguresInTx) would answer alike; their order reaches no figure, since
+// foldKeyOf and encodeFigures read the series by name. A write whose days and series pass
+// inlineFoldDaySeries folds the first paint of each cut its rows reach and leaves the rest to the
+// refresher (foldWrittenPaints); a computed eval's write folds nothing.
+func refoldWritten(ctx context.Context, tx pgx.Tx, definition Definition, byName map[string]Series, batch Batch, touched []Reading, spans daySpans) error {
+	if definition.Computed() {
+		return nil
+	}
+	// repos is the repository of each row the readings count in, the project's own ("") among them.
+	repos := []string{""}
+	for _, reading := range touched {
+		if keys, _, ok := dayKeysOf(reading, -1); ok {
+			spans.add(definition.EvalID, keys[0].day, keys[0].day)
+			for _, key := range keys[1:] {
+				repos = append(repos, key.repo)
+			}
+		}
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+	scope, ok, err := readFigureScope(ctx, tx, batch.BuiltBy, batch.Project)
+	if err != nil || !ok {
+		return err
+	}
+	entry := Entry{Definition: definition, Series: slices.Collect(maps.Values(byName))}
+	if daySeries(spans, entry, scope.through) > inlineFoldDaySeries {
+		slices.Sort(repos)
+		return foldWrittenPaints(ctx, tx, scope, entry, slices.Compact(repos))
+	}
+	return refoldFigures(ctx, tx, scope, map[string]Entry{definition.EvalID: entry}, spans.sets()...)
+}
+
+// WrittenIn is what a readings write in its caller's transaction did (WriteReadingsIn): the
+// readings it stored, in the batch's order, and each row it skipped, by its index in the batch,
+// with its code and why (RowError), a row refused for several reasons once for each.
+type WrittenIn struct {
+	Readings []Reading
+	Skipped  []RowError
+}
+
+// WriteReadingsIn is the readings write (WriteReadings) in tx, the caller's transaction, for a
+// caller that writes its own rows beside the readings and commits them together: the Legion
+// intake's admission eval (AdmissionWriter). It keeps R29's rules, each row parsed and judged as
+// WriteReadings judges it (parseRow, lockReplaced, the series' bound and size, insertReadings,
+// writeDays), but it judges each row alone: a row a rule refuses is skipped and named in the
+// answer (WrittenIn.Skipped), and the batch's other rows are written. It registers no eval: of
+// registerMissing it takes the series half alone, the first version of a series the eval holds
+// none of (firstSeries, listed and folded by its last value for a logged eval), and never the eval
+// half, so it writes no eval row, no section of `evals-md` and no document ledger, and every row of
+// an eval no row holds is skipped (CodeEvalNotFound). It takes no lock of the eval: the caller
+// holds it, taken before any row lock of tx (inWrite's rule; legion.Admissions).
+//
+// Each row is written under a savepoint of its own, its new series, its reading, the reading it
+// corrects and its day rows with it, released once they are written, and rolled back to where the
+// row is refused: by R29's rules (*Error), or by the database for good (SQLSTATE class 22 or 23,
+// legion.RefusedForGood), as a NUL in a reason is, named by its SQLSTATE. So a refused row leaves
+// tx as it found it. Then the stored figures of the days the written rows moved are folded again
+// (refoldWritten). Any other error is answered, and the caller's transaction is then to be rolled
+// back. It answers the move of the write's change rows into the delivery change log (drainChanges),
+// which the caller runs once tx has committed and never after a rollback, as inWrite runs it after
+// its own commit; nil where it stored no reading.
+func (s *Store) WriteReadingsIn(ctx context.Context, tx pgx.Tx, batch Batch) (WrittenIn, func(context.Context), error) {
+	if err := batch.check(); err != nil {
+		return WrittenIn{}, nil, err
+	}
+	if len(batch.Rows) == 0 {
+		return WrittenIn{}, nil, nil
+	}
+	evalID := EvalID(batch.Project, batch.Slug)
+	w, err := openWrite(ctx, tx, nil, batch.Project)
+	if err != nil {
+		return WrittenIn{}, nil, err
+	}
+	rows, skipped := parseRows(evalID, batch.Rows, w.now)
+	definition, found, err := newestDefinition(ctx, tx, evalID)
+	if err != nil {
+		return WrittenIn{}, nil, err
+	}
+	if !found {
+		skipped = skipped[:0]
+		for index := range rows {
+			skipped = append(skipped, RowError{Index: index, Code: CodeEvalNotFound,
+				Message: fmt.Sprintf("project %s holds no eval %q, and this write registers none", batch.Project, batch.Slug)})
+		}
+		return WrittenIn{Skipped: skipped}, nil, nil
+	}
+	refused := map[int]bool{}
+	for _, row := range skipped {
+		refused[row.Index] = true
+	}
+	for index := range rows {
+		if refused[index] {
+			// A refused row corrects nothing, so no later row is refused for correcting its reading.
+			rows[index].Replaces = ""
+		}
+	}
+	replaced, replaceErrors, err := lockReplaced(ctx, tx, evalID, rows)
+	if err != nil {
+		return WrittenIn{}, nil, err
+	}
+	for _, row := range replaceErrors {
+		refused[row.Index] = true
+		skipped = append(skipped, row)
+	}
+	series, err := currentSeries(ctx, tx, evalID)
+	if err != nil {
+		return WrittenIn{}, nil, err
+	}
+	var written, touched []Reading
+	spans := daySpans{}
+	for index, row := range rows {
+		if refused[index] {
+			continue
+		}
+		var first *Series
+		if _, has := series[row.Series]; !has {
+			if len(series) >= MaxEvalSeries {
+				skipped = append(skipped, RowError{Index: index, Code: CodeSeriesLimit, Field: "series",
+					Message: seriesLimitReason(evalID, row.Series, len(series)+1, len(series)+1)})
+				continue
+			}
+			version := firstSeries(evalID, row.Series, len(series) == 0, !definition.Computed(), row.Unit)
+			version.CreatedAt = w.now
+			size, field, err := seriesVersionSize(version, "")
+			if err != nil {
+				return WrittenIn{}, nil, err
+			}
+			if field != "" {
+				skipped = append(skipped, RowError{Index: index, Code: CodeVersionTooLarge, Field: field,
+					Message: versionTooLargeReason(seriesVersionName(version), size, field)})
+				continue
+			}
+			first = &version
+		}
+		readings, folded, rowRefusals, err := writeRowIn(ctx, w, definition, series, first, row, replaced, batch, spans)
+		if err != nil {
+			return WrittenIn{}, nil, err
+		}
+		for _, refusal := range rowRefusals {
+			refusal.Index = index
+			skipped = append(skipped, refusal)
+		}
+		written = append(written, readings...)
+		touched = append(append(touched, readings...), folded...)
+	}
+	sort.SliceStable(skipped, func(i, j int) bool { return skipped[i].Index < skipped[j].Index })
+	if len(written) == 0 {
+		return WrittenIn{Skipped: skipped}, nil, nil
+	}
+	if err := refoldWritten(ctx, tx, definition, series, batch, touched, spans); err != nil {
+		return WrittenIn{}, nil, err
+	}
+	return WrittenIn{Readings: written, Skipped: skipped}, s.drainChanges, nil
+}
+
+// writeRowIn writes row, one row of WriteReadingsIn's batch, under a savepoint of w's transaction:
+// first, where it is set, the first version of the row's series (registerMissing's series half),
+// which series holds from then on, then the row's reading and what it moves (storeReadings),
+// adding to spans the days whose figures it may have moved. A row R29's rules refuse (*Error), or
+// that the database refuses for good (legion.RefusedForGood), is rolled back to the savepoint, and
+// answered as its refusals, each at index 0, with no reading; any other error is answered as it
+// is.
+func writeRowIn(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, first *Series, row Reading, replaced map[string]Reading, batch Batch, spans daySpans) ([]Reading, []Reading, []RowError, error) {
+	savepoint, err := w.Begin(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open the savepoint of a reading of %s: %w", definition.EvalID, err)
+	}
+	in := &writeTx{Tx: savepoint, now: w.now, project: w.project, projectName: w.projectName}
+	rowSpans := daySpans{}
+	readings, folded, err := func() ([]Reading, []Reading, error) {
+		if first != nil {
+			stored, inserted, err := insertSeries(ctx, savepoint, *first)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !inserted {
+				return nil, nil, fmt.Errorf("series %s of %s was registered by a write that holds no lock of the eval", first.Series, definition.EvalID)
+			}
+			series[stored.Series] = stored
+		}
+		return storeReadings(ctx, in, definition, series, []Reading{row}, replaced, batch, rowSpans)
+	}()
+	if err == nil {
+		if err := savepoint.Commit(ctx); err != nil {
+			return nil, nil, nil, fmt.Errorf("release the savepoint of a reading of %s: %w", definition.EvalID, err)
+		}
+		for evalID, runs := range rowSpans {
+			for _, run := range runs {
+				spans.add(evalID, run.first, run.last)
+			}
+		}
+		return readings, folded, nil, nil
+	}
+	var refusals []RowError
+	var rowRefusal *Error
+	switch database := legion.RefusedForGood(err); {
+	case errors.As(err, &rowRefusal) && len(rowRefusal.Rows) > 0:
+		refusals = rowRefusal.Rows
+	case rowRefusal != nil:
+		refusals = []RowError{{Code: rowRefusal.Code, Field: rowRefusal.Field, Message: rowRefusal.Message}}
+	case database != nil:
+		refusals = []RowError{{Code: database.Code, Field: database.ColumnName, Message: database.Message}}
+	default:
+		return nil, nil, nil, err
+	}
+	if first != nil {
+		delete(series, first.Series)
+	}
+	if err := savepoint.Rollback(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("roll back to the savepoint of a refused reading of %s: %w", definition.EvalID, err)
+	}
+	return nil, nil, refusals, nil
 }
 
 // inlineFoldDaySeries is the most day and series pairs (daySeries) whose stored figures a readings

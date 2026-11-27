@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -508,14 +509,17 @@ func (d *fakeLegionDaemon) read(t *testing.T, database *store.Store, body string
 
 // readLegionWhole reads project's daemon whole through the setting the settings API stored for
 // project (legion.GetSettings), with the Legion intake's own whole read (legion.ReadWhole), which
-// records what it observes, or the read's failure, as the intake records it.
+// records what it observes, or the read's failure, and the readings of the project's admission eval,
+// as the intake records them. The admission writer writes no document, so its registry is built
+// with no document service, broker or attributor.
 func readLegionWhole(t *testing.T, database *store.Store, project string) {
 	t.Helper()
 	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
 	if err != nil {
 		t.Fatalf("read the Legion setting of %s: %v", project, err)
 	}
-	if err := legion.ReadWhole(t.Context(), database.Pool, setting, legion.ReadReasonStart); err != nil {
+	admissions := evals.AdmissionWriter(evals.New(database, nil, nil, nil), testServerBuild)
+	if err := legion.ReadWhole(t.Context(), database.Pool, admissions, setting, legion.ReadReasonStart); err != nil {
 		t.Fatalf("read the daemon of %s whole: %v", project, err)
 	}
 }

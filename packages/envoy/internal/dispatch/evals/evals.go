@@ -402,6 +402,9 @@ const (
 	CodeSlugInvalid = "EVAL_SLUG_INVALID"
 	// CodeProjectNotFound: no project has the key.
 	CodeProjectNotFound = "PROJECT_NOT_FOUND"
+	// CodeEvalNotFound: a readings write in its caller's transaction (WriteReadingsIn), which
+	// registers no eval, names an eval no row holds.
+	CodeEvalNotFound = "EVAL_NOT_FOUND"
 	// CodeFieldInvalid: a register write's field is outside the values its column allows (a
 	// kind, a state, a direction, a target's judge, a series role or fold, a min_n below 0 or past
 	// what the store holds), its source is not logged (only the seeded catalogue makes an eval

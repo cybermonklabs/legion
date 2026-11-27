@@ -58,7 +58,7 @@ const (
 	// store than the one the starting point read, so its sequences say nothing of the cursor's.
 	// The read finds the store the daemon the setting names counts in now.
 	ReadReasonStore = "store"
-	// ReadReasonRefused is a message the database refused for good (refusedForGood): it is not
+	// ReadReasonRefused is a message the database refused for good (RefusedForGood): it is not
 	// applied, and the read puts the project's observations at the daemon's state. The message is
 	// acknowledged, or goes back to the stream where it holds the owed read (cursor.readFor).
 	ReadReasonRefused = "refused"
@@ -117,10 +117,12 @@ type wholeRead struct {
 	stateRun      *string
 	schemaVersion *int64
 	// observations is what the state observes (State.Observations), recorded where observed is
-	// true: the daemon answered with the setting's project's state, failed read or not. bytes is
-	// the answer's size as the read knows it (Client.State).
+	// true: the daemon answered with the setting's project's state, failed read or not; admission
+	// is its admission block, nil for none, whose readings a good read writes (Admissions.Write).
+	// bytes is the answer's size as the read knows it (Client.State).
 	observations []Observation
 	observed     bool
+	admission    *Admission
 	bytes        int64
 	// started is Dispatch's clock before the call to the daemon: the read's start, which the next
 	// read waits ReadRetryAfter after (last_read_started_at), however long the daemon takes to
@@ -166,7 +168,7 @@ func fetchWhole(ctx context.Context, setting Settings, started time.Time, now fu
 		read.failure = fmt.Errorf("%w: it serves %q, and the setting is %s's", ErrStateOfAnotherProject, project, setting.Project)
 		return read
 	}
-	read.observations, read.observed = state.Observations(), true
+	read.observations, read.observed, read.admission = state.Observations(), true, state.Admission
 	switch seq := read.stateSeq; {
 	case JSONString(state.Settings["dispatch_url"]) == "":
 		read.failure = ErrNoDispatchURL
@@ -181,15 +183,17 @@ func fetchWhole(ctx context.Context, setting Settings, started time.Time, now fu
 }
 
 // ReadWhole is the intake's whole read (Intake.readWhole) of setting's daemon for reason, made once
-// and on Dispatch's wall clock, for a caller that is not on the project's runner. It is the test
-// seam of the read's record: the record's tests outside this package (api/legion_board_test.go,
-// api/legion_issue_capture_test.go) and this package's own tests drive the intake's own read
-// through it, and the intake itself calls readWhole. Its intake is built as NewIntake builds one,
-// with every map, but for the durable (newIntake). Its record clears every reason the project's
-// cursor owes as it begins, as the record of a read the read rule makes does (owedRead.clears). It
-// answers readWhole's error, or the error of the cursor it could not read (position).
-func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason string) error {
-	in := newIntake(pool, nil)
+// and on Dispatch's wall clock, for a caller that is not on the project's runner, running
+// admissions in its record as the intake does (recordWhole). It is the test seam of the read's
+// record: the record's tests outside this package (api/legion_board_test.go,
+// api/legion_issue_capture_test.go, admission_test.go) and this package's own tests drive the
+// intake's own read through it, and the intake itself calls readWhole. Its intake is built as
+// NewIntake builds one, with every map, but for the durable (newIntake). Its record clears every
+// reason the project's cursor owes as it begins, as the record of a read the read rule makes does
+// (owedRead.clears). It answers readWhole's error, or the error of the cursor it could not read
+// (position).
+func ReadWhole(ctx context.Context, pool *store.Pool, admissions Admissions, setting Settings, reason string) error {
+	in := newIntake(pool, admissions, nil)
 	_, current, _, err := in.position(ctx, setting.Project)
 	if err != nil {
 		return err
@@ -242,7 +246,7 @@ func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeR
 		}
 		*pending = read
 	}
-	recorded, err := finishWhole(ctx, in.pool, owed, read)
+	recorded, err := in.finishWhole(ctx, owed, read)
 	if err != nil {
 		return nil, err
 	}
@@ -266,19 +270,20 @@ func (in *Intake) reads(project string, started *time.Time) {
 // logs it (wholeReadLine), naming owed's recorded reason as its reason and every reason it joined
 // as its reasons, comma-separated, and answers the read as it was recorded. A read it does not
 // record, its setting moved or gone, it logs with a line of its own and answers as nil. A record
-// Postgres refused is recorded as a failed read instead, its failure `record: <why>` and none of
-// its observations, so the last good observations stand and the read is owed rather than its
-// project's runner held on a value the database will never take. An error is answered only when
-// that record is refused too: the database itself is failing, and the caller tries the record
-// again in place.
-func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *wholeRead) (*wholeRead, error) {
+// Postgres refused, or whose admission readings could not be written for a reason a retry may
+// fix, is recorded as a failed read instead, its failure `record: <why>`, none of its
+// observations and no reading, so the last good observations stand and the read is owed rather
+// than its project's runner held on a value the database will never take; the next good read
+// writes the readings. An error is answered only when that record is refused too: the database
+// itself is failing, and the caller tries the record again in place.
+func (in *Intake) finishWhole(ctx context.Context, owed owedRead, read *wholeRead) (*wholeRead, error) {
 	project := owed.setting.Project
-	recorded, written, err := recordWhole(ctx, pool, owed, read)
+	recorded, written, err := in.recordWhole(ctx, owed, read)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("legion intake: record a whole read; recording it as a failed read", "project", project, "reason", owed.reason, "error", err)
 		refused := *read
 		refused.failure, refused.observed = fmt.Errorf("record: %w", err), false
-		if recorded, written, err = recordWhole(ctx, pool, owed, &refused); err == nil {
+		if recorded, written, err = in.recordWhole(ctx, owed, &refused); err == nil {
 			read = &refused
 		}
 	}
@@ -300,18 +305,22 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 
 // recordWhole writes read, made for owed, in one transaction that holds the project's position
 // (lockCursor): the step every whole read's record takes (recordRead: its observations where it
-// observed them, its legion_reads row naming owed's recorded reason, and its announcement), then
-// the cursor the read leaves (cursor.afterRead), in one statement (writeCursor). That write sets
-// the read's start once more: readWhole wrote it before the call to the daemon (read-rule-cases
-// row 7.6), and writeCursor keeps the later of the two. A project with no cursor is given one that
-// follows no daemon before anything is computed, so a message past stateMaxWaiting that
-// judgeCrowded judges while the read is in flight either waits for this record or is seen by it,
-// and nothing it recorded is written over (R3-h, read-rule-cases' second invariant). readWhole
-// gave a cursor before the call to a project that had a setting then, so only a project whose
-// setting was written during the read has none here. A good read deletes the project's held parts
-// (part), which its snapshot holds, and so does a read of a cursor that followed another daemon. A
-// failed read of the daemon the cursor follows keeps them: the read holds none of the events, and
-// a part held is applied whole when its transaction's last part arrives.
+// observed them, its legion_reads row naming owed's recorded reason, and its announcement), then,
+// for a good read, the readings of the admission eval its admission block gives (Admissions.Write),
+// then the cursor the read leaves (cursor.afterRead), in one statement (writeCursor). A good read
+// takes the lock of its project's admission eval first (Admissions.Lock), before the position, and
+// its readings' change rows move into the delivery change log once the commit succeeds; a failed
+// read takes no such lock and writes no reading. The cursor's write sets the read's start once
+// more: readWhole wrote it before the call to the daemon (read-rule-cases row 7.6), and
+// writeCursor keeps the later of the two. A project with no cursor is given one that follows no
+// daemon before anything is computed, so a message past stateMaxWaiting that judgeCrowded judges
+// while the read is in flight either waits for this record or is seen by it, and nothing it
+// recorded is written over (R3-h, read-rule-cases' second invariant). readWhole gave a cursor
+// before the call to a project that had a setting then, so only a project whose setting was
+// written during the read has none here. A good read deletes the project's held parts (part),
+// which its snapshot holds, and so does a read of a cursor that followed another daemon. A failed
+// read of the daemon the cursor follows keeps them: the read holds none of the events, and a part
+// held is applied whole when its transaction's last part arrives.
 //
 // recorded is false when the project has no setting any more, and when its setting names another
 // URL than the daemon read. Where it has no setting, nothing is written here. Where the setting
@@ -319,13 +328,19 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 // readWhole wrote before the call already and which this writes again, the later of the two kept:
 // the daemon was read all the same, so the read that the setting's change calls for waits
 // ReadRetryAfter after it.
-func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *wholeRead) (recorded bool, written int64, err error) {
+func (in *Intake) recordWhole(ctx context.Context, owed owedRead, read *wholeRead) (recorded bool, written int64, err error) {
 	project := owed.setting.Project
-	tx, err := pool.Begin(ctx)
+	tx, err := in.pool.Begin(ctx)
 	if err != nil {
 		return false, 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	good := read.failure == nil
+	if good {
+		if err := in.admissions.Lock(ctx, tx, project); err != nil {
+			return false, 0, fmt.Errorf("lock the admission eval of %s: %w", project, err)
+		}
+	}
 	stateURL, current, found, err := lockCursor(ctx, tx, project)
 	if err != nil || !found {
 		return false, 0, err
@@ -344,16 +359,26 @@ func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 	if written, err = recordRead(ctx, tx, project, owed.reason, read); err != nil {
 		return false, 0, err
 	}
+	var drain func(context.Context)
+	if good && read.admission != nil {
+		admission := AdmissionState{Project: project, StateID: *read.stateID, Seq: *read.stateSeq, At: read.at, Blocks: []*Admission{read.admission}}
+		if drain, err = in.admissions.Write(ctx, tx, admission); err != nil {
+			return false, 0, fmt.Errorf("write the admission readings of %s: %w", project, err)
+		}
+	}
 	if err := writeCursor(ctx, tx, project, current.afterRead(owed, read)); err != nil {
 		return false, 0, fmt.Errorf("set where the Legion events of %s stand: %w", project, err)
 	}
-	if read.failure == nil || !current.follows(stateURL) {
+	if good || !current.follows(stateURL) {
 		if _, err := tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project); err != nil {
 			return false, 0, fmt.Errorf("delete the held state events of %s: %w", project, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
+	}
+	if drain != nil {
+		drain(ctx)
 	}
 	return true, written, nil
 }

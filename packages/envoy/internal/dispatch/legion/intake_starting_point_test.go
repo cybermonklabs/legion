@@ -25,7 +25,7 @@ func TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler(t *testing.T) 
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	daemon := newFakeDaemon(t, daemonState("INFRA", 15, planning("INFRA")))
 	database, setting := configured(t, daemon.URL)
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonStart); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonStart); err != nil {
 		t.Fatalf("read INFRA's daemon whole: %v", err)
 	}
 	line := logs.Lines(wholeReadLine)
