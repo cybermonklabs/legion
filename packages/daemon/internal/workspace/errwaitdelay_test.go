@@ -263,22 +263,25 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 // budget is 100 ms short of procgroup.WaitDelay, so a run whose command exits inside it returns
 // past it: a run that read a timeout from the deadline having passed, or from the time the run
 // took, would report jj's own exit 3 as a timeout. The child leaves the command's process group
-// before the command exits, and only a run whose command was seen reaped before its budget could
-// pass is judged, as in
-// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline.
+// before the command exits. A run whose command was seen reaped past its budget is judged as in
+// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline:
+// RunCommand's own time, from the call to the command's start and from the command's exit to its
+// reap, is held to main's budget, and only where it stays inside it did the command's own run
+// carry the reap past the budget, so that run alone is not judged.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
-		leader := filepath.Join(dir, "leader")
+		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
 		reaped := watchReaped(leader, within)
-		script := `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\nexit 3"
+		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
 
+		calledBoot := testexec.SinceBoot(t)
 		started := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", leader})
+		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", leader, mark, exited})
 		elapsed := time.Since(started)
 		cancel()
 		at := <-reaped
@@ -287,11 +290,16 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			t.Fatalf("run %d: the command was not seen reaped within %s of the run's start (RunCommand = %q, %v after %s)", runs, within, out, err, elapsed)
 		}
 		if !at.Before(started.Add(budget)) {
+			own, began, ran := ownBeforeReap(t, calledBoot, started, at, mark, exited)
+			if own >= budget {
+				t.Fatalf("run %d: RunCommand spent %s of its own before the command's reap, at or past main's %s budget: %s from the call to the command's start, and %s from the command's exit to its reap, which the row saw %s after the call (RunCommand = %q, %v after %s)",
+					runs, own, budget, began, own-began, at.Sub(started), out, err, elapsed)
+			}
 			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the command was seen reaped %s after the run's start, not inside its %s budget", runs, at.Sub(started), budget)
+				t.Logf("run %d is not judged: the command was seen reaped %s after the call, past its %s budget, with RunCommand's own time %s inside it: the command's own run %s", runs, at.Sub(started), budget, own, ran)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the command was seen reaped only after its %s budget could pass", runs, within, budget)
+			t.Fatalf("no run judged in %d runs over %s: in each the command was seen reaped past its %s budget with RunCommand's own time inside it; in the last, RunCommand's own time was %s, and the command's own run %s", runs, within, budget, own, ran)
 		}
 		if elapsed < procgroup.WaitDelay {
 			t.Fatalf("run %d: the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", runs, elapsed)
