@@ -1,4 +1,5 @@
 import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -53,6 +54,7 @@ import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
+import { commaListText } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -965,6 +967,10 @@ function GroupHeading({
  *  than a row of them; each is portalled over the page, and two would cover each other. */
 type OpenFilter = "group" | "machine" | "role";
 
+/** The two lists whose picks can take the address past what it keeps: a machine's name and a
+ *  role are any length, while the four groups are short words of the page's own. */
+type BoundedFilter = "machine" | "role";
+
 /** The group filter's option labels: the control hands its values over as strings, and a string
  *  that names no group has no label. */
 const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
@@ -977,7 +983,8 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
  * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
  * that narrows its own options, because forty
  * machines cannot be read in a list that does not search; all three now sit behind one trigger
- * rather than three of their own.
+ * rather than three of their own. A pick that would take the machine or the role list past what
+ * the address keeps is refused, in words under that list (`boundedList`).
  */
 function AgentFilterBar({
   agents,
@@ -999,6 +1006,41 @@ function AgentFilterBar({
   const [filterOpen, setFilterOpen] = useState(false);
   /** Which of its three controls has its popover open: one at a time, and none once it shuts. */
   const filterPanel = useNestedPanels<OpenFilter>(filterOpen);
+  /** The page's refusal of the reader's last pick in the machine or the role list, in words, and
+   *  the list it was in; null while it refused none. */
+  const [refusal, setRefusal] = useState<{ list: BoundedFilter; words: string } | null>(null);
+  /** The machine or the role list's props beyond its own words: the panel it opens in and its
+   *  pick. The address writes a list whole (`commaListParam`), so a pick that would take the
+   *  list's text there (`commaListText`) past `SEARCH_QUERY_MAX` characters is refused, in words
+   *  under the list, and the address keeps the list it had; any other change is written, an
+   *  untick or a Clear of a longer list a link carried among them. The refusal goes with the
+   *  next change written, a search typed in the list, or the list opened again. */
+  const boundedList = (list: BoundedFilter, current: readonly string[]) => {
+    const panel = filterPanel(list);
+    return {
+      error: refusal?.list === list ? refusal.words : null,
+      onChange: (next: string[]) => {
+        const length = commaListText(next).length;
+        if (next.length > current.length && length > SEARCH_QUERY_MAX) {
+          const count = (value: number) => value.toLocaleString("en-US");
+          setRefusal({
+            list,
+            words: `Not added: the address keeps at most ${count(SEARCH_QUERY_MAX)} characters of ${list}s, and this pick would make ${count(length)}.`,
+          });
+          return;
+        }
+        setRefusal(null);
+        onFilters(list === "machine" ? { machines: next } : { roles: next });
+      },
+      onOpenChange: (open: boolean) => {
+        if (open) setRefusal(null);
+        panel.onOpenChange(open);
+      },
+      onQueryChange: () => setRefusal(null),
+      open: panel.open,
+      selected: current,
+    };
+  };
   // One chip per value the reader has ticked, in the order the panel lists the three controls;
   // a press takes that one value off and leaves the rest of the narrowing alone.
   const chosen = [
@@ -1059,23 +1101,19 @@ function AgentFilterBar({
                 triggerAriaLabel="Filter by group"
               />
               <MultiSelect
-                {...filterPanel("machine")}
+                {...boundedList("machine", filters.machines)}
                 emptyMessage="No machine matches that."
                 label="Machine"
-                onChange={(next) => onFilters({ machines: next })}
                 options={machines}
                 searchLabel="Search machines"
-                selected={filters.machines}
                 triggerAriaLabel="Filter by machine"
               />
               <MultiSelect
-                {...filterPanel("role")}
+                {...boundedList("role", filters.roles)}
                 emptyMessage="No role matches that."
                 label="Role"
-                onChange={(next) => onFilters({ roles: next })}
                 options={roles}
                 searchLabel="Search roles"
-                selected={filters.roles}
                 triggerAriaLabel="Filter by role"
               />
             </>

@@ -289,15 +289,16 @@ test("a machine whose sessions are in no pane says so and opens the Agents page 
   }
 });
 
-// The Agents page's `?machine=` is cut at `SEARCH_QUERY_MAX`, so a link for a longer host would
-// open the sessions of a cut name, none or another machine's: the page draws no link for it and
-// still names the host in its heading.
-test("a machine whose name is past the address's cap names itself and has no Agents link", async () => {
+// The Agents page's `?machine=` is written whole at any length, so a host longer than
+// `SEARCH_QUERY_MAX` still has its link, and the link names the whole host.
+test("a machine whose name is past the address's cap names itself and links to the Agents page for all of it", async () => {
   const host = "h".repeat(SEARCH_QUERY_MAX + 1);
   const machine = renderMachine([session(id("a"), undefined, { host, machine_id: host })], host);
   try {
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(host);
-    expect(screen.queryByRole("link", { name: "Agents on this machine" })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: "Agents on this machine" })?.getAttribute("href")
+    ).toBe(`/agents?machine=${host}`);
   } finally {
     machine.close();
   }

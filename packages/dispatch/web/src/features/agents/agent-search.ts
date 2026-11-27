@@ -8,7 +8,6 @@ import {
   fieldsAddress,
   useAddressFields,
 } from "../../lib/page-address";
-import { AGENTS_ROLE_PARAM } from "../refs/routes";
 import { AGENT_GROUPS, type AgentGroup } from "./agent-groups";
 
 /**
@@ -25,18 +24,17 @@ export interface AgentFilters {
 
 /** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). A link from another page reaches them through `agentsAddress`, below, with one
- *  exception: a `dispatch://role/<token>` reference opens the page with its `?role=` built in
- *  `features/refs/routes.ts`. Both sides spell that parameter from `AGENTS_ROLE_PARAM`, the key
- *  of the role field here, so they cannot drift apart. Every one of them is absent while nothing
- *  is picked, so a plain `/agents` is the page as it opens and unticking the last value does not
- *  bring the filter back on reload. A module-level constant, since its identity is what
+ *  `?role=`). A link from another page reaches them through `agentsAddress`, below: a machine's
+ *  page links to that machine's sessions, and a `dispatch://role/<token>` reference opens the
+ *  page narrowed to its role (`features/refs/routes.ts`). Every one of them is absent while
+ *  nothing is picked, so a plain `/agents` is the page as it opens and unticking the last value
+ *  does not bring the filter back on reload. A module-level constant, since its identity is what
  *  `useAddressFields` memoizes on. */
 const AGENT_FILTER_SPEC = {
   group: commaListParam(),
   machine: commaListParam(),
   q: cappedTextParam(),
-  [AGENTS_ROLE_PARAM]: commaListParam(),
+  role: commaListParam(),
 } satisfies AddressSpec;
 
 /** The parameters a change of the narrowing writes, each under its name in `AGENT_FILTER_SPEC`.
@@ -55,10 +53,10 @@ function addressFields(
 /** The Agents page narrowed by `narrowing` (`/agents?machine=<host>` for one machine's
  *  sessions): the link another page sends a reader here by. It is written through the page's
  *  own grammar and the field names `useAgentFilters`'s setter writes, so it is the address that
- *  setter writes from a plain `/agents` for the same narrowing, encoded the same way. `null`
- *  where the grammar cannot carry the narrowing whole (`fieldsAddress`): a machine name longer
- *  than `SEARCH_QUERY_MAX` would otherwise link to the cut `?machine=` writes, a name no session
- *  reports or another machine's. The caller draws no link. */
+ *  setter writes from a plain `/agents` for the same narrowing, encoded the same way. Every
+ *  machine name and every role has its link whole, at any length, since a list is never cut.
+ *  `null` where the grammar cannot carry the narrowing whole (`fieldsAddress`): a search past
+ *  `SEARCH_QUERY_MAX`, which `?q=` cuts, or an empty name in a list. The caller draws no link. */
 export function agentsAddress(narrowing: Partial<AgentFilters>): string | null {
   return fieldsAddress("/agents", AGENT_FILTER_SPEC, addressFields(narrowing));
 }
@@ -84,9 +82,10 @@ const NONE: readonly string[] = [];
  * back in the one order the page draws them in, whatever order they were ticked in.
  *
  * The setter takes the fields that changed and writes those alone: each caller hands it only
- * the field its control moves. `q`, `machine` and `role` are cut at `SEARCH_QUERY_MAX` when
- * written, so a write of all four would cut a longer value a link carried as soon as an
- * unrelated control moved.
+ * the field its control moves. `q` is cut at `SEARCH_QUERY_MAX` when written, so a write of all
+ * four would cut a longer search a link carried as soon as an unrelated control moved. The
+ * three lists are written whole; the page refuses a pick that would take one past that bound
+ * (`AgentFilterBar`).
  */
 export function useAgentFilters(): readonly [
   AgentFilters,

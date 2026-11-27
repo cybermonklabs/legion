@@ -277,17 +277,32 @@ export function cappedTextParam(): AddressParam<string> {
   };
 }
 
+/** `values` as `commaListParam` writes them into its one parameter: joined by commas, with a
+ *  comma or a backslash inside a value written escaped (`\,` and `\\`). A page that bounds the
+ *  list a reader picks measures this, which is what the address holds. */
+export function commaListText(values: readonly string[]): string {
+  return values.map((value) => value.replace(/[\\,]/g, (char) => `\\${char}`)).join(",");
+}
+
 /** Several values in one parameter, comma-separated (`?machine=relay-1,relay-2`): what a
- *  multi-select writes where one link has always named one value. An empty list leaves the
- *  address, so unticking the last pick does not bring the filter back on reload. The written
- *  list is cut at `SEARCH_QUERY_MAX` like any other text the page puts in its address, for the
- *  same reason: the load balancer refuses a URL past 16 K on reload or a shared link. */
+ *  multi-select writes where one link has always named one value. A comma or a backslash inside
+ *  a value is written escaped (`commaListText`), and the read splits on each comma no backslash
+ *  escapes and takes only `\,` and `\\` as escapes, so every value reads back whole, while an
+ *  address that holds neither reads as it always has: any other backslash is itself, and an
+ *  empty item is dropped. An empty list leaves the address, so unticking the last pick does not
+ *  bring the filter back on reload. Nothing is cut, at any length: a page keeps the lists its
+ *  reader picks under `SEARCH_QUERY_MAX`, since the load balancer refuses a URL past 16 K on
+ *  reload or a shared link, by refusing the pick that would take one past it (the Agents page's
+ *  `AgentFilterBar`). */
 export function commaListParam(): AddressParam<readonly string[]> {
   return {
-    read: (params, name) => (params.get(name) ?? "").split(",").filter((value) => value !== ""),
+    read: (params, name) =>
+      (params.get(name)?.match(/(?:\\[\\,]|[^,])+/g) ?? []).map((value) =>
+        value.replace(/\\([\\,])/g, "$1")
+      ),
     write: (params, name, value) => {
       if (value.length === 0) params.delete(name);
-      else params.set(name, capSearchQuery(value.join(",")));
+      else params.set(name, commaListText(value));
     },
   };
 }
@@ -375,10 +390,12 @@ export function writeAddressFields<S extends AddressSpec>(
 /** The address of `pathname` narrowed by `values` and by nothing else, written through `spec`:
  *  a link to a page is the address that page's own setter writes for the same narrowing,
  *  encoded by the same parameters. `null` where that address does not read back through `spec`
- *  as exactly `values`, field by field: a parameter that cuts what it writes at
- *  `SEARCH_QUERY_MAX` (`commaListParam`, `cappedTextParam`), or a comma inside one value of a
- *  `commaListParam`, would point the link at another narrowing than the one it names, so the
- *  caller draws no link rather than one that opens a different page in silence. */
+ *  as exactly `values`, field by field: a `cappedTextParam` value past `SEARCH_QUERY_MAX`, which
+ *  it cuts, or an empty item in a `commaListParam`, which its read drops, would point the link
+ *  at another narrowing than the one it names, so the caller draws no link rather than one that
+ *  opens a different page in silence. A comma list carries every other value whole, commas and
+ *  backslashes included, at any length: the bound a page holds its lists to is on the reader's
+ *  own picks (`commaListParam`), not on a link to it. */
 export function fieldsAddress<S extends AddressSpec>(
   pathname: string,
   spec: S,

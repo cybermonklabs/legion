@@ -74,10 +74,10 @@ const REPEATED = repeatedParam();
  * names more than once is read as all of its lists. A value is trimmed, and a repeat is dropped,
  * as is a word outside the field's vocabulary (`INBOX_FILTER_VOCABULARY`).
  *
- * `commaListParam` would read only the first of those lists, and cut the joined list at
- * `SEARCH_QUERY_MAX` on the way back. Every write here rebuilds the whole query from the route,
- * so that cut would shorten a longer list a link arrived with on the reader's next `j`. So the
- * occurrences are read with `repeatedParam` and the joined list is written with `textParam`.
+ * `commaListParam` would read only the first of those lists. So the occurrences are read with
+ * `repeatedParam`, and the joined list is written with `textParam` and split back here on every
+ * comma, with no escape to read: no value a field takes, a word of its vocabulary or a project's
+ * key, holds a comma.
  */
 function chosenValues(params: URLSearchParams, field: InboxFilterField): string[] {
   const vocabulary = INBOX_FILTER_VOCABULARY[field];

@@ -5153,9 +5153,9 @@ test("the group and the role are written to the address, and are absent until th
   }
 });
 
-// The page cuts `q` and `machine` at 1,000 characters when it writes them. A longer value a link
-// carried stays as it came until the reader changes that field itself: ticking a group keeps the
-// whole search, and a search keeps every machine the link named.
+// The page cuts `q` at 1,000 characters when it writes it, and writes a machine list whole. A
+// longer value a link carried stays as it came until the reader changes that field itself:
+// ticking a group keeps the whole search, and a search keeps every machine the link named.
 test("a filter change leaves the longer search and machine list a link carried whole", async () => {
   const user = userEvent.setup();
   const query = "p".repeat(1200);
@@ -5180,6 +5180,46 @@ test("a filter change leaves the longer search and machine list a link carried w
     await waitFor(() => expect(address().get("q")).toBe("plan"));
     expect(address().get("machine")).toBe(machines);
     expect(address().get("group")).toBe("active");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The page writes a machine or a role list whole, so it keeps one within the 1,000 characters
+// of the address a list may take by refusing the pick that would pass them: the refusal is said
+// under the list, and the address keeps the list it had. A pick that ends exactly on the bound
+// is taken.
+test("a machine pick that would take the list past 1,000 characters is refused, in words under the list", async () => {
+  const user = userEvent.setup();
+  // Ninety-nine names of nine characters and their commas: 989 characters of the address.
+  const hosts = Array.from({ length: 99 }, (_, index) => `host-${String(index).padStart(4, "0")}`);
+  const page = renderAgents({
+    initialEntry: `/agents?machine=${hosts.join(",")}`,
+    listedAgents: [...agents, deployerAgent()],
+  });
+  const machineList = () =>
+    new URLSearchParams(screen.getByTestId("location-search").textContent ?? "").get("machine");
+  const words =
+    "Not added: the address keeps at most 1,000 characters of machines, and this pick would make 1,012.";
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const machine = await filterTrigger(user, region, "machine");
+    await user.click(machine);
+
+    // A comma and ten characters: 1,000 exactly, which the address takes.
+    await user.click(filterOption("machine", "build-host"));
+    const kept = [...hosts, "build-host"].join(",");
+    await waitFor(() => expect(machineList()).toBe(kept));
+
+    // A comma and eleven more would make 1,012: refused, and said under the list.
+    await user.click(filterOption("machine", "deploy-host"));
+    await waitFor(() =>
+      expect(within(panelOf(machine)).queryByText(words)?.textContent).toBe(words)
+    );
+    expect(machineList()).toBe(kept);
+    expect(machine.textContent).toBe("Machine · 100");
   } finally {
     page.view.unmount();
     page.restore();
