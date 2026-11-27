@@ -170,16 +170,17 @@ type rowMove struct {
 }
 
 // wayMove is a move the way after a fix makes (afterFix), which its context carries: moveTo is the
-// head the working copy of the task moves to before the started step's task (moveToOf), the task's
-// head for the first two ways and none for the third, and its presence marks the move as the
-// way's own, which besideFix lets through.
+// head the working copy of the task moves to before the started step's task (moveToOf), for the
+// first two ways the task's head or, where the fix made commits, where the branch stands after it
+// (headAfterFix), and none for the third; its presence marks the move as the way's own, which
+// besideFix lets through.
 type wayMove struct{ moveTo string }
 
 // wayMoveKey is the context key of a wayMove.
 type wayMoveKey struct{}
 
-// moveToOf is the head the start of a step moves the task's working copy to: the task's head for
-// a start the first two ways after a fix make, "" for every other start.
+// moveToOf is the head the start of a step moves the task's working copy to: the head the first
+// two ways after a fix chose (wayMove), "" for every other start.
 func moveToOf(ctx context.Context) string {
 	move, _ := ctx.Value(wayMoveKey{}).(wayMove)
 	return move.moveTo
@@ -193,8 +194,8 @@ func moveToOf(ctx context.Context) string {
 // a commit made since. So one start carries each fix's move, and the fix's mark, not any moment,
 // records which: the way's own start, which moves the copy to the head the way chose (moveToOf, the
 // first two ways), and otherwise the first start after the fix ended with commits of its own (its
-// end is not the head it started at), which moves the copy to the head that holds them
-// (headWithFix). That is a restart of the task after a stop, a leave or a new generation ended the
+// end is not the head it started at), which moves the copy to where the branch stands after it
+// (headAfterFix). That is a restart of the task after a stop, a leave or a new generation ended the
 // fix (wayNone), the retro, the merge or a step after a way that left each step its result (wayOn),
 // and a start while the way is pending.
 // A start after the one that carried the move answers "", and so does every start of a task that
@@ -220,22 +221,27 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 	if err != nil {
 		return "", nil, err
 	}
-	return headWithFix(*fix, pr), fix, nil
+	return headAfterFix(*fix, pr), fix, nil
 }
 
-// headWithFix is the head that holds the commits of fix, which made commits of its own (its end is
-// not the head it started at): the task's head where the record's moves lead to it from the fix's
-// end, since a push over that end holds its commits, and the fix's end otherwise. Only the two
-// commits' ancestry says which holds the other, and the engine reads no repository, so it reads the
-// record's moves (record.PullRequest.Moves): each the two heads of one push of the task's branch,
-// recorded as the push and its synchronize arrive. The fix's completion can reach the engine before
-// the synchronize of its end push, so the record's head can be a head pushed before that end: a
-// person's push while the fix ran, which the fix's take rebased onto. No move leads to that head
-// from the fix's end, and the copy moves to the end, which holds it and the fix's commits. A later
-// push whose move the record has not made yet, a synchronize that waits for its push, is taken the
-// same way: the copy holds the fix's commits without that push, as a copy holds no push made after
-// its step started.
-func headWithFix(fix record.TaskFix, pr *record.PullRequest) string {
+// headAfterFix is where the task's branch stands after fix, which made commits of its own (its end
+// is not the head it started at): the copy follows the branch from the fix's end by the moves the
+// record holds, and stands at the fix's end where no move leads from it to the record's head.
+// Only the two commits' ancestry says which holds the other, and the engine reads no repository,
+// so it reads the record's moves (record.PullRequest.Moves): each the two heads of one push of the
+// task's branch, recorded as the push and its synchronize arrive, the last classify.maxMoves of
+// them.
+//
+// What that gives, case by case. A push over the fix's end moves the copy to it, and it holds the
+// fix's commits. A reset or a force push to a commit before the fix's end moves the copy there
+// too, and the fix's commits are gone from it: that is the branch, and a step that started at the
+// fix's end would push them back. The fix's own completion can reach the engine before the
+// synchronize of its end push, so the record's head can be a commit pushed before that end — a
+// person's push the fix's take rebased onto — and no move leads from the end to it, so the copy
+// stands at the end, which holds both. A synchronize that waits for its push makes no move
+// (classify's advance), so a start in that window stands at the fix's end as well, and the step
+// meets that push when it pushes.
+func headAfterFix(fix record.TaskFix, pr *record.PullRequest) string {
 	if _, head := taskHead(pr); head != "" && movedFrom(pr.Moves, fix.EndHead, head) {
 		return head
 	}
@@ -435,7 +441,8 @@ func fixWayOf(fix record.TaskFix, steps int, taskHead string) (way, place int) {
 // does nothing otherwise, and the end of the last step running beside the fix calls it again
 // (besideFix). It writes the way on the fix row in the transaction of its act, so the way is taken
 // once. The first two ways return the task, held or not, by the one move out of a hold
-// (moveFromHold), at the task's head, which the started step's working copy moves to. The third
+// (moveFromHold), at the head the started step's working copy moves to: the task's head, or where
+// the fix made commits, where the branch stands after it (headAfterFix). The third
 // makes pending, the move of the table transition took no row for, where there is one. After the
 // way's act, in its transaction, the conflict that waited while the fix held the task's branch is
 // read again (mergeForwardAfterFix).
@@ -460,11 +467,14 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
 		return err
 	}
-	// The head the started step's working copy moves to is the task's head, and where the fix made
-	// commits of its own, the head that holds them (headWithFix).
+	// The head the started step's working copy moves to: the task's head, and where the fix made
+	// commits of its own, where the branch stands after it (headAfterFix), which is that head
+	// where the record's moves lead to it from the fix's end and the fix's end otherwise. No guard
+	// on an empty head: headAfterFix answers the fix's end there, which is the head the copy must
+	// move to, and the log below names it.
 	moveTo := head
-	if head != "" && fix.EndHead != "" && fix.EndHead != fix.Head {
-		moveTo = headWithFix(*fix, pr)
+	if fix.EndHead != "" && fix.EndHead != fix.Head {
+		moveTo = headAfterFix(*fix, pr)
 	}
 	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
 		"place", place, "moveTo", moveTo)
