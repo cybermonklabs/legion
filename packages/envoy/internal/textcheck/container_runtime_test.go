@@ -61,6 +61,7 @@ var dockerDriver = regexp.MustCompile(
 // so the untagged build reads neither import. The docker walk does not go by tag: it reads every
 // .go file, those included, and passes them because none drives docker by hand.
 func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
+	t.Parallel()
 	t.Run("imports", func(t *testing.T) {
 		findings, read := containerImporters(t)
 		if read == 0 {
@@ -86,6 +87,7 @@ func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
 // and t.Context() is the test's own. Each line is assembled from pieces so this file, which the walk
 // also reads, is not a finding itself.
 func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
+	t.Parallel()
 	const run, docker = "exec." + "Command", `"dock` + `er"`
 	for _, line := range []string{
 		run + "(" + docker + `, "pause", id)`,
@@ -107,6 +109,7 @@ func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
 // not in a file an untagged build leaves out, and names the package, not the file: the three
 // readings a finding rests on, against a module written for this test.
 func TestTheImportWalkReadsWhatAnUntaggedBuildCompiles(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write := func(name, text string) {
 		t.Helper()
