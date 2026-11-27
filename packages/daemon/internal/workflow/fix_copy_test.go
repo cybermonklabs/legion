@@ -133,3 +133,32 @@ func TestTheRetroAfterAPushOverTheFixsEndStartsAtThatPush(t *testing.T) {
 		t.Fatalf("the retro's start moves the task's copy to %q, want %s, the head pushed over the fix's end %s", got, headThree, headTwo)
 	}
 }
+
+// The fix's own completion can reach the engine before the synchronize of its end, so the first
+// start after the fix stands at the fix's end where no move leads from it to the record's head. On a
+// task whose one step is the implementation, a check fails at its end and a fix starts there; a
+// person pushes P while the fix runs, and the fix ends at E, which its take rebased onto P, before
+// E's synchronize arrives: the record's head is P, which lacks the fix's commits. Once CI passes at
+// P the retro starts with its copy moved to E, which holds both. Its red is copyMoveAfterFix taking
+// the record's head whatever its moves say: the retro then started at P, without the fix's commits.
+func TestTheRetroAfterAPushWhileTheFixRunsStartsAtTheFixsEnd(t *testing.T) {
+	r := newFixRig(t, returnEngine(), []string{"implementer"})
+	tickingClock(r.engine)
+	r.at(fixHead, jobRunning("k-ci"))
+	r.move(TriggerImplementationReady, "", record.PhaseRow{})
+	r.assertEndHold(record.HoldForCI)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.assertEndHold(record.HoldForFix)
+	r.personPushes(fixHead, headTwo)
+	if result := r.apply("fix-done", fixCompletion(headThree)); result.Refusal != nil {
+		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	if pr := recordedPR(t, r.pool, "LEGION-208"); pr.HeadSHA != headTwo {
+		t.Fatalf("the record's head after the fix's completion is %s, want P %s: this case needs E's synchronize not yet arrived", pr.HeadSHA, headTwo)
+	}
+	r.at(headTwo, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+	if got := r.assertRetroStarted().MoveTo; got != headThree {
+		t.Fatalf("the retro's start moves the task's copy to %q, want %s, the fix's end, which holds P %s and the fix's commits", got, headThree, headTwo)
+	}
+}
