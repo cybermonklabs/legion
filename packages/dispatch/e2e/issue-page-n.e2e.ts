@@ -149,6 +149,7 @@ import {
   treeActiveDescendant,
 } from "./issue-page-i";
 import { drawnContentsEntries, wordAtCaret } from "./issue-page-j";
+import { composer, composerField, composerTarget } from "./issue-page-l";
 import {
   daemonOf,
   focusedNodeFacts,
@@ -3446,19 +3447,28 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
       .toBe(true);
     await selectTextIn(page, rowWords(requirement), "requirement");
     await page.keyboard.press("ControlOrMeta+Alt+m");
-    // What the chord does while part L follows (part N's R11): it marks the selection as a
-    // comment in the row's own editor, which is this page's proof of R30 of the root spec.
-    // Today's composer, which the margin opened the mark in, is no part of this page yet
-    // (`AWAITING_THE_BOX`), so nothing is offered to write the comment in; part L's pull
-    // request reads its box here instead.
+    // What the chord does with part L's box on the page: it marks the selection as a comment in
+    // the row's own editor, which is this page's proof of R30 of the root spec. The box at the
+    // foot is aimed only by a Reply or an Edit (`IssueComposer.tsx`), never by the editor: it
+    // stays as it was, drawn and writing on the issue, with no target line and the issue's own
+    // placeholder, and the chord puts no caret in it.
     await expect(
       rowWords(requirement).locator(".mark-comment"),
       "$mod+Alt+m marked no selection in the row's editor"
     ).toHaveCount(1);
+    await expect(composer(page), "the box at the foot is not drawn after the chord").toBeVisible();
     await expect(
-      marginSlot(page).getByRole("form", { name: "Comment composer" }),
-      "the page offers today's composer while part L follows"
-    ).toBeHidden();
+      composerTarget(page),
+      "$mod+Alt+m aimed the box at the foot at the selection"
+    ).toHaveCount(0);
+    await expect(
+      composerField(page),
+      "the box at the foot no longer writes on the issue after the chord"
+    ).toHaveAttribute("placeholder", CONTROL_LABELS.issue_placeholder);
+    await expect(
+      composerField(page),
+      "$mod+Alt+m put the caret in the box at the foot"
+    ).not.toBeFocused();
   } finally {
     await context.close();
   }
@@ -3824,14 +3834,13 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // messages are read under the keys the margin already owns, so they are shared rather than
     // asked twice and are the entries already here.
     //
-    // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses and with two
-    // more, and no part on `main` adds one to this load. Three of the four are part L's, which
-    // follows this part (part N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and
-    // L's pull request puts them back: the head read and the reader's state, which the read mark
-    // writes, and the active-sessions read, which the box makes. The fourth, the repository
-    // mappings, `main`'s page no longer reads. The two more are the reads of
-    // dispatch://INFRA-5702's list of what waits on the reader, a part this branch holds, which
-    // the header's count counts (R5). Each is named where it stood or stands.
+    // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less one address and with two
+    // more, and no part on `main` adds one to this load. Part L's three are in it, as in the
+    // source: the head read and the reader's state, which the read mark at the outline's end
+    // writes, and the active-sessions read, which the box at the foot makes (`slots/foot.tsx`).
+    // The one less, the repository mappings, `main`'s page no longer reads. The two more are the
+    // reads of dispatch://INFRA-5702's list of what waits on the reader, a part this branch
+    // holds, which the header's count counts (R5). Each is named where it stood or stands.
     const firstLoad = [
       "/auth/whoami",
       // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -3845,11 +3854,10 @@ test("live: a fresh page load opens the socket at the current head and stays wit
       "/api/v1/me/state",
       // The issue's detail.
       `/api/v1/issues/${issue.key}`,
-      // No active-sessions read (`/api/v1/agents`): on this address the source made it for the
-      // box at the outline's foot, whose mention picker lists the live agents
-      // (`conversation/MentionComposer.tsx`'s `useAgents`). That box is part L's (R11). Nothing
-      // else on this load names an agent's session: the issue has no claim, and its messages are
-      // a person's.
+      // The active-sessions read of the box at the foot of the page, whose mention picker lists
+      // the live agents (`conversation/MentionComposer.tsx`'s `useAgents`, part L's
+      // `IssueComposer.tsx`).
+      "/api/v1/agents",
       // The primary artifact's comments, which the margin and the tree share rather than fetching
       // again.
       `/api/v1/issues/${issue.key}/comments`,
@@ -3863,9 +3871,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
       `/api/v1/issues/${issue.key}/asks?state=open`,
       // The issue's message threads, which the tree shares.
       `/api/v1/issues/${issue.key}/messages`,
-      // No read of the issue's head (`events?limit=1&order=desc`): the read mark at the outline's
-      // end that writes it is part L's (`IssueReadMark.tsx`), and part L follows this part (part
-      // N's R11). Part L's pull request puts that address back in this list.
+      // The issue's head, which the read mark at the outline's end writes when the reader has
+      // seen it (`IssueReadMark.tsx`, part L's R9).
+      `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
       // The live-agent query.
       `/api/v1/issues/${issue.key}/subscribers`,
       // The header's read of the project's architecture sources: the `Components:` line offers
@@ -3890,10 +3898,12 @@ test("live: a fresh page load opens the socket at the current head and stays wit
       `/api/v1/me/replies?issue=${issue.key}&state=unread`,
       // No list of the issue's phase handoffs: the list drew them beside the messages, and they
       // are lines of the history now, read with its log.
-      // No write of the reader's own state on this issue (`PUT /api/v1/me/issues/<key>/state`):
-      // in the source it was the read mark's, sent once the outline's end had been on screen for
-      // a second, through the head read above (`IssueReadMark.tsx`'s `last_read_seq`). The read
-      // mark is part L's (R11).
+      // The read mark's write of the reader's own state on this issue
+      // (`PUT /api/v1/me/issues/<key>/state`), sent once the outline's end has been on screen for
+      // a second, through the head read above (`IssueReadMark.tsx`'s `last_read_seq`): the
+      // seed's five messages are carol's, so the issue is unread for alice, and its short outline
+      // ends on her first screen.
+      `/api/v1/me/issues/${issue.key}/state`,
       // The tree's own reads, and the blocks of the one document the issue carries, which are
       // the nodes the tree draws of it. The document's *text* is no read of a first load:
       // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
@@ -4028,23 +4038,27 @@ async function settle(row: Locator, label: string): Promise<void> {
   }
 }
 
-/** One-shot: the question's row starts inside the first screen and ends above the viewport's
- *  foot. Its source measured to the line to write in at the foot of the outline, which is part
- *  L's box; part L follows this part (part N's R11), so the foot is the viewport's until part
- *  L's pull request measures to its box again. */
+/** One-shot: the question's row starts inside the first screen and ends at or above the top of
+ *  the box at the foot of the screen, part L's line to write in (`IssueComposer.tsx`), so the box
+ *  covers none of it: its source's measure against that line, read as L's `clearOfBox` reads a
+ *  row against the box, to the top of its `section` as it is drawn now. */
 async function expectQuestionInView(page: Page, row: Locator, label: string): Promise<void> {
   // Every caller settled the row first, visible and still, so its card is drawn and has a box.
   const box = await row.locator("[data-node-card]").first().boundingBox();
+  // Every caller stands on Conversation's address, where the box at the foot is drawn at rest
+  // (`useComposerShown`), so it has a box once the row has one.
+  const foot = await composer(page).boundingBox();
   const view = await page.evaluate(() => ({ height: window.innerHeight, scrollY: window.scrollY }));
   if (box === null) throw new Error(`${label}: expected the question's row to have a box`);
-  const where = `the question at ${JSON.stringify(box)}, the viewport ${view.height} tall at window.scrollY ${view.scrollY}`;
+  if (foot === null) throw new Error(`${label}: expected the box at the foot to have a box`);
+  const where = `the question at ${JSON.stringify(box)}, the box at the foot at ${JSON.stringify(foot)}, the viewport ${view.height} tall at window.scrollY ${view.scrollY}`;
   expect(
     box.y >= 0 && box.y < view.height,
     `${label}: the question is off the first screen: ${where}`
   ).toBe(true);
   expect(
-    box.y + box.height <= view.height,
-    `${label}: the question runs past the viewport's foot: ${where}`
+    box.y + box.height <= foot.y + 1,
+    `${label}: the question ends under the top of the box at the foot: ${where}`
   ).toBe(true);
 }
 

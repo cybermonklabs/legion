@@ -801,9 +801,9 @@ export interface CarriedOptions {
    */
   readonly renames: Readonly<Record<string, string>>;
   /** Recorded entries, in the same `role "name"` form, that only a part not yet on the page
-   *  carries (`AWAITING_THE_BOX` for part L, `AWAITING_THREADS` for INFRA-5704): none is looked
-   *  for, and one the page offers fails the check, since that part's own pull request is what
-   *  moves it back into the reading. */
+   *  carries (`AWAITING_THREADS`, for Threads, dispatch://INFRA-5704): none is looked for, and
+   *  one the page offers fails the check, since that part's own pull request is what moves it
+   *  back into the reading. */
   readonly awaiting?: readonly string[];
   /**
    * The fixture's links carried by a parent row (`ParentRowMapping`), keyed by the recorded
@@ -1022,7 +1022,7 @@ export async function assertInventoryCarried(
   expect
     .soft(
       early,
-      `${options.state} offers what only a part not yet on the page carries (the box of part L, or Threads): ${early.join(", ")}`
+      `${options.state} offers what only a part not yet on the page carries (Threads): ${early.join(", ")}`
     )
     .toEqual([]);
 
@@ -1057,10 +1057,10 @@ export async function assertInventoryCarried(
  * from the Design's table "Where each thing goes" and ruling 5, and with root version 183's
  * renames: tab Artifacts to Documents (R2); part M's four, the Activity tab to History, the
  * Collaborators tab, the Steps tab to the steps in Details and a block's "Referenced by" to
- * "What references this row"; the margin's Comments to the margin beside their node. Each
- * rename's reason is in `INVENTORY_RENAME_REASONS`, under the same key. The fixture is recorded
- * again after each merge of `main`; the table is declared here, so a new recording does not lose
- * it.
+ * "What references this row"; the margin's Comments to the margin beside their node; and part
+ * L's, today's composer's form to the box at the foot's, Draft. Each rename's reason is in
+ * `INVENTORY_RENAME_REASONS`, under the same key. The fixture is recorded again after each merge
+ * of `main`; the table is declared here, so a new recording does not lose it.
  *
  * The ask body of dispatch://INFRA-5702, which this stack holds, draws an ask on every surface of
  * the new page. It keeps today's names for Decline ("Decline to answer"), Hand on ("Hand this
@@ -1091,6 +1091,7 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'button "Referenced by (1)"': 'button "What references this row" | button "Referenced by"',
   'button "Referenced by (14)"': 'button "Referenced by"',
   'button "Write a reply"': 'button "Reply"',
+  'form "Comment composer"': 'form "Draft"',
   'button "Copy reference dispatch://LAY-2/comment/<id>"': 'button "Copy reference"',
   'button "Copy reference dispatch://LAY-2/message/<id>"': 'button "Copy reference"',
   'button "Reopen issue"': 'button "Reopen into Backlog"',
@@ -1172,7 +1173,9 @@ export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
   'button "Referenced by (1)"': DETAILS_FACTS_REASON,
   'button "Referenced by (14)"': DETAILS_FACTS_REASON,
   'button "Write a reply"':
-    "A collapsed thread's Write a reply is the Reply of the row that takes a reply, which sets the line of the box (R16); the box is part L's.",
+    "A collapsed thread's Write a reply is the Reply of the row that takes a reply, which sets the line of the box at the foot of the page (R16, part L's `IssueComposer`).",
+  'form "Comment composer"':
+    "Today's composer is the box at the foot of the page (part L's `IssueComposer`, dispatch://INFRA-3949), whose form a screen reader reads by the page's word for it, Draft (`CONTROL_LABELS.composer_form`, decision 527); its field and its Send keep their names, Comment and Send.",
   'button "Copy reference dispatch://LAY-2/comment/<id>"': COPY_REFERENCE_REASON,
   'button "Copy reference dispatch://LAY-2/message/<id>"': COPY_REFERENCE_REASON,
   'button "Reopen issue"':
@@ -1352,18 +1355,13 @@ export const INVENTORY_ROWS: Readonly<Record<string, CarriedByRow>> = {
 };
 
 /**
- * What only part L's box carries (part N's R11): today's composer, as the fixture recorded it in
- * every state. While pull request 3125 and part L have not merged, `slots/foot.tsx` draws
- * nothing, so the inventory row looks for none of these and fails if the page offers one. Part
- * L's pull request empties this list, and the row then reads each of them again. The message
- * route's button, `Messages default to <agent>`, is no name of the box: Details' Route row carries
- * it (R13), so it is read there.
+ * What only part L's box carries (part N's R11). Part L is on `main`, and `slots/foot.tsx` draws
+ * its box at the foot of the page, so the list is empty: the inventory row reads each name of
+ * today's composer again, as the fixture recorded it in every state, in the box or under the
+ * name `INVENTORY_RENAMES` gives it there. The message route's button, `Messages default to
+ * <agent>`, is no name of the box: Details' Route row carries it (R13), so it is read there.
  */
-export const AWAITING_THE_BOX: readonly string[] = [
-  'form "Comment composer"',
-  'textbox "Comment"',
-  'button "Send"',
-];
+export const AWAITING_THE_BOX: readonly string[] = [];
 
 /**
  * What only Threads carries (part N's R11), dispatch://INFRA-5704, which follows this part: the
@@ -1372,9 +1370,9 @@ export const AWAITING_THE_BOX: readonly string[] = [
  * empties this list, and the row then reads each of them again. It is empty: the fixture holds
  * no name that is New thread's alone. New thread, the control that sends a message to an agent
  * with an @ mention from Threads, is a control of the new page that the old page did not draw,
- * so no recording holds it; today's composer, which also sends such a message, is the box's
- * (`AWAITING_THE_BOX`), and listing its names here too would make this row fail once part L
- * lands and the box offers them.
+ * so no recording holds it; today's composer, which also sends such a message, is carried by
+ * part L's box, which is on `main` and offers its names, so listing them here would make this
+ * row fail.
  */
 export const AWAITING_THREADS: readonly string[] = [];
 

@@ -1,7 +1,7 @@
 /** The rows write an issue's status, priority, people, labels, parent, route, repository,
- *  claim, subscribers, approval, decisions, uploads and documents through the page and read each
- *  write back from the server, and a closed issue's rows wait for the settlement version the
- *  server writes of its spec. */
+ *  claim, subscribers, approval, decisions, a comment, uploads and documents through the page
+ *  and read each write back from the server, and a closed issue's rows wait for the settlement
+ *  version the server writes of its spec. */
 
 /*
  * Part N of dispatch://INFRA-1196 (dispatch://INFRA-3940), R7 and c-inventory: the new page
@@ -47,12 +47,15 @@ import {
 import {
   DESKTOP,
   expectIssuePageDrawn,
+  focusRow,
   nodeRow,
   nodeRows,
   PHONE,
+  rowAct,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { caretInNode, openPreset, pickPreset } from "./issue-page-i";
+import { caretInNode, focusedNodeId, openPreset, pickPreset } from "./issue-page-i";
+import { composer, composerField, composerTarget, sendFromComposer } from "./issue-page-l";
 import {
   AWAITING_THE_BOX,
   AWAITING_THREADS,
@@ -73,6 +76,7 @@ import {
   versionControl,
   zoomCrumbs,
 } from "./issue-page-n";
+import { commentWithBody } from "./margin-helpers";
 import type { InventoryEntry } from "./page-inventory";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -854,15 +858,24 @@ async function writeFromAnOpenIssue(
     )
     .toBe(true);
 
-  // No write through the composer: on the new page it is part L's box, which follows this part
-  // (part N's R11) and is in `AWAITING_THE_BOX`. Part L's pull request writes a comment in the
-  // box here and reads it back. Nor is a message to an agent written: today's way is the
-  // composer with an @ mention, and the new page's is Threads' New thread, which follows this part
-  // too (`AWAITING_THREADS`).
-
-  // Back to Conversation's address, where the tree opens on the spec's nodes.
+  // Back to Conversation's address, where the tree opens on the spec's nodes and the box at the
+  // foot of the page writes on the issue (`slots/foot.tsx`, part L's `IssueComposer.tsx`).
   await gotoIssue(page, `/issues/${seeded.key}/conversation`);
   const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+
+  // A comment through the box, as a reader writes one there: the words and Enter, read back from
+  // Dispatch's record. The box then takes the reader to the comment's row (part L's R4), which
+  // is waited for, so no landing still to come moves the focus off the row the next step
+  // presses. No message to an agent is written: today's way is the composer with an @ mention,
+  // and the new page's is Threads' New thread, which follows this part (`AWAITING_THREADS`).
+  const boxWords = "Written in the box at the foot of the page.";
+  await sendFromComposer(page, boxWords);
+  const written = await commentWithBody(seeded.key, undefined, boxWords);
+  await expect
+    .poll(() => focusedNodeId(page), {
+      message: "the comment written in the box did not take the reader to its row",
+    })
+    .toBe(written.id);
 
   await nodeRow(page, blockNodeId(specSlug, requirementBlockId(3)))
     .first()
@@ -906,13 +919,40 @@ async function writeFromAnOpenIssue(
     .poll(async () => (await getIssueArtifactText(seeded.key, specSlug)).markdown)
     .toContain("Edited where it was opened.");
 
+  // The outline's own control of the open question: its row's Answer sets the answer the page's
+  // writer holds (`outline-writer.tsx`), and the box at the foot of the page, the line the
+  // outline's controls set, answers no ask (part L's R5, `IssueComposer.tsx`): it stays writing
+  // on the issue, with no target line and no caret put in it, and Dispatch records no answer. So
+  // the answer is not a write of the outline: this step reads the line as it stands then, and
+  // the ask as still open.
+  const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
+  await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+  await expect(
+    nodeRow(page, question).first(),
+    "the conversation does not draw the open question's row"
+  ).toBeVisible();
+  await rowAct(await focusRow(page, question), "answer").click();
+  await expect(
+    composer(page),
+    "the box at the foot is not drawn after the row's Answer"
+  ).toBeVisible();
+  await expect(
+    composerTarget(page),
+    "the open question's Answer aimed the box at the foot at it, which answers no ask"
+  ).toHaveCount(0);
+  await expect(
+    composerField(page),
+    "the open question's Answer put the caret in the box at the foot"
+  ).not.toBeFocused();
+  expect(
+    (await getAsk(seeded.openQuestion.askId)).ask.state,
+    "the outline's Answer wrote an answer, which the box at the foot sends none of"
+  ).toBe("open");
+
   // The open question is answered where the new page offers an answer today: Peek, which the
   // navigation drawer carries (R7), opens the Inbox drawer over the issue, with the same ask's own
-  // card, whose option and Answer button write it. The outline's row writes nothing yet: its
-  // controls set the line at the foot of the outline (`slots/foot.tsx`, part L's box), which
-  // draws nothing while L follows, so the answer is not a write of the outline and this step does
-  // not read it as one. What it reads is Dispatch's own record: the ask answered with the option
-  // picked, and the issue's address as Peek found it.
+  // card, whose option and Answer button write it. What this reads is Dispatch's own record: the
+  // ask answered with the option picked, and the issue's address as Peek found it.
   await gotoIssue(page, `/issues/${seeded.key}`);
   const address = page.url();
   await page.getByRole("button", { exact: true, name: "Open navigation" }).click();
